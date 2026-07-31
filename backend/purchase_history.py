@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -29,6 +29,81 @@ class _OpenLot:
     purchase_date: date
     size: Decimal
     price: Decimal
+
+
+def fifo_cost_basis(
+    trades: list[WalletTrade],
+    size: Decimal,
+    *,
+    through: datetime | None = None,
+) -> Decimal | None:
+    """Return the FIFO cost of the next ``size`` shares, or None if history is incomplete."""
+    timestamp = through or datetime.max
+    return redemption_cost_bases(trades, [(0, timestamp, size)])[0]
+
+
+def redemption_cost_bases(
+    trades: list[WalletTrade],
+    redemptions: list[tuple[int, datetime, Decimal]],
+) -> dict[int, Decimal | None]:
+    """Calculate FIFO cost for chronologically interleaved redemption events."""
+    actions: list[tuple[datetime, int, int, WalletTrade | Decimal]] = [
+        (trade.timestamp, 0, trade.id, trade) for trade in trades
+    ]
+    actions.extend((timestamp, 1, event_id, size) for event_id, timestamp, size in redemptions)
+    actions.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    open_lots: deque[_OpenLot] = deque()
+    complete = True
+    results: dict[int, Decimal | None] = {}
+    for _, action_type, action_id, payload in actions:
+        if action_type == 0:
+            trade = payload
+            assert isinstance(trade, WalletTrade)
+            if trade.size <= ZERO or trade.side not in {"BUY", "SELL"}:
+                continue
+            if trade.side == "BUY":
+                open_lots.append(
+                    _OpenLot(
+                        purchase_date=_purchase_date(trade),
+                        size=trade.size,
+                        price=trade.price,
+                    )
+                )
+                continue
+            remaining_size, _ = _consume_lots(open_lots, trade.size)
+            if remaining_size > SIZE_TOLERANCE:
+                complete = False
+            continue
+
+        size = payload
+        assert isinstance(size, Decimal)
+        if size <= ZERO:
+            results[action_id] = ZERO
+            continue
+        remaining_size, cost_basis = _consume_lots(open_lots, size)
+        results[action_id] = cost_basis if complete and remaining_size <= SIZE_TOLERANCE else None
+        if remaining_size > SIZE_TOLERANCE:
+            complete = False
+
+    return results
+
+
+def _consume_lots(
+    open_lots: deque[_OpenLot],
+    size: Decimal,
+) -> tuple[Decimal, Decimal]:
+    remaining_size = size
+    cost_basis = ZERO
+    while remaining_size > SIZE_TOLERANCE and open_lots:
+        lot = open_lots[0]
+        consumed = min(lot.size, remaining_size)
+        cost_basis += consumed * lot.price
+        lot.size -= consumed
+        remaining_size -= consumed
+        if lot.size <= SIZE_TOLERANCE:
+            open_lots.popleft()
+    return remaining_size, cost_basis
 
 
 def _purchase_date(trade: WalletTrade) -> date:

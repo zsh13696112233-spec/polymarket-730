@@ -47,36 +47,55 @@ function isRunning(pid) {
   }
 }
 
+function sendSignal(pid, signal, port) {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") {
+      console.error(
+        `没有权限停止旧进程 ${pid}（端口 ${port}）。请在原终端按 Ctrl+C 后重试。`,
+      );
+      process.exit(1);
+    }
+    throw error;
+  }
+}
+
+async function waitForExit(processes, attempts) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (processes.every(({ pid }) => !isRunning(pid))) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 const stopped = [];
 for (const port of ports) {
   for (const pid of listenerPids(port)) {
     console.log(`端口 ${port} 已占用，正在停止旧进程 ${pid}…`);
-    try {
-      process.kill(pid, "SIGTERM");
+    if (sendSignal(pid, "SIGTERM", port)) {
       stopped.push({ pid, port });
-    } catch (error) {
-      if (error?.code === "ESRCH") continue;
-      if (error?.code === "EPERM") {
-        console.error(
-          `没有权限停止旧进程 ${pid}。请在原终端按 Ctrl+C 后重试。`,
-        );
-        process.exit(1);
-      }
-      throw error;
     }
   }
 }
 
-for (let attempt = 0; attempt < 30 && stopped.length > 0; attempt += 1) {
-  const remaining = stopped.filter(({ pid }) => isRunning(pid));
-  if (remaining.length === 0) break;
-  await new Promise((resolve) => setTimeout(resolve, 100));
+await waitForExit(stopped, 30);
+
+const forceStopped = stopped.filter(({ pid }) => isRunning(pid));
+for (const { pid, port } of forceStopped) {
+  console.warn(`旧进程 ${pid} 未能正常退出，正在强制结束…`);
+  sendSignal(pid, "SIGKILL", port);
 }
 
-const remaining = stopped.filter(({ pid }) => isRunning(pid));
-if (remaining.length > 0) {
-  for (const { pid, port } of remaining) {
-    console.error(`旧进程 ${pid} 未能正常退出，端口 ${port} 仍被占用。`);
+await waitForExit(forceStopped, 20);
+
+const occupied = ports.flatMap((port) =>
+  listenerPids(port).map((pid) => ({ pid, port })),
+);
+if (occupied.length > 0) {
+  for (const { pid, port } of occupied) {
+    console.error(`旧进程 ${pid} 未能结束，端口 ${port} 仍被占用。`);
   }
   process.exit(1);
 }

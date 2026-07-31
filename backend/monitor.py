@@ -19,6 +19,8 @@ from backend.models import (
     PositionChangeCandidate,
     PositionEvent,
     PositionEventFill,
+    PositionOverlapAlert,
+    PositionOverlapPeriod,
     WalletTrade,
     WatchedWallet,
 )
@@ -26,9 +28,11 @@ from backend.polymarket import (
     PolymarketAPIError,
     PolymarketClient,
     PositionSnapshot,
+    RedemptionSnapshot,
     SettlementEvidence,
     TradeSnapshot,
 )
+from backend.purchase_history import redemption_cost_bases
 
 LOGGER = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -59,6 +63,7 @@ class WalletMonitor:
         self._wake = asyncio.Event()
         self._semaphore = asyncio.Semaphore(settings.max_wallet_concurrency)
         self._wallet_locks: dict[int, asyncio.Lock] = {}
+        self._overlap_lock = asyncio.Lock()
 
     def start(self) -> None:
         if self._task is None:
@@ -133,6 +138,8 @@ class WalletMonitor:
         try:
             snapshot = await self.client.fetch_active_positions(proxy_wallet)
             trade_history_error: str | None = None
+            redemption_history_error: str | None = None
+            created_redemptions = 0
             try:
                 await self._sync_trade_history(
                     wallet_id,
@@ -143,6 +150,18 @@ class WalletMonitor:
                 trade_history_error = str(error)[:1000]
                 LOGGER.warning(
                     "Wallet trade history sync failed for wallet_id=%s: %s",
+                    wallet_id,
+                    error,
+                )
+            try:
+                created_redemptions = await self._sync_redemptions(
+                    wallet_id,
+                    observed_at=attempt_at,
+                )
+            except Exception as error:
+                redemption_history_error = str(error)[:1000]
+                LOGGER.warning(
+                    "Wallet redemption history sync failed for wallet_id=%s: %s",
                     wallet_id,
                     error,
                 )
@@ -177,6 +196,7 @@ class WalletMonitor:
                 evidence=evidence,
                 observed_at=success_at,
             )
+            await self._refresh_overlap_periods(wallet_id, observed_at=success_at)
             async with self.database.sessions() as session:
                 wallet = await session.get(WatchedWallet, wallet_id)
                 if wallet is None:
@@ -185,6 +205,7 @@ class WalletMonitor:
                 wallet.last_success_at = success_at
                 wallet.last_error = None
                 wallet.trade_history_error = trade_history_error
+                wallet.redemption_history_error = redemption_history_error
                 wallet.consecutive_failures = 0
                 wallet.next_sync_at = success_at + timedelta(
                     seconds=self.settings.poll_interval_seconds
@@ -193,7 +214,7 @@ class WalletMonitor:
                 await session.commit()
             await self.broker.publish("positions.updated", wallet_id)
             created_events = await self.finalize_due_candidates(wallet_id, now=success_at)
-            if created_events:
+            if created_events or created_redemptions:
                 await self.broker.publish("events.created", wallet_id)
             await self.broker.publish("sync.status", wallet_id)
             return True
@@ -201,6 +222,176 @@ class WalletMonitor:
             await self._record_failure(wallet_id, error)
             await self.broker.publish("sync.status", wallet_id)
             return False
+
+    async def _refresh_overlap_periods(
+        self,
+        wallet_id: int,
+        *,
+        observed_at: datetime,
+    ) -> None:
+        async with self._overlap_lock:
+            await self._refresh_overlap_periods_unlocked(
+                wallet_id,
+                observed_at=observed_at,
+            )
+
+    async def close_overlap_periods(
+        self,
+        *,
+        ended_at: datetime,
+        my_wallet_id: int | None = None,
+        tracked_wallet_id: int | None = None,
+    ) -> None:
+        if my_wallet_id is None and tracked_wallet_id is None:
+            return
+        async with self._overlap_lock:
+            async with self.database.sessions() as session:
+                conditions = [PositionOverlapPeriod.ended_at.is_(None)]
+                if my_wallet_id is not None:
+                    conditions.append(PositionOverlapPeriod.my_wallet_id == my_wallet_id)
+                if tracked_wallet_id is not None:
+                    conditions.append(PositionOverlapPeriod.tracked_wallet_id == tracked_wallet_id)
+                periods = list(
+                    (await session.scalars(select(PositionOverlapPeriod).where(*conditions))).all()
+                )
+                for period in periods:
+                    period.ended_at = ended_at
+                await session.commit()
+
+    async def _refresh_overlap_periods_unlocked(
+        self,
+        wallet_id: int,
+        *,
+        observed_at: datetime,
+    ) -> None:
+        async with self.database.sessions() as session:
+            wallet = await session.get(WatchedWallet, wallet_id)
+            if wallet is None:
+                return
+
+            if wallet.wallet_role == "self":
+                my_wallet = wallet
+                tracked_wallets = list(
+                    (
+                        await session.scalars(
+                            select(WatchedWallet).where(
+                                WatchedWallet.wallet_role == "tracked",
+                                WatchedWallet.enabled.is_(True),
+                            )
+                        )
+                    ).all()
+                )
+            else:
+                tracked_wallets = [wallet] if wallet.enabled else []
+                my_wallet = await session.scalar(
+                    select(WatchedWallet).where(
+                        WatchedWallet.wallet_role == "self",
+                        WatchedWallet.enabled.is_(True),
+                    )
+                )
+
+            if my_wallet is None or not my_wallet.enabled:
+                open_periods = list(
+                    (
+                        await session.scalars(
+                            select(PositionOverlapPeriod).where(
+                                PositionOverlapPeriod.tracked_wallet_id == wallet_id,
+                                PositionOverlapPeriod.ended_at.is_(None),
+                            )
+                        )
+                    ).all()
+                )
+                for period in open_periods:
+                    period.ended_at = observed_at
+                await session.commit()
+                return
+
+            tracked_ids = {tracked_wallet.id for tracked_wallet in tracked_wallets}
+            if wallet.wallet_role == "self":
+                orphaned_periods = list(
+                    (
+                        await session.scalars(
+                            select(PositionOverlapPeriod).where(
+                                PositionOverlapPeriod.my_wallet_id == my_wallet.id,
+                                PositionOverlapPeriod.ended_at.is_(None),
+                            )
+                        )
+                    ).all()
+                )
+                for period in orphaned_periods:
+                    if period.tracked_wallet_id not in tracked_ids:
+                        period.ended_at = observed_at
+
+            if not tracked_wallets:
+                await session.commit()
+                return
+
+            relevant_wallet_ids = [my_wallet.id, *tracked_ids]
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CurrentPosition).where(
+                            CurrentPosition.wallet_id.in_(relevant_wallet_ids),
+                            CurrentPosition.size > ZERO,
+                        )
+                    )
+                ).all()
+            )
+            positions_by_wallet: dict[int, dict[str, CurrentPosition]] = defaultdict(dict)
+            for position in positions:
+                positions_by_wallet[position.wallet_id][position.asset_id] = position
+
+            my_positions = positions_by_wallet[my_wallet.id]
+            for tracked_wallet in tracked_wallets:
+                tracked_positions = positions_by_wallet[tracked_wallet.id]
+                open_periods = list(
+                    (
+                        await session.scalars(
+                            select(PositionOverlapPeriod).where(
+                                PositionOverlapPeriod.my_wallet_id == my_wallet.id,
+                                PositionOverlapPeriod.tracked_wallet_id == tracked_wallet.id,
+                                PositionOverlapPeriod.ended_at.is_(None),
+                            )
+                        )
+                    ).all()
+                )
+                open_by_asset = {period.asset_id: period for period in open_periods}
+                common_assets = my_positions.keys() & tracked_positions.keys()
+
+                for asset_id in common_assets:
+                    mine = my_positions[asset_id]
+                    tracked = tracked_positions[asset_id]
+                    period = open_by_asset.get(asset_id)
+                    if period is None:
+                        period = PositionOverlapPeriod(
+                            my_wallet_id=my_wallet.id,
+                            tracked_wallet_id=tracked_wallet.id,
+                            asset_id=asset_id,
+                            condition_id=tracked.condition_id,
+                            title=tracked.title,
+                            outcome=tracked.outcome,
+                            event_slug=tracked.event_slug,
+                            market_slug=tracked.market_slug,
+                            last_my_size=mine.size,
+                            last_tracked_size=tracked.size,
+                            started_at=observed_at,
+                            ended_at=None,
+                        )
+                        session.add(period)
+                    else:
+                        period.condition_id = tracked.condition_id
+                        period.title = tracked.title
+                        period.outcome = tracked.outcome
+                        period.event_slug = tracked.event_slug
+                        period.market_slug = tracked.market_slug
+                        period.last_my_size = mine.size
+                        period.last_tracked_size = tracked.size
+
+                for asset_id, period in open_by_asset.items():
+                    if asset_id not in common_assets:
+                        period.ended_at = observed_at
+
+            await session.commit()
 
     async def _sync_trade_history(
         self,
@@ -284,6 +475,192 @@ class WalletMonitor:
                 wallet.trade_history_synced_at = observed_at
                 wallet.trade_history_error = None
             await session.commit()
+
+    async def _sync_redemptions(
+        self,
+        wallet_id: int,
+        *,
+        observed_at: datetime,
+    ) -> int:
+        async with self.database.sessions() as session:
+            wallet = await session.get(WatchedWallet, wallet_id)
+            if wallet is None:
+                return 0
+            start = wallet.redemption_history_synced_at or wallet.created_at
+            if wallet.redemption_history_synced_at is not None:
+                start -= timedelta(seconds=120)
+            proxy_wallet = wallet.proxy_wallet
+
+        redemptions = await self.client.fetch_redemptions(
+            proxy_wallet,
+            start=start,
+            end=observed_at + timedelta(seconds=30),
+        )
+        fingerprinted = [
+            (self._redemption_fingerprint(proxy_wallet, redemption), redemption)
+            for redemption in sorted(
+                redemptions,
+                key=lambda item: (
+                    item.timestamp,
+                    item.transaction_hash or "",
+                    item.condition_id,
+                    item.outcome_index if item.outcome_index is not None else -1,
+                ),
+            )
+        ]
+
+        async with self.database.sessions() as session:
+            existing_fingerprints: set[str] = set()
+            fingerprints = [fingerprint for fingerprint, _ in fingerprinted]
+            for offset in range(0, len(fingerprints), 500):
+                batch = fingerprints[offset : offset + 500]
+                existing_fingerprints.update(
+                    (
+                        await session.scalars(
+                            select(PositionEvent.source_fingerprint).where(
+                                PositionEvent.source_fingerprint.in_(batch)
+                            )
+                        )
+                    ).all()
+                )
+
+            created = 0
+            for fingerprint, redemption in fingerprinted:
+                if fingerprint in existing_fingerprints:
+                    continue
+                session.add(
+                    PositionEvent(
+                        wallet_id=wallet_id,
+                        asset_id=self._redemption_asset_id(redemption),
+                        condition_id=redemption.condition_id,
+                        type="redeemed",
+                        title=redemption.title,
+                        outcome=redemption.outcome,
+                        event_slug=redemption.event_slug,
+                        delta_size=-redemption.size,
+                        before_size=redemption.size,
+                        after_size=ZERO,
+                        before_avg_price=ZERO,
+                        after_avg_price=ZERO,
+                        average_fill_price=None,
+                        current_value=ZERO,
+                        reconciliation_status="onchain",
+                        first_detected_at=redemption.timestamp,
+                        settled_at=redemption.timestamp,
+                        source_fingerprint=fingerprint,
+                        payout_amount=redemption.usdc_size,
+                        redemption_cost_basis=None,
+                        transaction_hash=redemption.transaction_hash,
+                    )
+                )
+                existing_fingerprints.add(fingerprint)
+                created += 1
+
+            await self._refresh_redemption_costs(session, wallet_id)
+            wallet = await session.get(WatchedWallet, wallet_id)
+            if wallet is not None:
+                wallet.redemption_history_synced_at = observed_at
+                wallet.redemption_history_error = None
+            await session.commit()
+            return created
+
+    async def _refresh_redemption_costs(
+        self,
+        session: AsyncSession,
+        wallet_id: int,
+    ) -> None:
+        redemption_events = list(
+            (
+                await session.scalars(
+                    select(PositionEvent)
+                    .where(
+                        PositionEvent.wallet_id == wallet_id,
+                        PositionEvent.type == "redeemed",
+                    )
+                    .order_by(PositionEvent.settled_at.asc(), PositionEvent.id.asc())
+                )
+            ).all()
+        )
+        if not redemption_events:
+            return
+
+        condition_ids = {event.condition_id for event in redemption_events}
+        trades = list(
+            (
+                await session.scalars(
+                    select(WalletTrade)
+                    .where(
+                        WalletTrade.wallet_id == wallet_id,
+                        WalletTrade.condition_id.in_(condition_ids),
+                    )
+                    .order_by(WalletTrade.timestamp.asc(), WalletTrade.id.asc())
+                )
+            ).all()
+        )
+        positions = list(
+            (
+                await session.scalars(
+                    select(CurrentPosition).where(
+                        CurrentPosition.wallet_id == wallet_id,
+                        CurrentPosition.condition_id.in_(condition_ids),
+                    )
+                )
+            ).all()
+        )
+        trade_assets_by_condition: dict[str, set[str]] = defaultdict(set)
+        trades_by_asset: dict[str, list[WalletTrade]] = defaultdict(list)
+        for trade in trades:
+            trade_assets_by_condition[trade.condition_id].add(trade.asset_id)
+            trades_by_asset[trade.asset_id].append(trade)
+
+        known_assets: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for position in positions:
+            known_assets[(position.condition_id, position.outcome)].add(position.asset_id)
+        historical_events = list(
+            (
+                await session.scalars(
+                    select(PositionEvent).where(
+                        PositionEvent.wallet_id == wallet_id,
+                        PositionEvent.condition_id.in_(condition_ids),
+                        PositionEvent.type != "redeemed",
+                    )
+                )
+            ).all()
+        )
+        for event in historical_events:
+            known_assets[(event.condition_id, event.outcome)].add(event.asset_id)
+
+        events_by_asset: dict[str, list[PositionEvent]] = defaultdict(list)
+        for event in redemption_events:
+            asset_id: str | None = None
+            if not event.asset_id.startswith("redeem:") and event.asset_id in trades_by_asset:
+                asset_id = event.asset_id
+            else:
+                outcome_assets = known_assets.get(
+                    (event.condition_id, event.outcome),
+                    set(),
+                )
+                if len(outcome_assets) == 1:
+                    asset_id = next(iter(outcome_assets))
+                else:
+                    condition_assets = trade_assets_by_condition.get(
+                        event.condition_id,
+                        set(),
+                    )
+                    if len(condition_assets) == 1:
+                        asset_id = next(iter(condition_assets))
+            if asset_id is None:
+                continue
+            event.asset_id = asset_id
+            events_by_asset[asset_id].append(event)
+
+        for asset_id, events in events_by_asset.items():
+            costs = redemption_cost_bases(
+                trades_by_asset.get(asset_id, []),
+                [(event.id, event.settled_at, event.before_size) for event in events],
+            )
+            for event in events:
+                event.redemption_cost_basis = costs.get(event.id)
 
     async def _record_failure(self, wallet_id: int, error: Exception) -> None:
         failed_at = utcnow()
@@ -586,6 +963,7 @@ class WalletMonitor:
             trades_by_asset[trade.asset_id].append(trade)
 
         created = 0
+        alertable_event_ids: list[int] = []
         async with self.database.sessions() as session:
             for stale_candidate in candidates:
                 candidate = await session.get(PositionChangeCandidate, stale_candidate.id)
@@ -633,6 +1011,12 @@ class WalletMonitor:
                 )
                 session.add(event)
                 await session.flush()
+                if (
+                    wallet.wallet_role == "tracked"
+                    and event.type in {"increased", "decreased", "closed"}
+                    and event.id is not None
+                ):
+                    alertable_event_ids.append(event.id)
                 for fingerprint, trade in unconsumed_trades:
                     session.add(
                         PositionEventFill(
@@ -649,7 +1033,74 @@ class WalletMonitor:
                 await session.delete(candidate)
                 created += 1
             await session.commit()
+        created_alerts = await self._create_overlap_alerts(
+            wallet_id,
+            alertable_event_ids,
+            created_at=now,
+        )
+        if created_alerts:
+            await self.broker.publish("overlap-alerts.created", wallet_id)
         return created
+
+    async def _create_overlap_alerts(
+        self,
+        tracked_wallet_id: int,
+        event_ids: list[int],
+        *,
+        created_at: datetime,
+    ) -> int:
+        if not event_ids:
+            return 0
+        async with self._overlap_lock:
+            async with self.database.sessions() as session:
+                existing_event_ids = set(
+                    (
+                        await session.scalars(
+                            select(PositionOverlapAlert.event_id).where(
+                                PositionOverlapAlert.event_id.in_(event_ids)
+                            )
+                        )
+                    ).all()
+                )
+                events = list(
+                    (
+                        await session.scalars(
+                            select(PositionEvent).where(PositionEvent.id.in_(event_ids))
+                        )
+                    ).all()
+                )
+                created = 0
+                for event in events:
+                    if event.id in existing_event_ids:
+                        continue
+                    overlap_period = await session.scalar(
+                        select(PositionOverlapPeriod)
+                        .where(
+                            PositionOverlapPeriod.tracked_wallet_id == tracked_wallet_id,
+                            PositionOverlapPeriod.asset_id == event.asset_id,
+                            PositionOverlapPeriod.started_at <= event.first_detected_at,
+                            or_(
+                                PositionOverlapPeriod.ended_at.is_(None),
+                                PositionOverlapPeriod.ended_at >= event.first_detected_at,
+                            ),
+                        )
+                        .order_by(PositionOverlapPeriod.started_at.desc())
+                    )
+                    if overlap_period is None:
+                        continue
+                    session.add(
+                        PositionOverlapAlert(
+                            period_id=overlap_period.id,
+                            event_id=event.id,
+                            my_wallet_id=overlap_period.my_wallet_id,
+                            tracked_wallet_id=tracked_wallet_id,
+                            created_at=created_at,
+                            read_at=None,
+                        )
+                    )
+                    created += 1
+                await session.commit()
+                return created
 
     @staticmethod
     def _build_event(
@@ -711,6 +1162,34 @@ class WalletMonitor:
         if total_size == ZERO:
             return None
         return total_amount / total_size
+
+    @staticmethod
+    def _redemption_asset_id(redemption: RedemptionSnapshot) -> str:
+        if redemption.asset_id:
+            return redemption.asset_id
+        outcome_index = (
+            str(redemption.outcome_index) if redemption.outcome_index is not None else "unknown"
+        )
+        return f"redeem:{redemption.condition_id}:{outcome_index}"
+
+    @staticmethod
+    def _redemption_fingerprint(
+        proxy_wallet: str,
+        redemption: RedemptionSnapshot,
+    ) -> str:
+        base = "|".join(
+            [
+                proxy_wallet,
+                "REDEEM",
+                redemption.transaction_hash or "",
+                redemption.condition_id,
+                str(redemption.outcome_index),
+                redemption.timestamp.isoformat(),
+                str(redemption.size),
+                str(redemption.usdc_size),
+            ]
+        )
+        return hashlib.sha256(base.encode()).hexdigest()
 
     @staticmethod
     def _fingerprinted_trades(

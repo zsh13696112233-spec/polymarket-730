@@ -13,6 +13,7 @@ from backend.main import create_app
 from backend.polymarket import (
     PositionSnapshot,
     PublicProfile,
+    RedemptionSnapshot,
     SettlementEvidence,
     TradeSnapshot,
     parse_wallet_input,
@@ -69,6 +70,8 @@ class FakePolymarketClient:
         self.last_snapshot: list[PositionSnapshot] = []
         self.trades: list[TradeSnapshot] = []
         self.trade_error: Exception | None = None
+        self.redemptions: list[RedemptionSnapshot] = []
+        self.redemption_error: Exception | None = None
         self.evidence = SettlementEvidence(frozenset(), frozenset(), frozenset())
         self.settlement_calls: list[list[str]] = []
 
@@ -116,6 +119,22 @@ class FakePolymarketClient:
             if trade.condition_id in conditions
             and (start is None or trade.timestamp >= start)
             and (end is None or trade.timestamp <= end)
+        ]
+
+    async def fetch_redemptions(
+        self,
+        user: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[RedemptionSnapshot]:
+        if self.redemption_error is not None:
+            raise self.redemption_error
+        return [
+            redemption
+            for redemption in self.redemptions
+            if (start is None or redemption.timestamp >= start)
+            and (end is None or redemption.timestamp <= end)
         ]
 
 

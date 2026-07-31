@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -30,6 +31,7 @@ class WatchedWallet(Base):
     address: Mapped[str] = mapped_column(String(42), nullable=False)
     proxy_wallet: Mapped[str] = mapped_column(String(42), nullable=False, unique=True)
     label: Mapped[str] = mapped_column(String(100), nullable=False)
+    wallet_role: Mapped[str] = mapped_column(String(20), nullable=False, default="tracked")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     baseline_established: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle")
@@ -40,6 +42,8 @@ class WatchedWallet(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     trade_history_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     trade_history_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    redemption_history_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    redemption_history_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -122,7 +126,19 @@ class PositionChangeCandidate(Base):
 
 class PositionEvent(Base):
     __tablename__ = "position_events"
-    __table_args__ = (Index("ix_events_wallet_id_desc", "wallet_id", "id"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "source_fingerprint",
+            name="uq_position_events_source_fingerprint",
+        ),
+        Index("ix_events_wallet_id_desc", "wallet_id", "id"),
+        Index(
+            "ix_events_wallet_settled_desc",
+            "wallet_id",
+            "settled_at",
+            "id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     wallet_id: Mapped[int] = mapped_column(
@@ -144,6 +160,10 @@ class PositionEvent(Base):
     reconciliation_status: Mapped[str] = mapped_column(String(30), nullable=False)
     first_detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     settled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payout_amount: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    redemption_cost_basis: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    transaction_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     wallet: Mapped[WatchedWallet] = relationship(back_populates="events")
     fills: Mapped[list[PositionEventFill]] = relationship(
@@ -170,6 +190,80 @@ class PositionEventFill(Base):
     transaction_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     event: Mapped[PositionEvent] = relationship(back_populates="fills")
+
+
+class PositionOverlapPeriod(Base):
+    __tablename__ = "position_overlap_periods"
+    __table_args__ = (
+        Index(
+            "uq_overlap_periods_active_pair_asset",
+            "my_wallet_id",
+            "tracked_wallet_id",
+            "asset_id",
+            unique=True,
+            sqlite_where=text("ended_at IS NULL"),
+        ),
+        Index(
+            "ix_overlap_periods_tracked_asset_window",
+            "tracked_wallet_id",
+            "asset_id",
+            "started_at",
+            "ended_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    my_wallet_id: Mapped[int] = mapped_column(
+        ForeignKey("watched_wallets.id", ondelete="RESTRICT"), nullable=False
+    )
+    tracked_wallet_id: Mapped[int] = mapped_column(
+        ForeignKey("watched_wallets.id", ondelete="RESTRICT"), nullable=False
+    )
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_slug: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    market_slug: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_my_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    last_tracked_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PositionOverlapAlert(Base):
+    __tablename__ = "position_overlap_alerts"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_overlap_alerts_event"),
+        Index(
+            "ix_overlap_alerts_wallet_pair_desc",
+            "my_wallet_id",
+            "tracked_wallet_id",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    period_id: Mapped[int] = mapped_column(
+        ForeignKey("position_overlap_periods.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("position_events.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    my_wallet_id: Mapped[int] = mapped_column(
+        ForeignKey("watched_wallets.id", ondelete="RESTRICT"), nullable=False
+    )
+    tracked_wallet_id: Mapped[int] = mapped_column(
+        ForeignKey("watched_wallets.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    period: Mapped[PositionOverlapPeriod] = relationship()
+    event: Mapped[PositionEvent] = relationship()
 
 
 class WalletTrade(Base):

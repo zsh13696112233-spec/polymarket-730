@@ -4,7 +4,7 @@ import "./globals.css";
 
 const title = "仓位观察｜Polymarket 钱包持仓监控";
 const description =
-  "清晰查看 Polymarket 钱包的真实持仓、平均买入价、当前价值与加减仓明细。";
+  "清晰查看 Polymarket 钱包持仓，标出你与跟踪钱包的共同仓位、份额比例和仓位变动明细。";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

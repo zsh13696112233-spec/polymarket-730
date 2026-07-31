@@ -67,6 +67,21 @@ class TradeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RedemptionSnapshot:
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    outcome_index: int | None
+    event_slug: str | None
+    market_slug: str | None
+    size: Decimal
+    usdc_size: Decimal
+    timestamp: datetime
+    transaction_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class SettlementEvidence:
     resolved_condition_ids: frozenset[str]
     redeemable_asset_ids: frozenset[str]
@@ -400,6 +415,72 @@ class PolymarketClient:
             offset += limit
             if offset > 5_000:
                 raise PolymarketAPIError("活动分页超过官方接口上限")
+
+    async def fetch_redemptions(
+        self,
+        user: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[RedemptionSnapshot]:
+        offset = 0
+        limit = 500
+        results: list[RedemptionSnapshot] = []
+        while True:
+            params: dict[str, Any] = {
+                "user": user,
+                "type": "REDEEM",
+                "limit": limit,
+                "offset": offset,
+                "sortDirection": "DESC",
+            }
+            if start is not None:
+                params["start"] = int(start.replace(tzinfo=UTC).timestamp())
+            if end is not None:
+                params["end"] = int(end.replace(tzinfo=UTC).timestamp())
+            payload = await self._get_json(
+                f"{self.data_api_url}/activity",
+                params=params,
+            )
+            if not isinstance(payload, list):
+                raise PolymarketAPIError("赎回活动接口返回格式无效")
+            for item in payload:
+                if str(item.get("type") or "").upper() != "REDEEM":
+                    continue
+                condition_id = str(item.get("conditionId") or "")
+                timestamp = parse_datetime(item.get("timestamp"))
+                size = to_decimal(item.get("size"))
+                usdc_size = to_decimal(item.get("usdcSize"))
+                if not condition_id or timestamp is None or size <= ZERO:
+                    continue
+                if (start is not None and timestamp < start) or (
+                    end is not None and timestamp > end
+                ):
+                    continue
+                results.append(
+                    RedemptionSnapshot(
+                        asset_id=str(item.get("asset") or ""),
+                        condition_id=condition_id,
+                        title=str(item.get("title") or "未命名市场"),
+                        outcome=str(item.get("outcome") or ""),
+                        outcome_index=(
+                            int(item["outcomeIndex"])
+                            if item.get("outcomeIndex") is not None
+                            else None
+                        ),
+                        event_slug=item.get("eventSlug"),
+                        market_slug=item.get("slug"),
+                        size=size,
+                        usdc_size=usdc_size,
+                        timestamp=timestamp,
+                        transaction_hash=item.get("transactionHash"),
+                    )
+                )
+            if len(payload) < limit:
+                return results
+            offset += limit
+            if offset > 5_000:
+                raise PolymarketAPIError("赎回活动分页超过官方接口上限")
 
     async def fetch_trades(
         self,

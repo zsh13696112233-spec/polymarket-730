@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -28,6 +29,60 @@ def raw_position(asset: str) -> dict[str, object]:
         "outcome": "Yes",
         "outcomeIndex": 0,
     }
+
+
+def raw_redemption(index: int) -> dict[str, object]:
+    return {
+        "type": "REDEEM",
+        "conditionId": f"0x{index:064x}",
+        "asset": "",
+        "size": 10 + index,
+        "usdcSize": 10 + index,
+        "timestamp": 1_700_000_000 + index,
+        "transactionHash": f"0xredeem{index}",
+        "title": f"redeemed market {index}",
+        "slug": f"redeemed-market-{index}",
+        "eventSlug": f"redeemed-event-{index}",
+        "outcome": "Yes",
+        "outcomeIndex": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_redemption_history_is_parsed_and_paginated():
+    calls: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        calls.append(params)
+        offset = int(params["offset"])
+        if offset == 0:
+            return httpx.Response(200, json=[raw_redemption(index) for index in range(500)])
+        return httpx.Response(200, json=[raw_redemption(500)])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        redemptions = await client.fetch_redemptions(
+            TEST_ADDRESS,
+            start=datetime.fromtimestamp(1_699_999_999, tz=UTC).replace(tzinfo=None),
+            end=datetime.fromtimestamp(1_700_001_000, tz=UTC).replace(tzinfo=None),
+        )
+    finally:
+        await client.close()
+
+    assert len(redemptions) == 501
+    assert redemptions[-1].title == "redeemed market 500"
+    assert redemptions[-1].size == 510
+    assert redemptions[-1].usdc_size == 510
+    assert redemptions[-1].market_slug == "redeemed-market-500"
+    assert [call["offset"] for call in calls] == ["0", "500"]
+    assert all(call["type"] == "REDEEM" for call in calls)
+    assert all("start" in call and "end" in call for call in calls)
 
 
 @pytest.mark.asyncio

@@ -143,7 +143,7 @@ summary:focus-visible {
 }
 
 .headerActions {
-  gap: 16px;
+  gap: 10px;
 }
 
 .readOnlyNote {
@@ -156,6 +156,9 @@ summary:focus-visible {
 .refreshButton,
 .marketButton,
 .mobileMarketButton,
+.myWalletButton,
+.overlapBadge,
+.changeAlertBadge,
 .addTab,
 .walletTab,
 .viewTabs button,
@@ -163,6 +166,54 @@ summary:focus-visible {
 .staleBanner button {
   border: 0;
   cursor: pointer;
+}
+
+.myWalletButton {
+  display: grid;
+  min-width: 155px;
+  min-height: 42px;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+  padding: 6px 10px 6px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  text-align: left;
+}
+
+.myWalletButton:hover {
+  border-color: #d0a35c;
+  background: #fffaf0;
+}
+
+.myWalletButton.configured {
+  border-style: solid;
+  border-color: #e7c889;
+  background: #fffaf0;
+}
+
+.myWalletButton span {
+  color: var(--warning);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+
+.myWalletButton strong {
+  max-width: 115px;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.myWalletButton small {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  align-self: center;
+  color: var(--warning);
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .primaryButton {
@@ -523,6 +574,16 @@ summary:focus-visible {
   color: var(--brand);
 }
 
+.viewTabs button span.overlapTabCount {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.viewTabs button span.alertTabCount {
+  background: var(--loss-soft);
+  color: var(--loss);
+}
+
 .sortNote {
   margin: 0;
   color: var(--muted);
@@ -592,6 +653,227 @@ summary:focus-visible {
   margin: 0;
 }
 
+.comparisonPrompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border-bottom: 1px solid #f0dfbc;
+  background: #fffaf0;
+  color: #76501d;
+  font-size: 10px;
+}
+
+.comparisonPrompt > span {
+  color: #c48a30;
+}
+
+.comparisonPrompt p {
+  flex: 1;
+  margin: 0;
+}
+
+.comparisonPrompt button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 760;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.comparisonPrompt.error {
+  border-color: #f0cdca;
+  background: var(--loss-soft);
+  color: #8e3732;
+}
+
+.overlapActivity {
+  border-bottom: 1px solid #ecd1ce;
+  background: #fffdfc;
+}
+
+.overlapActivityHeader,
+.overlapActivityHeader > div,
+.activityTitleRow,
+.activityMeta {
+  display: flex;
+  align-items: center;
+}
+
+.overlapActivityHeader {
+  min-height: 58px;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #f1dfdc;
+  background: #fff8f7;
+}
+
+.overlapActivityHeader > div {
+  min-width: 0;
+  gap: 10px;
+}
+
+.activityIcon {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--loss);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  box-shadow: 0 0 0 4px rgba(189, 74, 68, 0.1);
+}
+
+.overlapActivityHeader h2 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.overlapActivityHeader p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.overlapActivityHeader > button,
+.activityMeta button {
+  border: 0;
+  background: transparent;
+  color: var(--loss);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 760;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.overlapActivityHeader button:disabled,
+.activityMeta button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.overlapActivityList {
+  max-height: 330px;
+  overflow-y: auto;
+}
+
+.overlapActivityItem {
+  display: grid;
+  min-height: 68px;
+  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 13px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #f2e8e6;
+}
+
+.overlapActivityItem:last-child {
+  border-bottom: 0;
+}
+
+.overlapActivityItem.unread {
+  background: #fff9f8;
+  box-shadow: inset 3px 0 0 var(--loss);
+}
+
+.overlapActivityItem.read {
+  background: #fbfcfb;
+  opacity: 0.68;
+}
+
+.activityType {
+  display: inline-flex;
+  min-width: 38px;
+  min-height: 23px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 760;
+}
+
+.activityType.decreased {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.activityType.increased {
+  background: var(--profit-soft);
+  color: var(--profit);
+}
+
+.activityType.closed {
+  background: var(--loss-soft);
+  color: var(--loss);
+}
+
+.activityMain {
+  min-width: 0;
+}
+
+.activityTitleRow {
+  min-width: 0;
+  gap: 8px;
+}
+
+.activityTitleRow > a {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activityTitleRow > a:hover {
+  color: var(--brand);
+}
+
+.activityTitleRow > a span {
+  margin-left: 4px;
+  color: var(--muted);
+}
+
+.activityMain > p {
+  margin: 5px 0 0;
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.activityMain > p strong {
+  color: var(--foreground);
+}
+
+.activityMain > p small {
+  margin-left: 5px;
+  color: var(--loss);
+  font-size: 9px;
+}
+
+.activityMeta {
+  min-width: 104px;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.activityMeta time,
+.activityMeta > span {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .tableWrap {
   width: 100%;
   overflow-x: auto;
@@ -599,7 +881,7 @@ summary:focus-visible {
 
 .positionsTable {
   width: 100%;
-  min-width: 1180px;
+  min-width: 1320px;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -647,6 +929,15 @@ summary:focus-visible {
   background: #fbfcfb;
 }
 
+.positionsTable tbody tr.overlapRow {
+  background: #fffaf0;
+  box-shadow: inset 3px 0 0 #d59a38;
+}
+
+.positionsTable tbody tr.overlapRow:hover {
+  background: #fff6e5;
+}
+
 .numberCell {
   text-align: right !important;
   white-space: nowrap;
@@ -655,6 +946,84 @@ summary:focus-visible {
 .marketCell {
   width: 36%;
   min-width: 300px;
+}
+
+.marketPositionIdentity {
+  display: grid;
+  min-width: 0;
+  justify-items: start;
+  gap: 7px;
+}
+
+.overlapBadge {
+  display: inline-flex;
+  min-height: 23px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid #e5bd73;
+  border-radius: 999px;
+  background: #fff3d8;
+  color: #875613;
+  font-size: 9px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.overlapBadge:hover {
+  border-color: #cb8e28;
+  background: #ffe8bb;
+}
+
+.overlapBadge span {
+  color: #cf8c20;
+  font-size: 7px;
+}
+
+.changeAlertBadge {
+  display: inline-flex;
+  min-height: 23px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid #e2a7a2;
+  border-radius: 999px;
+  background: var(--loss-soft);
+  color: #963a35;
+  font-size: 9px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.changeAlertBadge:hover {
+  border-color: var(--loss);
+  background: #f9dcd9;
+}
+
+.changeAlertBadge span {
+  display: grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--loss);
+  color: #fff;
+  font-size: 8px;
+}
+
+.changeAlertBadge.increased {
+  border-color: #9acdb7;
+  background: var(--profit-soft);
+  color: #206b4c;
+}
+
+.changeAlertBadge.increased:hover {
+  border-color: var(--profit);
+  background: #d8efe5;
+}
+
+.changeAlertBadge.increased span {
+  background: var(--profit);
 }
 
 .marketIdentity {
@@ -695,6 +1064,16 @@ summary:focus-visible {
   color: var(--loss);
 }
 
+.eventType.redeemed,
+.fillSide.redeemed {
+  background: #eee9ff;
+  color: #6246a7;
+}
+
+.redeemedValue {
+  color: #6246a7;
+}
+
 .outcomeBadge.neutral {
   background: #edf1ef;
   color: var(--muted-strong);
@@ -732,6 +1111,28 @@ summary:focus-visible {
   color: var(--muted-strong);
   font-size: 10px;
   white-space: nowrap;
+}
+
+.openedAtCell {
+  min-width: 164px;
+  color: var(--muted-strong);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.openedAtCell time,
+.cardOpenedAt time {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+.openedAtCell small,
+.cardOpenedAt small {
+  display: block;
+  margin-top: 3px;
+  color: var(--warning);
+  font-size: 8px;
+  font-weight: 650;
 }
 
 .strongNumber {
@@ -807,6 +1208,12 @@ summary:focus-visible {
   list-style: none;
 }
 
+.redemptionEventCard summary {
+  grid-template-columns:
+    minmax(250px, 1.45fr) minmax(95px, 0.45fr)
+    minmax(180px, 0.85fr) minmax(125px, 0.6fr) minmax(155px, 0.7fr);
+}
+
 .eventCard summary::-webkit-details-marker {
   display: none;
 }
@@ -850,6 +1257,7 @@ summary:focus-visible {
 
 .eventDelta span,
 .eventPrice span,
+.eventProfit span,
 .eventFacts span,
 .cardHeroValue span {
   display: block;
@@ -859,9 +1267,26 @@ summary:focus-visible {
 }
 
 .eventDelta strong,
-.eventPrice strong {
+.eventPrice strong,
+.eventProfit strong {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+.eventProfit strong {
+  display: flex;
+  flex-direction: column;
+}
+
+.eventProfit small,
+.redemptionFacts strong small {
+  margin-top: 2px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.costUnavailable {
+  color: var(--muted);
 }
 
 .eventTime {
@@ -942,6 +1367,20 @@ summary:focus-visible {
   font-size: 14px;
 }
 
+.redemptionFacts {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(85px, 1fr)) auto;
+  gap: 14px;
+}
+
+.redemptionFacts > div {
+  min-width: 0;
+}
+
+.redemptionFacts strong small {
+  display: block;
+}
+
 .reconcileStatus {
   display: inline-flex;
   min-height: 24px;
@@ -1008,6 +1447,10 @@ summary:focus-visible {
 
 .fillRow:last-child {
   border-bottom: 0;
+}
+
+.redemptionRow {
+  background: #fbf9ff;
 }
 
 .fillSide {
@@ -1325,6 +1768,231 @@ summary:focus-visible {
   min-width: 82px;
 }
 
+.comparisonModal {
+  width: min(100%, 940px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+.comparisonModalHeader {
+  align-items: flex-start;
+}
+
+.comparisonModalHeader > div {
+  min-width: 0;
+}
+
+.comparisonModalHeader h2 {
+  max-width: 760px;
+}
+
+.comparisonMarketMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ratioHero {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 15px;
+  border: 1px solid #efd6a9;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #fffaf0, #fff4dc);
+}
+
+.ratioHero div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ratioHero span {
+  color: #7d5a25;
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.ratioHero strong {
+  color: #70470e;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+}
+
+.ratioHero p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-top: 9px;
+  border-top: 1px solid #ecd8b2;
+  color: #8d6c3a;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.comparisonStale {
+  margin-bottom: 14px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--warning-soft);
+  color: #76501d;
+  font-size: 10px;
+}
+
+.comparisonGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.comparisonPanel {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.comparisonPanel.mine {
+  border-color: #c6ddd4;
+  background: #f4faf7;
+}
+
+.comparisonPanel.tracked {
+  border-color: #ead9b9;
+  background: #fffbf3;
+}
+
+.comparisonWalletHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.comparisonWalletHeader div {
+  min-width: 0;
+}
+
+.comparisonWalletHeader span,
+.comparisonWalletHeader strong {
+  display: block;
+}
+
+.comparisonWalletHeader span {
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 680;
+}
+
+.comparisonWalletHeader strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comparisonWalletHeader small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.comparisonFacts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 10px;
+  margin: 15px 0 0;
+}
+
+.comparisonFacts div {
+  min-width: 0;
+}
+
+.comparisonFacts dt {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.comparisonFacts dd {
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comparisonLots {
+  margin-top: 17px;
+}
+
+.comparisonLots h3 {
+  margin: 0 0 8px;
+  color: var(--muted-strong);
+  font-size: 10px;
+}
+
+.comparisonLots > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.comparisonLotList {
+  display: grid;
+  gap: 6px;
+}
+
+.comparisonLot {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 9px;
+}
+
+.comparisonLot strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.comparisonLot small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
+.comparisonError {
+  display: grid;
+  min-height: 190px;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  color: var(--loss);
+  font-size: 11px;
+  text-align: center;
+}
+
+.comparisonError p {
+  margin: 0;
+}
+
 .cardHeroValue,
 .positionFacts,
 .mobileMarketButton {
@@ -1368,6 +2036,12 @@ summary:focus-visible {
       ) minmax(135px, 0.65fr);
     gap: 10px;
   }
+
+  .redemptionEventCard summary {
+    grid-template-columns:
+      minmax(220px, 1.25fr) minmax(90px, 0.45fr)
+      minmax(165px, 0.8fr) minmax(115px, 0.55fr) minmax(135px, 0.65fr);
+  }
 }
 
 @media (max-width: 760px) {
@@ -1392,6 +2066,21 @@ summary:focus-visible {
   .addWalletButton {
     min-height: 38px;
     padding: 0 12px;
+  }
+
+  .headerActions {
+    gap: 7px;
+  }
+
+  .myWalletButton {
+    min-width: 118px;
+    min-height: 38px;
+    padding: 5px 8px;
+  }
+
+  .myWalletButton strong {
+    max-width: 82px;
+    font-size: 10px;
   }
 
   .walletSection {
@@ -1470,6 +2159,29 @@ summary:focus-visible {
     line-height: 1.5;
   }
 
+  .comparisonPrompt {
+    padding: 9px 13px;
+    line-height: 1.5;
+  }
+
+  .overlapActivityHeader {
+    padding: 10px 13px;
+  }
+
+  .overlapActivityItem {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 9px 10px;
+    padding: 11px 13px;
+  }
+
+  .activityMeta {
+    grid-column: 2;
+    min-width: 0;
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
   .positionCards {
     display: grid;
     gap: 10px;
@@ -1483,8 +2195,18 @@ summary:focus-visible {
     background: var(--surface);
   }
 
+  .positionCard.overlapCard {
+    border-color: #e5bd73;
+    background: #fffaf0;
+    box-shadow: inset 3px 0 0 #d59a38;
+  }
+
   .positionCard .marketIdentity {
     align-items: flex-start;
+  }
+
+  .positionCard .marketPositionIdentity {
+    width: 100%;
   }
 
   .positionCard .marketTitle {
@@ -1570,12 +2292,21 @@ summary:focus-visible {
   }
 
   .eventDelta,
-  .eventPrice {
+  .eventPrice,
+  .eventProfit {
     align-self: end;
   }
 
-  .eventPrice {
+  .eventProfit {
     text-align: right;
+  }
+
+  .redemptionEventCard summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .redemptionEventCard .eventPrice {
+    grid-column: 1 / -1;
   }
 
   .eventTime {
@@ -1597,6 +2328,14 @@ summary:focus-visible {
 
   .eventFacts > div:nth-of-type(3) {
     grid-column: 1 / -1;
+  }
+
+  .redemptionFacts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .redemptionFacts > div:nth-of-type(3) {
+    grid-column: auto;
   }
 
   .reconcileStatus {
@@ -1642,6 +2381,22 @@ summary:focus-visible {
   .modal {
     padding: 19px;
   }
+
+  .comparisonModal {
+    max-height: calc(100vh - 24px);
+  }
+
+  .comparisonGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .ratioHero {
+    grid-template-columns: 1fr;
+  }
+
+  .ratioHero p {
+    grid-column: 1;
+  }
 }
 
 @media (max-width: 410px) {
@@ -1657,6 +2412,20 @@ summary:focus-visible {
     font-size: 19px;
   }
 
+  .myWalletButton {
+    min-width: 42px;
+    width: 42px;
+    grid-template-columns: 1fr;
+    place-items: center;
+    padding: 4px;
+    text-align: center;
+  }
+
+  .myWalletButton strong,
+  .myWalletButton small {
+    display: none;
+  }
+
   .summaryCard strong {
     font-size: 20px;
   }
@@ -1668,6 +2437,25 @@ summary:focus-visible {
   .staleBanner {
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+
+  .viewTabs button {
+    gap: 4px;
+    font-size: 11px;
+  }
+
+  .viewTabs button span.overlapTabCount {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .viewTabs button span.alertTabCount {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .comparisonFacts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

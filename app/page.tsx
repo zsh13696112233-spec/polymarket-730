@@ -20,6 +20,7 @@ type Wallet = {
   address: string;
   proxy_wallet: string;
   label: string;
+  wallet_role: "self" | "tracked";
   enabled: boolean;
   status: string;
   last_success_at: string | null;
@@ -44,6 +45,8 @@ type Position = {
   cash_pnl: Numeric;
   percent_pnl: Numeric;
   end_date: string | null;
+  first_opened_at: string | null;
+  first_opened_at_source: "trade" | "first_seen";
   purchase_lots?: PurchaseLot[];
 };
 
@@ -74,6 +77,63 @@ type PositionResponse = {
   stale: boolean;
 };
 
+type PositionOverlap = {
+  asset_id: string;
+  condition_id: string;
+  my_size: Numeric;
+  tracked_size: Numeric;
+  my_to_tracked_percent: Numeric;
+  my_ratio: Numeric;
+  tracked_ratio: Numeric;
+};
+
+type PositionOverlapsResponse = {
+  my_wallet_id: number | string | null;
+  tracked_wallet_id: number | string;
+  items: PositionOverlap[];
+  overlap_count: number;
+  my_as_of: string | null;
+  tracked_as_of: string | null;
+  my_stale: boolean | null;
+  tracked_stale: boolean;
+};
+
+type PositionOverlapDetail = {
+  my_wallet: Wallet;
+  tracked_wallet: Wallet;
+  mine: Position;
+  tracked: Position;
+  my_to_tracked_percent: Numeric;
+  my_ratio: Numeric;
+  tracked_ratio: Numeric;
+  my_stale: boolean;
+  tracked_stale: boolean;
+};
+
+type PositionOverlapAlert = {
+  id: number | string;
+  my_wallet_id: number | string;
+  tracked_wallet_id: number | string;
+  asset_id: string;
+  condition_id: string;
+  title: string;
+  outcome: string;
+  event_slug: string | null;
+  market_slug: string | null;
+  type: "increased" | "decreased" | "closed";
+  before_size: Numeric;
+  after_size: Numeric;
+  delta_size: Numeric;
+  detected_at: string;
+  created_at: string;
+  read_at: string | null;
+};
+
+type PositionOverlapAlertsResponse = {
+  items: PositionOverlapAlert[];
+  unread_count: number;
+};
+
 type Fill = {
   id: number | string;
   side: string;
@@ -88,7 +148,7 @@ type PositionEvent = {
   id: number | string;
   wallet_id: number | string;
   asset_id: string;
-  type: "opened" | "increased" | "decreased" | "closed";
+  type: "opened" | "increased" | "decreased" | "closed" | "redeemed";
   title: string;
   outcome: string;
   event_slug: string | null;
@@ -103,6 +163,14 @@ type PositionEvent = {
   reconciliation_status: string;
   first_detected_at: string;
   settled_at: string;
+  payout_amount: Numeric | null;
+  redemption_cost_basis: Numeric | null;
+  redemption_entry_price: Numeric | null;
+  redemption_price: Numeric | null;
+  redemption_profit: Numeric | null;
+  redemption_profit_percent: Numeric | null;
+  redemption_cost_complete: boolean | null;
+  transaction_hash: string | null;
   fills: Fill[];
 };
 
@@ -127,6 +195,13 @@ const moneyFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
+const redemptionMoneyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 6,
+});
+
 const compactNumberFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 0,
   maximumFractionDigits: 2,
@@ -139,6 +214,18 @@ function toNumber(value: string | number | null | undefined) {
 
 function formatMoney(value: string | number | null | undefined) {
   return moneyFormatter.format(toNumber(value));
+}
+
+function formatRedemptionMoney(
+  value: string | number | null | undefined,
+) {
+  return redemptionMoneyFormatter.format(toNumber(value));
+}
+
+function formatRedemptionPrice(
+  value: string | number | null | undefined,
+) {
+  return toNumber(value).toFixed(6);
 }
 
 function formatShares(value: string | number | null | undefined) {
@@ -159,6 +246,22 @@ function formatPercent(value: string | number | null | undefined) {
   return `${number >= 0 ? "+" : ""}${number.toFixed(2)}%`;
 }
 
+function formatOverlapPercent(value: Numeric) {
+  const number = toNumber(value);
+  if (number > 0 && number < 0.01) return "<0.01%";
+  return `${new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(number)}%`;
+}
+
+function formatRatioPart(value: Numeric) {
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(toNumber(value));
+}
+
 function formatDateTime(value: string | null | undefined) {
   if (!value) return "等待首次同步";
   const date = new Date(value);
@@ -177,6 +280,21 @@ function formatPurchaseDate(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return value;
   return `${year}年${month}月${day}日`;
+}
+
+function formatPositionDateTime(value: string | null | undefined) {
+  if (!value) return "时间未知";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function positionForPurchaseDate(
@@ -249,10 +367,12 @@ function eventLabel(type: PositionEvent["type"]) {
     increased: "加仓",
     decreased: "减仓",
     closed: "清仓",
+    redeemed: "赎回",
   }[type];
 }
 
 function eventTone(type: PositionEvent["type"]) {
+  if (type === "redeemed") return "redeemed";
   return type === "opened" || type === "increased" ? "positive" : "negative";
 }
 
@@ -352,7 +472,67 @@ function MarketTitle({
   );
 }
 
-function PositionTable({ positions }: { positions: Position[] }) {
+function OverlapBadge({
+  overlap,
+  onOpen,
+}: {
+  overlap: PositionOverlap;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      className="overlapBadge"
+      type="button"
+      onClick={onOpen}
+      aria-label={`查看共同持仓对比，我的仓位是他的 ${formatOverlapPercent(
+        overlap.my_to_tracked_percent,
+      )}`}
+    >
+      <span aria-hidden="true">◆</span>
+      共同持仓 · 我的/他的{" "}
+      {formatOverlapPercent(overlap.my_to_tracked_percent)}
+    </button>
+  );
+}
+
+function ChangeAlertBadge({
+  alert,
+  onRead,
+}: {
+  alert: PositionOverlapAlert;
+  onRead: () => void;
+}) {
+  const increased = alert.type === "increased";
+  const action = increased ? "加仓" : "减仓";
+  return (
+    <button
+      className={`changeAlertBadge ${increased ? "increased" : "decreased"}`}
+      type="button"
+      onClick={onRead}
+      aria-label={`对方刚${action}，从 ${formatShares(
+        alert.before_size,
+      )} 变为 ${formatShares(alert.after_size)}，标为已读`}
+    >
+      <span aria-hidden="true">!</span>
+      对方刚{action} {formatShares(alert.before_size)} →{" "}
+      {formatShares(alert.after_size)}
+    </button>
+  );
+}
+
+function PositionTable({
+  positions,
+  overlaps,
+  changeAlerts,
+  onOpenComparison,
+  onReadAlert,
+}: {
+  positions: Position[];
+  overlaps: Map<string, PositionOverlap>;
+  changeAlerts: Map<string, PositionOverlapAlert>;
+  onOpenComparison: (assetId: string) => void;
+  onReadAlert: (alertId: number | string) => void;
+}) {
   return (
     <>
       <div className="tableWrap desktopPositions">
@@ -363,6 +543,7 @@ function PositionTable({ positions }: { positions: Position[] }) {
               <th className="numberCell">平均买入</th>
               <th className="numberCell">当前价格</th>
               <th>买入批次</th>
+              <th>初次建仓</th>
               <th className="numberCell">持仓份额</th>
               <th className="numberCell">持仓成本</th>
               <th className="numberCell sortedColumn">
@@ -375,119 +556,177 @@ function PositionTable({ positions }: { positions: Position[] }) {
             </tr>
           </thead>
           <tbody>
-            {positions.map((position) => (
-              <tr key={`${position.asset_id}-${position.condition_id}`}>
-                <td className="marketCell">
-                  <MarketTitle
-                    title={position.title}
-                    outcome={position.outcome}
-                    eventSlug={position.event_slug}
-                    marketSlug={position.market_slug}
-                  />
-                </td>
-                <td className="numberCell mutedNumber">
-                  {formatPrice(position.avg_price)}
-                </td>
-                <td className="numberCell">
-                  {formatPrice(position.current_price)}
-                </td>
-                <td className="purchaseDateCell">
-                  {purchaseDateLabel(position)}
-                </td>
-                <td className="numberCell">
-                  {formatShares(position.size)}
-                </td>
-                <td className="numberCell mutedNumber">
-                  {formatMoney(position.initial_value)}
-                </td>
-                <td className="numberCell strongNumber">
-                  {formatMoney(position.current_value)}
-                </td>
-                <td className="numberCell">
-                  <PnlValue
-                    value={position.cash_pnl}
-                    percent={position.percent_pnl}
-                  />
-                </td>
-                <td className="actionCell">
-                  <a
-                    className="marketButton"
-                    href={marketUrl(
-                      position.event_slug,
-                      position.market_slug,
+            {positions.map((position) => {
+              const overlap = overlaps.get(position.asset_id);
+              const changeAlert = changeAlerts.get(position.asset_id);
+              return (
+                <tr
+                  className={overlap ? "overlapRow" : ""}
+                  key={`${position.asset_id}-${position.condition_id}`}
+                >
+                  <td className="marketCell">
+                    <div className="marketPositionIdentity">
+                      <MarketTitle
+                        title={position.title}
+                        outcome={position.outcome}
+                        eventSlug={position.event_slug}
+                        marketSlug={position.market_slug}
+                      />
+                      {overlap && (
+                        <OverlapBadge
+                          overlap={overlap}
+                          onOpen={() => onOpenComparison(position.asset_id)}
+                        />
+                      )}
+                      {overlap && changeAlert && (
+                        <ChangeAlertBadge
+                          alert={changeAlert}
+                          onRead={() => onReadAlert(changeAlert.id)}
+                        />
+                      )}
+                    </div>
+                  </td>
+                  <td className="numberCell mutedNumber">
+                    {formatPrice(position.avg_price)}
+                  </td>
+                  <td className="numberCell">
+                    {formatPrice(position.current_price)}
+                  </td>
+                  <td className="purchaseDateCell">
+                    {purchaseDateLabel(position)}
+                  </td>
+                  <td className="openedAtCell">
+                    <time dateTime={position.first_opened_at ?? undefined}>
+                      {formatPositionDateTime(position.first_opened_at)}
+                    </time>
+                    {position.first_opened_at_source === "first_seen" && (
+                      <small>首次监测</small>
                     )}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`前往 ${position.title} 市场`}
-                  >
-                    去市场
-                  </a>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="numberCell">
+                    {formatShares(position.size)}
+                  </td>
+                  <td className="numberCell mutedNumber">
+                    {formatMoney(position.initial_value)}
+                  </td>
+                  <td className="numberCell strongNumber">
+                    {formatMoney(position.current_value)}
+                  </td>
+                  <td className="numberCell">
+                    <PnlValue
+                      value={position.cash_pnl}
+                      percent={position.percent_pnl}
+                    />
+                  </td>
+                  <td className="actionCell">
+                    <a
+                      className="marketButton"
+                      href={marketUrl(
+                        position.event_slug,
+                        position.market_slug,
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`前往 ${position.title} 市场`}
+                    >
+                      去市场
+                    </a>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
       <div className="positionCards">
-        {positions.map((position) => (
-          <article
-            className="positionCard"
-            key={`card-${position.asset_id}-${position.condition_id}`}
-          >
-            <MarketTitle
-              title={position.title}
-              outcome={position.outcome}
-              eventSlug={position.event_slug}
-              marketSlug={position.market_slug}
-            />
-            <div className="cardHeroValue">
-              <span>当前市值</span>
-              <strong>{formatMoney(position.current_value)}</strong>
-            </div>
-            <dl className="positionFacts">
-              <div>
-                <dt>平均买入</dt>
-                <dd>{formatPrice(position.avg_price)}</dd>
-              </div>
-              <div>
-                <dt>当前价格</dt>
-                <dd>{formatPrice(position.current_price)}</dd>
-              </div>
-              <div>
-                <dt>买入批次</dt>
-                <dd>{purchaseDateLabel(position)}</dd>
-              </div>
-              <div>
-                <dt>持仓份额</dt>
-                <dd>{formatShares(position.size)}</dd>
-              </div>
-              <div>
-                <dt>持仓成本</dt>
-                <dd>{formatMoney(position.initial_value)}</dd>
-              </div>
-              <div className="cardPnl">
-                <dt>浮动盈亏</dt>
-                <dd>
-                  <PnlValue
-                    compact
-                    value={position.cash_pnl}
-                    percent={position.percent_pnl}
-                  />
-                </dd>
-              </div>
-            </dl>
-            <a
-              className="mobileMarketButton"
-              href={marketUrl(position.event_slug, position.market_slug)}
-              target="_blank"
-              rel="noopener noreferrer"
+        {positions.map((position) => {
+          const overlap = overlaps.get(position.asset_id);
+          const changeAlert = changeAlerts.get(position.asset_id);
+          return (
+            <article
+              className={`positionCard ${overlap ? "overlapCard" : ""}`}
+              key={`card-${position.asset_id}-${position.condition_id}`}
             >
-              前往 Polymarket 下单
-              <span aria-hidden="true">↗</span>
-            </a>
-          </article>
-        ))}
+              <div className="marketPositionIdentity">
+                <MarketTitle
+                  title={position.title}
+                  outcome={position.outcome}
+                  eventSlug={position.event_slug}
+                  marketSlug={position.market_slug}
+                />
+                {overlap && (
+                  <OverlapBadge
+                    overlap={overlap}
+                    onOpen={() => onOpenComparison(position.asset_id)}
+                  />
+                )}
+                {overlap && changeAlert && (
+                  <ChangeAlertBadge
+                    alert={changeAlert}
+                    onRead={() => onReadAlert(changeAlert.id)}
+                  />
+                )}
+              </div>
+              <div className="cardHeroValue">
+                <span>当前市值</span>
+                <strong>{formatMoney(position.current_value)}</strong>
+              </div>
+              <dl className="positionFacts">
+                <div>
+                  <dt>平均买入</dt>
+                  <dd>{formatPrice(position.avg_price)}</dd>
+                </div>
+                <div>
+                  <dt>当前价格</dt>
+                  <dd>{formatPrice(position.current_price)}</dd>
+                </div>
+                <div>
+                  <dt>买入批次</dt>
+                  <dd>{purchaseDateLabel(position)}</dd>
+                </div>
+                <div>
+                  <dt>初次建仓</dt>
+                  <dd className="cardOpenedAt">
+                    <time dateTime={position.first_opened_at ?? undefined}>
+                      {formatPositionDateTime(position.first_opened_at)}
+                    </time>
+                    {position.first_opened_at_source === "first_seen" && (
+                      <small>首次监测</small>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>持仓份额</dt>
+                  <dd>{formatShares(position.size)}</dd>
+                </div>
+                <div>
+                  <dt>持仓成本</dt>
+                  <dd>{formatMoney(position.initial_value)}</dd>
+                </div>
+                <div className="cardPnl">
+                  <dt>浮动盈亏</dt>
+                  <dd>
+                    <PnlValue
+                      compact
+                      value={position.cash_pnl}
+                      percent={position.percent_pnl}
+                    />
+                  </dd>
+                </div>
+              </dl>
+              <a
+                className="mobileMarketButton"
+                href={marketUrl(position.event_slug, position.market_slug)}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                前往 Polymarket 下单
+                <span aria-hidden="true">↗</span>
+              </a>
+            </article>
+          );
+        })}
       </div>
     </>
   );
@@ -510,8 +749,14 @@ function EventList({ events }: { events: PositionEvent[] }) {
     <div className="eventList">
       {events.map((event) => {
         const delta = toNumber(event.delta_size);
+        const redeemed = event.type === "redeemed";
+        const redemptionCostComplete =
+          redeemed && event.redemption_cost_complete === true;
         return (
-          <details className="eventCard" key={event.id}>
+          <details
+            className={`eventCard ${redeemed ? "redemptionEventCard" : ""}`}
+            key={event.id}
+          >
             <summary>
               <div className="eventSummaryMain">
                 <div className="eventBadges">
@@ -537,21 +782,64 @@ function EventList({ events }: { events: PositionEvent[] }) {
               </div>
 
               <div className="eventDelta">
-                <span>份额变化</span>
-                <strong className={delta >= 0 ? "profit" : "loss"}>
-                  {delta > 0 ? "+" : ""}
-                  {formatShares(event.delta_size)}
+                <span>{redeemed ? "赎回份额" : "份额变化"}</span>
+                <strong
+                  className={
+                    redeemed ? "redeemedValue" : delta >= 0 ? "profit" : "loss"
+                  }
+                >
+                  {redeemed
+                    ? formatShares(event.before_size)
+                    : `${delta > 0 ? "+" : ""}${formatShares(event.delta_size)}`}
                 </strong>
               </div>
 
               <div className="eventPrice">
-                <span>合并成交均价</span>
+                <span>{redeemed ? "入手价 → 赎回价" : "合并成交均价"}</span>
                 <strong>
-                  {event.average_fill_price
+                  {redeemed
+                    ? `${
+                        redemptionCostComplete &&
+                        event.redemption_entry_price != null
+                          ? formatRedemptionPrice(
+                              event.redemption_entry_price,
+                            )
+                          : "—"
+                      } → ${
+                        event.redemption_price != null
+                          ? formatRedemptionPrice(event.redemption_price)
+                          : "—"
+                      }`
+                    : event.average_fill_price
                     ? formatPrice(event.average_fill_price)
                     : "—"}
                 </strong>
               </div>
+
+              {redeemed && (
+                <div className="eventProfit">
+                  <span>本次赎回盈利</span>
+                  {redemptionCostComplete &&
+                  event.redemption_profit != null ? (
+                    <strong
+                      className={
+                        toNumber(event.redemption_profit) >= 0
+                          ? "profit"
+                          : "loss"
+                      }
+                    >
+                      {formatRedemptionMoney(event.redemption_profit)}
+                      {event.redemption_profit_percent != null && (
+                        <small>
+                          {formatPercent(event.redemption_profit_percent)}
+                        </small>
+                      )}
+                    </strong>
+                  ) : (
+                    <strong className="costUnavailable">—</strong>
+                  )}
+                </div>
+              )}
 
               <div className="eventTime">
                 <time dateTime={event.settled_at}>
@@ -566,73 +854,191 @@ function EventList({ events }: { events: PositionEvent[] }) {
             </summary>
 
             <div className="eventDetail">
-              <div className="eventFacts">
-                <div>
-                  <span>变化前份额</span>
-                  <strong>{formatShares(event.before_size)}</strong>
-                </div>
-                <span className="factArrow" aria-hidden="true">
-                  →
-                </span>
-                <div>
-                  <span>变化后份额</span>
-                  <strong>{formatShares(event.after_size)}</strong>
-                </div>
-                <div>
-                  <span>变化后市值</span>
-                  <strong>{formatMoney(event.current_value)}</strong>
-                </div>
-                <ReconciliationStatus status={event.reconciliation_status} />
-              </div>
-
-              <div className="fillsBlock">
-                <div className="fillsHeading">
-                  <h3>逐笔成交</h3>
-                  <span>{event.fills.length} 笔</span>
-                </div>
-                {event.fills.length === 0 ? (
-                  <p className="noFills">
-                    暂未匹配到逐笔成交，以持仓份额变化为准。
-                  </p>
-                ) : (
-                  <div className="fillRows">
-                    {event.fills.map((fill) => (
-                      <div className="fillRow" key={fill.id}>
-                        <span
-                          className={`fillSide ${
-                            fill.side.toUpperCase() === "BUY"
-                              ? "positive"
-                              : "negative"
-                          }`}
+              {redeemed ? (
+                <>
+                  <div className="eventFacts redemptionFacts">
+                    <div>
+                      <span>赎回份额</span>
+                      <strong>{formatShares(event.before_size)}</strong>
+                    </div>
+                    <div>
+                      <span>入手价</span>
+                      <strong>
+                        {redemptionCostComplete &&
+                        event.redemption_entry_price != null
+                          ? `${formatRedemptionPrice(
+                              event.redemption_entry_price,
+                            )} USDC`
+                          : "—"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>赎回价</span>
+                      <strong>
+                        {event.redemption_price != null
+                          ? `${formatRedemptionPrice(
+                              event.redemption_price,
+                            )} USDC`
+                          : "—"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>持仓成本</span>
+                      <strong>
+                        {redemptionCostComplete &&
+                        event.redemption_cost_basis != null
+                          ? formatRedemptionMoney(
+                              event.redemption_cost_basis,
+                            )
+                          : "—"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>到账 USDC</span>
+                      <strong>
+                        {event.payout_amount !== null
+                          ? formatRedemptionMoney(event.payout_amount)
+                          : "—"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>本次赎回盈利</span>
+                      {redemptionCostComplete &&
+                      event.redemption_profit != null ? (
+                        <strong
+                          className={
+                            toNumber(event.redemption_profit) >= 0
+                              ? "profit"
+                              : "loss"
+                          }
                         >
-                          {fill.side.toUpperCase() === "BUY" ? "买入" : "卖出"}
-                        </span>
-                        <time dateTime={fill.timestamp}>
-                          {formatDateTime(fill.timestamp)}
+                          {formatRedemptionMoney(event.redemption_profit)}
+                          {event.redemption_profit_percent != null && (
+                            <small>
+                              {formatPercent(
+                                event.redemption_profit_percent,
+                              )}
+                            </small>
+                          )}
+                        </strong>
+                      ) : (
+                        <strong className="costUnavailable">
+                          成本数据不完整
+                        </strong>
+                      )}
+                    </div>
+                    <span className="reconcileStatus aligned">链上已确认</span>
+                  </div>
+
+                  <div className="fillsBlock">
+                    <div className="fillsHeading">
+                      <h3>链上赎回</h3>
+                      <span>1 笔</span>
+                    </div>
+                    <div className="fillRows">
+                      <div className="fillRow redemptionRow">
+                        <span className="fillSide redeemed">赎回</span>
+                        <time dateTime={event.settled_at}>
+                          {formatDateTime(event.settled_at)}
                         </time>
-                        <span>
-                          {formatShares(fill.size)} 份 ×{" "}
-                          {formatPrice(fill.price)}
-                        </span>
-                        <strong>{formatMoney(fill.amount)}</strong>
-                        {fill.transaction_hash ? (
+                        <span>{formatShares(event.before_size)} 份</span>
+                        <strong>
+                          {event.payout_amount !== null
+                            ? formatRedemptionMoney(event.payout_amount)
+                            : "—"}
+                        </strong>
+                        {event.transaction_hash ? (
                           <a
-                            href={`https://polygonscan.com/tx/${fill.transaction_hash}`}
+                            href={`https://polygonscan.com/tx/${event.transaction_hash}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="txLink"
                           >
-                            {shortenAddress(fill.transaction_hash)}
+                            {shortenAddress(event.transaction_hash)}
                             <span aria-hidden="true">↗</span>
                           </a>
                         ) : (
                           <span className="txLink empty">无交易哈希</span>
                         )}
                       </div>
-                    ))}
+                    </div>
                   </div>
-                )}
-              </div>
+                </>
+              ) : (
+                <>
+                  <div className="eventFacts">
+                    <div>
+                      <span>变化前份额</span>
+                      <strong>{formatShares(event.before_size)}</strong>
+                    </div>
+                    <span className="factArrow" aria-hidden="true">
+                      →
+                    </span>
+                    <div>
+                      <span>变化后份额</span>
+                      <strong>{formatShares(event.after_size)}</strong>
+                    </div>
+                    <div>
+                      <span>变化后市值</span>
+                      <strong>{formatMoney(event.current_value)}</strong>
+                    </div>
+                    <ReconciliationStatus
+                      status={event.reconciliation_status}
+                    />
+                  </div>
+
+                  <div className="fillsBlock">
+                    <div className="fillsHeading">
+                      <h3>逐笔成交</h3>
+                      <span>{event.fills.length} 笔</span>
+                    </div>
+                    {event.fills.length === 0 ? (
+                      <p className="noFills">
+                        暂未匹配到逐笔成交，以持仓份额变化为准。
+                      </p>
+                    ) : (
+                      <div className="fillRows">
+                        {event.fills.map((fill) => (
+                          <div className="fillRow" key={fill.id}>
+                            <span
+                              className={`fillSide ${
+                                fill.side.toUpperCase() === "BUY"
+                                  ? "positive"
+                                  : "negative"
+                              }`}
+                            >
+                              {fill.side.toUpperCase() === "BUY"
+                                ? "买入"
+                                : "卖出"}
+                            </span>
+                            <time dateTime={fill.timestamp}>
+                              {formatDateTime(fill.timestamp)}
+                            </time>
+                            <span>
+                              {formatShares(fill.size)} 份 ×{" "}
+                              {formatPrice(fill.price)}
+                            </span>
+                            <strong>{formatMoney(fill.amount)}</strong>
+                            {fill.transaction_hash ? (
+                              <a
+                                href={`https://polygonscan.com/tx/${fill.transaction_hash}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="txLink"
+                              >
+                                {shortenAddress(fill.transaction_hash)}
+                                <span aria-hidden="true">↗</span>
+                              </a>
+                            ) : (
+                              <span className="txLink empty">无交易哈希</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </details>
         );
@@ -662,7 +1068,7 @@ function EmptyState({
       <span className="emptyMark" aria-hidden="true">
         {type === "positions" ? "0" : "·"}
       </span>
-      <h2>{type === "positions" ? "当前没有活跃持仓" : "还没有加减仓记录"}</h2>
+      <h2>{type === "positions" ? "当前没有活跃持仓" : "还没有仓位变动记录"}</h2>
       <p>
         {type === "positions"
           ? "已结算和可领取仓位不会显示在这里。"
@@ -679,10 +1085,12 @@ function EmptyState({
 
 function AddWalletModal({
   open,
+  mode,
   onClose,
   onCreated,
 }: {
   open: boolean;
+  mode: "self" | "tracked";
   onClose: () => void;
   onCreated: (wallet: Wallet) => void;
 }) {
@@ -713,17 +1121,24 @@ function AddWalletModal({
     setSubmitting(true);
     setError(null);
     try {
-      const wallet = await request<Wallet>("/api/wallets", {
-        method: "POST",
-        body: JSON.stringify({
-          address: trimmedAddress,
-          ...(label.trim() ? { label: label.trim() } : {}),
-        }),
-      });
+      const wallet = await request<Wallet>(
+        mode === "self" ? "/api/my-wallet" : "/api/wallets",
+        {
+          method: mode === "self" ? "PUT" : "POST",
+          body: JSON.stringify({
+            address: trimmedAddress,
+            ...(label.trim() ? { label: label.trim() } : {}),
+          }),
+        },
+      );
       onCreated(wallet);
     } catch (submitError) {
       setError(
-        submitError instanceof Error ? submitError.message : "添加钱包失败",
+        submitError instanceof Error
+          ? submitError.message
+          : mode === "self"
+            ? "设置我的钱包失败"
+            : "添加钱包失败",
       );
     } finally {
       setSubmitting(false);
@@ -744,12 +1159,16 @@ function AddWalletModal({
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="add-wallet-title"
+        aria-labelledby={`${mode}-wallet-title`}
       >
         <div className="modalHeader">
           <div>
-            <span className="eyebrow">新增监控</span>
-            <h2 id="add-wallet-title">添加 Polymarket 钱包</h2>
+            <span className="eyebrow">
+              {mode === "self" ? "只读对比基准" : "新增监控"}
+            </span>
+            <h2 id={`${mode}-wallet-title`}>
+              {mode === "self" ? "设置我的钱包" : "添加 Polymarket 钱包"}
+            </h2>
           </div>
           <button
             className="closeButton"
@@ -787,7 +1206,9 @@ function AddWalletModal({
             />
           </label>
           <p className="privacyNote">
-            只读取公开持仓，不连接钱包，不需要私钥。
+            {mode === "self"
+              ? "该地址仅作为共同持仓的比较基准。只读取公开数据，不连接钱包，不需要私钥。"
+              : "只读取公开持仓，不连接钱包，不需要私钥。"}
           </p>
           {error && (
             <p className="formError" role="alert">
@@ -808,7 +1229,13 @@ function AddWalletModal({
               type="submit"
               disabled={submitting}
             >
-              {submitting ? "正在添加…" : "开始监控"}
+              {submitting
+                ? mode === "self"
+                  ? "正在设置…"
+                  : "正在添加…"
+                : mode === "self"
+                  ? "保存并同步"
+                  : "开始监控"}
             </button>
           </div>
         </form>
@@ -817,10 +1244,343 @@ function AddWalletModal({
   );
 }
 
+function PositionComparisonPanel({
+  title,
+  wallet,
+  position,
+  tone,
+}: {
+  title: string;
+  wallet: Wallet;
+  position: Position;
+  tone: "mine" | "tracked";
+}) {
+  return (
+    <section className={`comparisonPanel ${tone}`}>
+      <div className="comparisonWalletHeader">
+        <div>
+          <span>{title}</span>
+          <strong>{wallet.label || shortenAddress(wallet.address)}</strong>
+        </div>
+        <small>{shortenAddress(wallet.proxy_wallet || wallet.address)}</small>
+      </div>
+      <dl className="comparisonFacts">
+        <div>
+          <dt>持仓份额</dt>
+          <dd>{formatShares(position.size)}</dd>
+        </div>
+        <div>
+          <dt>平均买入</dt>
+          <dd>{formatPrice(position.avg_price)}</dd>
+        </div>
+        <div>
+          <dt>当前价格</dt>
+          <dd>{formatPrice(position.current_price)}</dd>
+        </div>
+        <div>
+          <dt>持仓成本</dt>
+          <dd>{formatMoney(position.initial_value)}</dd>
+        </div>
+        <div>
+          <dt>当前市值</dt>
+          <dd>{formatMoney(position.current_value)}</dd>
+        </div>
+        <div>
+          <dt>浮动盈亏</dt>
+          <dd>
+            <PnlValue
+              compact
+              value={position.cash_pnl}
+              percent={position.percent_pnl}
+            />
+          </dd>
+        </div>
+      </dl>
+      <div className="comparisonLots">
+        <h3>剩余买入批次</h3>
+        {(position.purchase_lots ?? []).length > 0 ? (
+          <div className="comparisonLotList">
+            {(position.purchase_lots ?? []).map((lot, index) => (
+              <div
+                className="comparisonLot"
+                key={`${lot.purchase_date}-${index}`}
+              >
+                <span>{formatPurchaseDate(lot.purchase_date)}</span>
+                <strong>{formatShares(lot.size)} shares</strong>
+                <small>
+                  均价 {formatPrice(lot.avg_price)} · 成本{" "}
+                  {formatMoney(lot.initial_value)}
+                </small>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p>历史成交尚未完整回填，暂无可展示批次。</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ComparisonModal({
+  assetId,
+  detail,
+  loading,
+  error,
+  onClose,
+  onRetry,
+}: {
+  assetId: string | null;
+  detail: PositionOverlapDetail | null;
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+  onRetry: () => void;
+}) {
+  useEffect(() => {
+    if (!assetId) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [assetId, onClose]);
+
+  if (!assetId) return null;
+
+  return (
+    <div
+      className="modalBackdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="modal comparisonModal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="comparison-title"
+      >
+        <div className="modalHeader comparisonModalHeader">
+          <div>
+            <span className="eyebrow">共同持仓对比</span>
+            <h2 id="comparison-title">
+              {detail?.tracked.title ?? "正在读取持仓…"}
+            </h2>
+            {detail && (
+              <div className="comparisonMarketMeta">
+                <span
+                  className={`outcomeBadge ${outcomeTone(
+                    detail.tracked.outcome,
+                  )}`}
+                >
+                  {detail.tracked.outcome}
+                </span>
+                <span>
+                  我的数据 {formatDateTime(detail.my_wallet.last_success_at)}
+                </span>
+                <span>
+                  对方数据{" "}
+                  {formatDateTime(detail.tracked_wallet.last_success_at)}
+                </span>
+              </div>
+            )}
+          </div>
+          <button
+            className="closeButton"
+            type="button"
+            aria-label="关闭共同持仓对比"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+
+        {loading ? (
+          <LoadingState label="正在读取双方持仓…" />
+        ) : error ? (
+          <div className="comparisonError" role="alert">
+            <p>{error}</p>
+            <button className="secondaryButton" type="button" onClick={onRetry}>
+              重新加载
+            </button>
+          </div>
+        ) : detail ? (
+          <>
+            <section className="ratioHero" aria-label="持仓份额比例">
+              <div>
+                <span>我的仓位是他的</span>
+                <strong>
+                  {formatOverlapPercent(detail.my_to_tracked_percent)}
+                </strong>
+              </div>
+              <div>
+                <span>我 : 他</span>
+                <strong>
+                  {formatRatioPart(detail.my_ratio)} :{" "}
+                  {formatRatioPart(detail.tracked_ratio)}
+                </strong>
+              </div>
+              <p>
+                {formatShares(detail.mine.size)} ÷{" "}
+                {formatShares(detail.tracked.size)} shares
+              </p>
+            </section>
+            {(detail.my_stale || detail.tracked_stale) && (
+              <div className="comparisonStale" role="status">
+                当前至少一方数据不是最新同步结果，比例可能暂时存在偏差。
+              </div>
+            )}
+            <div className="comparisonGrid">
+              <PositionComparisonPanel
+                title="我的钱包"
+                wallet={detail.my_wallet}
+                position={detail.mine}
+                tone="mine"
+              />
+              <PositionComparisonPanel
+                title="跟踪钱包"
+                wallet={detail.tracked_wallet}
+                position={detail.tracked}
+                tone="tracked"
+              />
+            </div>
+          </>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function OverlapActivity({
+  alerts,
+  unreadCount,
+  busyAlertIds,
+  markingAll,
+  onRead,
+  onReadAll,
+}: {
+  alerts: PositionOverlapAlert[];
+  unreadCount: number;
+  busyAlertIds: Set<string>;
+  markingAll: boolean;
+  onRead: (alertId: number | string) => void;
+  onReadAll: () => void;
+}) {
+  if (alerts.length === 0) return null;
+
+  return (
+    <section className="overlapActivity" aria-label="共同持仓动态">
+      <div className="overlapActivityHeader">
+        <div>
+          <span className="activityIcon" aria-hidden="true">
+            !
+          </span>
+          <div>
+            <h2>共同持仓动态</h2>
+            <p>
+              对方加仓、减仓和清仓提醒
+              {unreadCount > 0 ? ` · ${unreadCount} 条未读` : " · 已全部读过"}
+            </p>
+          </div>
+        </div>
+        {unreadCount > 0 && (
+          <button
+            type="button"
+            onClick={onReadAll}
+            disabled={markingAll}
+          >
+            {markingAll ? "处理中…" : "全部已读"}
+          </button>
+        )}
+      </div>
+      <div className="overlapActivityList">
+        {alerts.map((alert) => {
+          const unread = alert.read_at === null;
+          const busy = busyAlertIds.has(String(alert.id));
+          const alertLabel =
+            alert.type === "closed"
+              ? "清仓"
+              : alert.type === "increased"
+                ? "加仓"
+                : "减仓";
+          const alertMessage =
+            alert.type === "closed" ? "对方已清仓" : `对方${alertLabel}`;
+          return (
+            <article
+              className={`overlapActivityItem ${unread ? "unread" : "read"}`}
+              key={alert.id}
+            >
+              <span
+                className={`activityType ${alert.type}`}
+              >
+                {alertLabel}
+              </span>
+              <div className="activityMain">
+                <div className="activityTitleRow">
+                  <a
+                    href={marketUrl(alert.event_slug, alert.market_slug)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {alert.title}
+                    <span aria-hidden="true">↗</span>
+                  </a>
+                  <span
+                    className={`outcomeBadge ${outcomeTone(alert.outcome)}`}
+                  >
+                    {alert.outcome}
+                  </span>
+                </div>
+                <p>
+                  {alertMessage}{" "}
+                  <strong>{formatShares(alert.before_size)}</strong>
+                  <span aria-hidden="true"> → </span>
+                  <strong>{formatShares(alert.after_size)}</strong>
+                  <small>
+                    （{formatShares(alert.delta_size)} shares）
+                  </small>
+                </p>
+              </div>
+              <div className="activityMeta">
+                <time dateTime={alert.detected_at}>
+                  {formatDateTime(alert.detected_at)}
+                </time>
+                {unread ? (
+                  <button
+                    type="button"
+                    onClick={() => onRead(alert.id)}
+                    disabled={busy}
+                  >
+                    {busy ? "处理中…" : "标为已读"}
+                  </button>
+                ) : (
+                  <span>已读</span>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export default function Home() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
+  const [myWallet, setMyWallet] = useState<Wallet | null>(null);
   const [activeWalletId, setActiveWalletId] = useState<string | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [overlaps, setOverlaps] = useState<PositionOverlap[]>([]);
+  const [overlapError, setOverlapError] = useState<string | null>(null);
+  const [overlapAlerts, setOverlapAlerts] = useState<
+    PositionOverlapAlert[]
+  >([]);
+  const [unreadAlertCount, setUnreadAlertCount] = useState(0);
+  const [alertError, setAlertError] = useState<string | null>(null);
+  const [busyAlertIds, setBusyAlertIds] = useState<Set<string>>(new Set());
+  const [markingAllAlerts, setMarkingAllAlerts] = useState(false);
   const [summary, setSummary] = useState<PositionSummary>(emptySummary);
   const [purchaseDates, setPurchaseDates] = useState<string[]>([]);
   const [purchaseDate, setPurchaseDate] = useState("all");
@@ -840,20 +1600,42 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [streamConnected, setStreamConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [addWalletOpen, setAddWalletOpen] = useState(false);
+  const [walletModalMode, setWalletModalMode] = useState<
+    "self" | "tracked" | null
+  >(null);
+  const [comparisonAssetId, setComparisonAssetId] = useState<string | null>(
+    null,
+  );
+  const [comparisonDetail, setComparisonDetail] =
+    useState<PositionOverlapDetail | null>(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const comparisonSequence = useRef(0);
   const activeWalletRef = useRef<string | null>(null);
+  const myWalletRef = useRef<Wallet | null>(null);
 
   useEffect(() => {
     activeWalletRef.current = activeWalletId;
   }, [activeWalletId]);
 
+  useEffect(() => {
+    myWalletRef.current = myWallet;
+  }, [myWallet]);
+
   const loadWallets = useCallback(async () => {
     try {
       const walletList = await request<Wallet[]>("/api/wallets");
       const enabledWallets = walletList.filter(
-        (wallet) => wallet.enabled !== false,
+        (wallet) =>
+          wallet.enabled !== false && wallet.wallet_role !== "self",
       );
+      const nextMyWallet =
+        walletList.find(
+          (wallet) => wallet.enabled !== false && wallet.wallet_role === "self",
+        ) ?? null;
+      setMyWallet(nextMyWallet);
+      myWalletRef.current = nextMyWallet;
       setWallets(enabledWallets);
       setActiveWalletId((current) => {
         if (
@@ -883,13 +1665,66 @@ export default function Home() {
       const sequence = ++requestSequence.current;
       if (!quiet) setLoadingContent(true);
       try {
-        const [positionData, eventData] = await Promise.all([
+        const emptyOverlapResponse: PositionOverlapsResponse = {
+          my_wallet_id: myWalletRef.current?.id ?? null,
+          tracked_wallet_id: walletId,
+          items: [],
+          overlap_count: 0,
+          my_as_of: myWalletRef.current?.last_success_at ?? null,
+          tracked_as_of: null,
+          my_stale: null,
+          tracked_stale: false,
+        };
+        const comparisonRequest = myWalletRef.current
+          ? request<PositionOverlapsResponse>(
+              `/api/position-overlaps?tracked_wallet_id=${encodeURIComponent(
+                walletId,
+              )}`,
+            )
+              .then((data) => ({ data, error: null as string | null }))
+              .catch((overlapRequestError) => ({
+                data: emptyOverlapResponse,
+                error:
+                  overlapRequestError instanceof Error
+                    ? overlapRequestError.message
+                    : "共同持仓比较暂时不可用",
+              }))
+          : Promise.resolve({
+              data: emptyOverlapResponse,
+              error: null as string | null,
+            });
+        const emptyAlertResponse: PositionOverlapAlertsResponse = {
+          items: [],
+          unread_count: 0,
+        };
+        const alertRequest = myWalletRef.current
+          ? request<PositionOverlapAlertsResponse>(
+              `/api/overlap-alerts?tracked_wallet_id=${encodeURIComponent(
+                walletId,
+              )}`,
+            )
+              .then((data) => ({ data, error: null as string | null }))
+              .catch((alertRequestError) => ({
+                data: emptyAlertResponse,
+                error:
+                  alertRequestError instanceof Error
+                    ? alertRequestError.message
+                    : "共同持仓提醒暂时不可用",
+              }))
+          : Promise.resolve({
+              data: emptyAlertResponse,
+              error: null as string | null,
+            });
+        const [positionData, eventData, overlapResult, alertResult] =
+          await Promise.all([
           request<PositionResponse>(
             `/api/positions?wallet_id=${encodeURIComponent(walletId)}`,
           ),
           request<EventsResponse>(
             `/api/position-events?wallet_id=${encodeURIComponent(walletId)}`,
           ),
+          comparisonRequest,
+          alertRequest,
         ]);
 
         if (sequence !== requestSequence.current) return;
@@ -898,6 +1733,11 @@ export default function Home() {
             toNumber(right.current_value) - toNumber(left.current_value),
         );
         setPositions(sortedPositions);
+        setOverlaps(overlapResult.data.items);
+        setOverlapError(overlapResult.error);
+        setOverlapAlerts(alertResult.data.items);
+        setUnreadAlertCount(alertResult.data.unread_count);
+        setAlertError(alertResult.error);
         setSummary(positionData.summary ?? emptySummary);
         const nextPurchaseDates = positionData.purchase_dates ?? [];
         setPurchaseDates(nextPurchaseDates);
@@ -961,9 +1801,14 @@ export default function Home() {
         if (payload.type === "sync.status") void loadWallets();
         if (
           eventWalletId &&
-          eventWalletId === activeWalletRef.current &&
+          (eventWalletId === activeWalletRef.current ||
+            eventWalletId ===
+              (myWalletRef.current
+                ? String(myWalletRef.current.id)
+                : null)) &&
           (payload.type === "positions.updated" ||
             payload.type === "events.created" ||
+            payload.type === "overlap-alerts.created" ||
             payload.type === "sync.status")
         ) {
           window.clearTimeout(refreshTimer);
@@ -996,6 +1841,23 @@ export default function Home() {
     (wallet) => String(wallet.id) === activeWalletId,
   );
   const status = syncStatus(activeWallet?.status ?? "pending", streamConnected);
+  const overlapMap = useMemo(
+    () => new Map(overlaps.map((overlap) => [overlap.asset_id, overlap])),
+    [overlaps],
+  );
+  const unreadChangeAlerts = useMemo(() => {
+    const byAsset = new Map<string, PositionOverlapAlert>();
+    for (const alert of overlapAlerts) {
+      if (
+        alert.read_at === null &&
+        (alert.type === "increased" || alert.type === "decreased") &&
+        !byAsset.has(alert.asset_id)
+      ) {
+        byAsset.set(alert.asset_id, alert);
+      }
+    }
+    return byAsset;
+  }, [overlapAlerts]);
 
   const displayedPositions = useMemo(() => {
     const selected =
@@ -1038,9 +1900,15 @@ export default function Home() {
     if (!activeWalletId || refreshing) return;
     setRefreshing(true);
     try {
-      await request<Record<string, unknown>>(
-        `/api/wallets/${encodeURIComponent(activeWalletId)}/sync`,
-        { method: "POST" },
+      const walletIds = new Set([activeWalletId]);
+      if (myWalletRef.current) walletIds.add(String(myWalletRef.current.id));
+      await Promise.all(
+        [...walletIds].map((walletId) =>
+          request<Record<string, unknown>>(
+            `/api/wallets/${encodeURIComponent(walletId)}/sync`,
+            { method: "POST" },
+          ),
+        ),
       );
       await Promise.all([
         loadContent(activeWalletId, true),
@@ -1088,6 +1956,13 @@ export default function Home() {
     if (walletId === activeWalletRef.current) return;
     requestSequence.current += 1;
     setPositions([]);
+    setOverlaps([]);
+    setOverlapError(null);
+    setOverlapAlerts([]);
+    setUnreadAlertCount(0);
+    setAlertError(null);
+    setBusyAlertIds(new Set());
+    setMarkingAllAlerts(false);
     setEvents([]);
     setSummary(emptySummary);
     setPurchaseDates([]);
@@ -1098,11 +1973,46 @@ export default function Home() {
     setStale(false);
     setError(null);
     setLoadingContent(true);
+    closeComparison();
     setActiveWalletId(walletId);
   }
 
   function walletCreated(wallet: Wallet) {
-    setAddWalletOpen(false);
+    setWalletModalMode(null);
+    if (wallet.wallet_role === "self") {
+      setMyWallet(wallet);
+      myWalletRef.current = wallet;
+      const remainingWallets = wallets.filter(
+        (item) => String(item.id) !== String(wallet.id),
+      );
+      setWallets(remainingWallets);
+      if (activeWalletRef.current === String(wallet.id)) {
+        requestSequence.current += 1;
+        const nextActiveWalletId = remainingWallets[0]
+          ? String(remainingWallets[0].id)
+          : null;
+        activeWalletRef.current = nextActiveWalletId;
+        setPositions([]);
+        setOverlaps([]);
+        setOverlapAlerts([]);
+        setUnreadAlertCount(0);
+        setAlertError(null);
+        setEvents([]);
+        setSummary(emptySummary);
+        setPurchaseDates([]);
+        setPurchaseDate("all");
+        setPurchaseHistoryComplete(false);
+        setPurchaseHistoryError(null);
+        setAsOf(null);
+        setStale(false);
+        setError(null);
+        setActiveWalletId(nextActiveWalletId);
+      } else if (activeWalletRef.current) {
+        void loadContent(activeWalletRef.current, true);
+      }
+      void loadWallets();
+      return;
+    }
     setWallets((current) => {
       const next = current.filter(
         (item) => String(item.id) !== String(wallet.id),
@@ -1111,6 +2021,99 @@ export default function Home() {
     });
     selectWallet(String(wallet.id));
     void loadWallets();
+  }
+
+  async function markOverlapAlertRead(alertId: number | string) {
+    const alertKey = String(alertId);
+    if (busyAlertIds.has(alertKey)) return;
+    setBusyAlertIds((current) => new Set(current).add(alertKey));
+    setAlertError(null);
+    try {
+      const updated = await request<PositionOverlapAlert>(
+        `/api/overlap-alerts/${encodeURIComponent(alertKey)}/read`,
+        { method: "POST" },
+      );
+      setOverlapAlerts((current) =>
+        current.map((alert) =>
+          String(alert.id) === alertKey ? updated : alert,
+        ),
+      );
+      setUnreadAlertCount((current) => Math.max(0, current - 1));
+    } catch (markError) {
+      setAlertError(
+        markError instanceof Error ? markError.message : "无法更新提醒状态",
+      );
+    } finally {
+      setBusyAlertIds((current) => {
+        const next = new Set(current);
+        next.delete(alertKey);
+        return next;
+      });
+    }
+  }
+
+  async function markAllOverlapAlertsRead() {
+    if (!activeWalletId || markingAllAlerts || unreadAlertCount === 0) return;
+    setMarkingAllAlerts(true);
+    setAlertError(null);
+    try {
+      await request<void>(
+        `/api/overlap-alerts/read-all?tracked_wallet_id=${encodeURIComponent(
+          activeWalletId,
+        )}`,
+        { method: "POST" },
+      );
+      const readAt = new Date().toISOString();
+      setOverlapAlerts((current) =>
+        current.map((alert) =>
+          alert.read_at === null ? { ...alert, read_at: readAt } : alert,
+        ),
+      );
+      setUnreadAlertCount(0);
+    } catch (markError) {
+      setAlertError(
+        markError instanceof Error ? markError.message : "无法全部标为已读",
+      );
+    } finally {
+      setMarkingAllAlerts(false);
+    }
+  }
+
+  async function loadComparison(assetId: string) {
+    if (!activeWalletRef.current) return;
+    const sequence = ++comparisonSequence.current;
+    setComparisonAssetId(assetId);
+    setComparisonDetail(null);
+    setComparisonError(null);
+    setComparisonLoading(true);
+    try {
+      const detail = await request<PositionOverlapDetail>(
+        `/api/position-overlaps/${encodeURIComponent(
+          assetId,
+        )}?tracked_wallet_id=${encodeURIComponent(activeWalletRef.current)}`,
+      );
+      if (sequence !== comparisonSequence.current) return;
+      setComparisonDetail(detail);
+    } catch (comparisonRequestError) {
+      if (sequence !== comparisonSequence.current) return;
+      setComparisonError(
+        comparisonRequestError instanceof Error
+          ? comparisonRequestError.message
+          : "无法读取共同持仓详情",
+      );
+    } finally {
+      if (sequence === comparisonSequence.current) {
+        setComparisonLoading(false);
+      }
+    }
+  }
+
+  function closeComparison() {
+    comparisonSequence.current += 1;
+    setComparisonAssetId(null);
+    setComparisonDetail(null);
+    setComparisonError(null);
+    setComparisonLoading(false);
   }
 
   return (
@@ -1128,9 +2131,22 @@ export default function Home() {
         <div className="headerActions">
           <span className="readOnlyNote">只读监控 · 不连接钱包</span>
           <button
+            className={`myWalletButton ${myWallet ? "configured" : ""}`}
+            type="button"
+            onClick={() => setWalletModalMode("self")}
+          >
+            <span>我的钱包</span>
+            <strong>
+              {myWallet
+                ? myWallet.label || shortenAddress(myWallet.address)
+                : "尚未设置"}
+            </strong>
+            <small>{myWallet ? "更换" : "设置地址"}</small>
+          </button>
+          <button
             className="primaryButton addWalletButton"
             type="button"
-            onClick={() => setAddWalletOpen(true)}
+            onClick={() => setWalletModalMode("tracked")}
           >
             <span aria-hidden="true">＋</span>
             添加钱包
@@ -1150,7 +2166,7 @@ export default function Home() {
           <span className="eyebrow">从一个公开地址开始</span>
           <h2>把关心的钱包，变成清晰的持仓账本。</h2>
           <p>
-            只展示真实持仓和已经发生的加减仓，不把挂单和行情波动变成杂乱消息。
+            只展示真实持仓和已经发生的仓位变动，不把挂单和行情波动变成杂乱消息。
           </p>
           {error && (
             <p className="welcomeError" role="alert">
@@ -1160,7 +2176,7 @@ export default function Home() {
           <button
             className="primaryButton welcomeButton"
             type="button"
-            onClick={() => setAddWalletOpen(true)}
+            onClick={() => setWalletModalMode("tracked")}
           >
             添加第一个钱包
           </button>
@@ -1190,7 +2206,7 @@ export default function Home() {
               <button
                 className="addTab"
                 type="button"
-                onClick={() => setAddWalletOpen(true)}
+                onClick={() => setWalletModalMode("tracked")}
                 aria-label="添加钱包"
               >
                 ＋
@@ -1281,6 +2297,16 @@ export default function Home() {
                 >
                   当前持仓
                   <span>{displayedSummary.count}</span>
+                  {myWallet && (
+                    <span className="overlapTabCount">
+                      共同 {overlaps.length}
+                    </span>
+                  )}
+                  {unreadAlertCount > 0 && (
+                    <span className="alertTabCount">
+                      提醒 {unreadAlertCount}
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -1289,7 +2315,7 @@ export default function Home() {
                   className={view === "events" ? "active" : ""}
                   onClick={() => setView("events")}
                 >
-                  加减仓明细
+                  仓位变动明细
                 </button>
               </div>
               {view === "positions" && positions.length > 0 && (
@@ -1330,11 +2356,73 @@ export default function Home() {
                 </div>
               )}
 
+            {view === "positions" && positions.length > 0 && !myWallet && (
+              <div className="comparisonPrompt" role="status">
+                <span aria-hidden="true">◆</span>
+                <p>设置“我的钱包”后，即可标出你和当前钱包的共同持仓。</p>
+                <button
+                  type="button"
+                  onClick={() => setWalletModalMode("self")}
+                >
+                  现在设置
+                </button>
+              </div>
+            )}
+
+            {view === "positions" && overlapError && (
+              <div className="comparisonPrompt error" role="alert">
+                <span aria-hidden="true">!</span>
+                <p>共同持仓比较暂时不可用：{overlapError}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (activeWalletId) void loadContent(activeWalletId, true);
+                  }}
+                >
+                  重试
+                </button>
+              </div>
+            )}
+
+            {view === "positions" && alertError && (
+              <div className="comparisonPrompt error" role="alert">
+                <span aria-hidden="true">!</span>
+                <p>共同持仓提醒暂时不可用：{alertError}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (activeWalletId) void loadContent(activeWalletId, true);
+                  }}
+                >
+                  重试
+                </button>
+              </div>
+            )}
+
+            {view === "positions" && (
+              <OverlapActivity
+                alerts={overlapAlerts}
+                unreadCount={unreadAlertCount}
+                busyAlertIds={busyAlertIds}
+                markingAll={markingAllAlerts}
+                onRead={(alertId) => void markOverlapAlertRead(alertId)}
+                onReadAll={() => void markAllOverlapAlertsRead()}
+              />
+            )}
+
             {loadingContent && positions.length === 0 && events.length === 0 ? (
               <LoadingState label="正在同步公开持仓…" />
             ) : view === "positions" ? (
               displayedPositions.length > 0 ? (
-                <PositionTable positions={displayedPositions} />
+                <PositionTable
+                  positions={displayedPositions}
+                  overlaps={overlapMap}
+                  changeAlerts={unreadChangeAlerts}
+                  onOpenComparison={(assetId) => void loadComparison(assetId)}
+                  onReadAlert={(alertId) =>
+                    void markOverlapAlertRead(alertId)
+                  }
+                />
               ) : purchaseDate !== "all" ? (
                 <div className="emptyState">
                   <span className="emptyMark" aria-hidden="true">
@@ -1385,10 +2473,21 @@ export default function Home() {
       </footer>
 
       <AddWalletModal
-        key={addWalletOpen ? "open" : "closed"}
-        open={addWalletOpen}
-        onClose={() => setAddWalletOpen(false)}
+        key={walletModalMode ?? "closed"}
+        open={walletModalMode !== null}
+        mode={walletModalMode ?? "tracked"}
+        onClose={() => setWalletModalMode(null)}
         onCreated={walletCreated}
+      />
+      <ComparisonModal
+        assetId={comparisonAssetId}
+        detail={comparisonDetail}
+        loading={comparisonLoading}
+        error={comparisonError}
+        onClose={closeComparison}
+        onRetry={() => {
+          if (comparisonAssetId) void loadComparison(comparisonAssetId);
+        }}
       />
     </main>
   );

@@ -15,6 +15,7 @@ const walletOne = {
   address: "0x1111111111111111111111111111111111111111",
   proxy_wallet: "0x1111111111111111111111111111111111111111",
   label: "观察一号",
+  wallet_role: "tracked",
   enabled: true,
   status: "ok",
   last_success_at: "2026-07-30T10:00:00Z",
@@ -27,11 +28,25 @@ const walletTwo = {
   address: "0x2222222222222222222222222222222222222222",
   proxy_wallet: "0x2222222222222222222222222222222222222222",
   label: "新钱包",
+  wallet_role: "tracked",
   enabled: true,
   status: "ok",
   last_success_at: "2026-07-30T10:01:00Z",
   last_error: null,
   created_at: "2026-07-30T10:00:30Z",
+};
+
+const myWallet = {
+  id: 9,
+  address: "0x9999999999999999999999999999999999999999",
+  proxy_wallet: "0x9999999999999999999999999999999999999999",
+  label: "我的主钱包",
+  wallet_role: "self",
+  enabled: true,
+  status: "ok",
+  last_success_at: "2026-07-30T10:02:00Z",
+  last_error: null,
+  created_at: "2026-07-30T08:00:00Z",
 };
 
 type MockPurchaseLot = {
@@ -61,6 +76,8 @@ type MockPosition = {
   cash_pnl: number;
   percent_pnl: number;
   end_date: string;
+  first_opened_at: string;
+  first_opened_at_source: "trade" | "first_seen";
   purchase_lots?: MockPurchaseLot[];
 };
 
@@ -86,6 +103,8 @@ function makePosition(
     cash_pnl: currentValue - 30,
     percent_pnl: ((currentValue - 30) / 30) * 100,
     end_date: "2026-08-30T00:00:00Z",
+    first_opened_at: "2026-07-29T03:04:05Z",
+    first_opened_at_source: "trade",
   };
 }
 
@@ -143,6 +162,14 @@ function makeEvent(id: number, title: string) {
     reconciliation_status: "matched",
     first_detected_at: "2026-07-30T09:59:00Z",
     settled_at: "2026-07-30T10:00:00Z",
+    payout_amount: null,
+    redemption_cost_basis: null,
+    redemption_entry_price: null,
+    redemption_price: null,
+    redemption_profit: null,
+    redemption_profit_percent: null,
+    redemption_cost_complete: null,
+    transaction_hash: null,
     fills: [],
   };
 }
@@ -204,6 +231,371 @@ afterEach(() => {
 });
 
 describe("Polymarket 钱包监控页", () => {
+  it("可将只读地址设置为独立的我的钱包", async () => {
+    let configured = false;
+    let submittedBody: unknown;
+
+    mockFetch(async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/my-wallet" && method === "PUT") {
+        submittedBody = JSON.parse(String(init?.body));
+        configured = true;
+        return jsonResponse(myWallet);
+      }
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse(
+          configured ? [walletOne, myWallet] : [walletOne],
+        );
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/position-overlaps") {
+        return jsonResponse({
+          my_wallet_id: myWallet.id,
+          tracked_wallet_id: walletOne.id,
+          items: [],
+          overlap_count: 0,
+          my_as_of: myWallet.last_success_at,
+          tracked_as_of: walletOne.last_success_at,
+          my_stale: false,
+          tracked_stale: false,
+        });
+      }
+      if (url.pathname === "/api/overlap-alerts") {
+        return jsonResponse({ items: [], unread_count: 0 });
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+    await screen.findByRole("tab", { name: /观察一号/ });
+
+    await user.click(
+      screen.getByRole("button", { name: /我的钱包.*尚未设置/ }),
+    );
+    await user.type(
+      screen.getByLabelText("钱包地址或个人页链接"),
+      myWallet.address,
+    );
+    await user.type(screen.getByLabelText(/钱包备注/), myWallet.label);
+    await user.click(screen.getByRole("button", { name: "保存并同步" }));
+
+    await waitFor(() => {
+      expect(submittedBody).toEqual({
+        address: myWallet.address,
+        label: myWallet.label,
+      });
+    });
+    expect(
+      await screen.findByRole("button", {
+        name: /我的钱包.*我的主钱包.*更换/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: /我的主钱包/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("高亮共同持仓并展示双方份额比例详情", async () => {
+    const trackedPosition = makePosition("shared", "共同市场", 40);
+    trackedPosition.size = 100;
+    const mine = {
+      ...makePosition("shared", "共同市场", 4),
+      wallet_id: 9,
+      size: 10,
+      initial_value: 3,
+      cash_pnl: 1,
+    };
+    let alertRead = false;
+    const reductionAlert = {
+      id: 77,
+      my_wallet_id: myWallet.id,
+      tracked_wallet_id: walletOne.id,
+      asset_id: "shared",
+      condition_id: "condition-shared",
+      title: "共同市场",
+      outcome: "Yes",
+      event_slug: "event-shared",
+      market_slug: "market-shared",
+      type: "decreased",
+      before_size: 120,
+      after_size: 100,
+      delta_size: -20,
+      detected_at: "2026-07-30T10:03:00Z",
+      created_at: "2026-07-30T10:04:00Z",
+      read_at: null,
+    };
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne, myWallet]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([trackedPosition]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/position-overlaps") {
+        return jsonResponse({
+          my_wallet_id: myWallet.id,
+          tracked_wallet_id: walletOne.id,
+          items: [
+            {
+              asset_id: "shared",
+              condition_id: "condition-shared",
+              my_size: 10,
+              tracked_size: 100,
+              my_to_tracked_percent: 10,
+              my_ratio: 1,
+              tracked_ratio: 10,
+            },
+          ],
+          overlap_count: 1,
+          my_as_of: myWallet.last_success_at,
+          tracked_as_of: walletOne.last_success_at,
+          my_stale: false,
+          tracked_stale: false,
+        });
+      }
+      if (url.pathname === "/api/position-overlaps/shared") {
+        return jsonResponse({
+          my_wallet: myWallet,
+          tracked_wallet: walletOne,
+          mine,
+          tracked: trackedPosition,
+          my_to_tracked_percent: 10,
+          my_ratio: 1,
+          tracked_ratio: 10,
+          my_stale: false,
+          tracked_stale: false,
+        });
+      }
+      if (url.pathname === "/api/overlap-alerts/77/read") {
+        alertRead = true;
+        return jsonResponse({
+          ...reductionAlert,
+          read_at: "2026-07-30T10:05:00Z",
+        });
+      }
+      if (url.pathname === "/api/overlap-alerts" && method === "GET") {
+        return jsonResponse({
+          items: [
+            {
+              ...reductionAlert,
+              read_at: alertRead ? "2026-07-30T10:05:00Z" : null,
+            },
+          ],
+          unread_count: alertRead ? 0 : 1,
+        });
+      }
+      throw new Error(`未处理的请求：${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+
+    expect(await screen.findByText("共同 1")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: /我的主钱包/ }),
+    ).not.toBeInTheDocument();
+    const badge = screen.getAllByRole("button", {
+      name: /查看共同持仓对比.*10%/,
+    })[0];
+    expect(badge.closest("tr")).toHaveClass("overlapRow");
+    expect(screen.getByText("共同持仓动态")).toBeInTheDocument();
+    expect(screen.getByText("提醒 1")).toBeInTheDocument();
+    const changeBadge = screen.getAllByRole("button", {
+      name: /对方刚减仓.*标为已读/,
+    })[0];
+    expect(changeBadge.closest("tr")).toHaveClass("overlapRow");
+
+    await user.click(changeBadge);
+    await waitFor(() => expect(alertRead).toBe(true));
+    expect(
+      screen.queryByRole("button", {
+        name: /对方刚减仓.*标为已读/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("已读")).toBeInTheDocument();
+
+    await user.click(badge);
+    const dialog = await screen.findByRole("dialog", {
+      name: /共同市场/,
+    });
+    expect(within(dialog).getByText("10%")).toBeInTheDocument();
+    expect(within(dialog).getByText("1 : 10")).toBeInTheDocument();
+    expect(within(dialog).getByText("我的主钱包")).toBeInTheDocument();
+    expect(within(dialog).getByText("观察一号")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: /共同市场/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("对方加仓时在共同持仓行和动态区提醒", async () => {
+    const trackedPosition = makePosition("shared", "共同市场", 56);
+    trackedPosition.size = 140;
+    const increaseAlert = {
+      id: 78,
+      my_wallet_id: myWallet.id,
+      tracked_wallet_id: walletOne.id,
+      asset_id: "shared",
+      condition_id: "condition-shared",
+      title: "共同市场",
+      outcome: "Yes",
+      event_slug: "event-shared",
+      market_slug: "market-shared",
+      type: "increased",
+      before_size: 100,
+      after_size: 140,
+      delta_size: 40,
+      detected_at: "2026-07-30T10:03:00Z",
+      created_at: "2026-07-30T10:04:00Z",
+      read_at: null,
+    };
+
+    mockFetch((url) => {
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne, myWallet]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([trackedPosition]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/position-overlaps") {
+        return jsonResponse({
+          my_wallet_id: myWallet.id,
+          tracked_wallet_id: walletOne.id,
+          items: [
+            {
+              asset_id: "shared",
+              condition_id: "condition-shared",
+              my_size: 10,
+              tracked_size: 140,
+              my_to_tracked_percent: 7.142857,
+              my_ratio: 1,
+              tracked_ratio: 14,
+            },
+          ],
+          overlap_count: 1,
+          my_as_of: myWallet.last_success_at,
+          tracked_as_of: walletOne.last_success_at,
+          my_stale: false,
+          tracked_stale: false,
+        });
+      }
+      if (url.pathname === "/api/overlap-alerts") {
+        return jsonResponse({ items: [increaseAlert], unread_count: 1 });
+      }
+      throw new Error(`未处理的请求：${url}`);
+    });
+
+    render(<Home />);
+
+    const activity = await screen.findByRole("region", {
+      name: "共同持仓动态",
+    });
+    expect(within(activity).getByText("加仓")).toBeInTheDocument();
+    expect(
+      within(activity).getByText(
+        (_, element) =>
+          element?.tagName === "SMALL" &&
+          element.textContent?.includes("40 shares") === true,
+      ),
+    ).toBeInTheDocument();
+    const badges = screen.getAllByRole("button", {
+      name: /对方刚加仓.*100.*140.*标为已读/,
+    });
+    expect(badges[0]).toHaveClass("increased");
+    expect(badges[0].closest("tr")).toHaveClass("overlapRow");
+  });
+
+  it("清仓提醒保留在共同持仓动态区且不创建持仓行", async () => {
+    let markedAll = false;
+    const closedAlert = {
+      id: 88,
+      my_wallet_id: myWallet.id,
+      tracked_wallet_id: walletOne.id,
+      asset_id: "closed-shared",
+      condition_id: "condition-closed-shared",
+      title: "已经清仓的共同市场",
+      outcome: "No",
+      event_slug: "event-closed-shared",
+      market_slug: "market-closed-shared",
+      type: "closed",
+      before_size: 80,
+      after_size: 0,
+      delta_size: -80,
+      detected_at: "2026-07-30T11:00:00Z",
+      created_at: "2026-07-30T11:01:00Z",
+      read_at: null,
+    };
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne, myWallet]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/position-overlaps") {
+        return jsonResponse({
+          my_wallet_id: myWallet.id,
+          tracked_wallet_id: walletOne.id,
+          items: [],
+          overlap_count: 0,
+          my_as_of: myWallet.last_success_at,
+          tracked_as_of: walletOne.last_success_at,
+          my_stale: false,
+          tracked_stale: false,
+        });
+      }
+      if (
+        url.pathname === "/api/overlap-alerts/read-all" &&
+        method === "POST"
+      ) {
+        markedAll = true;
+        return new Response(null, { status: 204 });
+      }
+      if (url.pathname === "/api/overlap-alerts") {
+        return jsonResponse({
+          items: [closedAlert],
+          unread_count: 1,
+        });
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+
+    expect(await screen.findByText("共同持仓动态")).toBeInTheDocument();
+    expect(screen.getByText("对方已清仓")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /已经清仓的共同市场/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "全部已读" }));
+    await waitFor(() => expect(markedAll).toBe(true));
+    expect(screen.queryByText("提醒 1")).not.toBeInTheDocument();
+    expect(screen.getByText("已读")).toBeInTheDocument();
+  });
+
   it("加载钱包后按当前市值降序展示，并提示过期数据", async () => {
     const lowerPosition = makePosition("low", "较低市值市场", 24);
     const higherPosition = makePosition("high", "较高市值市场", 88);
@@ -234,6 +626,36 @@ describe("Polymarket 钱包监控页", () => {
     });
     expect(screen.getByText("数据更新暂时中断")).toBeInTheDocument();
     expect(screen.getByText("已按持仓价值从高到低排列")).toBeInTheDocument();
+  });
+
+  it("当前持仓展示精确到秒的初次建仓时间", async () => {
+    const position = {
+      ...makePosition("opened-at", "建仓时间市场", 52),
+      first_opened_at: "2026-07-29T03:04:05Z",
+      first_opened_at_source: "first_seen" as const,
+    };
+
+    mockFetch((url) => {
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([position]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      throw new Error(`未处理的请求：${url}`);
+    });
+
+    render(<Home />);
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("初次建仓")).toBeInTheDocument();
+    expect(
+      within(table).getByText((text) => /:04:05$/.test(text)),
+    ).toBeInTheDocument();
+    expect(within(table).getByText("首次监测")).toBeInTheDocument();
   });
 
   it("添加钱包会发送 POST，并自动选中新钱包", async () => {
@@ -331,6 +753,75 @@ describe("Polymarket 钱包监控页", () => {
     expect(screen.getAllByText("$25.00").length).toBeGreaterThan(0);
   });
 
+  it("收到 overlap-alerts.created 后刷新共同持仓提醒", async () => {
+    let alertRequests = 0;
+    const alert = {
+      id: 99,
+      my_wallet_id: myWallet.id,
+      tracked_wallet_id: walletOne.id,
+      asset_id: "alert-live",
+      condition_id: "condition-alert-live",
+      title: "实时提醒市场",
+      outcome: "Yes",
+      event_slug: "event-alert-live",
+      market_slug: "market-alert-live",
+      type: "closed",
+      before_size: 30,
+      after_size: 0,
+      delta_size: -30,
+      detected_at: "2026-07-30T12:00:00Z",
+      created_at: "2026-07-30T12:01:00Z",
+      read_at: null,
+    };
+
+    mockFetch((url) => {
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne, myWallet]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/position-overlaps") {
+        return jsonResponse({
+          my_wallet_id: myWallet.id,
+          tracked_wallet_id: walletOne.id,
+          items: [],
+          overlap_count: 0,
+          my_as_of: myWallet.last_success_at,
+          tracked_as_of: walletOne.last_success_at,
+          my_stale: false,
+          tracked_stale: false,
+        });
+      }
+      if (url.pathname === "/api/overlap-alerts") {
+        alertRequests += 1;
+        return jsonResponse(
+          alertRequests === 1
+            ? { items: [], unread_count: 0 }
+            : { items: [alert], unread_count: 1 },
+        );
+      }
+      throw new Error(`未处理的请求：${url}`);
+    });
+
+    render(<Home />);
+    await waitFor(() => expect(alertRequests).toBe(1));
+    expect(screen.queryByText("实时提醒市场")).not.toBeInTheDocument();
+
+    act(() => {
+      MockEventSource.instances[0].emit({
+        type: "overlap-alerts.created",
+        wallet_id: walletOne.id,
+      });
+    });
+
+    expect(await screen.findByText("实时提醒市场")).toBeInTheDocument();
+    expect(alertRequests).toBe(2);
+  });
+
   it("可按购买日期查看同一仓位的独立买入批次", async () => {
     const splitPosition = {
       ...makePosition("dated", "分批建仓市场", 120),
@@ -400,6 +891,73 @@ describe("Polymarket 钱包监控页", () => {
     expect(within(costCard!).getByText("2026年8月1日")).toBeInTheDocument();
   });
 
+  it("仓位变动明细把链上赎回与主动清仓分开显示", async () => {
+    const redeemedEvent = {
+      ...makeEvent(60, "已结算赎回市场"),
+      type: "redeemed",
+      delta_size: -350.1,
+      before_size: 350.1,
+      after_size: 0,
+      average_fill_price: null,
+      current_value: 0,
+      reconciliation_status: "onchain",
+      first_detected_at: "2026-07-31T06:30:53Z",
+      settled_at: "2026-07-31T06:30:53Z",
+      payout_amount: 350.1,
+      redemption_cost_basis: 30.909,
+      redemption_entry_price: 0.0882862039,
+      redemption_price: 1,
+      redemption_profit: 319.191,
+      redemption_profit_percent: 1032.6798,
+      redemption_cost_complete: true,
+      transaction_hash:
+        "0x08e8e1fbec07cd67e67f6c972138acc72e4075a2222fa62837cee9d21d930feb",
+    };
+
+    mockFetch((url) => {
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse({ items: [redeemedEvent], next_cursor: null });
+      }
+      throw new Error(`未处理的请求：${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+
+    await user.click(
+      await screen.findByRole("tab", { name: /仓位变动明细/ }),
+    );
+    const marketLink = await screen.findByRole("link", {
+      name: /已结算赎回市场/,
+    });
+    const card = marketLink.closest("details");
+    expect(card).not.toBeNull();
+    expect(within(card!).getAllByText("赎回")).toHaveLength(2);
+    expect(within(card!).getAllByText("赎回份额").length).toBeGreaterThan(0);
+    expect(within(card!).getAllByText("$350.10").length).toBeGreaterThan(0);
+    expect(within(card!).getAllByText(/0\.088286/).length).toBeGreaterThan(0);
+    expect(within(card!).getAllByText(/1\.000000/).length).toBeGreaterThan(0);
+    expect(within(card!).getAllByText("$319.191").length).toBeGreaterThan(0);
+    expect(within(card!).getAllByText("+1032.68%").length).toBeGreaterThan(0);
+    expect(within(card!).queryByText("清仓")).not.toBeInTheDocument();
+
+    await user.click(card!.querySelector("summary")!);
+    expect(within(card!).getByText("链上赎回")).toBeInTheDocument();
+    expect(within(card!).getByText("链上已确认")).toBeInTheDocument();
+    expect(
+      within(card!).getByRole("link", { name: "0x08e8…0feb" }),
+    ).toHaveAttribute(
+      "href",
+      "https://polygonscan.com/tx/0x08e8e1fbec07cd67e67f6c972138acc72e4075a2222fa62837cee9d21d930feb",
+    );
+  });
+
   it("点击加载更早记录后按游标合并事件", async () => {
     const newerEvent = makeEvent(50, "较新的加仓市场");
     const olderEvent = makeEvent(40, "更早的加仓市场");
@@ -424,7 +982,7 @@ describe("Polymarket 钱包监控页", () => {
     render(<Home />);
 
     await user.click(
-      await screen.findByRole("tab", { name: /加减仓明细/ }),
+      await screen.findByRole("tab", { name: /仓位变动明细/ }),
     );
     expect(
       await screen.findByRole("link", { name: /较新的加仓市场/ }),

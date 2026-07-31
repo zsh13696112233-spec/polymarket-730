@@ -45,6 +45,7 @@ class WalletRead(APIModel):
     address: str
     proxy_wallet: str
     label: str
+    wallet_role: Literal["self", "tracked"]
     enabled: bool
     status: str
     last_success_at: datetime | None
@@ -83,10 +84,12 @@ class PositionRead(APIModel):
     cash_pnl: DecimalNumber
     percent_pnl: DecimalNumber
     end_date: datetime | None
+    first_opened_at: datetime | None = None
+    first_opened_at_source: Literal["trade", "first_seen"] = "first_seen"
     purchase_lots: list[PurchaseLotRead] = Field(default_factory=list)
 
-    @field_serializer("end_date", when_used="json")
-    def serialize_end_date(self, value: datetime | None) -> str | None:
+    @field_serializer("end_date", "first_opened_at", when_used="json")
+    def serialize_position_dates(self, value: datetime | None) -> str | None:
         return _as_utc_iso(value)
 
 
@@ -111,6 +114,71 @@ class PositionsResponse(APIModel):
         return _as_utc_iso(value)
 
 
+class PositionOverlapRead(APIModel):
+    asset_id: str
+    condition_id: str
+    my_size: DecimalNumber
+    tracked_size: DecimalNumber
+    my_to_tracked_percent: DecimalNumber
+    my_ratio: DecimalNumber
+    tracked_ratio: DecimalNumber
+
+
+class PositionOverlapsResponse(APIModel):
+    my_wallet_id: int | None
+    tracked_wallet_id: int
+    items: list[PositionOverlapRead]
+    overlap_count: int
+    my_as_of: datetime | None
+    tracked_as_of: datetime | None
+    my_stale: bool | None
+    tracked_stale: bool
+
+    @field_serializer("my_as_of", "tracked_as_of", when_used="json")
+    def serialize_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class PositionOverlapDetail(APIModel):
+    my_wallet: WalletRead
+    tracked_wallet: WalletRead
+    mine: PositionRead
+    tracked: PositionRead
+    my_to_tracked_percent: DecimalNumber
+    my_ratio: DecimalNumber
+    tracked_ratio: DecimalNumber
+    my_stale: bool
+    tracked_stale: bool
+
+
+class PositionOverlapAlertRead(APIModel):
+    id: int
+    my_wallet_id: int
+    tracked_wallet_id: int
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    event_slug: str | None
+    market_slug: str | None
+    type: Literal["increased", "decreased", "closed"]
+    before_size: DecimalNumber
+    after_size: DecimalNumber
+    delta_size: DecimalNumber
+    detected_at: datetime
+    created_at: datetime
+    read_at: datetime | None
+
+    @field_serializer("detected_at", "created_at", "read_at", when_used="json")
+    def serialize_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class PositionOverlapAlertsResponse(APIModel):
+    items: list[PositionOverlapAlertRead]
+    unread_count: int
+
+
 class FillRead(APIModel):
     id: int
     side: Literal["BUY", "SELL"]
@@ -131,7 +199,7 @@ class EventRead(APIModel):
     id: int
     wallet_id: int
     asset_id: str
-    type: Literal["opened", "increased", "decreased", "closed"]
+    type: Literal["opened", "increased", "decreased", "closed", "redeemed"]
     title: str
     outcome: str
     event_slug: str | None
@@ -145,6 +213,14 @@ class EventRead(APIModel):
     reconciliation_status: str
     first_detected_at: datetime
     settled_at: datetime
+    payout_amount: DecimalNumber | None
+    redemption_cost_basis: DecimalNumber | None = None
+    redemption_entry_price: DecimalNumber | None = None
+    redemption_price: DecimalNumber | None = None
+    redemption_profit: DecimalNumber | None = None
+    redemption_profit_percent: DecimalNumber | None = None
+    redemption_cost_complete: bool | None = None
+    transaction_hash: str | None
     fills: list[FillRead]
 
     @field_serializer("first_detected_at", "settled_at", when_used="json")
@@ -156,7 +232,7 @@ class EventRead(APIModel):
 
 class EventsResponse(APIModel):
     items: list[EventRead]
-    next_cursor: int | None
+    next_cursor: str | None
 
 
 class HealthRead(APIModel):

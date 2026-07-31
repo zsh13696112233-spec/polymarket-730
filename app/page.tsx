@@ -1244,6 +1244,111 @@ function AddWalletModal({
   );
 }
 
+function DeleteWalletModal({
+  wallet,
+  onClose,
+  onConfirm,
+}: {
+  wallet: Wallet | null;
+  onClose: () => void;
+  onConfirm: (wallet: Wallet) => Promise<void>;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const confirmButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!wallet) return;
+    confirmButton.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submitting) onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, submitting, wallet]);
+
+  async function confirm() {
+    if (!wallet || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onConfirm(wallet);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : "删除观测钱包失败",
+      );
+      setSubmitting(false);
+    }
+  }
+
+  if (!wallet) return null;
+
+  const walletName = wallet.label || shortenAddress(wallet.address);
+  return (
+    <div
+      className="modalBackdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !submitting) onClose();
+      }}
+    >
+      <section
+        className="modal deleteWalletModal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-wallet-title"
+        aria-describedby="delete-wallet-description"
+      >
+        <div className="modalHeader">
+          <div>
+            <span className="eyebrow dangerEyebrow">停止监控</span>
+            <h2 id="delete-wallet-title">删除观测钱包？</h2>
+          </div>
+          <button
+            className="closeButton"
+            type="button"
+            aria-label="关闭"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            ×
+          </button>
+        </div>
+        <p id="delete-wallet-description" className="deleteWalletDescription">
+          “{walletName}”将从观测列表移除并停止自动同步。
+        </p>
+        <p className="deleteWalletNote">
+          已保存的持仓和变动历史不会被清除；以后重新添加该地址即可继续观测。
+        </p>
+        {error && (
+          <p className="formError" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="modalActions">
+          <button
+            className="secondaryButton"
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            取消
+          </button>
+          <button
+            ref={confirmButton}
+            className="dangerButton"
+            type="button"
+            onClick={confirm}
+            disabled={submitting}
+          >
+            {submitting ? "正在删除…" : "确认删除"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function PositionComparisonPanel({
   title,
   wallet,
@@ -1603,6 +1708,8 @@ export default function Home() {
   const [walletModalMode, setWalletModalMode] = useState<
     "self" | "tracked" | null
   >(null);
+  const [walletPendingDeletion, setWalletPendingDeletion] =
+    useState<Wallet | null>(null);
   const [comparisonAssetId, setComparisonAssetId] = useState<string | null>(
     null,
   );
@@ -1952,7 +2059,7 @@ export default function Home() {
     }
   }
 
-  function selectWallet(walletId: string) {
+  function selectWallet(walletId: string | null) {
     if (walletId === activeWalletRef.current) return;
     requestSequence.current += 1;
     setPositions([]);
@@ -1972,8 +2079,9 @@ export default function Home() {
     setAsOf(null);
     setStale(false);
     setError(null);
-    setLoadingContent(true);
+    setLoadingContent(Boolean(walletId));
     closeComparison();
+    activeWalletRef.current = walletId;
     setActiveWalletId(walletId);
   }
 
@@ -2020,6 +2128,26 @@ export default function Home() {
       return [...next, wallet];
     });
     selectWallet(String(wallet.id));
+    void loadWallets();
+  }
+
+  async function deleteObservedWallet(wallet: Wallet) {
+    await request<void>(
+      `/api/wallets/${encodeURIComponent(String(wallet.id))}`,
+      { method: "DELETE" },
+    );
+
+    const remainingWallets = wallets.filter(
+      (item) => String(item.id) !== String(wallet.id),
+    );
+    setWallets(remainingWallets);
+    if (activeWalletRef.current === String(wallet.id)) {
+      selectWallet(
+        remainingWallets[0] ? String(remainingWallets[0].id) : null,
+      );
+    }
+    setWalletPendingDeletion(null);
+    setError(null);
     void loadWallets();
   }
 
@@ -2234,6 +2362,16 @@ export default function Home() {
                   ↻
                 </span>
                 {refreshing ? "同步中" : "立即刷新"}
+              </button>
+              <button
+                className="deleteWalletButton"
+                type="button"
+                onClick={() => {
+                  if (activeWallet) setWalletPendingDeletion(activeWallet);
+                }}
+                disabled={!activeWallet || refreshing}
+              >
+                删除观测
               </button>
             </div>
           </section>
@@ -2478,6 +2616,12 @@ export default function Home() {
         mode={walletModalMode ?? "tracked"}
         onClose={() => setWalletModalMode(null)}
         onCreated={walletCreated}
+      />
+      <DeleteWalletModal
+        key={walletPendingDeletion ? String(walletPendingDeletion.id) : "closed"}
+        wallet={walletPendingDeletion}
+        onClose={() => setWalletPendingDeletion(null)}
+        onConfirm={deleteObservedWallet}
       />
       <ComparisonModal
         assetId={comparisonAssetId}

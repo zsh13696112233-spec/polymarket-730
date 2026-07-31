@@ -714,6 +714,66 @@ describe("Polymarket 钱包监控页", () => {
     ).toBeInTheDocument();
   });
 
+  it("删除当前观测钱包会二次确认，并自动切换到下一个钱包", async () => {
+    let deletedWalletId: string | null = null;
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/wallets/1" && method === "DELETE") {
+        deletedWalletId = "1";
+        return new Response(null, { status: 204 });
+      }
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse(
+          deletedWalletId ? [walletTwo] : [walletOne, walletTwo],
+        );
+      }
+      if (url.pathname === "/api/positions") {
+        const walletId = url.searchParams.get("wallet_id");
+        return jsonResponse(
+          positionPayload(
+            walletId === "2"
+              ? [
+                  {
+                    ...makePosition("remaining", "保留钱包持仓", 30),
+                    wallet_id: 2,
+                  },
+                ]
+              : [],
+          ),
+        );
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+    await screen.findByRole("tab", { name: /观察一号/ });
+
+    await user.click(screen.getByRole("button", { name: "删除观测" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "删除观测钱包？",
+    });
+    expect(within(dialog).getByText(/观察一号/)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /观察一号/ })).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
+    expect(
+      await screen.findByRole("tab", { name: /新钱包/ }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.queryByRole("tab", { name: /观察一号/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(await screen.findByRole("table")).getByText("保留钱包持仓"),
+    ).toBeInTheDocument();
+    expect(deletedWalletId).toBe("1");
+  });
+
   it("收到 positions.updated 后重新请求并刷新持仓", async () => {
     let positionRequests = 0;
 

@@ -242,6 +242,8 @@ summary:focus-visible {
 .primaryButton:disabled,
 .secondaryButton:disabled,
 .refreshButton:disabled,
+.deleteWalletButton:disabled,
+.dangerButton:disabled,
 .closeButton:disabled {
   cursor: wait;
   opacity: 0.58;
@@ -343,6 +345,23 @@ summary:focus-visible {
 .walletMeta {
   flex: 0 0 auto;
   gap: 14px;
+}
+
+.deleteWalletButton {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.deleteWalletButton:hover {
+  border-color: rgba(185, 57, 57, 0.2);
+  background: rgba(185, 57, 57, 0.06);
+  color: var(--loss);
 }
 
 .syncBadge {
@@ -1764,8 +1783,48 @@ summary:focus-visible {
 }
 
 .modalActions .primaryButton,
-.modalActions .secondaryButton {
+.modalActions .secondaryButton,
+.modalActions .dangerButton {
   min-width: 82px;
+}
+
+.dangerButton {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: #b93939;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 680;
+  box-shadow: 0 6px 16px rgba(185, 57, 57, 0.16);
+}
+
+.dangerButton:hover {
+  background: #9f2f2f;
+}
+
+.dangerEyebrow {
+  color: var(--loss);
+}
+
+.deleteWalletDescription {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.deleteWalletNote {
+  margin: 12px 0 0;
+  padding: 11px 12px;
+  border-radius: 9px;
+  background: var(--surface-muted);
+  color: var(--muted-strong);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .comparisonModal {

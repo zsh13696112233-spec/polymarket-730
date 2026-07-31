@@ -1,0 +1,53 @@
+{
+  "name": "polymarket-wallet-watch",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "node scripts/free-dev-ports.mjs 3000 && WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev --hostname 127.0.0.1",
+    "dev:api": "node scripts/free-dev-ports.mjs 8730 && UV_CACHE_DIR=.uv-cache uv run uvicorn backend.main:app --host 127.0.0.1 --port 8730 --workers 1",
+    "dev:all": "concurrently --kill-others --names WEB,API --prefix-colors blue,green \"npm run dev\" \"npm run dev:api\"",
+    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "start": "node scripts/free-dev-ports.mjs 3000 && WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start --hostname 127.0.0.1",
+    "start:api": "node scripts/free-dev-ports.mjs 8730 && UV_CACHE_DIR=.uv-cache uv run uvicorn backend.main:app --host 127.0.0.1 --port 8730 --workers 1",
+    "start:local": "concurrently --kill-others --names WEB,API --prefix-colors blue,green \"npm run start\" \"npm run start:api\"",
+    "test": "npm run test:web && npm run test:api",
+    "test:web": "npm run typecheck && npm run test:web:unit && npm run build && node --test tests/rendered-html.test.mjs",
+    "test:web:unit": "vitest run",
+    "test:api": "UV_CACHE_DIR=.uv-cache uv run pytest backend/tests",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next && UV_CACHE_DIR=.uv-cache uv run ruff check backend && UV_CACHE_DIR=.uv-cache uv run ruff format --check backend"
+  },
+  "dependencies": {
+    "next": "16.2.6",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@tailwindcss/postcss": "4.2.1",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "concurrently": "^10.0.4",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "jsdom": "29.1.1",
+    "react-server-dom-webpack": "19.2.6",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10",
+    "vinext": "0.0.50",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
+  },
+  "type": "module"
+}

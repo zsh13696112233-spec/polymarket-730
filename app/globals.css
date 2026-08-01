@@ -157,6 +157,7 @@ summary:focus-visible {
 .marketButton,
 .mobileMarketButton,
 .myWalletButton,
+.copyRatioButton,
 .overlapBadge,
 .changeAlertBadge,
 .addTab,
@@ -214,6 +215,44 @@ summary:focus-visible {
   color: var(--warning);
   font-size: 9px;
   font-weight: 700;
+}
+
+.copyRatioButton {
+  display: grid;
+  min-width: 104px;
+  min-height: 42px;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding: 6px 9px 6px 11px;
+  border: 1px solid #a9d4c3;
+  border-radius: 10px;
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+  text-align: left;
+}
+
+.copyRatioButton:hover {
+  border-color: var(--brand);
+  background: #dbefe7;
+}
+
+.copyRatioButton span {
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.copyRatioButton strong {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.copyRatioButton small {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  align-self: center;
+  font-size: 8px;
+  font-weight: 700;
+  opacity: 0.72;
 }
 
 .primaryButton {
@@ -879,6 +918,82 @@ summary:focus-visible {
   font-size: 9px;
 }
 
+.copyRecommendation {
+  display: flex;
+  min-width: 160px;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid #cce4da;
+  border-radius: 8px;
+  background: var(--brand-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.copyRecommendation > span {
+  margin: 0;
+  color: var(--brand-dark);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.copyRecommendation > strong {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.copyRecommendation > strong.buy {
+  color: var(--profit);
+}
+
+.copyRecommendation > strong.sell {
+  color: var(--loss);
+}
+
+.copyRecommendation > small {
+  color: var(--muted-strong);
+  font-size: 8px;
+  font-weight: 500;
+}
+
+.copyRecommendation.compact {
+  padding: 7px 9px;
+}
+
+.activityMain > .copyRecommendation {
+  width: fit-content;
+  min-width: 210px;
+  margin-top: 7px;
+}
+
+.currentCopyTarget {
+  display: flex;
+  min-width: 145px;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid #cce4da;
+  border-radius: 8px;
+  background: var(--brand-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.currentCopyTarget span {
+  color: var(--brand-dark);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.currentCopyTarget strong {
+  color: var(--profit);
+  font-size: 11px;
+}
+
+.currentCopyTarget small {
+  color: var(--muted-strong);
+  font-size: 8px;
+}
+
 .activityMeta {
   min-width: 104px;
   align-items: flex-end;
@@ -900,7 +1015,7 @@ summary:focus-visible {
 
 .positionsTable {
   width: 100%;
-  min-width: 1320px;
+  min-width: 1480px;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -1175,6 +1290,10 @@ summary:focus-visible {
   text-align: right;
 }
 
+.copyTargetCell {
+  min-width: 170px;
+}
+
 .marketButton {
   display: inline-flex;
   min-height: 29px;
@@ -1217,10 +1336,9 @@ summary:focus-visible {
   display: grid;
   min-height: 88px;
   align-items: center;
-  grid-template-columns: minmax(280px, 1.6fr) minmax(105px, 0.55fr) minmax(
-      120px,
-      0.65fr
-    ) minmax(155px, 0.75fr);
+  grid-template-columns:
+    minmax(245px, 1.45fr) minmax(92px, 0.45fr)
+    minmax(110px, 0.52fr) minmax(155px, 0.72fr) minmax(140px, 0.65fr);
   gap: 16px;
   padding: 12px 8px;
   cursor: pointer;
@@ -1384,6 +1502,21 @@ summary:focus-visible {
   margin: 0 -8px;
   color: #9aa6a1;
   font-size: 14px;
+}
+
+.eventFacts > .copyRecommendation {
+  min-width: 190px;
+  margin-left: auto;
+}
+
+.eventFacts > .copyRecommendation > span {
+  margin: 0;
+  color: var(--brand-dark);
+  font-size: 8px;
+}
+
+.eventFacts > .copyRecommendation + .reconcileStatus {
+  margin-left: 0;
 }
 
 .redemptionFacts {
@@ -1760,6 +1893,28 @@ summary:focus-visible {
   box-shadow: 0 0 0 3px rgba(15, 107, 85, 0.09);
 }
 
+.ratioField > div {
+  display: grid;
+  align-items: center;
+  grid-template-columns: 1fr 42px;
+}
+
+.ratioField input {
+  border-radius: 9px 0 0 9px;
+}
+
+.ratioField b {
+  display: grid;
+  height: 43px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-left: 0;
+  border-radius: 0 9px 9px 0;
+  background: var(--surface-muted);
+  color: var(--brand-dark);
+  font-size: 13px;
+}
+
 .privacyNote {
   margin: 2px 0 0;
   padding: 10px 11px;
@@ -2089,10 +2244,9 @@ summary:focus-visible {
   }
 
   .eventCard summary {
-    grid-template-columns: minmax(250px, 1.45fr) minmax(95px, 0.5fr) minmax(
-        110px,
-        0.55fr
-      ) minmax(135px, 0.65fr);
+    grid-template-columns:
+      minmax(210px, 1.2fr) minmax(82px, 0.4fr)
+      minmax(96px, 0.45fr) minmax(140px, 0.64fr) minmax(125px, 0.55fr);
     gap: 10px;
   }
 
@@ -2135,6 +2289,12 @@ summary:focus-visible {
     min-width: 118px;
     min-height: 38px;
     padding: 5px 8px;
+  }
+
+  .copyRatioButton {
+    min-width: 88px;
+    min-height: 38px;
+    padding: 5px 7px;
   }
 
   .myWalletButton strong {
@@ -2321,6 +2481,11 @@ summary:focus-visible {
     grid-column: 1 / -1;
   }
 
+  .positionCard > .currentCopyTarget {
+    width: 100%;
+    margin-top: 14px;
+  }
+
   .mobileMarketButton {
     display: flex;
     min-height: 39px;
@@ -2356,6 +2521,21 @@ summary:focus-visible {
     align-self: end;
   }
 
+  .eventCard summary > .copyRecommendation {
+    grid-column: 1 / -1;
+  }
+
+  .eventCard summary > .copyRecommendation.compact {
+    display: grid;
+    align-items: center;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px;
+  }
+
+  .eventCard summary > .copyRecommendation.compact > strong {
+    text-align: center;
+  }
+
   .eventProfit {
     text-align: right;
   }
@@ -2387,6 +2567,12 @@ summary:focus-visible {
 
   .eventFacts > div:nth-of-type(3) {
     grid-column: 1 / -1;
+  }
+
+  .eventFacts > .copyRecommendation {
+    grid-column: 1 / -1;
+    width: 100%;
+    margin-left: 0;
   }
 
   .redemptionFacts {
@@ -2478,6 +2664,20 @@ summary:focus-visible {
     place-items: center;
     padding: 4px;
     text-align: center;
+  }
+
+  .copyRatioButton {
+    min-width: 58px;
+    width: 58px;
+    grid-template-columns: 1fr;
+    place-items: center;
+    padding: 4px;
+    text-align: center;
+  }
+
+  .copyRatioButton span,
+  .copyRatioButton small {
+    display: none;
   }
 
   .myWalletButton strong,

@@ -36,6 +36,63 @@ def add_wallet(client):
     return response.json()
 
 
+def test_global_copy_ratio_defaults_validates_and_persists(settings_factory):
+    settings = settings_factory()
+    fake = FakePolymarketClient([[]])
+
+    with TestClient(create_app(settings=settings, client=fake)) as client:  # type: ignore[arg-type]
+        assert client.get("/api/settings").json() == {"copy_ratio_percent": 10.0}
+        assert client.put(
+            "/api/settings",
+            json={"copy_ratio_percent": 12.34},
+        ).json() == {"copy_ratio_percent": 12.34}
+        assert (
+            client.put(
+                "/api/settings",
+                json={"copy_ratio_percent": 1},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.put(
+                "/api/settings",
+                json={"copy_ratio_percent": 100},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.put(
+                "/api/settings",
+                json={"copy_ratio_percent": 0.99},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.put(
+                "/api/settings",
+                json={"copy_ratio_percent": 100.01},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.put(
+                "/api/settings",
+                json={"copy_ratio_percent": 12.345},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.put(
+                "/api/settings",
+                json={"copy_ratio_percent": 37.5},
+            ).status_code
+            == 200
+        )
+
+    with TestClient(create_app(settings=settings, client=fake)) as restarted:  # type: ignore[arg-type]
+        assert restarted.get("/api/settings").json() == {"copy_ratio_percent": 37.5}
+
+
 async def candidate_first_changed_at(database, wallet_id: int):
     async with database.sessions() as session:
         candidate = await session.scalar(
@@ -309,6 +366,12 @@ def test_common_position_reduction_creates_readable_alert(
     assert alert["after_size"] == 60
     assert alert["delta_size"] == -40
     assert alert["read_at"] is None
+    assert alert["copy_recommendation"] == {
+        "action": "sell",
+        "ratio_percent": 10.0,
+        "shares": 4.0,
+        "estimated_usdc": None,
+    }
 
     marked = client.post(f"/api/overlap-alerts/{alert['id']}/read")
     assert marked.status_code == 200
@@ -397,6 +460,8 @@ def test_common_position_close_creates_alert(app_client_factory):
     assert alerts["items"][0]["type"] == "closed"
     assert alerts["items"][0]["before_size"] == 100
     assert alerts["items"][0]["after_size"] == 0
+    assert alerts["items"][0]["copy_recommendation"]["action"] == "sell"
+    assert alerts["items"][0]["copy_recommendation"]["shares"] == 10
 
 
 def test_settlement_does_not_create_common_position_alert(
@@ -838,6 +903,7 @@ def test_redemption_uses_fifo_cost_for_entry_price_and_profit(
     assert event["redemption_price"] == 1
     assert event["redemption_profit"] == 12.6
     assert event["redemption_profit_percent"] == pytest.approx(12.6 / 4.4 * 100)
+    assert event["copy_recommendation"] is None
 
 
 def test_redemption_failure_does_not_interrupt_wallet_sync(app_client_factory):
@@ -880,6 +946,29 @@ def test_new_position_after_baseline_creates_opened_event(app_client_factory):
     assert events["items"][0]["type"] == "opened"
     assert events["items"][0]["before_size"] == 0.0
     assert events["items"][0]["after_size"] == 4.0
+    assert events["items"][0]["copy_recommendation"] == {
+        "action": "buy",
+        "ratio_percent": 10.0,
+        "shares": 0.4,
+        "estimated_usdc": 0.1,
+    }
+    assert (
+        client.put(
+            "/api/settings",
+            json={"copy_ratio_percent": 25},
+        ).status_code
+        == 200
+    )
+    recalculated = client.get(
+        "/api/position-events",
+        params={"wallet_id": wallet["id"]},
+    ).json()["items"][0]
+    assert recalculated["copy_recommendation"] == {
+        "action": "buy",
+        "ratio_percent": 25.0,
+        "shares": 1.0,
+        "estimated_usdc": 0.25,
+    }
     positions = client.get("/api/positions", params={"wallet_id": wallet["id"]}).json()
     assert len(positions["items"]) == 1
     assert positions["items"][0]["asset_id"] == "new"
@@ -1040,6 +1129,12 @@ def test_pending_reduction_survives_market_settlement(app_client_factory):
     assert events[0]["after_size"] == 50.0
     assert events[0]["delta_size"] == -50.0
     assert events[0]["reconciliation_status"] == "matched"
+    assert events[0]["copy_recommendation"] == {
+        "action": "sell",
+        "ratio_percent": 10.0,
+        "shares": 5.0,
+        "estimated_usdc": 2.5,
+    }
     assert [fill["transaction_hash"] for fill in events[0]["fills"]] == ["0xreduce"]
     positions = client.get("/api/positions", params={"wallet_id": wallet["id"]}).json()
     assert positions["summary"]["count"] == 0

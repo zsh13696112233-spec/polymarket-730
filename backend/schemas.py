@@ -30,6 +30,25 @@ class APIModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GlobalSettingsRead(APIModel):
+    copy_ratio_percent: DecimalNumber
+
+
+class GlobalSettingsUpdate(APIModel):
+    copy_ratio_percent: Decimal = Field(
+        ge=Decimal("1"),
+        le=Decimal("100"),
+        decimal_places=2,
+    )
+
+
+class CopyRecommendation(APIModel):
+    action: Literal["buy", "sell"]
+    ratio_percent: DecimalNumber
+    shares: DecimalNumber
+    estimated_usdc: DecimalNumber | None
+
+
 class WalletCreate(APIModel):
     address: str = Field(min_length=1, max_length=500)
     label: str | None = Field(default=None, min_length=1, max_length=100)
@@ -168,6 +187,7 @@ class PositionOverlapAlertRead(APIModel):
     detected_at: datetime
     created_at: datetime
     read_at: datetime | None
+    copy_recommendation: CopyRecommendation
 
     @field_serializer("detected_at", "created_at", "read_at", when_used="json")
     def serialize_dates(self, value: datetime | None) -> str | None:
@@ -222,6 +242,7 @@ class EventRead(APIModel):
     redemption_cost_complete: bool | None = None
     transaction_hash: str | None
     fills: list[FillRead]
+    copy_recommendation: CopyRecommendation | None = None
 
     @field_serializer("first_detected_at", "settled_at", when_used="json")
     def serialize_dates(self, value: datetime) -> str:

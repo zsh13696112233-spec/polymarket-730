@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -18,10 +19,29 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 DECIMAL_TYPE = Numeric(38, 18)
+PERCENT_TYPE = Numeric(5, 2)
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class GlobalSettings(Base):
+    __tablename__ = "global_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_global_settings_singleton"),
+        CheckConstraint(
+            "copy_ratio_percent >= 1 AND copy_ratio_percent <= 100",
+            name="ck_global_settings_copy_ratio_percent",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    copy_ratio_percent: Mapped[Decimal] = mapped_column(
+        PERCENT_TYPE,
+        nullable=False,
+        default=Decimal("10"),
+    )
 
 
 class WatchedWallet(Base):

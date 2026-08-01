@@ -18,6 +18,7 @@ from backend.config import Settings
 from backend.db import Database
 from backend.models import (
     CurrentPosition,
+    GlobalSettings,
     PositionEvent,
     PositionOverlapAlert,
     PositionOverlapPeriod,
@@ -32,8 +33,11 @@ from backend.polymarket import (
 )
 from backend.purchase_history import build_purchase_lots
 from backend.schemas import (
+    CopyRecommendation,
     EventRead,
     EventsResponse,
+    GlobalSettingsRead,
+    GlobalSettingsUpdate,
     HealthRead,
     PositionOverlapAlertRead,
     PositionOverlapAlertsResponse,
@@ -85,8 +89,38 @@ def decode_event_cursor(raw_cursor: str) -> tuple[datetime, int]:
     return timestamp, event_id
 
 
-def event_read(event: PositionEvent) -> EventRead:
-    item = EventRead.model_validate(event)
+DEFAULT_COPY_RATIO = Decimal("10")
+
+
+async def copy_ratio_percent(session: Any) -> Decimal:
+    settings = await session.get(GlobalSettings, 1)
+    return settings.copy_ratio_percent if settings is not None else DEFAULT_COPY_RATIO
+
+
+def copy_recommendation(
+    event: PositionEvent,
+    ratio_percent: Decimal,
+) -> CopyRecommendation | None:
+    if event.type == "redeemed":
+        return None
+    shares = abs(event.delta_size) * ratio_percent / Decimal("100")
+    estimated_usdc = (
+        shares * event.average_fill_price
+        if event.average_fill_price is not None and event.average_fill_price > 0
+        else None
+    )
+    return CopyRecommendation(
+        action="buy" if event.delta_size > 0 else "sell",
+        ratio_percent=ratio_percent,
+        shares=shares,
+        estimated_usdc=estimated_usdc,
+    )
+
+
+def event_read(event: PositionEvent, ratio_percent: Decimal) -> EventRead:
+    item = EventRead.model_validate(event).model_copy(
+        update={"copy_recommendation": copy_recommendation(event, ratio_percent)}
+    )
     if event.type != "redeemed":
         return item
 
@@ -153,7 +187,10 @@ def first_opened_metadata(
     return position.first_seen_at, "first_seen"
 
 
-def overlap_alert_read(alert: PositionOverlapAlert) -> PositionOverlapAlertRead:
+def overlap_alert_read(
+    alert: PositionOverlapAlert,
+    ratio_percent: Decimal,
+) -> PositionOverlapAlertRead:
     return PositionOverlapAlertRead(
         id=alert.id,
         my_wallet_id=alert.my_wallet_id,
@@ -171,6 +208,7 @@ def overlap_alert_read(alert: PositionOverlapAlert) -> PositionOverlapAlertRead:
         detected_at=alert.event.first_detected_at,
         created_at=alert.created_at,
         read_at=alert.read_at,
+        copy_recommendation=copy_recommendation(alert.event, ratio_percent),
     )
 
 
@@ -232,6 +270,33 @@ def create_app(
         async with database.sessions() as session:
             await session.execute(text("SELECT 1"))
         return HealthRead(status="ok", database="ok")
+
+    @application.get("/api/settings", response_model=GlobalSettingsRead)
+    async def get_global_settings(request: Request) -> GlobalSettingsRead:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            ratio = await copy_ratio_percent(session)
+        return GlobalSettingsRead(copy_ratio_percent=ratio)
+
+    @application.put("/api/settings", response_model=GlobalSettingsRead)
+    async def update_global_settings(
+        payload: GlobalSettingsUpdate,
+        request: Request,
+    ) -> GlobalSettingsRead:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            settings = await session.get(GlobalSettings, 1)
+            if settings is None:
+                settings = GlobalSettings(
+                    id=1,
+                    copy_ratio_percent=payload.copy_ratio_percent,
+                )
+                session.add(settings)
+            else:
+                settings.copy_ratio_percent = payload.copy_ratio_percent
+            await session.commit()
+            await session.refresh(settings)
+            return GlobalSettingsRead.model_validate(settings)
 
     @application.get("/api/wallets", response_model=list[WalletRead])
     async def list_wallets(request: Request) -> list[WatchedWallet]:
@@ -805,9 +870,10 @@ def create_app(
                     )
                 )
             ) or 0
+            ratio = await copy_ratio_percent(session)
 
         return PositionOverlapAlertsResponse(
-            items=[overlap_alert_read(alert) for alert in alerts],
+            items=[overlap_alert_read(alert, ratio) for alert in alerts],
             unread_count=unread_count,
         )
 
@@ -840,7 +906,8 @@ def create_app(
             if alert.read_at is None:
                 alert.read_at = utcnow()
                 await session.commit()
-            return overlap_alert_read(alert)
+            ratio = await copy_ratio_percent(session)
+            return overlap_alert_read(alert, ratio)
 
     @application.post(
         "/api/overlap-alerts/read-all",
@@ -918,10 +985,11 @@ def create_app(
                     )
                 )
             events = list((await session.scalars(query)).all())
+            ratio = await copy_ratio_percent(session)
         has_more = len(events) > limit
         page = events[:limit]
         return EventsResponse(
-            items=[event_read(event) for event in page],
+            items=[event_read(event, ratio) for event in page],
             next_cursor=encode_event_cursor(page[-1]) if has_more and page else None,
         )
 

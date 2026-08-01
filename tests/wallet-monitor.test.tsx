@@ -171,6 +171,12 @@ function makeEvent(id: number, title: string) {
     redemption_cost_complete: null,
     transaction_hash: null,
     fills: [],
+    copy_recommendation: {
+      action: "buy",
+      ratio_percent: 10,
+      shares: 1,
+      estimated_usdc: 0.36,
+    },
   };
 }
 
@@ -231,6 +237,91 @@ afterEach(() => {
 });
 
 describe("Polymarket 钱包监控页", () => {
+  it("保存全局跟单比例并按新比例展示历史建议", async () => {
+    let ratio = 10;
+    let submittedBody: unknown;
+    const currentPosition = makePosition(
+      "current-copy",
+      "当前持仓跟单市场",
+      40,
+    );
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/settings" && method === "GET") {
+        return jsonResponse({ copy_ratio_percent: ratio });
+      }
+      if (url.pathname === "/api/settings" && method === "PUT") {
+        submittedBody = JSON.parse(String(init?.body));
+        ratio = Number(
+          (submittedBody as { copy_ratio_percent: number })
+            .copy_ratio_percent,
+        );
+        return jsonResponse({ copy_ratio_percent: ratio });
+      }
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([currentPosition]));
+      }
+      if (url.pathname === "/api/position-events") {
+        const event = makeEvent(101, "跟单建议市场");
+        event.copy_recommendation = {
+          action: "buy",
+          ratio_percent: ratio,
+          shares: (10 * ratio) / 100,
+          estimated_usdc: (10 * ratio * 0.36) / 100,
+        };
+        return jsonResponse({ items: [event], next_cursor: null });
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+
+    const settingsButton = await screen.findByRole("button", {
+      name: "跟单比例 10%，修改",
+    });
+    expect(
+      (await screen.findAllByText("10% 跟单目标")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("10 shares").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("按现价约 $4.00 USDC").length,
+    ).toBeGreaterThan(0);
+    await user.click(settingsButton);
+    const dialog = screen.getByRole("dialog", { name: "设置跟单比例" });
+    const input = within(dialog).getByLabelText("全局跟单比例");
+    await user.clear(input);
+    await user.type(input, "25");
+    await user.click(within(dialog).getByRole("button", { name: "保存比例" }));
+
+    await waitFor(() => {
+      expect(submittedBody).toEqual({ copy_ratio_percent: 25 });
+    });
+    expect(
+      await screen.findByRole("button", { name: "跟单比例 25%，修改" }),
+    ).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("25% 跟单目标")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("25 shares").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("按现价约 $10.00 USDC").length,
+    ).toBeGreaterThan(0);
+
+    await user.click(
+      await screen.findByRole("tab", { name: /仓位变动明细/ }),
+    );
+    expect(screen.getAllByText("25% 跟单建议").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("买入 2.5 shares").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("估算 $0.90 USDC").length,
+    ).toBeGreaterThan(0);
+  });
+
   it("可将只读地址设置为独立的我的钱包", async () => {
     let configured = false;
     let submittedBody: unknown;
@@ -460,6 +551,12 @@ describe("Polymarket 钱包监控页", () => {
       detected_at: "2026-07-30T10:03:00Z",
       created_at: "2026-07-30T10:04:00Z",
       read_at: null,
+      copy_recommendation: {
+        action: "buy",
+        ratio_percent: 10,
+        shares: 4,
+        estimated_usdc: 1.8,
+      },
     };
 
     mockFetch((url) => {
@@ -506,6 +603,9 @@ describe("Polymarket 钱包监控页", () => {
       name: "共同持仓动态",
     });
     expect(within(activity).getByText("加仓")).toBeInTheDocument();
+    expect(within(activity).getByText("10% 跟单建议")).toBeInTheDocument();
+    expect(within(activity).getByText("买入 4 shares")).toBeInTheDocument();
+    expect(within(activity).getByText("估算 $1.80 USDC")).toBeInTheDocument();
     expect(
       within(activity).getByText(
         (_, element) =>
@@ -618,10 +718,13 @@ describe("Polymarket 钱包监控页", () => {
     render(<Home />);
 
     const table = await screen.findByRole("table");
+    expect(within(table).getByText("跟单目标")).toBeInTheDocument();
     await waitFor(() => {
       const rows = within(table).getAllByRole("row").slice(1);
       expect(rows).toHaveLength(2);
       expect(rows[0]).toHaveTextContent("较高市值市场");
+      expect(rows[0]).toHaveTextContent("10% 跟单目标");
+      expect(rows[0]).toHaveTextContent("10 shares");
       expect(rows[1]).toHaveTextContent("较低市值市场");
     });
     expect(screen.getByText("数据更新暂时中断")).toBeInTheDocument();

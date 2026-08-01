@@ -15,6 +15,17 @@ const API_BASE = (
 
 type Numeric = string | number;
 
+type GlobalSettings = {
+  copy_ratio_percent: Numeric;
+};
+
+type CopyRecommendation = {
+  action: "buy" | "sell";
+  ratio_percent: Numeric;
+  shares: Numeric;
+  estimated_usdc: Numeric | null;
+};
+
 type Wallet = {
   id: number | string;
   address: string;
@@ -127,6 +138,7 @@ type PositionOverlapAlert = {
   detected_at: string;
   created_at: string;
   read_at: string | null;
+  copy_recommendation?: CopyRecommendation;
 };
 
 type PositionOverlapAlertsResponse = {
@@ -172,6 +184,7 @@ type PositionEvent = {
   redemption_cost_complete: boolean | null;
   transaction_hash: string | null;
   fills: Fill[];
+  copy_recommendation?: CopyRecommendation | null;
 };
 
 type EventsResponse = {
@@ -230,6 +243,24 @@ function formatRedemptionPrice(
 
 function formatShares(value: string | number | null | undefined) {
   return compactNumberFormatter.format(toNumber(value));
+}
+
+function formatSuggestedShares(
+  value: string | number | null | undefined,
+) {
+  const number = toNumber(value);
+  if (number > 0 && number < 0.0001) return "<0.0001";
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  }).format(number);
+}
+
+function formatRatioSetting(value: Numeric) {
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(toNumber(value));
 }
 
 function formatPrice(value: string | number | null | undefined) {
@@ -520,16 +551,68 @@ function ChangeAlertBadge({
   );
 }
 
+function CopyRecommendationView({
+  recommendation,
+  compact = false,
+}: {
+  recommendation: CopyRecommendation;
+  compact?: boolean;
+}) {
+  const action = recommendation.action === "buy" ? "买入" : "卖出";
+  return (
+    <div className={`copyRecommendation ${compact ? "compact" : ""}`}>
+      <span>
+        {formatRatioSetting(recommendation.ratio_percent)}% 跟单建议
+      </span>
+      <strong className={recommendation.action}>
+        {action} {formatSuggestedShares(recommendation.shares)} shares
+      </strong>
+      <small>
+        {recommendation.estimated_usdc === null
+          ? "成交价缺失，仅供份额参考"
+          : `估算 ${formatRedemptionMoney(
+              recommendation.estimated_usdc,
+            )} USDC`}
+      </small>
+    </div>
+  );
+}
+
+function CurrentPositionCopyTarget({
+  position,
+  ratioPercent,
+}: {
+  position: Position;
+  ratioPercent: Numeric;
+}) {
+  const ratio = toNumber(ratioPercent);
+  const shares = (toNumber(position.size) * ratio) / 100;
+  const estimatedUsdc = shares * toNumber(position.current_price);
+  return (
+    <div className="currentCopyTarget">
+      <span>{formatRatioSetting(ratioPercent)}% 跟单目标</span>
+      <strong>{formatSuggestedShares(shares)} shares</strong>
+      <small>
+        {toNumber(position.current_price) > 0
+          ? `按现价约 ${formatRedemptionMoney(estimatedUsdc)} USDC`
+          : "当前价格缺失"}
+      </small>
+    </div>
+  );
+}
+
 function PositionTable({
   positions,
   overlaps,
   changeAlerts,
+  copyRatioPercent,
   onOpenComparison,
   onReadAlert,
 }: {
   positions: Position[];
   overlaps: Map<string, PositionOverlap>;
   changeAlerts: Map<string, PositionOverlapAlert>;
+  copyRatioPercent: Numeric;
   onOpenComparison: (assetId: string) => void;
   onReadAlert: (alertId: number | string) => void;
 }) {
@@ -545,6 +628,7 @@ function PositionTable({
               <th>买入批次</th>
               <th>初次建仓</th>
               <th className="numberCell">持仓份额</th>
+              <th>跟单目标</th>
               <th className="numberCell">持仓成本</th>
               <th className="numberCell sortedColumn">
                 当前市值 <span aria-hidden="true">↓</span>
@@ -605,6 +689,12 @@ function PositionTable({
                   </td>
                   <td className="numberCell">
                     {formatShares(position.size)}
+                  </td>
+                  <td className="copyTargetCell">
+                    <CurrentPositionCopyTarget
+                      position={position}
+                      ratioPercent={copyRatioPercent}
+                    />
                   </td>
                   <td className="numberCell mutedNumber">
                     {formatMoney(position.initial_value)}
@@ -715,6 +805,10 @@ function PositionTable({
                   </dd>
                 </div>
               </dl>
+              <CurrentPositionCopyTarget
+                position={position}
+                ratioPercent={copyRatioPercent}
+              />
               <a
                 className="mobileMarketButton"
                 href={marketUrl(position.event_slug, position.market_slug)}
@@ -815,6 +909,13 @@ function EventList({ events }: { events: PositionEvent[] }) {
                     : "—"}
                 </strong>
               </div>
+
+              {!redeemed && event.copy_recommendation && (
+                <CopyRecommendationView
+                  recommendation={event.copy_recommendation}
+                  compact
+                />
+              )}
 
               {redeemed && (
                 <div className="eventProfit">
@@ -982,6 +1083,11 @@ function EventList({ events }: { events: PositionEvent[] }) {
                       <span>变化后市值</span>
                       <strong>{formatMoney(event.current_value)}</strong>
                     </div>
+                    {event.copy_recommendation && (
+                      <CopyRecommendationView
+                        recommendation={event.copy_recommendation}
+                      />
+                    )}
                     <ReconciliationStatus
                       status={event.reconciliation_status}
                     />
@@ -1236,6 +1342,150 @@ function AddWalletModal({
                 : mode === "self"
                   ? "保存并同步"
                   : "开始监控"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function CopySettingsModal({
+  open,
+  settings,
+  initialError,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  settings: GlobalSettings;
+  initialError: string | null;
+  onClose: () => void;
+  onSaved: (settings: GlobalSettings) => void;
+}) {
+  const [ratio, setRatio] = useState(
+    formatRatioSetting(settings.copy_ratio_percent),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(initialError);
+  const ratioInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    ratioInput.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submitting) onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, open, submitting]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const parsed = Number(ratio);
+    if (
+      !Number.isFinite(parsed) ||
+      parsed < 1 ||
+      parsed > 100 ||
+      !/^\d+(?:\.\d{1,2})?$/.test(ratio.trim())
+    ) {
+      setError("请输入 1–100 之间、最多两位小数的比例");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await request<GlobalSettings>("/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({ copy_ratio_percent: parsed }),
+      });
+      onSaved(updated);
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "保存跟单比例失败",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="modalBackdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !submitting) onClose();
+      }}
+    >
+      <section
+        className="modal copySettingsModal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="copy-settings-title"
+      >
+        <div className="modalHeader">
+          <div>
+            <span className="eyebrow">全局计算口径</span>
+            <h2 id="copy-settings-title">设置跟单比例</h2>
+          </div>
+          <button
+            className="closeButton"
+            type="button"
+            aria-label="关闭"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            ×
+          </button>
+        </div>
+        <form onSubmit={submit}>
+          <label className="field ratioField" htmlFor="copy-ratio-percent">
+            <span>全局跟单比例</span>
+            <div>
+              <input
+                id="copy-ratio-percent"
+                aria-label="全局跟单比例"
+                ref={ratioInput}
+                type="number"
+                min="1"
+                max="100"
+                step="0.01"
+                inputMode="decimal"
+                value={ratio}
+                onChange={(event) => setRatio(event.target.value)}
+                disabled={submitting}
+              />
+              <b>%</b>
+            </div>
+          </label>
+          <p className="privacyNote">
+            对方每次净买入或卖出 100 shares 时，按当前比例计算你的建议份额。这里只提供只读建议，不会自动下单。
+          </p>
+          {error && (
+            <p className="formError" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="modalActions">
+            <button
+              className="secondaryButton"
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+            >
+              取消
+            </button>
+            <button
+              className="primaryButton"
+              type="submit"
+              disabled={submitting}
+            >
+              {submitting ? "正在保存…" : "保存比例"}
             </button>
           </div>
         </form>
@@ -1647,6 +1897,12 @@ function OverlapActivity({
                     （{formatShares(alert.delta_size)} shares）
                   </small>
                 </p>
+                {alert.copy_recommendation && (
+                  <CopyRecommendationView
+                    recommendation={alert.copy_recommendation}
+                    compact
+                  />
+                )}
               </div>
               <div className="activityMeta">
                 <time dateTime={alert.detected_at}>
@@ -1673,6 +1929,13 @@ function OverlapActivity({
 }
 
 export default function Home() {
+  const [globalSettings, setGlobalSettings] = useState<GlobalSettings>({
+    copy_ratio_percent: 10,
+  });
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsLoadError, setSettingsLoadError] = useState<string | null>(
+    null,
+  );
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [myWallet, setMyWallet] = useState<Wallet | null>(null);
   const [activeWalletId, setActiveWalletId] = useState<string | null>(null);
@@ -1729,6 +1992,20 @@ export default function Home() {
   useEffect(() => {
     myWalletRef.current = myWallet;
   }, [myWallet]);
+
+  const loadGlobalSettings = useCallback(async () => {
+    try {
+      const loaded = await request<GlobalSettings>("/api/settings");
+      setGlobalSettings(loaded);
+      setSettingsLoadError(null);
+    } catch (settingsError) {
+      setSettingsLoadError(
+        settingsError instanceof Error
+          ? settingsError.message
+          : "无法读取跟单比例",
+      );
+    }
+  }, []);
 
   const loadWallets = useCallback(async () => {
     try {
@@ -1881,6 +2158,11 @@ export default function Home() {
     const timer = window.setTimeout(() => void loadWallets(), 0);
     return () => window.clearTimeout(timer);
   }, [loadWallets]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadGlobalSettings(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadGlobalSettings]);
 
   useEffect(() => {
     if (!activeWalletId) return;
@@ -2131,6 +2413,14 @@ export default function Home() {
     void loadWallets();
   }
 
+  function copySettingsSaved(settings: GlobalSettings) {
+    setGlobalSettings(settings);
+    setSettingsLoadError(null);
+    setSettingsModalOpen(false);
+    const walletId = activeWalletRef.current;
+    if (walletId) void loadContent(walletId, true);
+  }
+
   async function deleteObservedWallet(wallet: Wallet) {
     await request<void>(
       `/api/wallets/${encodeURIComponent(String(wallet.id))}`,
@@ -2258,6 +2548,20 @@ export default function Home() {
         </div>
         <div className="headerActions">
           <span className="readOnlyNote">只读监控 · 不连接钱包</span>
+          <button
+            className="copyRatioButton"
+            type="button"
+            onClick={() => setSettingsModalOpen(true)}
+            aria-label={`跟单比例 ${formatRatioSetting(
+              globalSettings.copy_ratio_percent,
+            )}%，修改`}
+          >
+            <span>跟单比例</span>
+            <strong>
+              {formatRatioSetting(globalSettings.copy_ratio_percent)}%
+            </strong>
+            <small>全局</small>
+          </button>
           <button
             className={`myWalletButton ${myWallet ? "configured" : ""}`}
             type="button"
@@ -2556,6 +2860,7 @@ export default function Home() {
                   positions={displayedPositions}
                   overlaps={overlapMap}
                   changeAlerts={unreadChangeAlerts}
+                  copyRatioPercent={globalSettings.copy_ratio_percent}
                   onOpenComparison={(assetId) => void loadComparison(assetId)}
                   onReadAlert={(alertId) =>
                     void markOverlapAlertRead(alertId)
@@ -2611,14 +2916,30 @@ export default function Home() {
       </footer>
 
       <AddWalletModal
-        key={walletModalMode ?? "closed"}
+        key={`wallet-${walletModalMode ?? "closed"}`}
         open={walletModalMode !== null}
         mode={walletModalMode ?? "tracked"}
         onClose={() => setWalletModalMode(null)}
         onCreated={walletCreated}
       />
+      <CopySettingsModal
+        key={
+          settingsModalOpen
+            ? `copy-open-${globalSettings.copy_ratio_percent}`
+            : "copy-closed"
+        }
+        open={settingsModalOpen}
+        settings={globalSettings}
+        initialError={settingsLoadError}
+        onClose={() => setSettingsModalOpen(false)}
+        onSaved={copySettingsSaved}
+      />
       <DeleteWalletModal
-        key={walletPendingDeletion ? String(walletPendingDeletion.id) : "closed"}
+        key={
+          walletPendingDeletion
+            ? `delete-${String(walletPendingDeletion.id)}`
+            : "delete-closed"
+        }
         wallet={walletPendingDeletion}
         onClose={() => setWalletPendingDeletion(null)}
         onConfirm={deleteObservedWallet}

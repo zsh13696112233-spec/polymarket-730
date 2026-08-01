@@ -19,6 +19,77 @@ type GlobalSettings = {
   copy_ratio_percent: Numeric;
 };
 
+type ExecutionAccount = {
+  wallet_id: number | string;
+  signer_address: string | null;
+  funder_address?: string | null;
+  signature_type?: number;
+  status: string;
+  credentials_configured: boolean;
+  budget_usdc: Numeric;
+  cash_reserve_usdc: Numeric;
+  collateral_balance: Numeric | null;
+  last_error: string | null;
+};
+
+type CopySubscription = {
+  id: number | string;
+  tracked_wallet_id: number | string;
+  tracked_wallet_label: string | null;
+  mode: "paper" | "live";
+  state:
+    | "active"
+    | "paused"
+    | "exit_only"
+    | "closing"
+    | "disabled"
+    | "error";
+  copy_ratio_percent: Numeric;
+  base_bucket_cap_usdc: Numeric;
+  strong_threshold_usdc: Numeric;
+  strong_bucket_cap_usdc: Numeric;
+  event_cap_usdc: Numeric;
+  settlement_day_cap_usdc: Numeric;
+  total_exposure_cap_usdc: Numeric;
+  daily_buy_limit_usdc: Numeric;
+  daily_loss_limit_usdc: Numeric;
+  price_tolerance_ticks: number;
+  price_tolerance_percent: Numeric;
+  order_ttl_minutes: number;
+  close_buffer_minutes: number;
+  open_exposure_usdc: Numeric;
+  daily_bought_usdc: Numeric;
+  daily_realized_pnl: Numeric;
+  last_error: string | null;
+};
+
+type CopyPosition = {
+  id: number | string;
+  title: string;
+  outcome: string;
+  attributed_size: Numeric;
+  attributed_cost: Numeric;
+  realized_pnl: Numeric;
+  status: string;
+};
+
+type CopyOrder = {
+  id: number | string;
+  side: "BUY" | "SELL";
+  requested_usdc: Numeric;
+  filled_usdc: Numeric;
+  status: string;
+  reason: string | null;
+  created_at: string;
+};
+
+type CopyDashboard = {
+  account: ExecutionAccount | null;
+  subscription: CopySubscription | null;
+  positions: CopyPosition[];
+  orders: CopyOrder[];
+};
+
 type CopyRecommendation = {
   action: "buy" | "sell";
   ratio_percent: Numeric;
@@ -1928,11 +1999,305 @@ function OverlapActivity({
   );
 }
 
+const copyStateLabels: Record<CopySubscription["state"], string> = {
+  active: "运行中",
+  paused: "已暂停",
+  exit_only: "仅退出",
+  closing: "清仓中",
+  disabled: "未启动",
+  error: "已熔断",
+};
+
+function CopyTradingPanel({
+  dashboard,
+  error,
+  busy,
+  onConfigure,
+  onAction,
+  onMode,
+  onSetupAccount,
+  onVerifyAccount,
+}: {
+  dashboard: CopyDashboard | null;
+  error: string | null;
+  busy: boolean;
+  onConfigure: () => void;
+  onAction: (action: string) => void;
+  onMode: (mode: "paper" | "live") => void;
+  onSetupAccount: () => void;
+  onVerifyAccount: () => void;
+}) {
+  const subscription = dashboard?.subscription ?? null;
+  const account = dashboard?.account ?? null;
+  const openPositions =
+    dashboard?.positions.filter(
+      (position) => toNumber(position.attributed_size) > 0,
+    ).length ?? 0;
+
+  return (
+    <section className="copyTradingPanel" aria-label="自动跟单">
+      <div className="copyTradingLead">
+        <span className="eyebrow">单执行钱包 · V1</span>
+        <h2>自动跟单</h2>
+        <p>
+          只跟随极端温度桶；买入按成交金额缩放，减仓按对方仓位比例同步。不会补历史单。
+        </p>
+      </div>
+      {!subscription ? (
+        <div className="copyTradingEmpty">
+          <strong>当前钱包尚未配置</strong>
+          <span>默认模拟盘、2% 比例、单桶 $20 / 强信号 $40。</span>
+          <button className="primaryButton" type="button" onClick={onConfigure}>
+            配置自动跟单
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="copyTradingMetrics">
+            <div>
+              <span>模式 / 状态</span>
+              <strong>
+                {subscription.mode === "paper" ? "模拟盘" : "实盘"} ·{" "}
+                {copyStateLabels[subscription.state]}
+              </strong>
+            </div>
+            <div>
+              <span>当前归因敞口</span>
+              <strong>{formatMoney(subscription.open_exposure_usdc)}</strong>
+            </div>
+            <div>
+              <span>今日买入</span>
+              <strong>
+                {formatMoney(subscription.daily_bought_usdc)} /{" "}
+                {formatMoney(subscription.daily_buy_limit_usdc)}
+              </strong>
+            </div>
+            <div>
+              <span>归因持仓</span>
+              <strong>{openPositions} 个</strong>
+            </div>
+          </div>
+          <div className="copyTradingActions">
+            <button type="button" onClick={onConfigure} disabled={busy}>
+              风控设置
+            </button>
+            {subscription.state === "active" ? (
+              <button type="button" onClick={() => onAction("pause")} disabled={busy}>
+                暂停并撤单
+              </button>
+            ) : (
+              <button
+                className="primaryButton"
+                type="button"
+                onClick={() =>
+                  onAction(subscription.state === "disabled" ? "activate" : "resume")
+                }
+                disabled={busy || subscription.state === "closing"}
+              >
+                {busy ? "处理中…" : "启动跟单"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onAction("exit_only")}
+              disabled={busy || subscription.state === "closing"}
+            >
+              仅退出
+            </button>
+            <button
+              className="dangerButton"
+              type="button"
+              onClick={() => onAction("close")}
+              disabled={busy || subscription.state === "closing"}
+            >
+              关闭并清仓
+            </button>
+            <button
+              type="button"
+              onClick={() => onMode(subscription.mode === "paper" ? "live" : "paper")}
+              disabled={busy}
+            >
+              切换{subscription.mode === "paper" ? "实盘" : "模拟盘"}
+            </button>
+          </div>
+        </>
+      )}
+      <div className="executionAccountRow">
+        <div>
+          <span>执行钱包</span>
+          <strong>
+            {!account
+              ? "尚未配置"
+              : account.status === "ready"
+                ? `已验证 · ${formatMoney(account.collateral_balance)}`
+                : account.credentials_configured
+                  ? "密钥已配置，等待余额验证"
+                  : "等待导入钥匙串密钥"}
+          </strong>
+        </div>
+        {!account ? (
+          <button type="button" onClick={onSetupAccount} disabled={busy}>
+            绑定我的钱包
+          </button>
+        ) : account.status !== "ready" ? (
+          <button type="button" onClick={onVerifyAccount} disabled={busy}>
+            验证密钥与余额
+          </button>
+        ) : null}
+      </div>
+      {account && !account.credentials_configured && account.signer_address && (
+        <p className="keychainHint">
+          在终端运行：
+          <code>
+            uv run python -m backend.copy_cli set-key --account {account.signer_address}
+          </code>
+        </p>
+      )}
+      {account && account.credentials_configured && account.signer_address && (
+        <p className="keychainHint">
+          代理 / Safe 钱包自动赎回还需 Builder 凭证：
+          <code>
+            uv run python -m backend.copy_cli set-builder-creds --account {account.signer_address}
+          </code>
+        </p>
+      )}
+      {(error || subscription?.last_error || account?.last_error) && (
+        <p className="copyTradingError" role="alert">
+          {error || subscription?.last_error || account?.last_error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function CopyTradingModal({
+  open,
+  trackedWalletId,
+  subscription,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  trackedWalletId: string | null;
+  subscription: CopySubscription | null;
+  onClose: () => void;
+  onSaved: (subscription: CopySubscription) => void;
+}) {
+  const defaults = {
+    copy_ratio_percent: String(subscription?.copy_ratio_percent ?? 2),
+    base_bucket_cap_usdc: String(subscription?.base_bucket_cap_usdc ?? 20),
+    strong_threshold_usdc: String(subscription?.strong_threshold_usdc ?? 1000),
+    strong_bucket_cap_usdc: String(subscription?.strong_bucket_cap_usdc ?? 40),
+    event_cap_usdc: String(subscription?.event_cap_usdc ?? 60),
+    settlement_day_cap_usdc: String(subscription?.settlement_day_cap_usdc ?? 100),
+    total_exposure_cap_usdc: String(subscription?.total_exposure_cap_usdc ?? 160),
+    daily_buy_limit_usdc: String(subscription?.daily_buy_limit_usdc ?? 80),
+    daily_loss_limit_usdc: String(subscription?.daily_loss_limit_usdc ?? 40),
+  };
+  const [values, setValues] = useState(defaults);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) return null;
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!trackedWalletId) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const payload = Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [key, Number(value)]),
+      );
+      const updated = await request<CopySubscription>(
+        subscription
+          ? `/api/copy-trading/subscriptions/${subscription.id}`
+          : "/api/copy-trading/subscriptions",
+        {
+          method: subscription ? "PUT" : "POST",
+          body: JSON.stringify(
+            subscription
+              ? payload
+              : { ...payload, tracked_wallet_id: Number(trackedWalletId) },
+          ),
+        },
+      );
+      onSaved(updated);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "无法保存跟单设置");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const fields: Array<[keyof typeof values, string, string]> = [
+    ["copy_ratio_percent", "跟单比例", "%"],
+    ["base_bucket_cap_usdc", "普通温度桶上限", "USDC"],
+    ["strong_threshold_usdc", "强信号持仓成本阈值", "USDC"],
+    ["strong_bucket_cap_usdc", "强信号温度桶上限", "USDC"],
+    ["event_cap_usdc", "单事件上限", "USDC"],
+    ["settlement_day_cap_usdc", "单结算日上限", "USDC"],
+    ["total_exposure_cap_usdc", "总敞口上限", "USDC"],
+    ["daily_buy_limit_usdc", "每日买入上限", "USDC"],
+    ["daily_loss_limit_usdc", "每日已实现亏损熔断", "USDC"],
+  ];
+
+  return (
+    <div className="modalBackdrop" role="presentation">
+      <section className="modal copyTradingModal" role="dialog" aria-modal="true">
+        <div className="modalHeader">
+          <div>
+            <span className="eyebrow">按观察钱包独立配置</span>
+            <h2>{subscription ? "修改自动跟单风控" : "配置自动跟单"}</h2>
+          </div>
+          <button className="closeButton" type="button" onClick={onClose}>×</button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="copyTradingFormGrid">
+            {fields.map(([key, label, unit]) => (
+              <label className="field" key={key}>
+                <span>{label}</span>
+                <div className="unitInput">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={values[key]}
+                    onChange={(event) =>
+                      setValues((current) => ({ ...current, [key]: event.target.value }))
+                    }
+                    disabled={submitting}
+                  />
+                  <b>{unit}</b>
+                </div>
+              </label>
+            ))}
+          </div>
+          <p className="privacyNote">
+            买单最长保留 6 小时，结算前 15 分钟撤单；买卖价格容忍度取 2 ticks 与 3% 中更小者。
+          </p>
+          {error && <p className="formError" role="alert">{error}</p>}
+          <div className="modalActions">
+            <button className="secondaryButton" type="button" onClick={onClose}>取消</button>
+            <button className="primaryButton" type="submit" disabled={submitting}>
+              {submitting ? "正在保存…" : "保存风控"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 export default function Home() {
   const [globalSettings, setGlobalSettings] = useState<GlobalSettings>({
     copy_ratio_percent: 10,
   });
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [copyTradingModalOpen, setCopyTradingModalOpen] = useState(false);
+  const [copyDashboard, setCopyDashboard] = useState<CopyDashboard | null>(null);
+  const [copyTradingError, setCopyTradingError] = useState<string | null>(null);
+  const [copyTradingBusy, setCopyTradingBusy] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(
     null,
   );
@@ -2041,6 +2406,24 @@ export default function Home() {
       return [];
     } finally {
       setLoadingWallets(false);
+    }
+  }, []);
+
+  const loadCopyDashboard = useCallback(async (walletId: string) => {
+    try {
+      const dashboard = await request<CopyDashboard>(
+        `/api/copy-trading/dashboard?tracked_wallet_id=${encodeURIComponent(walletId)}`,
+      );
+      if (activeWalletRef.current !== walletId) return;
+      setCopyDashboard(dashboard);
+      setCopyTradingError(null);
+    } catch (dashboardError) {
+      if (activeWalletRef.current !== walletId) return;
+      setCopyTradingError(
+        dashboardError instanceof Error
+          ? dashboardError.message
+          : "无法读取自动跟单状态",
+      );
     }
   }, []);
 
@@ -2167,11 +2550,14 @@ export default function Home() {
   useEffect(() => {
     if (!activeWalletId) return;
     const timer = window.setTimeout(
-      () => void loadContent(activeWalletId),
+      () => {
+        void loadContent(activeWalletId);
+        void loadCopyDashboard(activeWalletId);
+      },
       0,
     );
     return () => window.clearTimeout(timer);
-  }, [activeWalletId, loadContent]);
+  }, [activeWalletId, loadContent, loadCopyDashboard]);
 
   useEffect(() => {
     let refreshTimer: number | undefined;
@@ -2221,10 +2607,13 @@ export default function Home() {
     const fallbackRefresh = window.setInterval(() => {
       void loadWallets();
       const walletId = activeWalletRef.current;
-      if (walletId) void loadContent(walletId, true);
+      if (walletId) {
+        void loadContent(walletId, true);
+        void loadCopyDashboard(walletId);
+      }
     }, 30_000);
     return () => window.clearInterval(fallbackRefresh);
-  }, [loadContent, loadWallets]);
+  }, [loadContent, loadCopyDashboard, loadWallets]);
 
   const activeWallet = wallets.find(
     (wallet) => String(wallet.id) === activeWalletId,
@@ -2301,6 +2690,7 @@ export default function Home() {
       );
       await Promise.all([
         loadContent(activeWalletId, true),
+        loadCopyDashboard(activeWalletId),
         loadWallets(),
       ]);
     } catch (refreshError) {
@@ -2350,6 +2740,8 @@ export default function Home() {
     setOverlapAlerts([]);
     setUnreadAlertCount(0);
     setAlertError(null);
+    setCopyDashboard(null);
+    setCopyTradingError(null);
     setBusyAlertIds(new Set());
     setMarkingAllAlerts(false);
     setEvents([]);
@@ -2534,6 +2926,146 @@ export default function Home() {
     setComparisonLoading(false);
   }
 
+  async function setupExecutionAccount() {
+    if (!myWalletRef.current) {
+      setCopyTradingError("请先在右上角设置“我的钱包”");
+      return;
+    }
+    setCopyTradingBusy(true);
+    setCopyTradingError(null);
+    try {
+      const signerAddress = window.prompt(
+        "签名钱包地址（持有私钥的 EOA）",
+        myWalletRef.current.address,
+      );
+      if (!signerAddress) return;
+      const funderAddress = window.prompt(
+        "资金钱包地址（Polymarket Proxy / Safe；EOA 模式填同一地址）",
+        myWalletRef.current.proxy_wallet || signerAddress,
+      );
+      if (!funderAddress) return;
+      const suggestedType =
+        signerAddress.toLowerCase() === funderAddress.toLowerCase() ? "0" : "2";
+      const signatureType = window.prompt(
+        "签名类型：0=EOA，1=Magic/Proxy，2=Safe",
+        suggestedType,
+      );
+      if (!signatureType || !["0", "1", "2"].includes(signatureType)) {
+        throw new Error("签名类型只能是 0、1 或 2");
+      }
+      await request<ExecutionAccount>("/api/copy-trading/account", {
+        method: "PUT",
+        body: JSON.stringify({
+          wallet_id: Number(myWalletRef.current.id),
+          signer_address: signerAddress,
+          funder_address: funderAddress,
+          signature_type: Number(signatureType),
+        }),
+      });
+      if (activeWalletRef.current) {
+        await loadCopyDashboard(activeWalletRef.current);
+      }
+    } catch (accountError) {
+      setCopyTradingError(
+        accountError instanceof Error ? accountError.message : "无法配置执行钱包",
+      );
+    } finally {
+      setCopyTradingBusy(false);
+    }
+  }
+
+  async function verifyExecutionAccount() {
+    setCopyTradingBusy(true);
+    setCopyTradingError(null);
+    try {
+      await request<ExecutionAccount>("/api/copy-trading/account/verify", {
+        method: "POST",
+      });
+      if (activeWalletRef.current) {
+        await loadCopyDashboard(activeWalletRef.current);
+      }
+    } catch (accountError) {
+      setCopyTradingError(
+        accountError instanceof Error ? accountError.message : "执行钱包验证失败",
+      );
+    } finally {
+      setCopyTradingBusy(false);
+    }
+  }
+
+  async function copyTradingAction(action: string) {
+    const subscription = copyDashboard?.subscription;
+    if (!subscription) return;
+    if (
+      action === "close" &&
+      !window.confirm("确认关闭策略并卖出全部自动跟单归因持仓？")
+    ) {
+      return;
+    }
+    setCopyTradingBusy(true);
+    setCopyTradingError(null);
+    try {
+      const confirmLive = subscription.mode === "live" &&
+        (action === "activate" || action === "resume");
+      if (
+        confirmLive &&
+        !window.confirm("确认启动实盘自动下单？实盘可能产生实际亏损。")
+      ) {
+        return;
+      }
+      await request<CopySubscription>(
+        `/api/copy-trading/subscriptions/${subscription.id}/action`,
+        {
+          method: "POST",
+          body: JSON.stringify({ action, confirm_live: confirmLive }),
+        },
+      );
+      if (activeWalletRef.current) {
+        await loadCopyDashboard(activeWalletRef.current);
+      }
+    } catch (actionError) {
+      setCopyTradingError(
+        actionError instanceof Error ? actionError.message : "策略操作失败",
+      );
+    } finally {
+      setCopyTradingBusy(false);
+    }
+  }
+
+  async function switchCopyMode(mode: "paper" | "live") {
+    const subscription = copyDashboard?.subscription;
+    if (!subscription) return;
+    const live = mode === "live";
+    if (
+      live &&
+      !window.confirm(
+        "确认切换实盘？模拟持仓会归档，系统只跟随确认后的新信号，不会补单。",
+      )
+    ) {
+      return;
+    }
+    setCopyTradingBusy(true);
+    setCopyTradingError(null);
+    try {
+      await request<CopySubscription>(
+        `/api/copy-trading/subscriptions/${subscription.id}/mode`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ mode, confirm_live: live }),
+        },
+      );
+      if (activeWalletRef.current) {
+        await loadCopyDashboard(activeWalletRef.current);
+      }
+    } catch (modeError) {
+      setCopyTradingError(
+        modeError instanceof Error ? modeError.message : "无法切换跟单模式",
+      );
+    } finally {
+      setCopyTradingBusy(false);
+    }
+  }
+
   return (
     <main className="appShell">
       <header className="appHeader">
@@ -2547,7 +3079,7 @@ export default function Home() {
           </div>
         </div>
         <div className="headerActions">
-          <span className="readOnlyNote">只读监控 · 不连接钱包</span>
+          <span className="readOnlyNote">公开监控 · 自动跟单独立风控</span>
           <button
             className="copyRatioButton"
             type="button"
@@ -2695,6 +3227,17 @@ export default function Home() {
               </button>
             </div>
           )}
+
+          <CopyTradingPanel
+            dashboard={copyDashboard}
+            error={copyTradingError}
+            busy={copyTradingBusy}
+            onConfigure={() => setCopyTradingModalOpen(true)}
+            onAction={(action) => void copyTradingAction(action)}
+            onMode={(mode) => void switchCopyMode(mode)}
+            onSetupAccount={() => void setupExecutionAccount()}
+            onVerifyAccount={() => void verifyExecutionAccount()}
+          />
 
           <section className="summaryGrid" aria-label="钱包总览">
             <article className="summaryCard primaryMetric">
@@ -2912,7 +3455,7 @@ export default function Home() {
         <span aria-hidden="true">·</span>
         <span>挂单不会产生消息</span>
         <span aria-hidden="true">·</span>
-        <span>本机只读运行</span>
+        <span>本机运行 · 实盘密钥仅存钥匙串</span>
       </footer>
 
       <AddWalletModal
@@ -2933,6 +3476,27 @@ export default function Home() {
         initialError={settingsLoadError}
         onClose={() => setSettingsModalOpen(false)}
         onSaved={copySettingsSaved}
+      />
+      <CopyTradingModal
+        key={
+          copyTradingModalOpen
+            ? `auto-copy-${copyDashboard?.subscription?.id ?? activeWalletId}`
+            : "auto-copy-closed"
+        }
+        open={copyTradingModalOpen}
+        trackedWalletId={activeWalletId}
+        subscription={copyDashboard?.subscription ?? null}
+        onClose={() => setCopyTradingModalOpen(false)}
+        onSaved={(subscription) => {
+          setCopyTradingModalOpen(false);
+          setCopyTradingError(null);
+          setCopyDashboard((current) =>
+            current ? { ...current, subscription } : current,
+          );
+          if (activeWalletRef.current) {
+            void loadCopyDashboard(activeWalletRef.current);
+          }
+        }}
       />
       <DeleteWalletModal
         key={

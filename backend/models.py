@@ -79,6 +79,284 @@ class WatchedWallet(Base):
     )
 
 
+class ExecutionAccount(Base):
+    __tablename__ = "execution_accounts"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_execution_accounts_singleton"),
+        CheckConstraint("budget_usdc >= 0", name="ck_execution_accounts_budget"),
+        CheckConstraint("cash_reserve_usdc >= 0", name="ck_execution_accounts_reserve"),
+        CheckConstraint(
+            "max_total_exposure_usdc >= 0",
+            name="ck_execution_accounts_total_exposure",
+        ),
+        CheckConstraint(
+            "daily_buy_limit_usdc >= 0",
+            name="ck_execution_accounts_daily_buy_limit",
+        ),
+        CheckConstraint(
+            "daily_loss_limit_usdc >= 0",
+            name="ck_execution_accounts_daily_loss_limit",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(
+        ForeignKey("watched_wallets.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    signer_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    funder_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    signature_type: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    keychain_service: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    keychain_account: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="unconfigured")
+    budget_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("400")
+    )
+    cash_reserve_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("240")
+    )
+    max_total_exposure_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("160")
+    )
+    daily_buy_limit_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("80")
+    )
+    daily_loss_limit_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("40")
+    )
+    auto_redeem: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    collateral_balance: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    last_balance_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    wallet: Mapped[WatchedWallet] = relationship()
+
+
+class CopySubscription(Base):
+    __tablename__ = "copy_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("tracked_wallet_id", name="uq_copy_subscriptions_tracked_wallet"),
+        Index(
+            "uq_copy_subscriptions_single_live",
+            "mode",
+            unique=True,
+            sqlite_where=text("mode = 'live' AND state != 'disabled'"),
+        ),
+        CheckConstraint(
+            "copy_ratio_percent > 0 AND copy_ratio_percent <= 100",
+            name="ck_copy_subscriptions_ratio",
+        ),
+        CheckConstraint(
+            "base_bucket_cap_usdc <= strong_bucket_cap_usdc",
+            name="ck_copy_subscriptions_bucket_caps",
+        ),
+        CheckConstraint(
+            "strong_bucket_cap_usdc <= event_cap_usdc",
+            name="ck_copy_subscriptions_event_cap",
+        ),
+        CheckConstraint(
+            "event_cap_usdc <= settlement_day_cap_usdc",
+            name="ck_copy_subscriptions_day_cap",
+        ),
+        CheckConstraint(
+            "settlement_day_cap_usdc <= total_exposure_cap_usdc",
+            name="ck_copy_subscriptions_total_cap",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tracked_wallet_id: Mapped[int] = mapped_column(
+        ForeignKey("watched_wallets.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="paper")
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="disabled")
+    market_scope: Mapped[str] = mapped_column(String(30), nullable=False, default="temperature")
+    copy_ratio_percent: Mapped[Decimal] = mapped_column(
+        PERCENT_TYPE, nullable=False, default=Decimal("2")
+    )
+    base_bucket_cap_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("20")
+    )
+    strong_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("1000")
+    )
+    strong_bucket_cap_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("40")
+    )
+    event_cap_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("60")
+    )
+    settlement_day_cap_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("100")
+    )
+    total_exposure_cap_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("160")
+    )
+    daily_buy_limit_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("80")
+    )
+    daily_loss_limit_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("40")
+    )
+    price_tolerance_ticks: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    price_tolerance_percent: Mapped[Decimal] = mapped_column(
+        PERCENT_TYPE, nullable=False, default=Decimal("3")
+    )
+    order_ttl_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=360)
+    close_buffer_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    baseline_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_processed_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    tracked_wallet: Mapped[WatchedWallet] = relationship()
+    positions: Mapped[list[CopyPosition]] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan"
+    )
+    orders: Mapped[list[CopyOrder]] = relationship(back_populates="subscription")
+
+
+class CopyPosition(Base):
+    __tablename__ = "copy_positions"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "asset_id", name="uq_copy_positions_asset"),
+        Index("ix_copy_positions_subscription_event", "subscription_id", "event_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("copy_subscriptions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(200), nullable=False)
+    outcome_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    neg_risk: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    event_slug: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    settlement_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    attributed_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    attributed_cost: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    reserved_buy_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    pending_target_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    dust_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    leader_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    leader_remaining_cost: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    realized_pnl: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    subscription: Mapped[CopySubscription] = relationship(back_populates="positions")
+
+
+class CopyOrder(Base):
+    __tablename__ = "copy_orders"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_copy_orders_idempotency"),
+        Index("ix_copy_orders_subscription_created", "subscription_id", "created_at"),
+        Index("ix_copy_orders_status_expires", "status", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("copy_subscriptions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    copy_position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("copy_positions.id", ondelete="SET NULL"), nullable=True
+    )
+    leader_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("position_events.id", ondelete="SET NULL"), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    order_type: Mapped[str] = mapped_column(String(10), nullable=False, default="GTD")
+    requested_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    requested_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    limit_price: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    filled_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    filled_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    fee_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="planned")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_order_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    subscription: Mapped[CopySubscription] = relationship(back_populates="orders")
+    fills: Mapped[list[CopyFill]] = relationship(
+        back_populates="order", cascade="all, delete-orphan"
+    )
+
+
+class CopyFill(Base):
+    __tablename__ = "copy_fills"
+    __table_args__ = (UniqueConstraint("fingerprint", name="uq_copy_fills_fingerprint"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("copy_orders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    price: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    fee_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    order: Mapped[CopyOrder] = relationship(back_populates="fills")
+
+
+class CopyLedger(Base):
+    __tablename__ = "copy_ledger"
+    __table_args__ = (Index("ix_copy_ledger_subscription_time", "subscription_id", "timestamp"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("copy_subscriptions.id", ondelete="RESTRICT"), nullable=False
+    )
+    copy_position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("copy_positions.id", ondelete="SET NULL"), nullable=True
+    )
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("copy_orders.id", ondelete="SET NULL"), nullable=True
+    )
+    type: Mapped[str] = mapped_column(String(30), nullable=False)
+    amount_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    realized_pnl: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class CopyRedemption(Base):
+    __tablename__ = "copy_redemptions"
+    __table_args__ = (UniqueConstraint("copy_position_id", name="uq_copy_redemptions_position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    copy_position_id: Mapped[int] = mapped_column(
+        ForeignKey("copy_positions.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    payout_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    transaction_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class CurrentPosition(Base):
     __tablename__ = "current_positions"
     __table_args__ = (

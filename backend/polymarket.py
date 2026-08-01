@@ -95,6 +95,30 @@ class SettlementEvidence:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class OrderBookLevel:
+    price: Decimal
+    size: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class OrderBookSnapshot:
+    asset_id: str
+    bids: tuple[OrderBookLevel, ...]
+    asks: tuple[OrderBookLevel, ...]
+    tick_size: Decimal
+    min_order_size: Decimal
+    neg_risk: bool
+
+    @property
+    def best_bid(self) -> Decimal | None:
+        return max((level.price for level in self.bids), default=None)
+
+    @property
+    def best_ask(self) -> Decimal | None:
+        return min((level.price for level in self.asks), default=None)
+
+
 def parse_wallet_input(value: str) -> str:
     candidate = value.strip()
     if ADDRESS_RE.fullmatch(candidate):
@@ -149,11 +173,13 @@ class PolymarketClient:
         *,
         data_api_url: str,
         gamma_api_url: str,
+        clob_api_url: str = "https://clob.polymarket.com",
         timeout: float,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.data_api_url = data_api_url.rstrip("/")
         self.gamma_api_url = gamma_api_url.rstrip("/")
+        self.clob_api_url = clob_api_url.rstrip("/")
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
             transport=transport,
@@ -185,6 +211,39 @@ class PolymarketClient:
             return response.json()
         except ValueError as error:
             raise PolymarketAPIError("Polymarket 接口返回了无效 JSON") from error
+
+    async def fetch_order_book(self, asset_id: str) -> OrderBookSnapshot:
+        payload = await self._get_json(
+            f"{self.clob_api_url}/book",
+            params={"token_id": asset_id},
+        )
+        if not isinstance(payload, dict):
+            raise PolymarketAPIError("订单簿接口返回格式无效")
+
+        def levels(key: str) -> tuple[OrderBookLevel, ...]:
+            raw_levels = payload.get(key)
+            if not isinstance(raw_levels, list):
+                return ()
+            parsed: list[OrderBookLevel] = []
+            for item in raw_levels:
+                if not isinstance(item, dict):
+                    continue
+                price = to_decimal(item.get("price"))
+                size = to_decimal(item.get("size"))
+                if ZERO < price < Decimal("1") and size > ZERO:
+                    parsed.append(OrderBookLevel(price=price, size=size))
+            return tuple(parsed)
+
+        tick_size = to_decimal(payload.get("tick_size"), default=Decimal("0.01"))
+        min_order_size = to_decimal(payload.get("min_order_size"), default=Decimal("5"))
+        return OrderBookSnapshot(
+            asset_id=str(payload.get("asset_id") or payload.get("market") or asset_id),
+            bids=levels("bids"),
+            asks=levels("asks"),
+            tick_size=tick_size if tick_size > ZERO else Decimal("0.01"),
+            min_order_size=min_order_size if min_order_size > ZERO else Decimal("5"),
+            neg_risk=bool(payload.get("neg_risk", False)),
+        )
 
     @staticmethod
     def _parse_retry_after(raw: str | None) -> float | None:

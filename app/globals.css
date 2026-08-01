@@ -2718,6 +2718,186 @@ summary:focus-visible {
   }
 }
 
+.copyTradingPanel {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.8fr) minmax(420px, 2fr);
+  gap: 22px;
+  margin-bottom: 18px;
+  padding: 22px;
+  border: 1px solid rgba(31, 41, 55, 0.12);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 0 0, rgba(24, 163, 127, 0.12), transparent 40%),
+    #fff;
+  box-shadow: 0 12px 32px rgba(25, 35, 45, 0.06);
+}
+
+.copyTradingLead {
+  grid-row: span 3;
+}
+
+.copyTradingLead h2 {
+  margin: 5px 0 8px;
+  font-size: 24px;
+}
+
+.copyTradingLead p,
+.copyTradingEmpty span {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.copyTradingEmpty,
+.executionAccountRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.copyTradingEmpty > span {
+  flex: 1;
+}
+
+.copyTradingMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.copyTradingMetrics > div {
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(246, 248, 247, 0.9);
+}
+
+.copyTradingMetrics span,
+.executionAccountRow span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.copyTradingMetrics strong,
+.executionAccountRow strong {
+  font-size: 13px;
+}
+
+.copyTradingActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.copyTradingActions button,
+.executionAccountRow button {
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--foreground);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.copyTradingActions .primaryButton {
+  border-color: transparent;
+  background: var(--brand);
+  color: white;
+}
+
+.copyTradingActions .dangerButton {
+  color: #b33434;
+}
+
+.executionAccountRow {
+  padding-top: 13px;
+  border-top: 1px solid rgba(31, 41, 55, 0.1);
+}
+
+.keychainHint,
+.copyTradingError {
+  grid-column: 2;
+  margin: 0;
+  font-size: 12px;
+}
+
+.keychainHint code {
+  display: block;
+  overflow-x: auto;
+  margin-top: 7px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #17221f;
+  color: #d9f8ed;
+  white-space: nowrap;
+}
+
+.copyTradingError {
+  color: #b33434;
+}
+
+.copyTradingModal {
+  width: min(780px, calc(100vw - 32px));
+}
+
+.copyTradingFormGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.unitInput {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unitInput input {
+  min-width: 0;
+}
+
+.unitInput b {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .copyTradingPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .copyTradingLead {
+    grid-row: auto;
+  }
+
+  .copyTradingMetrics,
+  .copyTradingFormGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .keychainHint,
+  .copyTradingError {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 560px) {
+  .copyTradingMetrics,
+  .copyTradingFormGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .copyTradingEmpty,
+  .executionAccountRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

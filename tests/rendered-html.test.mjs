@@ -38,7 +38,8 @@ test("server-renders the wallet monitor shell and product metadata", async () =>
   assert.match(html, /仓位观察/);
   assert.match(html, /看清持仓，安静跟随。/);
   assert.match(html, /添加钱包/);
-  assert.match(html, /只读监控/);
+  assert.match(html, /公开监控/);
+  assert.match(html, /自动跟单独立风控/);
   assert.match(html, /property="og:image"/i);
   assert.match(html, /http:\/\/localhost(?::3000)?\/og\.png/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);

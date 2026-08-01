@@ -42,6 +42,172 @@ class GlobalSettingsUpdate(APIModel):
     )
 
 
+class ExecutionAccountRead(APIModel):
+    wallet_id: int
+    signer_address: str | None
+    funder_address: str | None
+    signature_type: int
+    credentials_configured: bool = False
+    status: str
+    budget_usdc: DecimalNumber
+    cash_reserve_usdc: DecimalNumber
+    max_total_exposure_usdc: DecimalNumber
+    daily_buy_limit_usdc: DecimalNumber
+    daily_loss_limit_usdc: DecimalNumber
+    auto_redeem: bool
+    collateral_balance: DecimalNumber | None
+    last_balance_at: datetime | None
+    last_error: str | None
+
+    @field_serializer("last_balance_at", when_used="json")
+    def serialize_account_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class ExecutionAccountUpdate(APIModel):
+    wallet_id: int = Field(gt=0)
+    signer_address: str | None = Field(default=None, max_length=42)
+    funder_address: str | None = Field(default=None, max_length=42)
+    signature_type: int = Field(default=0, ge=0, le=2)
+    budget_usdc: Decimal = Field(default=Decimal("400"), ge=0)
+    cash_reserve_usdc: Decimal = Field(default=Decimal("240"), ge=0)
+    max_total_exposure_usdc: Decimal = Field(default=Decimal("160"), ge=0)
+    daily_buy_limit_usdc: Decimal = Field(default=Decimal("80"), ge=0)
+    daily_loss_limit_usdc: Decimal = Field(default=Decimal("40"), ge=0)
+    auto_redeem: bool = True
+
+
+class CopySubscriptionConfig(APIModel):
+    market_scope: Literal["temperature"] = "temperature"
+    copy_ratio_percent: Decimal = Field(default=Decimal("2"), gt=0, le=100)
+    base_bucket_cap_usdc: Decimal = Field(default=Decimal("20"), ge=0)
+    strong_threshold_usdc: Decimal = Field(default=Decimal("1000"), ge=0)
+    strong_bucket_cap_usdc: Decimal = Field(default=Decimal("40"), ge=0)
+    event_cap_usdc: Decimal = Field(default=Decimal("60"), ge=0)
+    settlement_day_cap_usdc: Decimal = Field(default=Decimal("100"), ge=0)
+    total_exposure_cap_usdc: Decimal = Field(default=Decimal("160"), ge=0)
+    daily_buy_limit_usdc: Decimal = Field(default=Decimal("80"), ge=0)
+    daily_loss_limit_usdc: Decimal = Field(default=Decimal("40"), ge=0)
+    price_tolerance_ticks: int = Field(default=2, ge=0, le=20)
+    price_tolerance_percent: Decimal = Field(default=Decimal("3"), ge=0, le=100)
+    order_ttl_minutes: int = Field(default=360, ge=1, le=1440)
+    close_buffer_minutes: int = Field(default=15, ge=0, le=1440)
+
+
+class CopySubscriptionCreate(CopySubscriptionConfig):
+    tracked_wallet_id: int = Field(gt=0)
+    mode: Literal["paper", "live"] = "paper"
+    confirm_live: bool = False
+
+
+class CopySubscriptionUpdate(CopySubscriptionConfig):
+    pass
+
+
+class CopySubscriptionAction(APIModel):
+    action: Literal["activate", "pause", "resume", "exit_only", "close", "disable"]
+    confirm_live: bool = False
+
+
+class CopySubscriptionModeUpdate(APIModel):
+    mode: Literal["paper", "live"]
+    confirm_live: bool = False
+
+
+class CopySubscriptionRead(APIModel):
+    id: int
+    tracked_wallet_id: int
+    tracked_wallet_label: str | None = None
+    mode: Literal["paper", "live"]
+    state: Literal["active", "paused", "exit_only", "closing", "disabled", "error"]
+    market_scope: str
+    copy_ratio_percent: DecimalNumber
+    base_bucket_cap_usdc: DecimalNumber
+    strong_threshold_usdc: DecimalNumber
+    strong_bucket_cap_usdc: DecimalNumber
+    event_cap_usdc: DecimalNumber
+    settlement_day_cap_usdc: DecimalNumber
+    total_exposure_cap_usdc: DecimalNumber
+    daily_buy_limit_usdc: DecimalNumber
+    daily_loss_limit_usdc: DecimalNumber
+    price_tolerance_ticks: int
+    price_tolerance_percent: DecimalNumber
+    order_ttl_minutes: int
+    close_buffer_minutes: int
+    baseline_event_id: int
+    last_processed_event_id: int
+    enabled_at: datetime | None
+    last_processed_at: datetime | None
+    last_error: str | None
+    open_exposure_usdc: DecimalNumber = Decimal("0")
+    daily_bought_usdc: DecimalNumber = Decimal("0")
+    daily_realized_pnl: DecimalNumber = Decimal("0")
+
+    @field_serializer("enabled_at", "last_processed_at", when_used="json")
+    def serialize_subscription_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class CopyPositionRead(APIModel):
+    id: int
+    subscription_id: int
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    outcome_index: int | None
+    neg_risk: bool | None
+    event_slug: str | None
+    settlement_date: str | None
+    attributed_size: DecimalNumber
+    attributed_cost: DecimalNumber
+    reserved_buy_usdc: DecimalNumber
+    pending_target_usdc: DecimalNumber
+    leader_size: DecimalNumber
+    leader_remaining_cost: DecimalNumber
+    realized_pnl: DecimalNumber
+    status: str
+    updated_at: datetime
+
+    @field_serializer("updated_at", when_used="json")
+    def serialize_position_updated_at(self, value: datetime) -> str:
+        serialized = _as_utc_iso(value)
+        assert serialized is not None
+        return serialized
+
+
+class CopyOrderRead(APIModel):
+    id: int
+    subscription_id: int
+    leader_event_id: int | None
+    asset_id: str
+    side: Literal["BUY", "SELL"]
+    mode: Literal["paper", "live"]
+    order_type: str
+    requested_size: DecimalNumber
+    requested_usdc: DecimalNumber
+    limit_price: DecimalNumber
+    filled_size: DecimalNumber
+    filled_usdc: DecimalNumber
+    fee_usdc: DecimalNumber
+    status: str
+    reason: str | None
+    external_order_id: str | None
+    expires_at: datetime | None
+    created_at: datetime
+
+    @field_serializer("expires_at", "created_at", when_used="json")
+    def serialize_order_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class CopyDashboardRead(APIModel):
+    account: ExecutionAccountRead | None
+    subscription: CopySubscriptionRead | None
+    positions: list[CopyPositionRead]
+    orders: list[CopyOrderRead]
+
+
 class CopyRecommendation(APIModel):
     action: Literal["buy", "sell"]
     ratio_percent: DecimalNumber

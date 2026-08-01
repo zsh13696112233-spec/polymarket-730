@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,9 +16,17 @@ from sqlalchemy.orm import selectinload
 
 from backend.broker import EventBroker
 from backend.config import Settings
+from backend.copy_cli import DEFAULT_SERVICE
+from backend.copy_trading import CopyTradingEngine, latest_event_id
 from backend.db import Database
+from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
+    CopyLedger,
+    CopyOrder,
+    CopyPosition,
+    CopySubscription,
     CurrentPosition,
+    ExecutionAccount,
     GlobalSettings,
     PositionEvent,
     PositionOverlapAlert,
@@ -33,9 +42,19 @@ from backend.polymarket import (
 )
 from backend.purchase_history import build_purchase_lots
 from backend.schemas import (
+    CopyDashboardRead,
+    CopyOrderRead,
+    CopyPositionRead,
     CopyRecommendation,
+    CopySubscriptionAction,
+    CopySubscriptionCreate,
+    CopySubscriptionModeUpdate,
+    CopySubscriptionRead,
+    CopySubscriptionUpdate,
     EventRead,
     EventsResponse,
+    ExecutionAccountRead,
+    ExecutionAccountUpdate,
     GlobalSettingsRead,
     GlobalSettingsUpdate,
     HealthRead,
@@ -52,6 +71,7 @@ from backend.schemas import (
     WalletRead,
     WalletUpdate,
 )
+from backend.trading import OfficialClobTrader, TradingUnavailable
 
 
 def wallet_is_stale(wallet: WatchedWallet, settings: Settings) -> bool:
@@ -90,6 +110,75 @@ def decode_event_cursor(raw_cursor: str) -> tuple[datetime, int]:
 
 
 DEFAULT_COPY_RATIO = Decimal("10")
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def validate_copy_caps(payload: CopySubscriptionCreate | CopySubscriptionUpdate) -> None:
+    ordered = [
+        payload.base_bucket_cap_usdc,
+        payload.strong_bucket_cap_usdc,
+        payload.event_cap_usdc,
+        payload.settlement_day_cap_usdc,
+        payload.total_exposure_cap_usdc,
+    ]
+    if ordered != sorted(ordered):
+        raise HTTPException(
+            status_code=422,
+            detail="限额必须满足：普通温度桶 ≤ 强信号桶 ≤ 单事件 ≤ 单结算日 ≤ 总敞口",
+        )
+
+
+async def copy_subscription_read(
+    session: Any,
+    subscription: CopySubscription,
+) -> CopySubscriptionRead:
+    positions = list(
+        (
+            await session.scalars(
+                select(CopyPosition).where(CopyPosition.subscription_id == subscription.id)
+            )
+        ).all()
+    )
+    exposure = sum(
+        (position.attributed_cost + position.reserved_buy_usdc for position in positions),
+        start=Decimal("0"),
+    )
+    local_start = datetime.now(SHANGHAI).replace(hour=0, minute=0, second=0, microsecond=0)
+    utc_start = local_start.astimezone(UTC).replace(tzinfo=None)
+    ledger = list(
+        (
+            await session.scalars(
+                select(CopyLedger).where(
+                    CopyLedger.subscription_id == subscription.id,
+                    CopyLedger.timestamp >= utc_start,
+                )
+            )
+        ).all()
+    )
+    bought = sum(
+        (entry.amount_usdc for entry in ledger if entry.type == "buy"),
+        start=Decimal("0"),
+    )
+    realized = sum((entry.realized_pnl for entry in ledger), start=Decimal("0"))
+    wallet = await session.get(WatchedWallet, subscription.tracked_wallet_id)
+    return CopySubscriptionRead.model_validate(subscription).model_copy(
+        update={
+            "tracked_wallet_label": wallet.label if wallet else None,
+            "open_exposure_usdc": exposure,
+            "daily_bought_usdc": bought,
+            "daily_realized_pnl": realized,
+        }
+    )
+
+
+def execution_account_read(account: ExecutionAccount | None) -> ExecutionAccountRead | None:
+    if account is None:
+        return None
+    return ExecutionAccountRead.model_validate(account).model_copy(
+        update={
+            "credentials_configured": bool(account.keychain_service and account.keychain_account)
+        }
+    )
 
 
 async def copy_ratio_percent(session: Any) -> Decimal:
@@ -227,6 +316,7 @@ def create_app(
         polymarket_client = client or PolymarketClient(
             data_api_url=resolved_settings.data_api_url,
             gamma_api_url=resolved_settings.gamma_api_url,
+            clob_api_url=resolved_settings.clob_api_url,
             timeout=resolved_settings.request_timeout_seconds,
         )
         broker = EventBroker()
@@ -236,16 +326,27 @@ def create_app(
             broker=broker,
             settings=resolved_settings,
         )
+        keychain = MacOSKeychain()
+        copy_engine = CopyTradingEngine(
+            database=database,
+            client=polymarket_client,
+            settings=resolved_settings,
+            keychain=keychain,
+        )
         application.state.settings = resolved_settings
         application.state.database = database
         application.state.polymarket_client = polymarket_client
         application.state.broker = broker
         application.state.monitor = monitor
+        application.state.keychain = keychain
+        application.state.copy_engine = copy_engine
         if resolved_settings.start_monitor:
             monitor.start()
+            copy_engine.start()
         try:
             yield
         finally:
+            await copy_engine.stop()
             await monitor.stop()
             if owns_client:
                 await polymarket_client.close()
@@ -298,6 +399,423 @@ def create_app(
             await session.refresh(settings)
             return GlobalSettingsRead.model_validate(settings)
 
+    @application.get("/api/copy-trading/account", response_model=ExecutionAccountRead | None)
+    async def get_execution_account(request: Request) -> ExecutionAccountRead | None:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            return execution_account_read(await session.get(ExecutionAccount, 1))
+
+    @application.put("/api/copy-trading/account", response_model=ExecutionAccountRead)
+    async def configure_execution_account(
+        payload: ExecutionAccountUpdate,
+        request: Request,
+    ) -> ExecutionAccountRead:
+        if payload.cash_reserve_usdc > payload.budget_usdc:
+            raise HTTPException(status_code=422, detail="现金保留额不能高于钱包预算")
+        if payload.max_total_exposure_usdc > payload.budget_usdc - payload.cash_reserve_usdc:
+            raise HTTPException(status_code=422, detail="总敞口不能高于预算扣除现金保留额")
+        database: Database = request.app.state.database
+        keychain: MacOSKeychain = request.app.state.keychain
+        async with database.sessions() as session:
+            wallet = await session.get(WatchedWallet, payload.wallet_id)
+            if wallet is None or wallet.wallet_role != "self":
+                raise HTTPException(status_code=422, detail="执行账户必须绑定唯一的“我的钱包”")
+            account = await session.get(ExecutionAccount, 1)
+            if account is not None and account.wallet_id != wallet.id:
+                has_position = await session.scalar(
+                    select(CopyPosition.id).where(CopyPosition.attributed_size > 0).limit(1)
+                )
+                has_order = await session.scalar(
+                    select(CopyOrder.id)
+                    .where(CopyOrder.status.in_(["open", "partially_filled", "submitted"]))
+                    .limit(1)
+                )
+                if has_position is not None or has_order is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="存在自动跟单持仓或挂单，不能更换执行账户",
+                    )
+            signer = (payload.signer_address or wallet.address).lower()
+            funder = (payload.funder_address or wallet.proxy_wallet).lower()
+            if len(signer) != 42 or not signer.startswith("0x"):
+                raise HTTPException(status_code=422, detail="签名钱包地址无效")
+            if len(funder) != 42 or not funder.startswith("0x"):
+                raise HTTPException(status_code=422, detail="资金钱包地址无效")
+            reference = KeychainReference(service=DEFAULT_SERVICE, account=signer)
+            try:
+                await asyncio.to_thread(keychain.get_secret, reference)
+                account_status = "configured"
+            except KeychainError:
+                account_status = "missing_key"
+            now = utcnow()
+            if account is None:
+                account = ExecutionAccount(
+                    id=1,
+                    wallet_id=wallet.id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(account)
+            account.wallet_id = wallet.id
+            account.signer_address = signer
+            account.funder_address = funder
+            account.signature_type = payload.signature_type
+            account.keychain_service = reference.service
+            account.keychain_account = reference.account
+            account.status = account_status
+            account.budget_usdc = payload.budget_usdc
+            account.cash_reserve_usdc = payload.cash_reserve_usdc
+            account.max_total_exposure_usdc = payload.max_total_exposure_usdc
+            account.daily_buy_limit_usdc = payload.daily_buy_limit_usdc
+            account.daily_loss_limit_usdc = payload.daily_loss_limit_usdc
+            account.auto_redeem = payload.auto_redeem
+            account.collateral_balance = None
+            account.last_balance_at = None
+            account.last_error = None
+            account.updated_at = now
+            await session.commit()
+            return execution_account_read(account)  # type: ignore[return-value]
+
+    @application.post(
+        "/api/copy-trading/account/verify",
+        response_model=ExecutionAccountRead,
+    )
+    async def verify_execution_account(request: Request) -> ExecutionAccountRead:
+        database: Database = request.app.state.database
+        settings_for_request: Settings = request.app.state.settings
+        keychain: MacOSKeychain = request.app.state.keychain
+        async with database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is None or not account.keychain_service or not account.keychain_account:
+                raise HTTPException(status_code=409, detail="请先配置执行账户和钥匙串密钥")
+            trader = OfficialClobTrader(
+                host=settings_for_request.clob_api_url,
+                keychain=keychain,
+                key_reference=KeychainReference(
+                    service=account.keychain_service,
+                    account=account.keychain_account,
+                ),
+                signature_type=account.signature_type,
+                funder_address=account.funder_address,
+                relayer_url=settings_for_request.relayer_api_url,
+                rpc_url=settings_for_request.polygon_rpc_url,
+            )
+            try:
+                balance = await trader.collateral_balance()
+            except (KeychainError, TradingUnavailable) as error:
+                account.status = "error"
+                account.last_error = str(error)[:1000]
+                account.updated_at = utcnow()
+                await session.commit()
+                raise HTTPException(status_code=502, detail=str(error)) from error
+            account.collateral_balance = balance
+            account.last_balance_at = utcnow()
+            account.status = (
+                "ready" if balance > account.cash_reserve_usdc else "insufficient_balance"
+            )
+            account.last_error = None
+            account.updated_at = utcnow()
+            await session.commit()
+            return execution_account_read(account)  # type: ignore[return-value]
+
+    @application.get(
+        "/api/copy-trading/subscriptions",
+        response_model=list[CopySubscriptionRead],
+    )
+    async def list_copy_subscriptions(request: Request) -> list[CopySubscriptionRead]:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            subscriptions = list(
+                (
+                    await session.scalars(
+                        select(CopySubscription).order_by(CopySubscription.id.asc())
+                    )
+                ).all()
+            )
+            return [
+                await copy_subscription_read(session, subscription)
+                for subscription in subscriptions
+            ]
+
+    @application.post(
+        "/api/copy-trading/subscriptions",
+        response_model=CopySubscriptionRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_copy_subscription(
+        payload: CopySubscriptionCreate,
+        request: Request,
+    ) -> CopySubscriptionRead:
+        validate_copy_caps(payload)
+        if payload.mode == "live" and not payload.confirm_live:
+            raise HTTPException(status_code=422, detail="创建实盘策略需要明确确认")
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            wallet = await session.get(WatchedWallet, payload.tracked_wallet_id)
+            if wallet is None or wallet.wallet_role != "tracked":
+                raise HTTPException(status_code=422, detail="请选择一个观察钱包作为跟单目标")
+            existing = await session.scalar(
+                select(CopySubscription).where(
+                    CopySubscription.tracked_wallet_id == payload.tracked_wallet_id
+                )
+            )
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="该观察钱包已经有跟单配置")
+            if payload.mode == "live":
+                account = await session.get(ExecutionAccount, 1)
+                if account is None or account.status != "ready":
+                    raise HTTPException(status_code=409, detail="实盘前必须验证执行账户和余额")
+            baseline = await latest_event_id(session, payload.tracked_wallet_id)
+            now = utcnow()
+            values = payload.model_dump(exclude={"tracked_wallet_id", "mode", "confirm_live"})
+            subscription = CopySubscription(
+                tracked_wallet_id=payload.tracked_wallet_id,
+                mode=payload.mode,
+                state="disabled",
+                baseline_event_id=baseline,
+                last_processed_event_id=baseline,
+                created_at=now,
+                updated_at=now,
+                **values,
+            )
+            session.add(subscription)
+            await session.commit()
+            return await copy_subscription_read(session, subscription)
+
+    @application.put(
+        "/api/copy-trading/subscriptions/{subscription_id}",
+        response_model=CopySubscriptionRead,
+    )
+    async def update_copy_subscription(
+        subscription_id: int,
+        payload: CopySubscriptionUpdate,
+        request: Request,
+    ) -> CopySubscriptionRead:
+        validate_copy_caps(payload)
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                raise HTTPException(status_code=404, detail="跟单策略不存在")
+            for field, value in payload.model_dump().items():
+                setattr(subscription, field, value)
+            subscription.updated_at = utcnow()
+            await session.commit()
+            return await copy_subscription_read(session, subscription)
+
+    @application.put(
+        "/api/copy-trading/subscriptions/{subscription_id}/mode",
+        response_model=CopySubscriptionRead,
+    )
+    async def update_copy_subscription_mode(
+        subscription_id: int,
+        payload: CopySubscriptionModeUpdate,
+        request: Request,
+    ) -> CopySubscriptionRead:
+        database: Database = request.app.state.database
+        engine: CopyTradingEngine = request.app.state.copy_engine
+        async with database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                raise HTTPException(status_code=404, detail="跟单策略不存在")
+            if payload.mode == subscription.mode:
+                return await copy_subscription_read(session, subscription)
+            if payload.mode == "paper" and subscription.mode == "live":
+                live_position = await session.scalar(
+                    select(CopyPosition.id)
+                    .where(
+                        CopyPosition.subscription_id == subscription.id,
+                        CopyPosition.attributed_size > 0,
+                    )
+                    .limit(1)
+                )
+                if live_position is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="实盘仍有归因持仓，请先使用“关闭并清仓”后再切换模拟盘",
+                    )
+            if payload.mode == "live":
+                if not payload.confirm_live:
+                    raise HTTPException(status_code=422, detail="切换实盘需要明确确认")
+                account = await session.get(ExecutionAccount, 1)
+                if account is None or account.status != "ready":
+                    raise HTTPException(status_code=409, detail="实盘前必须验证执行账户和余额")
+                other_live = await session.scalar(
+                    select(CopySubscription.id).where(
+                        CopySubscription.id != subscription.id,
+                        CopySubscription.mode == "live",
+                        CopySubscription.state != "disabled",
+                    )
+                )
+                if other_live is not None and subscription.state != "disabled":
+                    raise HTTPException(status_code=409, detail="同一时间只能有一个实盘目标")
+        await engine.cancel_open_orders(subscription_id)
+        async with database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            assert subscription is not None
+            if subscription.mode == "paper" and payload.mode == "live":
+                paper_positions = list(
+                    (
+                        await session.scalars(
+                            select(CopyPosition).where(
+                                CopyPosition.subscription_id == subscription.id,
+                                CopyPosition.attributed_size > 0,
+                            )
+                        )
+                    ).all()
+                )
+                for position in paper_positions:
+                    position.status = "paper_archived"
+                    position.attributed_size = Decimal("0")
+                    position.attributed_cost = Decimal("0")
+                    position.reserved_buy_usdc = Decimal("0")
+                    position.pending_target_usdc = Decimal("0")
+                    position.updated_at = utcnow()
+            subscription.mode = payload.mode
+            baseline = await latest_event_id(session, subscription.tracked_wallet_id)
+            subscription.baseline_event_id = baseline
+            subscription.last_processed_event_id = baseline
+            subscription.updated_at = utcnow()
+            await session.commit()
+            return await copy_subscription_read(session, subscription)
+
+    @application.post(
+        "/api/copy-trading/subscriptions/{subscription_id}/action",
+        response_model=CopySubscriptionRead,
+    )
+    async def act_on_copy_subscription(
+        subscription_id: int,
+        payload: CopySubscriptionAction,
+        request: Request,
+    ) -> CopySubscriptionRead:
+        database: Database = request.app.state.database
+        engine: CopyTradingEngine = request.app.state.copy_engine
+        if payload.action == "disable":
+            async with database.sessions() as session:
+                subscription = await session.get(CopySubscription, subscription_id)
+                if subscription is None:
+                    raise HTTPException(status_code=404, detail="跟单策略不存在")
+                has_position = await session.scalar(
+                    select(CopyPosition.id)
+                    .where(
+                        CopyPosition.subscription_id == subscription.id,
+                        CopyPosition.attributed_size > 0,
+                    )
+                    .limit(1)
+                )
+                if has_position is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="仍有归因持仓，请选择仅退出或关闭清仓",
+                    )
+                subscription.state = "paused"
+                subscription.updated_at = utcnow()
+                await session.commit()
+            await engine.cancel_open_orders(subscription_id)
+            async with database.sessions() as session:
+                subscription = await session.get(CopySubscription, subscription_id)
+                assert subscription is not None
+                subscription.state = "disabled"
+                subscription.updated_at = utcnow()
+                await session.commit()
+                return await copy_subscription_read(session, subscription)
+        if payload.action == "pause":
+            async with database.sessions() as session:
+                subscription = await session.get(CopySubscription, subscription_id)
+                if subscription is None:
+                    raise HTTPException(status_code=404, detail="跟单策略不存在")
+                subscription.state = "paused"
+                subscription.updated_at = utcnow()
+                await session.commit()
+            await engine.cancel_open_orders(subscription_id)
+        async with database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                raise HTTPException(status_code=404, detail="跟单策略不存在")
+            if payload.action in {"activate", "resume"}:
+                if subscription.mode == "live":
+                    if not payload.confirm_live:
+                        raise HTTPException(status_code=422, detail="启动实盘需要明确确认")
+                    account = await session.get(ExecutionAccount, 1)
+                    if account is None or account.status != "ready":
+                        raise HTTPException(status_code=409, detail="执行账户尚未通过余额验证")
+                    other_live = await session.scalar(
+                        select(CopySubscription.id).where(
+                            CopySubscription.id != subscription.id,
+                            CopySubscription.mode == "live",
+                            CopySubscription.state != "disabled",
+                        )
+                    )
+                    if other_live is not None:
+                        raise HTTPException(status_code=409, detail="已有其他实盘跟单目标")
+                baseline = await latest_event_id(session, subscription.tracked_wallet_id)
+                subscription.baseline_event_id = baseline
+                subscription.last_processed_event_id = baseline
+                subscription.state = "active"
+                subscription.enabled_at = utcnow()
+                subscription.last_error = None
+            elif payload.action == "exit_only":
+                if subscription.state == "paused":
+                    subscription.last_processed_event_id = await latest_event_id(
+                        session, subscription.tracked_wallet_id
+                    )
+                subscription.state = "exit_only"
+            elif payload.action == "close":
+                subscription.state = "closing"
+            elif payload.action != "pause":
+                raise HTTPException(status_code=422, detail="不支持的策略操作")
+            subscription.updated_at = utcnow()
+            await session.commit()
+            result = await copy_subscription_read(session, subscription)
+        engine.wake()
+        return result
+
+    @application.get(
+        "/api/copy-trading/dashboard",
+        response_model=CopyDashboardRead,
+    )
+    async def get_copy_dashboard(
+        request: Request,
+        tracked_wallet_id: int = Query(gt=0),
+    ) -> CopyDashboardRead:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            subscription = await session.scalar(
+                select(CopySubscription).where(
+                    CopySubscription.tracked_wallet_id == tracked_wallet_id
+                )
+            )
+            positions: list[CopyPosition] = []
+            orders: list[CopyOrder] = []
+            subscription_response = None
+            if subscription is not None:
+                subscription_response = await copy_subscription_read(session, subscription)
+                positions = list(
+                    (
+                        await session.scalars(
+                            select(CopyPosition)
+                            .where(CopyPosition.subscription_id == subscription.id)
+                            .order_by(CopyPosition.updated_at.desc())
+                        )
+                    ).all()
+                )
+                orders = list(
+                    (
+                        await session.scalars(
+                            select(CopyOrder)
+                            .where(CopyOrder.subscription_id == subscription.id)
+                            .order_by(CopyOrder.created_at.desc())
+                            .limit(100)
+                        )
+                    ).all()
+                )
+            return CopyDashboardRead(
+                account=execution_account_read(await session.get(ExecutionAccount, 1)),
+                subscription=subscription_response,
+                positions=[CopyPositionRead.model_validate(item) for item in positions],
+                orders=[CopyOrderRead.model_validate(item) for item in orders],
+            )
+
     @application.get("/api/wallets", response_model=list[WalletRead])
     async def list_wallets(request: Request) -> list[WatchedWallet]:
         database: Database = request.app.state.database
@@ -344,6 +862,27 @@ def create_app(
             )
 
             if current_self is not None and current_self is not wallet:
+                execution_account = await session.get(ExecutionAccount, 1)
+                active_copy_position = await session.scalar(
+                    select(CopyPosition.id)
+                    .join(CopySubscription)
+                    .where(CopyPosition.attributed_size > 0)
+                    .limit(1)
+                )
+                active_copy_order = await session.scalar(
+                    select(CopyOrder.id)
+                    .where(CopyOrder.status.in_(["open", "partially_filled", "submitted"]))
+                    .limit(1)
+                )
+                if (
+                    execution_account is not None
+                    and execution_account.wallet_id == current_self.id
+                    and (active_copy_position is not None or active_copy_order is not None)
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="存在自动跟单持仓或挂单，请先关闭策略并清仓后再更换执行钱包",
+                    )
                 previous_self_id = current_self.id
                 open_periods = list(
                     (

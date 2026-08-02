@@ -53,6 +53,7 @@ type CopySubscription = {
   total_exposure_cap_usdc: Numeric;
   daily_buy_limit_usdc: Numeric;
   daily_loss_limit_usdc: Numeric;
+  market_slippage_cents: Numeric;
   price_tolerance_ticks: number;
   price_tolerance_percent: Numeric;
   order_ttl_minutes: number;
@@ -60,6 +61,9 @@ type CopySubscription = {
   open_exposure_usdc: Numeric;
   daily_bought_usdc: Numeric;
   daily_realized_pnl: Numeric;
+  fast_poll_started_at: string | null;
+  last_trade_poll_at: string | null;
+  last_trade_error: string | null;
   last_error: string | null;
 };
 
@@ -77,10 +81,32 @@ type CopyOrder = {
   id: number | string;
   side: "BUY" | "SELL";
   requested_usdc: Numeric;
+  filled_size: Numeric;
   filled_usdc: Numeric;
+  reference_price: Numeric | null;
+  limit_price: Numeric;
+  order_type: string;
   status: string;
   reason: string | null;
   created_at: string;
+};
+
+type CopyTradeSignal = {
+  id: number | string;
+  wallet_trade_id: number | string;
+  order_id: number | string | null;
+  asset_id: string;
+  title: string | null;
+  outcome: string | null;
+  side: "BUY" | "SELL";
+  leader_size: Numeric;
+  leader_amount: Numeric;
+  leader_price: Numeric;
+  traded_at: string;
+  detected_at: string;
+  processed_at: string | null;
+  status: string;
+  reason: string | null;
 };
 
 type CopyDashboard = {
@@ -88,6 +114,7 @@ type CopyDashboard = {
   subscription: CopySubscription | null;
   positions: CopyPosition[];
   orders: CopyOrder[];
+  signals: CopyTradeSignal[];
 };
 
 type CopyRecommendation = {
@@ -1894,7 +1921,13 @@ function OverlapActivity({
   onRead: (alertId: number | string) => void;
   onReadAll: () => void;
 }) {
+  const [showRead, setShowRead] = useState(false);
   if (alerts.length === 0) return null;
+
+  const readCount = alerts.filter((alert) => alert.read_at !== null).length;
+  const visibleAlerts = alerts.filter(
+    (alert) => alert.read_at === null || showRead,
+  );
 
   return (
     <section className="overlapActivity" aria-label="共同持仓动态">
@@ -1911,18 +1944,38 @@ function OverlapActivity({
             </p>
           </div>
         </div>
-        {unreadCount > 0 && (
-          <button
-            type="button"
-            onClick={onReadAll}
-            disabled={markingAll}
-          >
-            {markingAll ? "处理中…" : "全部已读"}
-          </button>
-        )}
+        <div className="overlapActivityHeaderActions">
+          {readCount > 0 && (
+            <button
+              type="button"
+              aria-expanded={showRead}
+              onClick={() => setShowRead((current) => !current)}
+            >
+              {showRead ? "收起已读" : `展开已读 (${readCount})`}
+            </button>
+          )}
+          {unreadCount > 0 && (
+            <button
+              type="button"
+              onClick={onReadAll}
+              disabled={markingAll}
+            >
+              {markingAll ? "处理中…" : "全部已读"}
+            </button>
+          )}
+        </div>
       </div>
-      <div className="overlapActivityList">
-        {alerts.map((alert) => {
+      {visibleAlerts.length === 0 ? (
+        <button
+          className="overlapActivityCollapsed"
+          type="button"
+          onClick={() => setShowRead(true)}
+        >
+          {readCount} 条已读提醒已收起 · 点击展开
+        </button>
+      ) : (
+        <div className="overlapActivityList">
+        {visibleAlerts.map((alert) => {
           const unread = alert.read_at === null;
           const busy = busyAlertIds.has(String(alert.id));
           const alertLabel =
@@ -1994,7 +2047,8 @@ function OverlapActivity({
             </article>
           );
         })}
-      </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -2007,6 +2061,24 @@ const copyStateLabels: Record<CopySubscription["state"], string> = {
   disabled: "未启动",
   error: "已熔断",
 };
+
+const copySignalLabels: Record<string, string> = {
+  pending: "等待处理",
+  submitted: "订单确认中",
+  followed: "已跟随",
+  netted: "已净额抵消",
+  deferred: "金额累计中",
+  skipped: "已跳过",
+  failed: "未成交",
+};
+
+function formatSignalLag(signal: CopyTradeSignal) {
+  const traded = new Date(signal.traded_at).getTime();
+  const detected = new Date(signal.detected_at).getTime();
+  if (!Number.isFinite(traded) || !Number.isFinite(detected)) return "延迟未知";
+  const seconds = Math.max(0, (detected - traded) / 1000);
+  return `检测延迟 ${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`;
+}
 
 function CopyTradingPanel({
   dashboard,
@@ -2033,6 +2105,10 @@ function CopyTradingPanel({
     dashboard?.positions.filter(
       (position) => toNumber(position.attributed_size) > 0,
     ).length ?? 0;
+  const recentSignals = (dashboard?.signals ?? []).slice(0, 8);
+  const ordersById = new Map(
+    (dashboard?.orders ?? []).map((order) => [String(order.id), order]),
+  );
 
   return (
     <section className="copyTradingPanel" aria-label="自动跟单">
@@ -2040,7 +2116,7 @@ function CopyTradingPanel({
         <span className="eyebrow">单执行钱包 · V1</span>
         <h2>自动跟单</h2>
         <p>
-          只跟随极端温度桶；买入按成交金额缩放，减仓按对方仓位比例同步。不会补历史单。
+          每秒检测最高/最低气温市场成交；按当前盘口使用 FAK 立即跟随，未成交部分自动取消。
         </p>
       </div>
       {!subscription ? (
@@ -2075,6 +2151,10 @@ function CopyTradingPanel({
             <div>
               <span>归因持仓</span>
               <strong>{openPositions} 个</strong>
+            </div>
+            <div>
+              <span>快速检测</span>
+              <strong>{formatDateTime(subscription.last_trade_poll_at)}</strong>
             </div>
           </div>
           <div className="copyTradingActions">
@@ -2120,6 +2200,61 @@ function CopyTradingPanel({
               切换{subscription.mode === "paper" ? "实盘" : "模拟盘"}
             </button>
           </div>
+          <section className="copySignalFeed" aria-label="最近快速跟单">
+            <div className="copySignalFeedHeader">
+              <strong>最近快速跟单</strong>
+              <span>盘口保护 ±{formatRatioPart(subscription.market_slippage_cents)}¢</span>
+            </div>
+            {recentSignals.length === 0 ? (
+              <p>基线建立后，目标钱包的新成交会显示在这里。</p>
+            ) : (
+              <div className="copySignalList">
+                {recentSignals.map((signal) => {
+                  const order = signal.order_id
+                    ? ordersById.get(String(signal.order_id))
+                    : undefined;
+                  const actualAverage =
+                    order && toNumber(order.filled_size) > 0
+                      ? toNumber(order.filled_usdc) / toNumber(order.filled_size)
+                      : null;
+                  return (
+                    <article className="copySignalItem" key={signal.id}>
+                      <div>
+                        <span className={`copySignalSide ${signal.side.toLowerCase()}`}>
+                          {signal.side === "BUY" ? "买入" : "卖出"}
+                        </span>
+                        <strong>{signal.title || "未命名温度市场"}</strong>
+                        <small>{signal.outcome || ""}</small>
+                      </div>
+                      <div>
+                        <span>目标成交</span>
+                        <strong>
+                          {formatMoney(signal.leader_amount)} @ {formatPrice(signal.leader_price)}
+                        </strong>
+                        <small>{formatSignalLag(signal)}</small>
+                      </div>
+                      <div>
+                        <span>{copySignalLabels[signal.status] ?? signal.status}</span>
+                        <strong>
+                          {order
+                            ? `目标 ${formatMoney(order.requested_usdc)}`
+                            : "—"}
+                        </strong>
+                        <small>
+                          {order && actualAverage !== null
+                            ? `实际 ${formatMoney(order.filled_usdc)} @ ${formatPrice(actualAverage)}`
+                            : signal.reason || formatDateTime(signal.detected_at)}
+                        </small>
+                        {order && actualAverage !== null && signal.reason && (
+                          <small>{signal.reason}</small>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </>
       )}
       <div className="executionAccountRow">
@@ -2161,9 +2296,9 @@ function CopyTradingPanel({
           </code>
         </p>
       )}
-      {(error || subscription?.last_error || account?.last_error) && (
+      {(error || subscription?.last_trade_error || subscription?.last_error || account?.last_error) && (
         <p className="copyTradingError" role="alert">
-          {error || subscription?.last_error || account?.last_error}
+          {error || subscription?.last_trade_error || subscription?.last_error || account?.last_error}
         </p>
       )}
     </section>
@@ -2193,6 +2328,7 @@ function CopyTradingModal({
     total_exposure_cap_usdc: String(subscription?.total_exposure_cap_usdc ?? 160),
     daily_buy_limit_usdc: String(subscription?.daily_buy_limit_usdc ?? 80),
     daily_loss_limit_usdc: String(subscription?.daily_loss_limit_usdc ?? 40),
+    market_slippage_cents: String(subscription?.market_slippage_cents ?? 5),
   };
   const [values, setValues] = useState(defaults);
   const [submitting, setSubmitting] = useState(false);
@@ -2240,6 +2376,7 @@ function CopyTradingModal({
     ["total_exposure_cap_usdc", "总敞口上限", "USDC"],
     ["daily_buy_limit_usdc", "每日买入上限", "USDC"],
     ["daily_loss_limit_usdc", "每日已实现亏损熔断", "USDC"],
+    ["market_slippage_cents", "当前盘口保护范围", "¢"],
   ];
 
   return (
@@ -2261,6 +2398,7 @@ function CopyTradingModal({
                   <input
                     type="number"
                     min="0"
+                    max={key === "market_slippage_cents" ? "50" : undefined}
                     step="0.01"
                     value={values[key]}
                     onChange={(event) =>
@@ -2274,7 +2412,7 @@ function CopyTradingModal({
             ))}
           </div>
           <p className="privacyNote">
-            买单最长保留 6 小时，结算前 15 分钟撤单；买卖价格容忍度取 2 ticks 与 3% 中更小者。
+            每秒检测公开成交；按当前卖一/买一使用 FAK 立即成交，最差价格不超过当前盘口 ± 配置范围，未成交部分自动取消。
           </p>
           {error && <p className="formError" role="alert">{error}</p>}
           <div className="modalActions">
@@ -3386,6 +3524,7 @@ export default function Home() {
 
             {view === "positions" && (
               <OverlapActivity
+                key={activeWalletId ?? "no-wallet"}
                 alerts={overlapAlerts}
                 unreadCount={unreadAlertCount}
                 busyAlertIds={busyAlertIds}

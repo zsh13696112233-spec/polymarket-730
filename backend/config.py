@@ -18,6 +18,7 @@ class Settings:
     relayer_api_url: str = "https://relayer-v2.polymarket.com"
     polygon_rpc_url: str = "https://polygon.drpc.org"
     poll_interval_seconds: float = 15.0
+    copy_poll_interval_seconds: float = 1.0
     quiet_window_seconds: float = 45.0
     hard_window_seconds: float = 180.0
     max_wallet_concurrency: int = 3
@@ -48,6 +49,9 @@ class Settings:
             ),
             polygon_rpc_url=os.getenv("POLYMARKET_POLYGON_RPC_URL", "https://polygon.drpc.org"),
             poll_interval_seconds=float(os.getenv("POLYMARKET_POLL_INTERVAL_SECONDS", "15")),
+            copy_poll_interval_seconds=float(
+                os.getenv("POLYMARKET_COPY_POLL_INTERVAL_SECONDS", "1")
+            ),
             quiet_window_seconds=float(os.getenv("POLYMARKET_SETTLE_QUIET_SECONDS", "45")),
             hard_window_seconds=float(os.getenv("POLYMARKET_SETTLE_HARD_SECONDS", "180")),
             max_wallet_concurrency=int(os.getenv("POLYMARKET_MAX_CONCURRENCY", "3")),

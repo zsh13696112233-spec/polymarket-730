@@ -514,7 +514,15 @@ describe("Polymarket 钱包监控页", () => {
         name: /对方刚减仓.*标为已读/,
       }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText("已读")).not.toBeInTheDocument();
+    const expandRead = screen.getByRole("button", {
+      name: "展开已读 (1)",
+    });
+    await user.click(expandRead);
     expect(screen.getByText("已读")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "收起已读" }),
+    ).toBeInTheDocument();
 
     await user.click(badge);
     const dialog = await screen.findByRole("dialog", {
@@ -693,7 +701,10 @@ describe("Polymarket 钱包监控页", () => {
     await user.click(screen.getByRole("button", { name: "全部已读" }));
     await waitFor(() => expect(markedAll).toBe(true));
     expect(screen.queryByText("提醒 1")).not.toBeInTheDocument();
-    expect(screen.getByText("已读")).toBeInTheDocument();
+    expect(screen.queryByText("已读")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /1 条已读提醒已收起/ }),
+    ).toBeInTheDocument();
   });
 
   it("加载钱包后按当前市值降序展示，并提示过期数据", async () => {

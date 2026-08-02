@@ -8,7 +8,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from backend.config import Settings
@@ -16,41 +17,58 @@ from backend.db import Database
 from backend.keychain import KeychainReference, MacOSKeychain
 from backend.models import (
     CopyFill,
+    CopyLeaderState,
     CopyLedger,
     CopyOrder,
     CopyPosition,
     CopyRedemption,
     CopySubscription,
+    CopyTradeSignal,
     CurrentPosition,
     ExecutionAccount,
     PositionEvent,
+    WalletTrade,
+    WatchedWallet,
 )
-from backend.polymarket import OrderBookSnapshot, PolymarketClient
+from backend.polymarket import (
+    OrderBookSnapshot,
+    PolymarketClient,
+    fingerprint_trades,
+)
 from backend.trading import (
+    MarketTradeRequest,
     OfficialClobTrader,
     TradeRequest,
     TradeResult,
     TradingUnavailable,
     simulate_limit_order,
+    simulate_market_order,
 )
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-OPEN_ORDER_STATES = {"open", "partially_filled", "submitted"}
-LOW_BUCKET = re.compile(r"(?:or\s+(?:lower|below|less)|(?:under|below|less than)\b|≤|<)", re.I)
-HIGH_BUCKET = re.compile(r"(?:or\s+(?:higher|above|more)|(?:over|above|more than)\b|≥|>)", re.I)
+OPEN_ORDER_STATES = {"open", "submitted"}
+TEMPERATURE_BUCKET_MARKET = re.compile(
+    r"\b(?:highest|lowest)\s+(?:daily\s+)?temperature\b|(?:最高|最低)(?:气温|温度)",
+    re.I,
+)
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def is_extreme_temperature_bucket(title: str, outcome: str) -> bool:
-    market = f"{title} {outcome}"
-    temperature = re.search(r"temperature|degrees?|°[fc]|最高气温|最低气温|气温", market, re.I)
-    extreme = LOW_BUCKET.search(outcome) or HIGH_BUCKET.search(outcome)
-    return temperature is not None and extreme is not None
+def is_temperature_bucket(title: str, outcome: str) -> bool:
+    """Recognize every bucket inside a highest/lowest-temperature market.
+
+    Polymarket emits the selected bucket in the title for exact-value markets and
+    commonly emits only ``Yes`` as the position outcome. Matching only the outcome
+    therefore drops valid exact-value and range buckets.
+    """
+
+    del outcome
+    return TEMPERATURE_BUCKET_MARKET.search(title) is not None
 
 
 def quantize_price(value: Decimal, tick: Decimal, *, side: str) -> Decimal:
@@ -72,6 +90,22 @@ def tolerated_price(
     delta = min(percent_delta, tick_delta)
     raw = reference + delta if side == "BUY" else reference - delta
     return quantize_price(raw, tick, side=side)
+
+
+def market_worst_price(
+    reference: Decimal,
+    tick: Decimal,
+    slippage_cents: Decimal,
+    *,
+    side: str,
+) -> Decimal:
+    buffer = slippage_cents / Decimal("100")
+    raw = reference + buffer if side == "BUY" else reference - buffer
+    rounding = ROUND_DOWN if side == "BUY" else ROUND_UP
+    ticks = (raw / tick).to_integral_value(rounding=rounding)
+    lower_bound = max(Decimal("0.01"), tick)
+    upper_bound = min(Decimal("0.99"), ONE - tick)
+    return max(lower_bound, min(upper_bound, ticks * tick))
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,8 +161,11 @@ class CopyTradingEngine:
         self.settings = settings
         self.keychain = keychain or MacOSKeychain()
         self._task: asyncio.Task[None] | None = None
+        self._balance_task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
+        self._trader_cache_key: tuple[object, ...] | None = None
+        self._trader_cache: OfficialClobTrader | None = None
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -146,6 +183,13 @@ class CopyTradingEngine:
         except asyncio.CancelledError:
             pass
         self._task = None
+        if self._balance_task is not None:
+            self._balance_task.cancel()
+            try:
+                await self._balance_task
+            except asyncio.CancelledError:
+                pass
+            self._balance_task = None
 
     async def _run(self) -> None:
         while True:
@@ -160,7 +204,8 @@ class CopyTradingEngine:
             self._wake.clear()
             try:
                 await asyncio.wait_for(
-                    self._wake.wait(), timeout=max(2.0, self.settings.poll_interval_seconds)
+                    self._wake.wait(),
+                    timeout=max(0.25, self.settings.copy_poll_interval_seconds),
                 )
             except TimeoutError:
                 pass
@@ -183,17 +228,25 @@ class CopyTradingEngine:
                 )
             for subscription_id in subscription_ids:
                 try:
+                    await self.retire_legacy_orders(subscription_id)
                     await self.process_open_orders(subscription_id)
+                    await self.process_fast_trades(subscription_id)
                     await self.process_subscription(subscription_id)
                     await self.process_redemptions(subscription_id)
                 except Exception as error:
                     await self._record_error(subscription_id, error)
+            if self._balance_task is None or self._balance_task.done():
+                self._balance_task = asyncio.create_task(
+                    self.refresh_stale_live_balance(),
+                    name="copy-trading-balance-refresh",
+                )
 
     async def process_subscription(self, subscription_id: int) -> None:
         async with self.database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
             if subscription is None or subscription.state not in {
                 "active",
+                "paused",
                 "exit_only",
                 "closing",
             }:
@@ -218,14 +271,711 @@ class CopyTradingEngine:
             for event in events:
                 if event.type == "redeemed":
                     await self._leader_redeemed(session, subscription, event)
-                elif event.delta_size > ZERO and subscription.state == "active":
-                    await self._follow_buy(session, subscription, event)
-                elif event.delta_size < ZERO:
-                    await self._follow_sell(session, subscription, event)
                 subscription.last_processed_event_id = event.id
                 subscription.last_processed_at = utcnow()
                 subscription.updated_at = utcnow()
                 await session.commit()
+
+    async def prime_subscription(self, subscription_id: int) -> None:
+        """Establish a no-backfill trade baseline and reconcile leader state."""
+
+        await self.cancel_open_orders(subscription_id)
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                return
+            wallet = await session.get(WatchedWallet, subscription.tracked_wallet_id)
+            if wallet is None:
+                return
+            proxy_wallet = wallet.proxy_wallet
+        positions = await self.client.fetch_active_positions(proxy_wallet)
+        scoped = [
+            position
+            for position in positions
+            if is_temperature_bucket(position.title, position.outcome)
+        ]
+        now = utcnow()
+        # Public trade timestamps have one-second precision. Starting at the next
+        # whole second cleanly separates pre-enable trades from new trades without
+        # creating a same-second historical backfill race.
+        baseline_at = now.replace(microsecond=0) + timedelta(seconds=1)
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                return
+            existing_states = {
+                state.asset_id: state
+                for state in (
+                    await session.scalars(
+                        select(CopyLeaderState).where(
+                            CopyLeaderState.subscription_id == subscription_id
+                        )
+                    )
+                ).all()
+            }
+            active_assets: set[str] = set()
+            for snapshot in scoped:
+                active_assets.add(snapshot.asset_id)
+                state = existing_states.get(snapshot.asset_id)
+                if state is None:
+                    state = CopyLeaderState(
+                        subscription_id=subscription_id,
+                        asset_id=snapshot.asset_id,
+                        condition_id=snapshot.condition_id,
+                        title=snapshot.title,
+                        outcome=snapshot.outcome,
+                        outcome_index=snapshot.outcome_index,
+                        event_slug=snapshot.event_slug,
+                        market_slug=snapshot.market_slug,
+                        settlement_date=(
+                            snapshot.end_date.date().isoformat()
+                            if snapshot.end_date is not None
+                            else None
+                        ),
+                        size=snapshot.size,
+                        remaining_cost=snapshot.initial_value,
+                        last_trade_at=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(state)
+                else:
+                    state.condition_id = snapshot.condition_id
+                    state.title = snapshot.title
+                    state.outcome = snapshot.outcome
+                    state.outcome_index = snapshot.outcome_index
+                    state.event_slug = snapshot.event_slug
+                    state.market_slug = snapshot.market_slug
+                    state.settlement_date = (
+                        snapshot.end_date.date().isoformat()
+                        if snapshot.end_date is not None
+                        else None
+                    )
+                    state.size = snapshot.size
+                    state.remaining_cost = snapshot.initial_value
+                    state.updated_at = now
+            for asset_id, state in existing_states.items():
+                if asset_id not in active_assets:
+                    state.size = ZERO
+                    state.remaining_cost = ZERO
+                    state.updated_at = now
+            pending_signals = list(
+                (
+                    await session.scalars(
+                        select(CopyTradeSignal).where(
+                            CopyTradeSignal.subscription_id == subscription_id,
+                            CopyTradeSignal.status.in_(["pending", "submitted", "deferred"]),
+                        )
+                    )
+                ).all()
+            )
+            for signal in pending_signals:
+                signal.status = "skipped"
+                signal.reason = "策略重新建立成交基线，不补历史单"
+                signal.processed_at = now
+            copy_positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(CopyPosition.subscription_id == subscription_id)
+                    )
+                ).all()
+            )
+            for position in copy_positions:
+                position.pending_target_usdc = ZERO
+                position.reserved_buy_usdc = ZERO
+                state = existing_states.get(position.asset_id)
+                if state is not None:
+                    position.leader_size = state.size
+                    position.leader_remaining_cost = state.remaining_cost
+                position.updated_at = now
+            subscription.fast_poll_started_at = baseline_at
+            subscription.last_trade_poll_at = baseline_at
+            subscription.last_trade_error = None
+            subscription.last_error = None
+            subscription.updated_at = now
+            await session.commit()
+
+    async def process_fast_trades(self, subscription_id: int) -> None:
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None or subscription.state not in {"active", "exit_only"}:
+                return
+            if subscription.fast_poll_started_at is None:
+                needs_prime = True
+                proxy_wallet = ""
+                started_at = utcnow()
+                last_poll_at = None
+            else:
+                needs_prime = False
+                wallet = await session.get(WatchedWallet, subscription.tracked_wallet_id)
+                if wallet is None:
+                    return
+                proxy_wallet = wallet.proxy_wallet
+                started_at = subscription.fast_poll_started_at
+                last_poll_at = subscription.last_trade_poll_at
+        if needs_prime:
+            await self.prime_subscription(subscription_id)
+            return
+
+        now = utcnow()
+        if now < started_at:
+            return
+        start = last_poll_at or started_at
+        start = max(start - timedelta(seconds=120), started_at)
+        try:
+            trades = await self.client.fetch_trades(
+                proxy_wallet,
+                start=start,
+                end=now + timedelta(seconds=30),
+            )
+        except Exception as error:
+            async with self.database.sessions() as session:
+                subscription = await session.get(CopySubscription, subscription_id)
+                if subscription is not None:
+                    subscription.last_trade_error = str(error)[:1000]
+                    subscription.updated_at = utcnow()
+                    await session.commit()
+            return
+
+        fingerprinted = fingerprint_trades(proxy_wallet, trades)
+        fingerprints = [fingerprint for fingerprint, _ in fingerprinted]
+        async with self.database.sessions() as session:
+            existing: set[str] = set()
+            for offset in range(0, len(fingerprints), 500):
+                existing.update(
+                    (
+                        await session.scalars(
+                            select(WalletTrade.fingerprint).where(
+                                WalletTrade.fingerprint.in_(fingerprints[offset : offset + 500])
+                            )
+                        )
+                    ).all()
+                )
+            for fingerprint, trade in fingerprinted:
+                if fingerprint in existing:
+                    continue
+                try:
+                    async with session.begin_nested():
+                        session.add(
+                            WalletTrade(
+                                wallet_id=subscription.tracked_wallet_id,
+                                fingerprint=fingerprint,
+                                asset_id=trade.asset_id,
+                                condition_id=trade.condition_id,
+                                side=trade.side,
+                                size=trade.size,
+                                price=trade.price,
+                                amount=trade.size * trade.price,
+                                timestamp=trade.timestamp,
+                                transaction_hash=trade.transaction_hash,
+                                title=trade.title,
+                                outcome=trade.outcome,
+                                outcome_index=trade.outcome_index,
+                                event_slug=trade.event_slug,
+                                market_slug=trade.market_slug,
+                                imported_at=now,
+                            )
+                        )
+                        await session.flush()
+                except IntegrityError:
+                    continue
+            await session.flush()
+            rows: list[WalletTrade] = []
+            for offset in range(0, len(fingerprints), 500):
+                rows.extend(
+                    (
+                        await session.scalars(
+                            select(WalletTrade).where(
+                                WalletTrade.wallet_id == subscription.tracked_wallet_id,
+                                WalletTrade.fingerprint.in_(fingerprints[offset : offset + 500]),
+                                WalletTrade.timestamp >= started_at,
+                            )
+                        )
+                    ).all()
+                )
+            existing_signal_trade_ids: set[int] = set()
+            row_ids = [row.id for row in rows]
+            for offset in range(0, len(row_ids), 500):
+                existing_signal_trade_ids.update(
+                    (
+                        await session.scalars(
+                            select(CopyTradeSignal.wallet_trade_id).where(
+                                CopyTradeSignal.subscription_id == subscription_id,
+                                CopyTradeSignal.wallet_trade_id.in_(row_ids[offset : offset + 500]),
+                            )
+                        )
+                    ).all()
+                )
+            for row in rows:
+                title = row.title or ""
+                outcome = row.outcome or ""
+                if row.id in existing_signal_trade_ids or not is_temperature_bucket(title, outcome):
+                    continue
+                session.add(
+                    CopyTradeSignal(
+                        subscription_id=subscription_id,
+                        wallet_trade_id=row.id,
+                        status="pending",
+                        detected_at=now,
+                    )
+                )
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is not None:
+                subscription.last_trade_poll_at = now
+                subscription.last_trade_error = None
+                subscription.updated_at = now
+            await session.commit()
+        await self.process_pending_signals(subscription_id)
+
+    async def process_pending_signals(self, subscription_id: int) -> None:
+        async with self.database.sessions() as session:
+            assets = list(
+                dict.fromkeys(
+                    (
+                        await session.scalars(
+                            select(WalletTrade.asset_id)
+                            .join(
+                                CopyTradeSignal,
+                                CopyTradeSignal.wallet_trade_id == WalletTrade.id,
+                            )
+                            .where(
+                                CopyTradeSignal.subscription_id == subscription_id,
+                                CopyTradeSignal.status == "pending",
+                            )
+                            .order_by(WalletTrade.timestamp.asc(), WalletTrade.id.asc())
+                        )
+                    ).all()
+                )
+            )
+        for asset_id in assets:
+            async with self.database.sessions() as session:
+                subscription = await session.get(CopySubscription, subscription_id)
+                if subscription is None or subscription.state not in {"active", "exit_only"}:
+                    return
+                signals = list(
+                    (
+                        await session.scalars(
+                            select(CopyTradeSignal)
+                            .options(selectinload(CopyTradeSignal.trade))
+                            .join(WalletTrade)
+                            .where(
+                                CopyTradeSignal.subscription_id == subscription_id,
+                                CopyTradeSignal.status == "pending",
+                                WalletTrade.asset_id == asset_id,
+                            )
+                            .order_by(WalletTrade.timestamp.asc(), WalletTrade.id.asc())
+                        )
+                    ).all()
+                )
+                if not signals:
+                    continue
+                await self._process_signal_group(session, subscription, signals)
+                await session.commit()
+
+    async def _process_signal_group(
+        self,
+        session: object,
+        subscription: CopySubscription,
+        signals: list[CopyTradeSignal],
+    ) -> None:
+        trades = [signal.trade for signal in signals]
+        first = trades[0]
+        current = await session.scalar(
+            select(CurrentPosition).where(
+                CurrentPosition.wallet_id == subscription.tracked_wallet_id,
+                CurrentPosition.asset_id == first.asset_id,
+            )
+        )
+        title = first.title or (current.title if current is not None else "")
+        outcome = first.outcome or (current.outcome if current is not None else "")
+        if not is_temperature_bucket(title, outcome):
+            self._mark_signals(signals, "skipped", "非最高/最低气温市场")
+            return
+        state = await session.scalar(
+            select(CopyLeaderState).where(
+                CopyLeaderState.subscription_id == subscription.id,
+                CopyLeaderState.asset_id == first.asset_id,
+            )
+        )
+        now = utcnow()
+        if state is None:
+            state = CopyLeaderState(
+                subscription_id=subscription.id,
+                asset_id=first.asset_id,
+                condition_id=first.condition_id,
+                title=title,
+                outcome=outcome,
+                outcome_index=(
+                    first.outcome_index
+                    if first.outcome_index is not None
+                    else (current.outcome_index if current is not None else None)
+                ),
+                event_slug=first.event_slug
+                or (current.event_slug if current is not None else None),
+                market_slug=first.market_slug
+                or (current.market_slug if current is not None else None),
+                settlement_date=(
+                    current.end_date.date().isoformat()
+                    if current is not None and current.end_date is not None
+                    else None
+                ),
+                size=ZERO,
+                remaining_cost=ZERO,
+                last_trade_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(state)
+            await session.flush()
+        start_size = state.size
+        start_cost = state.remaining_cost
+        end_size = start_size
+        end_cost = start_cost
+        for trade in trades:
+            if trade.side == "BUY":
+                end_size += trade.size
+                end_cost += trade.amount
+            elif end_size > ZERO:
+                fraction = min(ONE, trade.size / end_size)
+                end_size = max(ZERO, end_size - trade.size)
+                end_cost = max(ZERO, end_cost * (ONE - fraction))
+        last_trade = max(trades, key=lambda trade: (trade.timestamp, trade.id))
+        state.size = end_size
+        state.remaining_cost = end_cost
+        state.last_trade_at = last_trade.timestamp
+        state.title = last_trade.title or state.title
+        state.outcome = last_trade.outcome or state.outcome
+        state.event_slug = last_trade.event_slug or state.event_slug
+        state.market_slug = last_trade.market_slug or state.market_slug
+        if last_trade.outcome_index is not None:
+            state.outcome_index = last_trade.outcome_index
+        if current is not None:
+            state.condition_id = current.condition_id
+            state.title = current.title
+            state.outcome = current.outcome
+            state.outcome_index = current.outcome_index
+            state.event_slug = current.event_slug
+            state.market_slug = current.market_slug
+            state.settlement_date = (
+                current.end_date.date().isoformat() if current.end_date is not None else None
+            )
+        state.updated_at = now
+
+        if end_size > start_size and end_cost > start_cost:
+            if subscription.state != "active":
+                self._mark_signals(signals, "skipped", "策略处于仅退出状态")
+                return
+            await self._fast_follow_buy(
+                session,
+                subscription,
+                state,
+                signals,
+                end_cost - start_cost,
+                current,
+            )
+        elif end_size < start_size:
+            fraction = ONE if start_size <= ZERO else min(ONE, (start_size - end_size) / start_size)
+            await self._fast_follow_sell(
+                session,
+                subscription,
+                state,
+                signals,
+                fraction,
+            )
+        else:
+            self._mark_signals(signals, "netted", "同批成交最终净仓位未变化")
+
+    async def _fast_follow_buy(
+        self,
+        session: object,
+        subscription: CopySubscription,
+        state: CopyLeaderState,
+        signals: list[CopyTradeSignal],
+        leader_cost_increase: Decimal,
+        current: CurrentPosition | None,
+    ) -> None:
+        if subscription.mode == "live":
+            account = await session.get(ExecutionAccount, 1)
+            now = utcnow()
+            if (
+                account is None
+                or account.collateral_balance is None
+                or account.last_balance_at is None
+                or now - account.last_balance_at > timedelta(seconds=60)
+            ):
+                raise RuntimeError("执行钱包余额超过60秒未核对，本次实盘买入等待余额刷新")
+        position = await self._position_for_state(session, subscription, state)
+        if position.attributed_size <= ZERO:
+            position.status = "open"
+        position.leader_size = state.size
+        position.leader_remaining_cost = state.remaining_cost
+        precise_end_date = await self.client.fetch_market_end_date(
+            market_slug=state.market_slug,
+            condition_id=state.condition_id,
+        )
+        if precise_end_date is not None:
+            cutoff = precise_end_date - timedelta(minutes=subscription.close_buffer_minutes)
+            if utcnow() >= cutoff:
+                self._mark_signals(signals, "skipped", "市场已进入结算前停止下单窗口")
+                return
+        candidate = (
+            leader_cost_increase * subscription.copy_ratio_percent / Decimal("100")
+            + position.pending_target_usdc
+        )
+        usage = await self._risk_usage(session, subscription, position)
+        bucket_cap = (
+            subscription.strong_bucket_cap_usdc
+            if state.remaining_cost > subscription.strong_threshold_usdc
+            else subscription.base_bucket_cap_usdc
+        )
+        allowed, reason = allowed_buy_usdc(
+            candidate,
+            bucket_cap=bucket_cap,
+            subscription=subscription,
+            usage=usage,
+        )
+        if allowed <= ZERO:
+            self._mark_signals(signals, "skipped", reason or "风控拒绝")
+            return
+        book = await self.client.fetch_order_book(state.asset_id)
+        if book.best_ask is None:
+            raise RuntimeError("订单簿没有可用卖价")
+        estimated_size = allowed / book.best_ask
+        if estimated_size < book.min_order_size:
+            position.pending_target_usdc = min(candidate, max(ZERO, bucket_cap - usage.bucket))
+            position.updated_at = utcnow()
+            self._mark_signals(signals, "deferred", "低于市场最小买入量，已累计")
+            return
+        position.neg_risk = book.neg_risk
+        position.pending_target_usdc = ZERO
+        worst_price = market_worst_price(
+            book.best_ask,
+            book.tick_size,
+            subscription.market_slippage_cents,
+            side="BUY",
+        )
+        await self._place_market_order(
+            session,
+            subscription,
+            position,
+            signals=signals,
+            side="BUY",
+            amount=allowed,
+            reference_price=book.best_ask,
+            worst_price=worst_price,
+            book=book,
+            reason="跟随目标钱包净加仓",
+        )
+
+    async def _fast_follow_sell(
+        self,
+        session: object,
+        subscription: CopySubscription,
+        state: CopyLeaderState,
+        signals: list[CopyTradeSignal],
+        fraction: Decimal,
+    ) -> None:
+        position = await session.scalar(
+            select(CopyPosition).where(
+                CopyPosition.subscription_id == subscription.id,
+                CopyPosition.asset_id == state.asset_id,
+            )
+        )
+        await self._clear_deferred_signals(
+            session,
+            subscription.id,
+            state.asset_id,
+            "目标钱包已减仓，累计买入金额已清零",
+        )
+        if position is None:
+            self._mark_signals(signals, "netted", "目标钱包减仓，但本策略没有归因持仓")
+            return
+        position.pending_target_usdc = ZERO
+        if position.attributed_size <= ZERO:
+            self._mark_signals(signals, "netted", "目标钱包减仓，但本策略没有归因持仓")
+            return
+        await self._cancel_open_buys(session, subscription, position)
+        position.leader_size = state.size
+        position.leader_remaining_cost = state.remaining_cost
+        unallocated_size = max(ZERO, position.attributed_size - position.dust_size)
+        new_size = unallocated_size if fraction >= ONE else unallocated_size * fraction
+        size = min(position.attributed_size, new_size + position.dust_size)
+        book = await self.client.fetch_order_book(state.asset_id)
+        if book.best_bid is None:
+            raise RuntimeError("订单簿没有可用买价")
+        if size < book.min_order_size:
+            position.dust_size = size
+            position.updated_at = utcnow()
+            self._mark_signals(signals, "deferred", "低于市场最小卖出量，已累计")
+            return
+        position.dust_size = ZERO
+        worst_price = market_worst_price(
+            book.best_bid,
+            book.tick_size,
+            subscription.market_slippage_cents,
+            side="SELL",
+        )
+        await self._place_market_order(
+            session,
+            subscription,
+            position,
+            signals=signals,
+            side="SELL",
+            amount=size,
+            reference_price=book.best_bid,
+            worst_price=worst_price,
+            book=book,
+            reason="跟随目标钱包净减仓",
+        )
+
+    async def _position_for_state(
+        self,
+        session: object,
+        subscription: CopySubscription,
+        state: CopyLeaderState,
+    ) -> CopyPosition:
+        position = await session.scalar(
+            select(CopyPosition).where(
+                CopyPosition.subscription_id == subscription.id,
+                CopyPosition.asset_id == state.asset_id,
+            )
+        )
+        if position is not None:
+            return position
+        now = utcnow()
+        position = CopyPosition(
+            subscription_id=subscription.id,
+            asset_id=state.asset_id,
+            condition_id=state.condition_id,
+            title=state.title,
+            outcome=state.outcome,
+            outcome_index=state.outcome_index,
+            neg_risk=None,
+            event_slug=state.event_slug,
+            settlement_date=state.settlement_date,
+            attributed_size=ZERO,
+            attributed_cost=ZERO,
+            reserved_buy_usdc=ZERO,
+            pending_target_usdc=ZERO,
+            dust_size=ZERO,
+            leader_size=state.size,
+            leader_remaining_cost=state.remaining_cost,
+            realized_pnl=ZERO,
+            status="open",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(position)
+        await session.flush()
+        return position
+
+    async def _place_market_order(
+        self,
+        session: object,
+        subscription: CopySubscription,
+        position: CopyPosition,
+        *,
+        signals: list[CopyTradeSignal],
+        side: str,
+        amount: Decimal,
+        reference_price: Decimal,
+        worst_price: Decimal,
+        book: OrderBookSnapshot,
+        reason: str,
+    ) -> CopyOrder:
+        signal_key = (
+            ",".join(str(signal.wallet_trade_id) for signal in signals)
+            if signals
+            else f"close-{position.id}-{int(utcnow().timestamp() // 5)}"
+        )
+        key = hashlib.sha256(
+            f"{subscription.id}:trades:{signal_key}:{side}:{position.asset_id}".encode()
+        ).hexdigest()
+        existing = await session.scalar(select(CopyOrder).where(CopyOrder.idempotency_key == key))
+        if existing is not None:
+            for signal in signals:
+                signal.order_id = existing.id
+            return existing
+        now = utcnow()
+        requested_size = (amount / reference_price if side == "BUY" else amount).quantize(
+            Decimal("0.000001"), rounding=ROUND_DOWN
+        )
+        requested_usdc = amount if side == "BUY" else amount * reference_price
+        order = CopyOrder(
+            subscription_id=subscription.id,
+            copy_position_id=position.id,
+            leader_event_id=None,
+            idempotency_key=key,
+            asset_id=position.asset_id,
+            condition_id=position.condition_id,
+            side=side,
+            mode=subscription.mode,
+            order_type="FAK",
+            requested_size=requested_size,
+            requested_usdc=requested_usdc,
+            limit_price=worst_price,
+            reference_price=reference_price,
+            filled_size=ZERO,
+            filled_usdc=ZERO,
+            fee_usdc=ZERO,
+            status="planned",
+            reason=reason,
+            expires_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(order)
+        await session.flush()
+        for signal in signals:
+            signal.order_id = order.id
+            signal.status = "submitted"
+        request = MarketTradeRequest(
+            asset_id=position.asset_id,
+            side=side,
+            amount=amount,
+            worst_price=worst_price,
+            neg_risk=book.neg_risk,
+        )
+        if subscription.mode == "paper":
+            result = simulate_market_order(request, book)
+        else:
+            result = await (await self._live_trader(session)).submit_market(request)
+        await self._apply_trade_result(session, order, position, result)
+        return order
+
+    @staticmethod
+    def _mark_signals(
+        signals: list[CopyTradeSignal],
+        status: str,
+        reason: str | None,
+    ) -> None:
+        now = utcnow()
+        for signal in signals:
+            signal.status = status
+            signal.reason = reason
+            signal.processed_at = now
+
+    async def _clear_deferred_signals(
+        self,
+        session: object,
+        subscription_id: int,
+        asset_id: str,
+        reason: str,
+    ) -> None:
+        signals = list(
+            (
+                await session.scalars(
+                    select(CopyTradeSignal)
+                    .join(WalletTrade)
+                    .where(
+                        CopyTradeSignal.subscription_id == subscription_id,
+                        CopyTradeSignal.status == "deferred",
+                        WalletTrade.asset_id == asset_id,
+                    )
+                )
+            ).all()
+        )
+        self._mark_signals(signals, "skipped", reason)
 
     async def _follow_buy(
         self,
@@ -233,7 +983,7 @@ class CopyTradingEngine:
         subscription: CopySubscription,
         event: PositionEvent,
     ) -> None:
-        if not is_extreme_temperature_bucket(event.title, event.outcome):
+        if not is_temperature_bucket(event.title, event.outcome):
             return
         leader_amount = sum((fill.amount for fill in event.fills if fill.side == "BUY"), start=ZERO)
         if leader_amount <= ZERO and event.average_fill_price is not None:
@@ -481,13 +1231,66 @@ class CopyTradingEngine:
             )
         order.filled_size = result.filled_size
         order.filled_usdc = result.filled_usdc
-        remaining = max(ZERO, order.requested_size - order.filled_size)
-        position.reserved_buy_usdc = (
-            remaining * order.limit_price
-            if order.side == "BUY" and order.status in OPEN_ORDER_STATES
-            else ZERO
-        )
+        if order.side == "BUY" and order.status in OPEN_ORDER_STATES:
+            position.reserved_buy_usdc = max(ZERO, order.requested_usdc - order.filled_usdc)
+        else:
+            position.reserved_buy_usdc = ZERO
         position.updated_at = now
+        signals = list(
+            (
+                await session.scalars(
+                    select(CopyTradeSignal).where(CopyTradeSignal.order_id == order.id)
+                )
+            ).all()
+        )
+        if order.status in OPEN_ORDER_STATES:
+            for signal in signals:
+                signal.status = "submitted"
+        else:
+            followed = order.filled_size > ZERO
+            for signal in signals:
+                signal.status = "followed" if followed else "failed"
+                signal.reason = order.reason
+                signal.processed_at = now
+        if order.mode == "live" and delta_usdc > ZERO:
+            account = await session.get(ExecutionAccount, 1)
+            if account is not None and account.collateral_balance is not None:
+                account.collateral_balance = max(
+                    ZERO,
+                    account.collateral_balance
+                    + (delta_usdc if order.side == "SELL" else -delta_usdc),
+                )
+                account.updated_at = now
+
+    async def retire_legacy_orders(self, subscription_id: int) -> None:
+        """Cancel resting V1 orders before processing any fast trade signal."""
+
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                return
+            orders = list(
+                (
+                    await session.scalars(
+                        select(CopyOrder).where(
+                            CopyOrder.subscription_id == subscription_id,
+                            CopyOrder.order_type != "FAK",
+                            CopyOrder.status.in_(["open", "submitted", "partially_filled"]),
+                        )
+                    )
+                ).all()
+            )
+            for order in orders:
+                position = await session.get(CopyPosition, order.copy_position_id)
+                if position is not None:
+                    await self._cancel_order(
+                        session,
+                        subscription,
+                        order,
+                        position,
+                        "策略已升级为即时 FAK 跟单，旧挂单已撤销",
+                    )
+            await session.commit()
 
     async def process_open_orders(self, subscription_id: int) -> None:
         async with self.database.sessions() as session:
@@ -499,7 +1302,13 @@ class CopyTradingEngine:
                     await session.scalars(
                         select(CopyOrder).where(
                             CopyOrder.subscription_id == subscription_id,
-                            CopyOrder.status.in_(OPEN_ORDER_STATES),
+                            or_(
+                                CopyOrder.status.in_(OPEN_ORDER_STATES),
+                                and_(
+                                    CopyOrder.order_type != "FAK",
+                                    CopyOrder.status == "partially_filled",
+                                ),
+                            ),
                         )
                     )
                 ).all()
@@ -581,7 +1390,13 @@ class CopyTradingEngine:
                     await session.scalars(
                         select(CopyOrder).where(
                             CopyOrder.subscription_id == subscription_id,
-                            CopyOrder.status.in_(OPEN_ORDER_STATES),
+                            or_(
+                                CopyOrder.status.in_(OPEN_ORDER_STATES),
+                                and_(
+                                    CopyOrder.order_type != "FAK",
+                                    CopyOrder.status == "partially_filled",
+                                ),
+                            ),
                         )
                     )
                 ).all()
@@ -600,6 +1415,17 @@ class CopyTradingEngine:
             for position in positions:
                 position.pending_target_usdc = ZERO
                 position.updated_at = utcnow()
+            deferred = list(
+                (
+                    await session.scalars(
+                        select(CopyTradeSignal).where(
+                            CopyTradeSignal.subscription_id == subscription_id,
+                            CopyTradeSignal.status == "deferred",
+                        )
+                    )
+                ).all()
+            )
+            self._mark_signals(deferred, "skipped", "策略状态变更，累计金额已清零")
             await session.commit()
 
     async def _cancel_open_buys(
@@ -612,7 +1438,13 @@ class CopyTradingEngine:
                         CopyOrder.subscription_id == subscription.id,
                         CopyOrder.copy_position_id == position.id,
                         CopyOrder.side == "BUY",
-                        CopyOrder.status.in_(OPEN_ORDER_STATES),
+                        or_(
+                            CopyOrder.status.in_(OPEN_ORDER_STATES),
+                            and_(
+                                CopyOrder.order_type != "FAK",
+                                CopyOrder.status == "partially_filled",
+                            ),
+                        ),
                     )
                 )
             ).all()
@@ -652,34 +1484,24 @@ class CopyTradingEngine:
         )
         for position in positions:
             await self._cancel_open_buys(session, subscription, position)
-            existing = await session.scalar(
-                select(CopyOrder).where(
-                    CopyOrder.idempotency_key
-                    == hashlib.sha256(
-                        f"{subscription.id}:close-{position.id}:SELL:{position.asset_id}".encode()
-                    ).hexdigest()
-                )
-            )
-            if existing is not None:
-                continue
             book = await self.client.fetch_order_book(position.asset_id)
             if book.best_bid is None:
                 continue
-            price = tolerated_price(
+            price = market_worst_price(
                 book.best_bid,
                 book.tick_size,
-                subscription.price_tolerance_ticks,
-                subscription.price_tolerance_percent,
+                subscription.market_slippage_cents,
                 side="SELL",
             )
-            await self._place_order(
+            await self._place_market_order(
                 session,
                 subscription,
                 position,
-                event=None,
+                signals=[],
                 side="SELL",
-                size=position.attributed_size,
-                limit_price=price,
+                amount=position.attributed_size,
+                reference_price=book.best_bid,
+                worst_price=price,
                 book=book,
                 reason="关闭策略并清仓",
             )
@@ -889,7 +1711,8 @@ class CopyTradingEngine:
             (
                 item.attributed_cost + item.reserved_buy_usdc
                 for item in positions
-                if item.event_slug and item.event_slug == position.event_slug
+                if (item.event_slug or item.condition_id)
+                == (position.event_slug or position.condition_id)
             ),
             start=ZERO,
         )
@@ -897,7 +1720,7 @@ class CopyTradingEngine:
             (
                 item.attributed_cost + item.reserved_buy_usdc
                 for item in positions
-                if item.settlement_date and item.settlement_date == position.settlement_date
+                if item.settlement_date == position.settlement_date
             ),
             start=ZERO,
         )
@@ -957,6 +1780,39 @@ class CopyTradingEngine:
         account.status = "ready"
         await session.commit()
 
+    async def refresh_stale_live_balance(self) -> None:
+        async with self.database.sessions() as session:
+            subscription = await session.scalar(
+                select(CopySubscription).where(
+                    CopySubscription.mode == "live",
+                    CopySubscription.state.in_(["active", "exit_only", "closing"]),
+                )
+            )
+            account = await session.get(ExecutionAccount, 1)
+            if subscription is None or account is None:
+                return
+            now = utcnow()
+            if account.last_balance_at is not None and now - account.last_balance_at < timedelta(
+                seconds=15
+            ):
+                return
+            try:
+                trader = await self._live_trader(session, allow_non_ready=True)
+                balance = await trader.collateral_balance()
+            except Exception as error:
+                account.last_error = str(error)[:1000]
+                account.updated_at = now
+                await session.commit()
+                return
+            account.collateral_balance = balance
+            account.last_balance_at = now
+            account.last_error = None
+            account.status = (
+                "ready" if balance > account.cash_reserve_usdc else "insufficient_balance"
+            )
+            account.updated_at = now
+            await session.commit()
+
     async def _record_skip(
         self,
         session: object,
@@ -1006,7 +1862,16 @@ class CopyTradingEngine:
             raise TradingUnavailable("执行钱包尚未就绪，实盘下单已拒绝")
         if not account.keychain_service or not account.keychain_account:
             raise TradingUnavailable("执行钱包没有钥匙串引用，实盘下单已拒绝")
-        return OfficialClobTrader(
+        cache_key = (
+            account.keychain_service,
+            account.keychain_account,
+            account.signature_type,
+            account.funder_address,
+            self.settings.clob_api_url,
+        )
+        if self._trader_cache is not None and self._trader_cache_key == cache_key:
+            return self._trader_cache
+        trader = OfficialClobTrader(
             host=self.settings.clob_api_url,
             keychain=self.keychain,
             key_reference=KeychainReference(
@@ -1018,6 +1883,9 @@ class CopyTradingEngine:
             relayer_url=self.settings.relayer_api_url,
             rpc_url=self.settings.polygon_rpc_url,
         )
+        self._trader_cache_key = cache_key
+        self._trader_cache = trader
+        return trader
 
     @staticmethod
     def _leader_reference_price(event: PositionEvent, *, side: str) -> Decimal | None:

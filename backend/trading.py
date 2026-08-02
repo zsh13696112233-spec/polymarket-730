@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -27,6 +28,15 @@ class TradeRequest:
     size: Decimal
     limit_price: Decimal
     expiration: int
+    neg_risk: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MarketTradeRequest:
+    asset_id: str
+    side: str
+    amount: Decimal
+    worst_price: Decimal
     neg_risk: bool = False
 
 
@@ -79,6 +89,58 @@ def simulate_limit_order(request: TradeRequest, book: OrderBookSnapshot) -> Trad
     )
 
 
+def simulate_market_order(
+    request: MarketTradeRequest,
+    book: OrderBookSnapshot,
+) -> TradeResult:
+    """Execute once against current depth and cancel any unfilled remainder."""
+
+    levels = (
+        sorted(book.asks, key=lambda level: level.price)
+        if request.side == "BUY"
+        else sorted(book.bids, key=lambda level: level.price, reverse=True)
+    )
+    remaining = request.amount
+    filled_size = ZERO
+    filled_usdc = ZERO
+    for level in levels:
+        marketable = (
+            level.price <= request.worst_price
+            if request.side == "BUY"
+            else level.price >= request.worst_price
+        )
+        if not marketable:
+            break
+        if request.side == "BUY":
+            size = min(level.size, remaining / level.price)
+            amount = size * level.price
+            remaining -= amount
+        else:
+            size = min(level.size, remaining)
+            amount = size * level.price
+            remaining -= size
+        filled_size += size
+        filled_usdc += amount
+        if remaining <= Decimal("0.0000001"):
+            remaining = ZERO
+            break
+    average = filled_usdc / filled_size if filled_size > ZERO else None
+    if remaining <= ZERO:
+        status = "filled"
+    elif filled_size > ZERO:
+        status = "partially_filled"
+    else:
+        status = "unfilled"
+    return TradeResult(
+        status=status,
+        external_order_id=None,
+        filled_size=filled_size,
+        filled_usdc=filled_usdc,
+        average_price=average,
+        reason=("盘口深度不足，未成交部分已取消" if remaining > ZERO else None),
+    )
+
+
 class OfficialClobTrader:
     """Thin adapter around Polymarket's official py-clob-client package."""
 
@@ -100,9 +162,86 @@ class OfficialClobTrader:
         self.funder_address = funder_address
         self.relayer_url = relayer_url
         self.rpc_url = rpc_url
+        self._client: Any | None = None
+        self._client_lock = threading.Lock()
 
     async def submit(self, request: TradeRequest) -> TradeResult:
         return await asyncio.to_thread(self._submit_sync, request)
+
+    async def submit_market(self, request: MarketTradeRequest) -> TradeResult:
+        return await asyncio.to_thread(self._submit_market_sync, request)
+
+    def _submit_market_sync(self, request: MarketTradeRequest) -> TradeResult:
+        try:
+            from py_clob_client.clob_types import (
+                MarketOrderArgs,
+                OrderType,
+                PartialCreateOrderOptions,
+            )
+        except ImportError as error:
+            raise TradingUnavailable("缺少官方 py-clob-client，实盘下单已拒绝") from error
+
+        try:
+            client = self._client_sync()
+            args = MarketOrderArgs(
+                token_id=request.asset_id,
+                amount=float(request.amount),
+                side="BUY" if request.side == "BUY" else "SELL",
+                price=float(request.worst_price),
+                order_type=OrderType.FAK,
+            )
+            options = PartialCreateOrderOptions(neg_risk=request.neg_risk)
+            signed_order = client.create_market_order(args, options)
+            response = client.post_order(signed_order, OrderType.FAK)
+        except Exception as error:
+            raise TradingUnavailable(f"Polymarket FAK 市价下单失败：{error}") from error
+        if not isinstance(response, dict):
+            raise TradingUnavailable("Polymarket 实盘下单返回格式无效")
+        if response.get("success") is False or response.get("errorMsg"):
+            return TradeResult(
+                status="unfilled",
+                external_order_id=None,
+                reason=str(response.get("errorMsg") or "Polymarket 拒绝订单"),
+            )
+        order_id = response.get("orderID") or response.get("orderId") or response.get("id")
+        try:
+            making = Decimal(str(response.get("makingAmount") or 0))
+            taking = Decimal(str(response.get("takingAmount") or 0))
+        except (ArithmeticError, ValueError):
+            making = ZERO
+            taking = ZERO
+        if making > ZERO and taking > ZERO:
+            if request.side == "BUY":
+                filled_size = taking
+                filled_usdc = making
+            else:
+                filled_size = making
+                filled_usdc = taking
+            requested_fill = filled_usdc if request.side == "BUY" else filled_size
+            fully_filled = requested_fill >= request.amount - Decimal("0.000001")
+            return TradeResult(
+                status="filled" if fully_filled else "partially_filled",
+                external_order_id=str(order_id) if order_id else None,
+                filled_size=filled_size,
+                filled_usdc=filled_usdc,
+                average_price=filled_usdc / filled_size,
+                reason=None if fully_filled else "FAK 部分成交，剩余已取消",
+            )
+        if order_id:
+            try:
+                result = self._order_status_sync(str(order_id))
+                if result.filled_size <= ZERO:
+                    return TradeResult(
+                        status="unfilled",
+                        external_order_id=str(order_id),
+                        reason="FAK 未成交，订单已取消",
+                    )
+                return result
+            except TradingUnavailable:
+                # A successful POST with an order id is not retried. Returning the
+                # accepted id lets the engine reconcile it without duplicating a market order.
+                return TradeResult(status="submitted", external_order_id=str(order_id))
+        raise TradingUnavailable("FAK 市价订单已提交但没有返回订单编号，结果无法确认")
 
     def _submit_sync(self, request: TradeRequest) -> TradeResult:
         try:
@@ -112,7 +251,7 @@ class OfficialClobTrader:
                 OrderType,
                 PartialCreateOrderOptions,
             )
-            from py_clob_client.constants import BUY, POLYGON, SELL
+            from py_clob_client.constants import POLYGON
         except ImportError as error:
             raise TradingUnavailable("缺少官方 py-clob-client，实盘下单已拒绝") from error
 
@@ -132,7 +271,7 @@ class OfficialClobTrader:
                 token_id=request.asset_id,
                 price=float(request.limit_price),
                 size=float(request.size),
-                side=BUY if request.side == "BUY" else SELL,
+                side="BUY" if request.side == "BUY" else "SELL",
                 expiration=request.expiration,
             )
             options = PartialCreateOrderOptions(neg_risk=request.neg_risk)
@@ -185,6 +324,15 @@ class OfficialClobTrader:
         )
 
     def _client_sync(self) -> Any:
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            self._client = self._build_client_sync()
+            return self._client
+
+    def _build_client_sync(self) -> Any:
         try:
             from py_clob_client.client import ClobClient
             from py_clob_client.constants import POLYGON
@@ -239,6 +387,8 @@ class OfficialClobTrader:
         original = Decimal(str(payload.get("original_size") or payload.get("originalSize") or 0))
         if original > ZERO and matched >= original:
             status = "filled"
+        elif matched > ZERO and original > matched:
+            status = "partially_filled"
         elif matched > ZERO and status == "open":
             status = "partially_filled"
         return TradeResult(

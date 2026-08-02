@@ -25,6 +25,7 @@ from backend.models import (
     CopyOrder,
     CopyPosition,
     CopySubscription,
+    CopyTradeSignal,
     CurrentPosition,
     ExecutionAccount,
     GlobalSettings,
@@ -51,6 +52,7 @@ from backend.schemas import (
     CopySubscriptionModeUpdate,
     CopySubscriptionRead,
     CopySubscriptionUpdate,
+    CopyTradeSignalRead,
     EventRead,
     EventsResponse,
     ExecutionAccountRead,
@@ -614,6 +616,7 @@ def create_app(
     ) -> CopySubscriptionRead:
         database: Database = request.app.state.database
         engine: CopyTradingEngine = request.app.state.copy_engine
+        previous_state: str
         async with database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
             if subscription is None:
@@ -649,6 +652,10 @@ def create_app(
                 )
                 if other_live is not None and subscription.state != "disabled":
                     raise HTTPException(status_code=409, detail="同一时间只能有一个实盘目标")
+            previous_state = subscription.state
+            subscription.state = "paused"
+            subscription.updated_at = utcnow()
+            await session.commit()
         await engine.cancel_open_orders(subscription_id)
         async with database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
@@ -677,7 +684,16 @@ def create_app(
             subscription.last_processed_event_id = baseline
             subscription.updated_at = utcnow()
             await session.commit()
-            return await copy_subscription_read(session, subscription)
+        await engine.prime_subscription(subscription_id)
+        async with database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            assert subscription is not None
+            subscription.state = previous_state
+            subscription.updated_at = utcnow()
+            await session.commit()
+            result = await copy_subscription_read(session, subscription)
+        engine.wake()
+        return result
 
     @application.post(
         "/api/copy-trading/subscriptions/{subscription_id}/action",
@@ -728,6 +744,7 @@ def create_app(
                 subscription.updated_at = utcnow()
                 await session.commit()
             await engine.cancel_open_orders(subscription_id)
+        needs_fast_baseline = False
         async with database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
             if subscription is None:
@@ -751,14 +768,16 @@ def create_app(
                 baseline = await latest_event_id(session, subscription.tracked_wallet_id)
                 subscription.baseline_event_id = baseline
                 subscription.last_processed_event_id = baseline
-                subscription.state = "active"
+                subscription.state = "paused"
                 subscription.enabled_at = utcnow()
                 subscription.last_error = None
+                needs_fast_baseline = True
             elif payload.action == "exit_only":
                 if subscription.state == "paused":
                     subscription.last_processed_event_id = await latest_event_id(
                         session, subscription.tracked_wallet_id
                     )
+                    needs_fast_baseline = True
                 subscription.state = "exit_only"
             elif payload.action == "close":
                 subscription.state = "closing"
@@ -766,6 +785,15 @@ def create_app(
                 raise HTTPException(status_code=422, detail="不支持的策略操作")
             subscription.updated_at = utcnow()
             await session.commit()
+        if needs_fast_baseline:
+            await engine.prime_subscription(subscription_id)
+        async with database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            assert subscription is not None
+            if payload.action in {"activate", "resume"}:
+                subscription.state = "active"
+                subscription.updated_at = utcnow()
+                await session.commit()
             result = await copy_subscription_read(session, subscription)
         engine.wake()
         return result
@@ -787,6 +815,7 @@ def create_app(
             )
             positions: list[CopyPosition] = []
             orders: list[CopyOrder] = []
+            signals: list[CopyTradeSignal] = []
             subscription_response = None
             if subscription is not None:
                 subscription_response = await copy_subscription_read(session, subscription)
@@ -809,11 +838,42 @@ def create_app(
                         )
                     ).all()
                 )
+                signals = list(
+                    (
+                        await session.scalars(
+                            select(CopyTradeSignal)
+                            .options(selectinload(CopyTradeSignal.trade))
+                            .where(CopyTradeSignal.subscription_id == subscription.id)
+                            .order_by(CopyTradeSignal.detected_at.desc(), CopyTradeSignal.id.desc())
+                            .limit(100)
+                        )
+                    ).all()
+                )
             return CopyDashboardRead(
                 account=execution_account_read(await session.get(ExecutionAccount, 1)),
                 subscription=subscription_response,
                 positions=[CopyPositionRead.model_validate(item) for item in positions],
                 orders=[CopyOrderRead.model_validate(item) for item in orders],
+                signals=[
+                    CopyTradeSignalRead(
+                        id=item.id,
+                        wallet_trade_id=item.wallet_trade_id,
+                        order_id=item.order_id,
+                        asset_id=item.trade.asset_id,
+                        title=item.trade.title,
+                        outcome=item.trade.outcome,
+                        side=item.trade.side,
+                        leader_size=item.trade.size,
+                        leader_amount=item.trade.amount,
+                        leader_price=item.trade.price,
+                        traded_at=item.trade.timestamp,
+                        detected_at=item.detected_at,
+                        processed_at=item.processed_at,
+                        status=item.status,
+                        reason=item.reason,
+                    )
+                    for item in signals
+                ],
             )
 
     @application.get("/api/wallets", response_model=list[WalletRead])

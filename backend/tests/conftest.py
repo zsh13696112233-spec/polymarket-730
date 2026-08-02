@@ -70,6 +70,7 @@ class FakePolymarketClient:
         self.last_snapshot: list[PositionSnapshot] = []
         self.trades: list[TradeSnapshot] = []
         self.trade_error: Exception | None = None
+        self.market_end_dates: dict[str, datetime | None] = {}
         self.redemptions: list[RedemptionSnapshot] = []
         self.redemption_error: Exception | None = None
         self.evidence = SettlementEvidence(frozenset(), frozenset(), frozenset())
@@ -106,20 +107,28 @@ class FakePolymarketClient:
         self,
         user: str,
         *,
-        condition_ids: Any,
+        condition_ids: Any = None,
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> list[TradeSnapshot]:
         if self.trade_error is not None:
             raise self.trade_error
-        conditions = set(condition_ids)
+        conditions = set(condition_ids or [])
         return [
             trade
             for trade in self.trades
-            if trade.condition_id in conditions
+            if (not conditions or trade.condition_id in conditions)
             and (start is None or trade.timestamp >= start)
             and (end is None or trade.timestamp <= end)
         ]
+
+    async def fetch_market_end_date(
+        self,
+        *,
+        market_slug: str | None,
+        condition_id: str,
+    ) -> datetime | None:
+        return self.market_end_dates.get(market_slug or condition_id)
 
     async def fetch_redemptions(
         self,

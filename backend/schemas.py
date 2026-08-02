@@ -88,6 +88,7 @@ class CopySubscriptionConfig(APIModel):
     total_exposure_cap_usdc: Decimal = Field(default=Decimal("160"), ge=0)
     daily_buy_limit_usdc: Decimal = Field(default=Decimal("80"), ge=0)
     daily_loss_limit_usdc: Decimal = Field(default=Decimal("40"), ge=0)
+    market_slippage_cents: Decimal = Field(default=Decimal("5"), ge=0, le=50)
     price_tolerance_ticks: int = Field(default=2, ge=0, le=20)
     price_tolerance_percent: Decimal = Field(default=Decimal("3"), ge=0, le=100)
     order_ttl_minutes: int = Field(default=360, ge=1, le=1440)
@@ -130,6 +131,7 @@ class CopySubscriptionRead(APIModel):
     total_exposure_cap_usdc: DecimalNumber
     daily_buy_limit_usdc: DecimalNumber
     daily_loss_limit_usdc: DecimalNumber
+    market_slippage_cents: DecimalNumber
     price_tolerance_ticks: int
     price_tolerance_percent: DecimalNumber
     order_ttl_minutes: int
@@ -138,12 +140,21 @@ class CopySubscriptionRead(APIModel):
     last_processed_event_id: int
     enabled_at: datetime | None
     last_processed_at: datetime | None
+    fast_poll_started_at: datetime | None
+    last_trade_poll_at: datetime | None
+    last_trade_error: str | None
     last_error: str | None
     open_exposure_usdc: DecimalNumber = Decimal("0")
     daily_bought_usdc: DecimalNumber = Decimal("0")
     daily_realized_pnl: DecimalNumber = Decimal("0")
 
-    @field_serializer("enabled_at", "last_processed_at", when_used="json")
+    @field_serializer(
+        "enabled_at",
+        "last_processed_at",
+        "fast_poll_started_at",
+        "last_trade_poll_at",
+        when_used="json",
+    )
     def serialize_subscription_dates(self, value: datetime | None) -> str | None:
         return _as_utc_iso(value)
 
@@ -187,6 +198,7 @@ class CopyOrderRead(APIModel):
     requested_size: DecimalNumber
     requested_usdc: DecimalNumber
     limit_price: DecimalNumber
+    reference_price: DecimalNumber | None
     filled_size: DecimalNumber
     filled_usdc: DecimalNumber
     fee_usdc: DecimalNumber
@@ -206,6 +218,29 @@ class CopyDashboardRead(APIModel):
     subscription: CopySubscriptionRead | None
     positions: list[CopyPositionRead]
     orders: list[CopyOrderRead]
+    signals: list[CopyTradeSignalRead]
+
+
+class CopyTradeSignalRead(APIModel):
+    id: int
+    wallet_trade_id: int
+    order_id: int | None
+    asset_id: str
+    title: str | None
+    outcome: str | None
+    side: Literal["BUY", "SELL"]
+    leader_size: DecimalNumber
+    leader_amount: DecimalNumber
+    leader_price: DecimalNumber
+    traded_at: datetime
+    detected_at: datetime
+    processed_at: datetime | None
+    status: str
+    reason: str | None
+
+    @field_serializer("traded_at", "detected_at", "processed_at", when_used="json")
+    def serialize_signal_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
 
 
 class CopyRecommendation(APIModel):

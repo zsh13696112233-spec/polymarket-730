@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
+from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
+from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
 
@@ -64,6 +67,11 @@ class TradeSnapshot:
     price: Decimal
     timestamp: datetime
     transaction_hash: str | None
+    title: str | None = None
+    outcome: str | None = None
+    outcome_index: int | None = None
+    event_slug: str | None = None
+    market_slug: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +125,42 @@ class OrderBookSnapshot:
     @property
     def best_ask(self) -> Decimal | None:
         return min((level.price for level in self.asks), default=None)
+
+
+def fingerprint_trades(
+    proxy_wallet: str,
+    trades: list[TradeSnapshot],
+) -> list[tuple[str, TradeSnapshot]]:
+    """Create stable fingerprints across overlapping public-trade polls."""
+
+    occurrences: dict[str, int] = defaultdict(int)
+    results: list[tuple[str, TradeSnapshot]] = []
+    for trade in sorted(
+        trades,
+        key=lambda item: (
+            item.timestamp,
+            item.transaction_hash or "",
+            item.asset_id,
+            item.side,
+            item.price,
+            item.size,
+        ),
+    ):
+        base = "|".join(
+            [
+                proxy_wallet,
+                trade.transaction_hash or "",
+                trade.asset_id,
+                trade.side,
+                str(trade.price),
+                str(trade.size),
+            ]
+        )
+        occurrence = occurrences[base]
+        occurrences[base] += 1
+        fingerprint = hashlib.sha256(f"{base}|{occurrence}".encode()).hexdigest()
+        results.append((fingerprint, trade))
+    return results
 
 
 def parse_wallet_input(value: str) -> str:
@@ -185,6 +229,7 @@ class PolymarketClient:
             transport=transport,
             headers={"User-Agent": "polymarket-wallet-monitor/0.1"},
         )
+        self._market_end_cache: dict[str, tuple[float, datetime | None]] = {}
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -244,6 +289,39 @@ class PolymarketClient:
             min_order_size=min_order_size if min_order_size > ZERO else Decimal("5"),
             neg_risk=bool(payload.get("neg_risk", False)),
         )
+
+    async def fetch_market_end_date(
+        self,
+        *,
+        market_slug: str | None,
+        condition_id: str,
+    ) -> datetime | None:
+        """Return Gamma's timestamped end date, never Data API's date-only value."""
+
+        cache_key = market_slug or condition_id
+        cached = self._market_end_cache.get(cache_key)
+        now = monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        params: dict[str, Any] = {"limit": 1}
+        if market_slug:
+            params["slug"] = market_slug
+        else:
+            params["condition_ids"] = condition_id
+        payload = await self._get_json(f"{self.gamma_api_url}/markets", params=params)
+        if not isinstance(payload, list):
+            raise PolymarketAPIError("市场时间接口返回格式无效")
+        item = next((entry for entry in payload if isinstance(entry, dict)), None)
+        raw_end_date = item.get("endDate") if item is not None else None
+        # A bare YYYY-MM-DD cannot be used as a UTC cutoff. Treat it as unknown
+        # rather than silently converting it to midnight and blocking the whole day.
+        end_date = (
+            None
+            if isinstance(raw_end_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_end_date)
+            else parse_datetime(raw_end_date)
+        )
+        self._market_end_cache[cache_key] = (now + (300 if end_date is not None else 30), end_date)
+        return end_date
 
     @staticmethod
     def _parse_retry_after(raw: str | None) -> float | None:
@@ -545,32 +623,32 @@ class PolymarketClient:
         self,
         user: str,
         *,
-        condition_ids: Iterable[str],
+        condition_ids: Iterable[str] | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> list[TradeSnapshot]:
-        conditions = list(dict.fromkeys(condition_ids))
-        if not conditions:
-            return []
+        conditions = list(dict.fromkeys(condition_ids or []))
         limit = 500
         results: list[TradeSnapshot] = []
-        for condition_offset in range(
-            0,
-            len(conditions),
-            self.TRADE_MARKET_BATCH_SIZE,
-        ):
-            condition_batch = conditions[
-                condition_offset : condition_offset + self.TRADE_MARKET_BATCH_SIZE
+        condition_batches: list[list[str] | None] = (
+            [
+                conditions[offset : offset + self.TRADE_MARKET_BATCH_SIZE]
+                for offset in range(0, len(conditions), self.TRADE_MARKET_BATCH_SIZE)
             ]
+            if conditions
+            else [None]
+        )
+        for condition_batch in condition_batches:
             offset = 0
             while True:
                 params: dict[str, Any] = {
                     "user": user,
-                    "market": ",".join(condition_batch),
                     "takerOnly": "false",
                     "limit": limit,
                     "offset": offset,
                 }
+                if condition_batch:
+                    params["market"] = ",".join(condition_batch)
                 if start is not None:
                     params["start"] = int(start.replace(tzinfo=UTC).timestamp())
                 if end is not None:
@@ -601,6 +679,15 @@ class PolymarketClient:
                             price=to_decimal(item.get("price")),
                             timestamp=timestamp,
                             transaction_hash=item.get("transactionHash"),
+                            title=str(item.get("title") or "") or None,
+                            outcome=str(item.get("outcome") or "") or None,
+                            outcome_index=(
+                                int(item["outcomeIndex"])
+                                if item.get("outcomeIndex") is not None
+                                else None
+                            ),
+                            event_slug=item.get("eventSlug"),
+                            market_slug=item.get("slug"),
                         )
                     )
                 if len(payload) < limit or (

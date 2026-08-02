@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.broker import EventBroker
@@ -31,6 +32,7 @@ from backend.polymarket import (
     RedemptionSnapshot,
     SettlementEvidence,
     TradeSnapshot,
+    fingerprint_trades,
 )
 from backend.purchase_history import redemption_cost_bases
 
@@ -455,21 +457,31 @@ class WalletMonitor:
             for fingerprint, trade in fingerprinted:
                 if fingerprint in existing_fingerprints:
                     continue
-                session.add(
-                    WalletTrade(
-                        wallet_id=wallet_id,
-                        fingerprint=fingerprint,
-                        asset_id=trade.asset_id,
-                        condition_id=trade.condition_id,
-                        side=trade.side,
-                        size=trade.size,
-                        price=trade.price,
-                        amount=trade.size * trade.price,
-                        timestamp=trade.timestamp,
-                        transaction_hash=trade.transaction_hash,
-                        imported_at=observed_at,
-                    )
-                )
+                try:
+                    async with session.begin_nested():
+                        session.add(
+                            WalletTrade(
+                                wallet_id=wallet_id,
+                                fingerprint=fingerprint,
+                                asset_id=trade.asset_id,
+                                condition_id=trade.condition_id,
+                                side=trade.side,
+                                size=trade.size,
+                                price=trade.price,
+                                amount=trade.size * trade.price,
+                                timestamp=trade.timestamp,
+                                transaction_hash=trade.transaction_hash,
+                                title=trade.title,
+                                outcome=trade.outcome,
+                                outcome_index=trade.outcome_index,
+                                event_slug=trade.event_slug,
+                                market_slug=trade.market_slug,
+                                imported_at=observed_at,
+                            )
+                        )
+                        await session.flush()
+                except IntegrityError:
+                    continue
             wallet = await session.get(WatchedWallet, wallet_id)
             if wallet is not None:
                 wallet.trade_history_synced_at = observed_at
@@ -1196,31 +1208,4 @@ class WalletMonitor:
         proxy_wallet: str,
         trades: list[TradeSnapshot],
     ) -> list[tuple[str, TradeSnapshot]]:
-        occurrences: dict[str, int] = defaultdict(int)
-        results: list[tuple[str, TradeSnapshot]] = []
-        for trade in sorted(
-            trades,
-            key=lambda item: (
-                item.timestamp,
-                item.transaction_hash or "",
-                item.asset_id,
-                item.side,
-                item.price,
-                item.size,
-            ),
-        ):
-            base = "|".join(
-                [
-                    proxy_wallet,
-                    trade.transaction_hash or "",
-                    trade.asset_id,
-                    trade.side,
-                    str(trade.price),
-                    str(trade.size),
-                ]
-            )
-            occurrence = occurrences[base]
-            occurrences[base] += 1
-            fingerprint = hashlib.sha256(f"{base}|{occurrence}".encode()).hexdigest()
-            results.append((fingerprint, trade))
-        return results
+        return fingerprint_trades(proxy_wallet, trades)

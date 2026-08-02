@@ -10,6 +10,62 @@ from backend.polymarket import InvalidWalletInput, PolymarketAPIError, Polymarke
 from backend.tests.conftest import TEST_ADDRESS
 
 
+@pytest.mark.asyncio
+async def test_market_end_date_uses_precise_gamma_timestamp_and_cache():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.host == "gamma.test"
+        assert request.url.params["slug"] == "temperature-market"
+        return httpx.Response(200, json=[{"endDate": "2026-08-02T12:00:00Z"}])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        first = await client.fetch_market_end_date(
+            market_slug="temperature-market",
+            condition_id="0x" + "1" * 64,
+        )
+        second = await client.fetch_market_end_date(
+            market_slug="temperature-market",
+            condition_id="0x" + "1" * 64,
+        )
+    finally:
+        await client.close()
+
+    assert first == datetime(2026, 8, 2, 12)
+    assert second == first
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_market_end_date_rejects_date_only_midnight_assumption():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"endDate": "2026-08-02"}])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        end_date = await client.fetch_market_end_date(
+            market_slug="temperature-market",
+            condition_id="0x" + "1" * 64,
+        )
+    finally:
+        await client.close()
+
+    assert end_date is None
+
+
 def raw_position(asset: str) -> dict[str, object]:
     return {
         "asset": asset,

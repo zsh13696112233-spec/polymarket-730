@@ -166,6 +166,10 @@ class CopySubscription(Base):
             "settlement_day_cap_usdc <= total_exposure_cap_usdc",
             name="ck_copy_subscriptions_total_cap",
         ),
+        CheckConstraint(
+            "market_slippage_cents >= 0 AND market_slippage_cents <= 50",
+            name="ck_copy_subscriptions_market_slippage",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -202,6 +206,9 @@ class CopySubscription(Base):
     daily_loss_limit_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("40")
     )
+    market_slippage_cents: Mapped[Decimal] = mapped_column(
+        PERCENT_TYPE, nullable=False, default=Decimal("5")
+    )
     price_tolerance_ticks: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     price_tolerance_percent: Mapped[Decimal] = mapped_column(
         PERCENT_TYPE, nullable=False, default=Decimal("3")
@@ -212,6 +219,9 @@ class CopySubscription(Base):
     last_processed_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fast_poll_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_trade_poll_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_trade_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -221,6 +231,40 @@ class CopySubscription(Base):
         back_populates="subscription", cascade="all, delete-orphan"
     )
     orders: Mapped[list[CopyOrder]] = relationship(back_populates="subscription")
+    leader_states: Mapped[list[CopyLeaderState]] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan"
+    )
+    signals: Mapped[list[CopyTradeSignal]] = relationship(
+        back_populates="subscription", cascade="all, delete-orphan"
+    )
+
+
+class CopyLeaderState(Base):
+    __tablename__ = "copy_leader_states"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "asset_id", name="uq_copy_leader_states_asset"),
+        Index("ix_copy_leader_states_subscription", "subscription_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("copy_subscriptions.id", ondelete="CASCADE"), nullable=False
+    )
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(200), nullable=False)
+    outcome_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_slug: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    market_slug: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    settlement_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    remaining_cost: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
+    last_trade_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    subscription: Mapped[CopySubscription] = relationship(back_populates="leader_states")
 
 
 class CopyPosition(Base):
@@ -284,6 +328,7 @@ class CopyOrder(Base):
     requested_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     requested_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     limit_price: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    reference_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     filled_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
     filled_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
     fee_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
@@ -298,6 +343,7 @@ class CopyOrder(Base):
     fills: Mapped[list[CopyFill]] = relationship(
         back_populates="order", cascade="all, delete-orphan"
     )
+    signals: Mapped[list[CopyTradeSignal]] = relationship(back_populates="order")
 
 
 class CopyFill(Base):
@@ -584,6 +630,42 @@ class WalletTrade(Base):
     amount: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     transaction_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    outcome_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_slug: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    market_slug: Mapped[str | None] = mapped_column(String(500), nullable=True)
     imported_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     wallet: Mapped[WatchedWallet] = relationship(back_populates="trades")
+
+
+class CopyTradeSignal(Base):
+    __tablename__ = "copy_trade_signals"
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id",
+            "wallet_trade_id",
+            name="uq_copy_trade_signals_subscription_trade",
+        ),
+        Index("ix_copy_trade_signals_subscription_detected", "subscription_id", "detected_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("copy_subscriptions.id", ondelete="CASCADE"), nullable=False
+    )
+    wallet_trade_id: Mapped[int] = mapped_column(
+        ForeignKey("wallet_trades.id", ondelete="CASCADE"), nullable=False
+    )
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("copy_orders.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    subscription: Mapped[CopySubscription] = relationship(back_populates="signals")
+    trade: Mapped[WalletTrade] = relationship()
+    order: Mapped[CopyOrder | None] = relationship(back_populates="signals")

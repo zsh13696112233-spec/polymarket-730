@@ -801,7 +801,7 @@ summary:focus-visible {
   font-size: 9px;
 }
 
-.overlapActivityHeader > button,
+.overlapActivityHeaderActions button,
 .activityMeta button {
   border: 0;
   background: transparent;
@@ -811,6 +811,26 @@ summary:focus-visible {
   font-weight: 760;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.overlapActivityHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 12px;
+}
+
+.overlapActivityCollapsed {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  background: #fffdfc;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.overlapActivityCollapsed:hover {
+  color: var(--loss);
 }
 
 .overlapActivityHeader button:disabled,
@@ -2761,7 +2781,7 @@ summary:focus-visible {
 
 .copyTradingMetrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -2816,6 +2836,89 @@ summary:focus-visible {
 .executionAccountRow {
   padding-top: 13px;
   border-top: 1px solid rgba(31, 41, 55, 0.1);
+}
+
+.copySignalFeed {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.copySignalFeedHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.08);
+}
+
+.copySignalFeedHeader span,
+.copySignalFeed > p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.copySignalFeed > p {
+  margin: 0;
+  padding: 15px 13px;
+}
+
+.copySignalList {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.copySignalItem {
+  display: grid;
+  grid-template-columns: minmax(210px, 1.5fr) minmax(150px, 0.75fr) minmax(150px, 0.75fr);
+  gap: 14px;
+  padding: 11px 13px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.07);
+}
+
+.copySignalItem:last-child {
+  border-bottom: 0;
+}
+
+.copySignalItem > div {
+  min-width: 0;
+}
+
+.copySignalItem span,
+.copySignalItem small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.copySignalItem strong {
+  display: block;
+  overflow: hidden;
+  margin: 3px 0;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copySignalSide {
+  width: max-content;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-weight: 760;
+}
+
+.copySignalSide.buy {
+  background: var(--profit-soft);
+  color: var(--profit);
+}
+
+.copySignalSide.sell {
+  background: var(--loss-soft);
+  color: var(--loss);
 }
 
 .keychainHint,
@@ -2879,8 +2982,13 @@ summary:focus-visible {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .copySignalItem {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .keychainHint,
-  .copyTradingError {
+  .copyTradingError,
+  .copySignalFeed {
     grid-column: 1;
   }
 }
@@ -2895,6 +3003,10 @@ summary:focus-visible {
   .executionAccountRow {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .copySignalItem {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -71,10 +71,36 @@ type CopyPosition = {
   id: number | string;
   title: string;
   outcome: string;
+  event_slug: string | null;
   attributed_size: Numeric;
   attributed_cost: Numeric;
   realized_pnl: Numeric;
   status: string;
+  updated_at: string;
+  average_entry_price: Numeric | null;
+  current_bid: Numeric | null;
+  current_value: Numeric | null;
+  unrealized_pnl: Numeric | null;
+  unrealized_pnl_percent: Numeric | null;
+  total_pnl: Numeric | null;
+  lifetime_bought_size: Numeric;
+  lifetime_bought_usdc: Numeric;
+  lifetime_sold_size: Numeric;
+  lifetime_sold_usdc: Numeric;
+  lifetime_average_buy_price: Numeric | null;
+  valuation_status: "ok" | "unavailable" | "not_applicable";
+  valued_at: string | null;
+};
+
+type CopyPortfolioSummary = {
+  open_cost_usdc: Numeric;
+  market_value_usdc: Numeric | null;
+  unrealized_pnl: Numeric | null;
+  realized_pnl: Numeric;
+  total_pnl: Numeric | null;
+  valuation_complete: boolean;
+  unpriced_positions: number;
+  valued_at: string | null;
 };
 
 type CopyOrder = {
@@ -115,6 +141,7 @@ type CopyDashboard = {
   positions: CopyPosition[];
   orders: CopyOrder[];
   signals: CopyTradeSignal[];
+  portfolio?: CopyPortfolioSummary;
 };
 
 type CopyRecommendation = {
@@ -325,6 +352,14 @@ function toNumber(value: string | number | null | undefined) {
 
 function formatMoney(value: string | number | null | undefined) {
   return moneyFormatter.format(toNumber(value));
+}
+
+function formatOptionalMoney(value: string | number | null | undefined) {
+  return value === null || value === undefined ? "—" : formatMoney(value);
+}
+
+function formatOptionalPrice(value: string | number | null | undefined) {
+  return value === null || value === undefined ? "—" : formatPrice(value);
 }
 
 function formatRedemptionMoney(
@@ -2080,6 +2115,239 @@ function formatSignalLag(signal: CopyTradeSignal) {
   return `检测延迟 ${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`;
 }
 
+const copyPositionStatusLabels: Record<string, string> = {
+  open: "持仓中",
+  closed: "已清仓",
+  redeemed: "已赎回",
+  paper_archived: "模拟归档",
+};
+
+function CopyPnlValue({
+  value,
+  percent,
+}: {
+  value: Numeric | null;
+  percent?: Numeric | null;
+}) {
+  if (value === null || value === undefined) return <span className="copyValueMissing">—</span>;
+  const tone = toNumber(value) >= 0 ? "profit" : "loss";
+  return (
+    <span className={`copyPnlValue ${tone}`}>
+      {formatMoney(value)}
+      {percent !== null && percent !== undefined && <small>{formatPercent(percent)}</small>}
+    </span>
+  );
+}
+
+function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
+  const [view, setView] = useState<"open" | "history">("open");
+  const openPositions = dashboard.positions.filter(
+    (position) => toNumber(position.attributed_size) > 0,
+  );
+  const historicalPositions = dashboard.positions.filter(
+    (position) =>
+      toNumber(position.attributed_size) <= 0 &&
+      toNumber(position.lifetime_bought_size) > 0,
+  );
+  const displayed = view === "open" ? openPositions : historicalPositions;
+  const portfolio = dashboard.portfolio ?? {
+    open_cost_usdc: dashboard.subscription?.open_exposure_usdc ?? 0,
+    market_value_usdc: null,
+    unrealized_pnl: null,
+    realized_pnl: dashboard.subscription?.daily_realized_pnl ?? 0,
+    total_pnl: null,
+    valuation_complete: false,
+    unpriced_positions: openPositions.length,
+    valued_at: null,
+  };
+
+  return (
+    <section className="copyPositionSection" aria-label="模拟跟单持仓明细">
+      <div className="copyPositionHeader">
+        <div>
+          <strong>
+            {dashboard.subscription?.mode === "paper" ? "模拟跟单持仓" : "实盘归因持仓"}
+          </strong>
+          <span>按当前买一价估算可卖出价值 · 盈亏未计交易手续费</span>
+        </div>
+        <div className="copyPositionTabs" role="tablist" aria-label="跟单持仓范围">
+          <button
+            className={view === "open" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={view === "open"}
+            onClick={() => setView("open")}
+          >
+            当前持仓 <span>{openPositions.length}</span>
+          </button>
+          <button
+            className={view === "history" ? "active" : ""}
+            type="button"
+            role="tab"
+            aria-selected={view === "history"}
+            onClick={() => setView("history")}
+          >
+            历史记录 <span>{historicalPositions.length}</span>
+          </button>
+        </div>
+      </div>
+      <div className="copyPortfolioSummary">
+        <div>
+          <span>当前成本</span>
+          <strong>{formatMoney(portfolio.open_cost_usdc)}</strong>
+        </div>
+        <div>
+          <span>可卖出市值</span>
+          <strong>{formatOptionalMoney(portfolio.market_value_usdc)}</strong>
+        </div>
+        <div>
+          <span>浮动盈亏</span>
+          <CopyPnlValue value={portfolio.unrealized_pnl} />
+        </div>
+        <div>
+          <span>已实现盈亏</span>
+          <CopyPnlValue value={portfolio.realized_pnl} />
+        </div>
+        <div>
+          <span>总盈亏</span>
+          <CopyPnlValue value={portfolio.total_pnl} />
+        </div>
+      </div>
+      {!portfolio.valuation_complete && openPositions.length > 0 && (
+        <p className="copyValuationWarning">
+          {portfolio.unpriced_positions} 个当前持仓暂时没有买一价，组合市值与总盈亏暂不展示。
+        </p>
+      )}
+      {displayed.length === 0 ? (
+        <p className="copyPositionEmpty">
+          {view === "open" ? "当前还没有模拟归因持仓。" : "暂时没有已清仓或已赎回记录。"}
+        </p>
+      ) : (
+        <>
+          <div className="copyPositionTableWrap">
+            <table className="copyPositionTable">
+              <thead>
+                {view === "open" ? (
+                  <tr>
+                    <th>市场 / 方向</th>
+                    <th className="numberCell">份额</th>
+                    <th className="numberCell">成本 / 均价</th>
+                    <th className="numberCell">当前买一</th>
+                    <th className="numberCell">当前市值</th>
+                    <th className="numberCell">浮动盈亏</th>
+                    <th className="numberCell">已实现 / 总盈亏</th>
+                  </tr>
+                ) : (
+                  <tr>
+                    <th>市场 / 方向</th>
+                    <th>状态</th>
+                    <th className="numberCell">累计买入份额</th>
+                    <th className="numberCell">累计投入 / 均价</th>
+                    <th className="numberCell">累计卖出</th>
+                    <th className="numberCell">最终已实现盈亏</th>
+                  </tr>
+                )}
+              </thead>
+              <tbody>
+                {displayed.map((position) =>
+                  view === "open" ? (
+                    <tr key={position.id}>
+                      <td>
+                        <MarketTitle
+                          title={position.title}
+                          outcome={position.outcome}
+                          eventSlug={position.event_slug}
+                        />
+                        <small className="copyPositionUpdated">
+                          {position.valuation_status === "ok"
+                            ? `估值 ${formatDateTime(position.valued_at)}`
+                            : "当前盘口不可用"}
+                        </small>
+                      </td>
+                      <td className="numberCell">{formatShares(position.attributed_size)}</td>
+                      <td className="numberCell">
+                        <strong>{formatMoney(position.attributed_cost)}</strong>
+                        <small>{formatOptionalPrice(position.average_entry_price)}</small>
+                      </td>
+                      <td className="numberCell">{formatOptionalPrice(position.current_bid)}</td>
+                      <td className="numberCell">{formatOptionalMoney(position.current_value)}</td>
+                      <td className="numberCell">
+                        <CopyPnlValue
+                          value={position.unrealized_pnl}
+                          percent={position.unrealized_pnl_percent}
+                        />
+                      </td>
+                      <td className="numberCell">
+                        <small>{formatMoney(position.realized_pnl)}</small>
+                        <CopyPnlValue value={position.total_pnl} />
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr key={position.id}>
+                      <td>
+                        <MarketTitle
+                          title={position.title}
+                          outcome={position.outcome}
+                          eventSlug={position.event_slug}
+                        />
+                        <small className="copyPositionUpdated">
+                          更新于 {formatDateTime(position.updated_at)}
+                        </small>
+                      </td>
+                      <td>{copyPositionStatusLabels[position.status] ?? position.status}</td>
+                      <td className="numberCell">{formatShares(position.lifetime_bought_size)}</td>
+                      <td className="numberCell">
+                        <strong>{formatMoney(position.lifetime_bought_usdc)}</strong>
+                        <small>{formatOptionalPrice(position.lifetime_average_buy_price)}</small>
+                      </td>
+                      <td className="numberCell">{formatMoney(position.lifetime_sold_usdc)}</td>
+                      <td className="numberCell">
+                        <CopyPnlValue value={position.realized_pnl} />
+                      </td>
+                    </tr>
+                  ),
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="copyPositionCards">
+            {displayed.map((position) => (
+              <article className="copyPositionCard" key={position.id}>
+                <MarketTitle
+                  title={position.title}
+                  outcome={position.outcome}
+                  eventSlug={position.event_slug}
+                />
+                {view === "open" ? (
+                  <dl>
+                    <div><dt>持仓份额</dt><dd>{formatShares(position.attributed_size)}</dd></div>
+                    <div><dt>持仓成本</dt><dd>{formatMoney(position.attributed_cost)}</dd></div>
+                    <div><dt>平均买入</dt><dd>{formatOptionalPrice(position.average_entry_price)}</dd></div>
+                    <div><dt>当前买一</dt><dd>{formatOptionalPrice(position.current_bid)}</dd></div>
+                    <div><dt>当前市值</dt><dd>{formatOptionalMoney(position.current_value)}</dd></div>
+                    <div><dt>浮动盈亏</dt><dd><CopyPnlValue value={position.unrealized_pnl} percent={position.unrealized_pnl_percent} /></dd></div>
+                    <div><dt>已实现盈亏</dt><dd><CopyPnlValue value={position.realized_pnl} /></dd></div>
+                    <div><dt>总盈亏</dt><dd><CopyPnlValue value={position.total_pnl} /></dd></div>
+                  </dl>
+                ) : (
+                  <dl>
+                    <div><dt>状态</dt><dd>{copyPositionStatusLabels[position.status] ?? position.status}</dd></div>
+                    <div><dt>累计买入份额</dt><dd>{formatShares(position.lifetime_bought_size)}</dd></div>
+                    <div><dt>累计投入</dt><dd>{formatMoney(position.lifetime_bought_usdc)}</dd></div>
+                    <div><dt>历史买入均价</dt><dd>{formatOptionalPrice(position.lifetime_average_buy_price)}</dd></div>
+                    <div><dt>累计卖出</dt><dd>{formatMoney(position.lifetime_sold_usdc)}</dd></div>
+                    <div><dt>已实现盈亏</dt><dd><CopyPnlValue value={position.realized_pnl} /></dd></div>
+                  </dl>
+                )}
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function CopyTradingPanel({
   dashboard,
   error,
@@ -2200,6 +2468,7 @@ function CopyTradingPanel({
               切换{subscription.mode === "paper" ? "实盘" : "模拟盘"}
             </button>
           </div>
+          {dashboard && <CopyTradingPositions dashboard={dashboard} />}
           <section className="copySignalFeed" aria-label="最近快速跟单">
             <div className="copySignalFeedHeader">
               <strong>最近快速跟单</strong>

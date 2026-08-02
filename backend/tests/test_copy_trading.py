@@ -491,6 +491,17 @@ def test_fast_paper_engine_buys_at_current_ask_not_leader_average(app_client_fac
     assert dashboard["orders"][0]["order_type"] == "FAK"
     assert dashboard["orders"][0]["expires_at"] is None
     assert dashboard["signals"][0]["status"] == "followed"
+    position = dashboard["positions"][0]
+    assert abs(Decimal(str(position["average_entry_price"])) - Decimal("0.47")) < Decimal(
+        "0.000001"
+    )
+    assert Decimal(str(position["current_bid"])) == Decimal("0.46")
+    assert abs(Decimal(str(position["current_value"])) - Decimal("5.87234")) < Decimal("0.00001")
+    assert Decimal(str(position["unrealized_pnl"])) < 0
+    assert Decimal(str(position["lifetime_bought_usdc"])) == Decimal("6")
+    assert position["valuation_status"] == "ok"
+    assert dashboard["portfolio"]["valuation_complete"] is True
+    assert dashboard["portfolio"]["unpriced_positions"] == 0
 
     client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
     repeated = client.get(
@@ -499,6 +510,20 @@ def test_fast_paper_engine_buys_at_current_ask_not_leader_average(app_client_fac
     ).json()
     assert len(repeated["orders"]) == 1
     assert len(repeated["signals"]) == 1
+
+    async def unavailable_order_book(_: str) -> OrderBookSnapshot:
+        raise RuntimeError("temporary quote failure")
+
+    fake.fetch_order_book = unavailable_order_book  # type: ignore[attr-defined]
+    unavailable = client.get(
+        "/api/copy-trading/dashboard",
+        params={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    assert unavailable["positions"][0]["valuation_status"] == "unavailable"
+    assert unavailable["positions"][0]["current_bid"] is None
+    assert unavailable["portfolio"]["valuation_complete"] is False
+    assert unavailable["portfolio"]["market_value_usdc"] is None
+    assert unavailable["portfolio"]["total_pnl"] is None
 
 
 def test_fast_buy_uses_precise_gamma_end_time_instead_of_date_only_midnight(
@@ -687,4 +712,51 @@ def test_fast_engine_sells_same_fraction_as_leader(app_client_factory):
     ).json()
     assert [order["side"] for order in dashboard["orders"]] == ["SELL", "BUY"]
     assert Decimal(str(dashboard["positions"][0]["attributed_size"])) == Decimal("6")
+    assert Decimal(str(dashboard["positions"][0]["attributed_cost"])) == Decimal("3")
+    assert Decimal(str(dashboard["positions"][0]["current_value"])) == Decimal("4.14")
+    assert Decimal(str(dashboard["positions"][0]["realized_pnl"])) == Decimal("1.14")
+    assert Decimal(str(dashboard["positions"][0]["unrealized_pnl"])) == Decimal("1.14")
+    assert Decimal(str(dashboard["positions"][0]["total_pnl"])) == Decimal("2.28")
+    assert Decimal(str(dashboard["positions"][0]["lifetime_bought_usdc"])) == Decimal("6")
+    assert Decimal(str(dashboard["positions"][0]["lifetime_sold_usdc"])) == Decimal("4.14")
     assert dashboard["signals"][0]["status"] == "followed"
+
+    fake.trades.append(
+        TradeSnapshot(
+            **common,
+            side="SELL",
+            size=Decimal("300"),
+            price=Decimal("0.80"),
+            timestamp=utcnow(),
+            transaction_hash="0xsell-rest",
+        )
+    )
+    current_book["value"] = OrderBookSnapshot(
+        asset_id="asset-sell",
+        bids=(OrderBookLevel(Decimal("0.80"), Decimal("1000")),),
+        asks=(OrderBookLevel(Decimal("0.81"), Decimal("1000")),),
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("5"),
+        neg_risk=False,
+    )
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+    quote_calls = {"count": 0}
+
+    async def should_not_quote_closed(_: str) -> OrderBookSnapshot:
+        quote_calls["count"] += 1
+        raise AssertionError("closed history must not request an order book")
+
+    fake.fetch_order_book = should_not_quote_closed  # type: ignore[attr-defined]
+    history = client.get(
+        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
+    ).json()
+    assert quote_calls["count"] == 0
+    assert Decimal(str(history["positions"][0]["attributed_size"])) == 0
+    assert history["positions"][0]["status"] == "closed"
+    assert Decimal(str(history["positions"][0]["lifetime_bought_usdc"])) == Decimal("6")
+    assert Decimal(str(history["positions"][0]["lifetime_sold_usdc"])) == Decimal("8.94")
+    assert Decimal(str(history["positions"][0]["realized_pnl"])) == Decimal("2.94")
+    assert Decimal(str(history["positions"][0]["total_pnl"])) == Decimal("2.94")
+    assert Decimal(str(history["portfolio"]["open_cost_usdc"])) == 0
+    assert Decimal(str(history["portfolio"]["market_value_usdc"])) == 0
+    assert Decimal(str(history["portfolio"]["total_pnl"])) == Decimal("2.94")

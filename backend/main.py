@@ -21,6 +21,7 @@ from backend.copy_trading import CopyTradingEngine, latest_event_id
 from backend.db import Database
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
+    CopyFill,
     CopyLedger,
     CopyOrder,
     CopyPosition,
@@ -45,6 +46,7 @@ from backend.purchase_history import build_purchase_lots
 from backend.schemas import (
     CopyDashboardRead,
     CopyOrderRead,
+    CopyPortfolioSummaryRead,
     CopyPositionRead,
     CopyRecommendation,
     CopySubscriptionAction,
@@ -816,6 +818,7 @@ def create_app(
             positions: list[CopyPosition] = []
             orders: list[CopyOrder] = []
             signals: list[CopyTradeSignal] = []
+            fill_totals: dict[int, dict[str, Decimal]] = {}
             subscription_response = None
             if subscription is not None:
                 subscription_response = await copy_subscription_read(session, subscription)
@@ -849,10 +852,153 @@ def create_app(
                         )
                     ).all()
                 )
+                aggregate_rows = (
+                    await session.execute(
+                        select(
+                            CopyOrder.copy_position_id,
+                            CopyOrder.side,
+                            func.sum(CopyFill.size),
+                            func.sum(CopyFill.amount),
+                        )
+                        .join(CopyFill, CopyFill.order_id == CopyOrder.id)
+                        .where(
+                            CopyOrder.subscription_id == subscription.id,
+                            CopyOrder.copy_position_id.is_not(None),
+                        )
+                        .group_by(CopyOrder.copy_position_id, CopyOrder.side)
+                    )
+                ).all()
+                for position_id, side, size, amount in aggregate_rows:
+                    totals = fill_totals.setdefault(
+                        int(position_id),
+                        {
+                            "BUY_size": Decimal("0"),
+                            "BUY_usdc": Decimal("0"),
+                            "SELL_size": Decimal("0"),
+                            "SELL_usdc": Decimal("0"),
+                        },
+                    )
+                    totals[f"{side}_size"] = size or Decimal("0")
+                    totals[f"{side}_usdc"] = amount or Decimal("0")
+            open_positions = [item for item in positions if item.attributed_size > 0]
+            quote_semaphore = asyncio.Semaphore(5)
+
+            async def fetch_position_bid(position: CopyPosition) -> tuple[int, Decimal | None]:
+                async with quote_semaphore:
+                    try:
+                        book = await request.app.state.polymarket_client.fetch_order_book(
+                            position.asset_id
+                        )
+                    except Exception:
+                        return position.id, None
+                    return position.id, book.best_bid
+
+            quote_rows = await asyncio.gather(
+                *(fetch_position_bid(position) for position in open_positions)
+            )
+            bids = dict(quote_rows)
+            valued_at = utcnow()
+            position_responses: list[CopyPositionRead] = []
+            for position in positions:
+                totals = fill_totals.get(
+                    position.id,
+                    {
+                        "BUY_size": Decimal("0"),
+                        "BUY_usdc": Decimal("0"),
+                        "SELL_size": Decimal("0"),
+                        "SELL_usdc": Decimal("0"),
+                    },
+                )
+                lifetime_bought_size = totals["BUY_size"]
+                lifetime_bought_usdc = totals["BUY_usdc"]
+                if position.attributed_size <= 0 and lifetime_bought_size <= 0:
+                    continue
+                average_entry_price = (
+                    position.attributed_cost / position.attributed_size
+                    if position.attributed_size > 0
+                    else None
+                )
+                lifetime_average_buy_price = (
+                    lifetime_bought_usdc / lifetime_bought_size
+                    if lifetime_bought_size > 0
+                    else None
+                )
+                current_bid = bids.get(position.id) if position.attributed_size > 0 else None
+                if position.attributed_size > 0 and current_bid is not None:
+                    current_value = position.attributed_size * current_bid
+                    unrealized_pnl = current_value - position.attributed_cost
+                    unrealized_pnl_percent = (
+                        unrealized_pnl / position.attributed_cost * Decimal("100")
+                        if position.attributed_cost > 0
+                        else None
+                    )
+                    total_pnl = unrealized_pnl + position.realized_pnl
+                    valuation_status = "ok"
+                    position_valued_at = valued_at
+                elif position.attributed_size > 0:
+                    current_value = None
+                    unrealized_pnl = None
+                    unrealized_pnl_percent = None
+                    total_pnl = None
+                    valuation_status = "unavailable"
+                    position_valued_at = valued_at
+                else:
+                    current_value = None
+                    unrealized_pnl = None
+                    unrealized_pnl_percent = None
+                    total_pnl = position.realized_pnl
+                    valuation_status = "not_applicable"
+                    position_valued_at = None
+                position_responses.append(
+                    CopyPositionRead.model_validate(position).model_copy(
+                        update={
+                            "average_entry_price": average_entry_price,
+                            "current_bid": current_bid,
+                            "current_value": current_value,
+                            "unrealized_pnl": unrealized_pnl,
+                            "unrealized_pnl_percent": unrealized_pnl_percent,
+                            "total_pnl": total_pnl,
+                            "lifetime_bought_size": lifetime_bought_size,
+                            "lifetime_bought_usdc": lifetime_bought_usdc,
+                            "lifetime_sold_size": totals["SELL_size"],
+                            "lifetime_sold_usdc": totals["SELL_usdc"],
+                            "lifetime_average_buy_price": lifetime_average_buy_price,
+                            "valuation_status": valuation_status,
+                            "valued_at": position_valued_at,
+                        }
+                    )
+                )
+            open_cost = sum(
+                (position.attributed_cost for position in open_positions),
+                start=Decimal("0"),
+            )
+            realized_pnl = sum(
+                (position.realized_pnl for position in positions),
+                start=Decimal("0"),
+            )
+            priced_values = [
+                position.current_value
+                for position in position_responses
+                if position.attributed_size > 0 and position.current_value is not None
+            ]
+            unpriced_positions = sum(
+                1
+                for position in position_responses
+                if position.attributed_size > 0 and position.current_value is None
+            )
+            valuation_complete = unpriced_positions == 0
+            if valuation_complete:
+                market_value = sum(priced_values, start=Decimal("0"))
+                unrealized_pnl = market_value - open_cost
+                total_pnl = unrealized_pnl + realized_pnl
+            else:
+                market_value = None
+                unrealized_pnl = None
+                total_pnl = None
             return CopyDashboardRead(
                 account=execution_account_read(await session.get(ExecutionAccount, 1)),
                 subscription=subscription_response,
-                positions=[CopyPositionRead.model_validate(item) for item in positions],
+                positions=position_responses,
                 orders=[CopyOrderRead.model_validate(item) for item in orders],
                 signals=[
                     CopyTradeSignalRead(
@@ -874,6 +1020,16 @@ def create_app(
                     )
                     for item in signals
                 ],
+                portfolio=CopyPortfolioSummaryRead(
+                    open_cost_usdc=open_cost,
+                    market_value_usdc=market_value,
+                    unrealized_pnl=unrealized_pnl,
+                    realized_pnl=realized_pnl,
+                    total_pnl=total_pnl,
+                    valuation_complete=valuation_complete,
+                    unpriced_positions=unpriced_positions,
+                    valued_at=valued_at if open_positions else None,
+                ),
             )
 
     @application.get("/api/wallets", response_model=list[WalletRead])

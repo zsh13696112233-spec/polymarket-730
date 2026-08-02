@@ -237,6 +237,125 @@ afterEach(() => {
 });
 
 describe("Polymarket 钱包监控页", () => {
+  it("展示模拟跟单当前持仓估值并可切换历史盈亏", async () => {
+    const subscription = {
+      id: 1,
+      tracked_wallet_id: walletOne.id,
+      tracked_wallet_label: walletOne.label,
+      mode: "paper",
+      state: "active",
+      copy_ratio_percent: 2,
+      open_exposure_usdc: 6,
+      daily_bought_usdc: 6,
+      daily_buy_limit_usdc: 80,
+      daily_realized_pnl: 2,
+      market_slippage_cents: 5,
+      last_trade_poll_at: "2026-08-02T10:00:00Z",
+      last_trade_error: null,
+      last_error: null,
+    };
+    const currentCopyPosition = {
+      id: 11,
+      title: "Paris 37°C 模拟持仓",
+      outcome: "Yes",
+      event_slug: "highest-temperature-in-paris-on-august-3-2026",
+      attributed_size: 12.765957,
+      attributed_cost: 6,
+      realized_pnl: 0,
+      status: "open",
+      updated_at: "2026-08-02T10:00:00Z",
+      average_entry_price: 0.47,
+      current_bid: 0.46,
+      current_value: 5.87234,
+      unrealized_pnl: -0.12766,
+      unrealized_pnl_percent: -2.12767,
+      total_pnl: -0.12766,
+      lifetime_bought_size: 12.765957,
+      lifetime_bought_usdc: 6,
+      lifetime_sold_size: 0,
+      lifetime_sold_usdc: 0,
+      lifetime_average_buy_price: 0.47,
+      valuation_status: "ok",
+      valued_at: "2026-08-02T10:00:00Z",
+    };
+    const historicalCopyPosition = {
+      ...currentCopyPosition,
+      id: 12,
+      title: "London 17°C 历史持仓",
+      attributed_size: 0,
+      attributed_cost: 0,
+      realized_pnl: 2.94,
+      status: "closed",
+      average_entry_price: null,
+      current_bid: null,
+      current_value: null,
+      unrealized_pnl: null,
+      unrealized_pnl_percent: null,
+      total_pnl: 2.94,
+      lifetime_bought_size: 12,
+      lifetime_bought_usdc: 6,
+      lifetime_sold_size: 12,
+      lifetime_sold_usdc: 8.94,
+      lifetime_average_buy_price: 0.5,
+      valuation_status: "not_applicable",
+      valued_at: null,
+    };
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/settings") {
+        return jsonResponse({ copy_ratio_percent: 10 });
+      }
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/copy-trading/dashboard") {
+        return jsonResponse({
+          account: null,
+          subscription,
+          positions: [currentCopyPosition, historicalCopyPosition],
+          orders: [],
+          signals: [],
+          portfolio: {
+            open_cost_usdc: 6,
+            market_value_usdc: 5.87234,
+            unrealized_pnl: -0.12766,
+            realized_pnl: 2.94,
+            total_pnl: 2.81234,
+            valuation_complete: true,
+            unpriced_positions: 0,
+            valued_at: "2026-08-02T10:00:00Z",
+          },
+        });
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+
+    expect(await screen.findByText("模拟跟单持仓")).toBeInTheDocument();
+    expect(screen.getAllByText("Paris 37°C 模拟持仓").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("47¢").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("46¢").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("-$0.13").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("-2.13%").length).toBeGreaterThan(0);
+    expect(screen.queryByText("London 17°C 历史持仓")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /历史记录 1/ }));
+    expect(screen.getAllByText("London 17°C 历史持仓").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("已清仓").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$8.94").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$2.94").length).toBeGreaterThan(0);
+    expect(screen.getByText("盈亏未计交易手续费", { exact: false })).toBeInTheDocument();
+  });
+
   it("保存全局跟单比例并按新比例展示历史建议", async () => {
     let ratio = 10;
     let submittedBody: unknown;

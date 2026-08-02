@@ -2833,6 +2833,194 @@ summary:focus-visible {
   color: #b33434;
 }
 
+.copyPositionSection {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.copyPositionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.08);
+}
+
+.copyPositionHeader > div:first-child {
+  min-width: 0;
+}
+
+.copyPositionHeader strong,
+.copyPositionHeader span {
+  display: block;
+}
+
+.copyPositionHeader > div:first-child > span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.copyPositionTabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--surface-muted);
+}
+
+.copyPositionTabs button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.copyPositionTabs button.active {
+  background: #fff;
+  color: var(--brand-dark);
+  box-shadow: 0 2px 7px rgba(31, 41, 55, 0.08);
+}
+
+.copyPositionTabs button span {
+  display: inline;
+  margin-left: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.copyPortfolioSummary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.08);
+  background: rgba(31, 41, 55, 0.07);
+}
+
+.copyPortfolioSummary > div {
+  min-width: 0;
+  padding: 11px 13px;
+  background: #fff;
+}
+
+.copyPortfolioSummary span,
+.copyPortfolioSummary small {
+  display: block;
+}
+
+.copyPortfolioSummary > div > span {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.copyPortfolioSummary strong,
+.copyPortfolioSummary .copyPnlValue {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.copyValuationWarning,
+.copyPositionEmpty {
+  margin: 0;
+  padding: 11px 13px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.copyValuationWarning {
+  border-bottom: 1px solid rgba(31, 41, 55, 0.07);
+  background: var(--warning-soft);
+  color: #76501d;
+}
+
+.copyPositionTableWrap {
+  overflow-x: auto;
+}
+
+.copyPositionTable {
+  width: 100%;
+  min-width: 850px;
+  border-collapse: collapse;
+}
+
+.copyPositionTable th,
+.copyPositionTable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.07);
+  font-size: 10px;
+  vertical-align: middle;
+}
+
+.copyPositionTable th {
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.copyPositionTable tr:last-child td {
+  border-bottom: 0;
+}
+
+.copyPositionTable td:first-child {
+  min-width: 235px;
+  max-width: 330px;
+}
+
+.copyPositionTable td > strong,
+.copyPositionTable td > small,
+.copyPnlValue,
+.copyPnlValue small {
+  display: block;
+}
+
+.copyPositionTable td > small,
+.copyPnlValue small,
+.copyPositionUpdated {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.copyPnlValue {
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+}
+
+.copyPnlValue.profit {
+  color: var(--profit);
+}
+
+.copyPnlValue.loss {
+  color: var(--loss);
+}
+
+.copyPnlValue small {
+  color: inherit;
+}
+
+.copyValueMissing {
+  color: var(--muted);
+}
+
+.copyPositionCards {
+  display: none;
+}
+
 .executionAccountRow {
   padding-top: 13px;
   border-top: 1px solid rgba(31, 41, 55, 0.1);
@@ -2988,8 +3176,13 @@ summary:focus-visible {
 
   .keychainHint,
   .copyTradingError,
+  .copyPositionSection,
   .copySignalFeed {
     grid-column: 1;
+  }
+
+  .copyPortfolioSummary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -3007,6 +3200,61 @@ summary:focus-visible {
 
   .copySignalItem {
     grid-template-columns: 1fr;
+  }
+
+  .copyPositionHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .copyPositionTabs {
+    width: 100%;
+  }
+
+  .copyPositionTabs button {
+    flex: 1;
+  }
+
+  .copyPortfolioSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .copyPositionTableWrap {
+    display: none;
+  }
+
+  .copyPositionCards {
+    display: grid;
+    gap: 10px;
+    padding: 11px;
+  }
+
+  .copyPositionCard {
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .copyPositionCard dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
+    margin: 14px 0 0;
+  }
+
+  .copyPositionCard dt {
+    margin-bottom: 4px;
+    color: var(--muted);
+    font-size: 9px;
+  }
+
+  .copyPositionCard dd {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 680;
+    font-variant-numeric: tabular-nums;
   }
 }
 

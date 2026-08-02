@@ -179,12 +179,23 @@ class CopyPositionRead(APIModel):
     realized_pnl: DecimalNumber
     status: str
     updated_at: datetime
+    average_entry_price: DecimalNumber | None = None
+    current_bid: DecimalNumber | None = None
+    current_value: DecimalNumber | None = None
+    unrealized_pnl: DecimalNumber | None = None
+    unrealized_pnl_percent: DecimalNumber | None = None
+    total_pnl: DecimalNumber | None = None
+    lifetime_bought_size: DecimalNumber = Decimal("0")
+    lifetime_bought_usdc: DecimalNumber = Decimal("0")
+    lifetime_sold_size: DecimalNumber = Decimal("0")
+    lifetime_sold_usdc: DecimalNumber = Decimal("0")
+    lifetime_average_buy_price: DecimalNumber | None = None
+    valuation_status: Literal["ok", "unavailable", "not_applicable"] = "not_applicable"
+    valued_at: datetime | None = None
 
-    @field_serializer("updated_at", when_used="json")
-    def serialize_position_updated_at(self, value: datetime) -> str:
-        serialized = _as_utc_iso(value)
-        assert serialized is not None
-        return serialized
+    @field_serializer("updated_at", "valued_at", when_used="json")
+    def serialize_position_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
 
 
 class CopyOrderRead(APIModel):
@@ -213,12 +224,28 @@ class CopyOrderRead(APIModel):
         return _as_utc_iso(value)
 
 
+class CopyPortfolioSummaryRead(APIModel):
+    open_cost_usdc: DecimalNumber = Decimal("0")
+    market_value_usdc: DecimalNumber | None = None
+    unrealized_pnl: DecimalNumber | None = None
+    realized_pnl: DecimalNumber = Decimal("0")
+    total_pnl: DecimalNumber | None = None
+    valuation_complete: bool = True
+    unpriced_positions: int = 0
+    valued_at: datetime | None = None
+
+    @field_serializer("valued_at", when_used="json")
+    def serialize_valued_at(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
 class CopyDashboardRead(APIModel):
     account: ExecutionAccountRead | None
     subscription: CopySubscriptionRead | None
     positions: list[CopyPositionRead]
     orders: list[CopyOrderRead]
     signals: list[CopyTradeSignalRead]
+    portfolio: CopyPortfolioSummaryRead
 
 
 class CopyTradeSignalRead(APIModel):

@@ -634,10 +634,18 @@ def test_purchase_dates_preserve_daily_buy_lots_and_fifo_reductions(
     body = client.get("/api/positions", params={"wallet_id": wallet["id"]}).json()
 
     assert body["purchase_dates"] == ["2026-07-29", "2026-07-28"]
+    assert body["opened_dates"] == ["2026-07-28"]
     assert body["purchase_history_complete"] is True
     assert body["purchase_history_error"] is None
     assert body["items"][0]["first_opened_at"] == "2026-07-27T17:00:00Z"
     assert body["items"][0]["first_opened_at_source"] == "trade"
+    assert body["items"][0]["opened_date"] == "2026-07-28"
+    assert body["items"][0]["cycle_history_complete"] is True
+    assert [trade["type"] for trade in body["items"][0]["cycle_trades"]] == [
+        "opened",
+        "increased",
+        "decreased",
+    ]
     lots = body["items"][0]["purchase_lots"]
     assert [lot["purchase_date"] for lot in lots] == ["2026-07-29", "2026-07-28"]
     assert lots[0]["size"] == pytest.approx(50)
@@ -663,9 +671,11 @@ def test_purchase_history_is_marked_incomplete_without_matching_trades(
     body = client.get("/api/positions", params={"wallet_id": wallet["id"]}).json()
 
     assert body["purchase_dates"] == []
+    assert len(body["opened_dates"]) == 1
     assert body["purchase_history_complete"] is False
     assert body["items"][0]["first_opened_at"] is not None
     assert body["items"][0]["first_opened_at_source"] == "first_seen"
+    assert body["items"][0]["cycle_history_complete"] is False
     assert body["items"][0]["purchase_lots"] == []
 
 

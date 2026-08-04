@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -45,6 +46,8 @@ type CopySubscription = {
     | "disabled"
     | "error";
   copy_ratio_percent: Numeric;
+  large_trade_threshold_usdc: Numeric;
+  large_trade_fixed_shares: Numeric;
   base_bucket_cap_usdc: Numeric;
   strong_threshold_usdc: Numeric;
   strong_bucket_cap_usdc: Numeric;
@@ -183,7 +186,20 @@ type Position = {
   end_date: string | null;
   first_opened_at: string | null;
   first_opened_at_source: "trade" | "first_seen";
+  opened_date: string | null;
+  cycle_trades: PositionCycleTrade[];
+  cycle_history_complete: boolean;
   purchase_lots?: PurchaseLot[];
+};
+
+type PositionCycleTrade = {
+  id: number | string;
+  type: "opened" | "increased" | "decreased";
+  size: Numeric;
+  price: Numeric;
+  amount: Numeric;
+  timestamp: string;
+  transaction_hash: string | null;
 };
 
 type PurchaseLot = {
@@ -206,6 +222,7 @@ type PositionSummary = {
 type PositionResponse = {
   items: Position[];
   summary: PositionSummary;
+  opened_dates?: string[];
   purchase_dates?: string[];
   purchase_history_complete?: boolean;
   purchase_history_error?: string | null;
@@ -458,47 +475,8 @@ function formatPositionDateTime(value: string | null | undefined) {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    timeZone: "Asia/Shanghai",
   }).format(date);
-}
-
-function positionForPurchaseDate(
-  position: Position,
-  purchaseDate: string,
-): Position | null {
-  const lots = (position.purchase_lots ?? []).filter(
-    (lot) => lot.purchase_date === purchaseDate,
-  );
-  if (lots.length === 0) return null;
-
-  const size = lots.reduce((total, lot) => total + toNumber(lot.size), 0);
-  const initialValue = lots.reduce(
-    (total, lot) => total + toNumber(lot.initial_value),
-    0,
-  );
-  const currentValue = lots.reduce(
-    (total, lot) => total + toNumber(lot.current_value),
-    0,
-  );
-  const cashPnl = currentValue - initialValue;
-  return {
-    ...position,
-    size,
-    avg_price: size > 0 ? initialValue / size : 0,
-    initial_value: initialValue,
-    current_value: currentValue,
-    cash_pnl: cashPnl,
-    percent_pnl: initialValue > 0 ? (cashPnl / initialValue) * 100 : 0,
-    purchase_lots: lots,
-  };
-}
-
-function purchaseDateLabel(position: Position) {
-  const dates = [
-    ...new Set((position.purchase_lots ?? []).map((lot) => lot.purchase_date)),
-  ];
-  if (dates.length === 0) return "日期待回填";
-  if (dates.length === 1) return formatPurchaseDate(dates[0]);
-  return `${formatPurchaseDate(dates[dates.length - 1])} 等 ${dates.length} 天`;
 }
 
 function shortenAddress(address: string) {
@@ -734,6 +712,61 @@ function CurrentPositionCopyTarget({
   );
 }
 
+function PositionCycleDetails({ position }: { position: Position }) {
+  return (
+    <div className="positionCycleDetails">
+      <div className="positionCycleHeading">
+        <div>
+          <span>当前建仓周期</span>
+          <strong>{formatPurchaseDate(position.opened_date ?? "")}</strong>
+        </div>
+        <small>以下明细均按北京时间显示</small>
+      </div>
+      {!position.cycle_history_complete && (
+        <p className="cycleHistoryWarning">
+          历史成交尚未完整回填，建仓时间以首次监测为准，下面仅展示已识别成交。
+        </p>
+      )}
+      {position.cycle_trades.length > 0 ? (
+        <div className="cycleTradeList">
+          {position.cycle_trades.map((trade) => (
+            <div className="cycleTradeRow" key={trade.id}>
+              <span className={`cycleTradeType ${trade.type}`}>
+                {trade.type === "opened"
+                  ? "建仓"
+                  : trade.type === "increased"
+                    ? "加仓"
+                    : "减仓"}
+              </span>
+              <time dateTime={trade.timestamp}>
+                {formatPositionDateTime(trade.timestamp)}
+              </time>
+              <span>{formatShares(trade.size)} 份</span>
+              <span>× {formatPrice(trade.price)}</span>
+              <strong>{formatMoney(trade.amount)}</strong>
+              {trade.transaction_hash ? (
+                <a
+                  className="cycleTxLink"
+                  href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {shortenAddress(trade.transaction_hash)}
+                  <span aria-hidden="true">↗</span>
+                </a>
+              ) : (
+                <span className="cycleTxLink empty">无交易哈希</span>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="emptyCycleTrades">暂未匹配到本周期逐笔成交。</p>
+      )}
+    </div>
+  );
+}
+
 function PositionTable({
   positions,
   overlaps,
@@ -749,6 +782,24 @@ function PositionTable({
   onOpenComparison: (assetId: string) => void;
   onReadAlert: (alertId: number | string) => void;
 }) {
+  const [expandedPositions, setExpandedPositions] = useState<Set<string>>(
+    new Set(),
+  );
+
+  function positionKey(position: Position) {
+    return `${position.wallet_id}-${position.asset_id}`;
+  }
+
+  function toggleDetails(position: Position) {
+    const key = positionKey(position);
+    setExpandedPositions((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   return (
     <>
       <div className="tableWrap desktopPositions">
@@ -758,7 +809,7 @@ function PositionTable({
               <th>市场 / 方向</th>
               <th className="numberCell">平均买入</th>
               <th className="numberCell">当前价格</th>
-              <th>买入批次</th>
+              <th>建仓日期</th>
               <th>初次建仓</th>
               <th className="numberCell">持仓份额</th>
               <th>跟单目标</th>
@@ -776,11 +827,12 @@ function PositionTable({
             {positions.map((position) => {
               const overlap = overlaps.get(position.asset_id);
               const changeAlert = changeAlerts.get(position.asset_id);
+              const key = positionKey(position);
+              const expanded = expandedPositions.has(key);
+              const detailId = `position-cycle-desktop-${key}`;
               return (
-                <tr
-                  className={overlap ? "overlapRow" : ""}
-                  key={`${position.asset_id}-${position.condition_id}`}
-                >
+                <Fragment key={`${position.asset_id}-${position.condition_id}`}>
+                  <tr className={overlap ? "overlapRow" : ""}>
                   <td className="marketCell">
                     <div className="marketPositionIdentity">
                       <MarketTitle
@@ -810,7 +862,9 @@ function PositionTable({
                     {formatPrice(position.current_price)}
                   </td>
                   <td className="purchaseDateCell">
-                    {purchaseDateLabel(position)}
+                    {position.opened_date
+                      ? formatPurchaseDate(position.opened_date)
+                      : "日期待回填"}
                   </td>
                   <td className="openedAtCell">
                     <time dateTime={position.first_opened_at ?? undefined}>
@@ -819,6 +873,16 @@ function PositionTable({
                     {position.first_opened_at_source === "first_seen" && (
                       <small>首次监测</small>
                     )}
+                    <button
+                      className="positionDetailToggle"
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-controls={detailId}
+                      onClick={() => toggleDetails(position)}
+                    >
+                      {expanded ? "收起明细" : "查看明细"}
+                      <span aria-hidden="true">⌄</span>
+                    </button>
                   </td>
                   <td className="numberCell">
                     {formatShares(position.size)}
@@ -855,7 +919,15 @@ function PositionTable({
                       去市场
                     </a>
                   </td>
-                </tr>
+                  </tr>
+                  {expanded && (
+                    <tr className="positionDetailRow">
+                      <td colSpan={11} id={detailId}>
+                        <PositionCycleDetails position={position} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
           </tbody>
@@ -866,6 +938,9 @@ function PositionTable({
         {positions.map((position) => {
           const overlap = overlaps.get(position.asset_id);
           const changeAlert = changeAlerts.get(position.asset_id);
+          const key = positionKey(position);
+          const expanded = expandedPositions.has(key);
+          const detailId = `position-cycle-mobile-${key}`;
           return (
             <article
               className={`positionCard ${overlap ? "overlapCard" : ""}`}
@@ -905,8 +980,12 @@ function PositionTable({
                   <dd>{formatPrice(position.current_price)}</dd>
                 </div>
                 <div>
-                  <dt>买入批次</dt>
-                  <dd>{purchaseDateLabel(position)}</dd>
+                  <dt>建仓日期</dt>
+                  <dd>
+                    {position.opened_date
+                      ? formatPurchaseDate(position.opened_date)
+                      : "日期待回填"}
+                  </dd>
                 </div>
                 <div>
                   <dt>初次建仓</dt>
@@ -938,6 +1017,21 @@ function PositionTable({
                   </dd>
                 </div>
               </dl>
+              <button
+                className="positionDetailToggle mobile"
+                type="button"
+                aria-expanded={expanded}
+                aria-controls={detailId}
+                onClick={() => toggleDetails(position)}
+              >
+                {expanded ? "收起建仓明细" : "查看建仓明细"}
+                <span aria-hidden="true">⌄</span>
+              </button>
+              {expanded && (
+                <div id={detailId}>
+                  <PositionCycleDetails position={position} />
+                </div>
+              )}
               <CurrentPositionCopyTarget
                 position={position}
                 ratioPercent={copyRatioPercent}
@@ -2390,7 +2484,7 @@ function CopyTradingPanel({
       {!subscription ? (
         <div className="copyTradingEmpty">
           <strong>当前钱包尚未配置</strong>
-          <span>默认模拟盘、2% 比例、单桶 $20 / 强信号 $40。</span>
+          <span>默认模拟盘、$100 大单跟 5 份、其余按 2% 比例。</span>
           <button className="primaryButton" type="button" onClick={onConfigure}>
             配置自动跟单
           </button>
@@ -2589,6 +2683,12 @@ function CopyTradingModal({
 }) {
   const defaults = {
     copy_ratio_percent: String(subscription?.copy_ratio_percent ?? 2),
+    large_trade_threshold_usdc: String(
+      subscription?.large_trade_threshold_usdc ?? 100,
+    ),
+    large_trade_fixed_shares: String(
+      subscription?.large_trade_fixed_shares ?? 5,
+    ),
     base_bucket_cap_usdc: String(subscription?.base_bucket_cap_usdc ?? 20),
     strong_threshold_usdc: String(subscription?.strong_threshold_usdc ?? 1000),
     strong_bucket_cap_usdc: String(subscription?.strong_bucket_cap_usdc ?? 40),
@@ -2598,6 +2698,10 @@ function CopyTradingModal({
     daily_buy_limit_usdc: String(subscription?.daily_buy_limit_usdc ?? 80),
     daily_loss_limit_usdc: String(subscription?.daily_loss_limit_usdc ?? 40),
     market_slippage_cents: String(subscription?.market_slippage_cents ?? 5),
+    close_buffer_minutes: String(subscription?.close_buffer_minutes ?? 15),
+    price_tolerance_ticks: String(subscription?.price_tolerance_ticks ?? 2),
+    price_tolerance_percent: String(subscription?.price_tolerance_percent ?? 3),
+    order_ttl_minutes: String(subscription?.order_ttl_minutes ?? 360),
   };
   const [values, setValues] = useState(defaults);
   const [submitting, setSubmitting] = useState(false);
@@ -2635,17 +2739,127 @@ function CopyTradingModal({
     }
   }
 
-  const fields: Array<[keyof typeof values, string, string]> = [
-    ["copy_ratio_percent", "跟单比例", "%"],
-    ["base_bucket_cap_usdc", "普通温度桶上限", "USDC"],
-    ["strong_threshold_usdc", "强信号持仓成本阈值", "USDC"],
-    ["strong_bucket_cap_usdc", "强信号温度桶上限", "USDC"],
-    ["event_cap_usdc", "单事件上限", "USDC"],
-    ["settlement_day_cap_usdc", "单结算日上限", "USDC"],
-    ["total_exposure_cap_usdc", "总敞口上限", "USDC"],
-    ["daily_buy_limit_usdc", "每日买入上限", "USDC"],
-    ["daily_loss_limit_usdc", "每日已实现亏损熔断", "USDC"],
-    ["market_slippage_cents", "当前盘口保护范围", "¢"],
+  type FieldConfig = {
+    key: keyof typeof values;
+    label: string;
+    unit: string;
+    description: string;
+    min: string;
+    max?: string;
+    step?: string;
+  };
+  const fieldGroups: Array<{ title: string; fields: FieldConfig[] }> = [
+    {
+      title: "下单规模",
+      fields: [
+        {
+          key: "large_trade_threshold_usdc",
+          label: "单笔大额成交阈值",
+          unit: "USDC",
+          description: "目标钱包单笔 BUY 成交金额达到或超过此值时，改用固定份数规则。",
+          min: "0.01",
+        },
+        {
+          key: "large_trade_fixed_shares",
+          label: "大额成交固定跟单份数",
+          unit: "shares",
+          description: "每笔达标成交贡献此份数；同轮多笔达标会相加，仍受全部风控限制。",
+          min: "0.01",
+          step: "0.01",
+        },
+        {
+          key: "copy_ratio_percent",
+          label: "跟单比例",
+          unit: "%",
+          description: "仅在同轮没有达标大单时，按目标钱包净加仓金额计算；不足市场最小量会累计。",
+          min: "0.01",
+          max: "100",
+        },
+      ],
+    },
+    {
+      title: "风险限额",
+      fields: [
+        {
+          key: "base_bucket_cap_usdc",
+          label: "普通温度桶上限",
+          unit: "USDC",
+          description: "未达到强信号条件时，本策略在单个温度选项上的最高成本敞口。",
+          min: "0",
+        },
+        {
+          key: "strong_threshold_usdc",
+          label: "强信号持仓成本阈值",
+          unit: "USDC",
+          description: "目标钱包在该选项的剩余持仓成本超过此值后，启用强信号桶上限。",
+          min: "0",
+        },
+        {
+          key: "strong_bucket_cap_usdc",
+          label: "强信号温度桶上限",
+          unit: "USDC",
+          description: "达到强信号条件后，单个温度选项允许的最高成本敞口。",
+          min: "0",
+        },
+        {
+          key: "event_cap_usdc",
+          label: "单事件上限",
+          unit: "USDC",
+          description: "同一温度事件下所有选项合计允许的最高成本敞口。",
+          min: "0",
+        },
+        {
+          key: "settlement_day_cap_usdc",
+          label: "单结算日上限",
+          unit: "USDC",
+          description: "同一结算日期全部持仓合计允许的最高成本敞口。",
+          min: "0",
+        },
+        {
+          key: "total_exposure_cap_usdc",
+          label: "总敞口上限",
+          unit: "USDC",
+          description: "当前跟单策略全部未平仓成本的最高合计值。",
+          min: "0",
+        },
+        {
+          key: "daily_buy_limit_usdc",
+          label: "每日买入上限",
+          unit: "USDC",
+          description: "按北京时间统计每日实际买入金额，并与执行账户上限取更严格者。",
+          min: "0",
+        },
+        {
+          key: "daily_loss_limit_usdc",
+          label: "每日已实现亏损熔断",
+          unit: "USDC",
+          description: "当日已实现亏损达到此值后停止新增买入，并与执行账户限制取更严格者。",
+          min: "0",
+        },
+      ],
+    },
+    {
+      title: "执行保护",
+      fields: [
+        {
+          key: "market_slippage_cents",
+          label: "当前盘口保护范围",
+          unit: "¢",
+          description: "FAK 买入/卖出相对当前最优价格允许的最差偏移，超出范围不成交。",
+          min: "0",
+          max: "50",
+        },
+        {
+          key: "close_buffer_minutes",
+          label: "结算前停止下单",
+          unit: "分钟",
+          description: "距市场准确结束时间少于此分钟数时停止新增买入。",
+          min: "0",
+          max: "1440",
+          step: "1",
+        },
+      ],
+    },
   ];
 
   return (
@@ -2659,25 +2873,36 @@ function CopyTradingModal({
           <button className="closeButton" type="button" onClick={onClose}>×</button>
         </div>
         <form onSubmit={submit}>
-          <div className="copyTradingFormGrid">
-            {fields.map(([key, label, unit]) => (
-              <label className="field" key={key}>
-                <span>{label}</span>
-                <div className="unitInput">
-                  <input
-                    type="number"
-                    min="0"
-                    max={key === "market_slippage_cents" ? "50" : undefined}
-                    step="0.01"
-                    value={values[key]}
-                    onChange={(event) =>
-                      setValues((current) => ({ ...current, [key]: event.target.value }))
-                    }
-                    disabled={submitting}
-                  />
-                  <b>{unit}</b>
+          <div className="copyTradingFieldGroups">
+            {fieldGroups.map((group) => (
+              <section className="copyTradingFieldGroup" key={group.title}>
+                <h3>{group.title}</h3>
+                <div className="copyTradingFormGrid">
+                  {group.fields.map((field) => (
+                    <label className="field copyTradingField" key={field.key}>
+                      <span>{field.label}</span>
+                      <div className="unitInput">
+                        <input
+                          type="number"
+                          min={field.min}
+                          max={field.max}
+                          step={field.step ?? "0.01"}
+                          value={values[field.key]}
+                          onChange={(event) =>
+                            setValues((current) => ({
+                              ...current,
+                              [field.key]: event.target.value,
+                            }))
+                          }
+                          disabled={submitting}
+                        />
+                        <b>{field.unit}</b>
+                      </div>
+                      <small>{field.description}</small>
+                    </label>
+                  ))}
                 </div>
-              </label>
+              </section>
             ))}
           </div>
           <p className="privacyNote">
@@ -2722,8 +2947,8 @@ export default function Home() {
   const [busyAlertIds, setBusyAlertIds] = useState<Set<string>>(new Set());
   const [markingAllAlerts, setMarkingAllAlerts] = useState(false);
   const [summary, setSummary] = useState<PositionSummary>(emptySummary);
-  const [purchaseDates, setPurchaseDates] = useState<string[]>([]);
-  const [purchaseDate, setPurchaseDate] = useState("all");
+  const [openedDates, setOpenedDates] = useState<string[]>([]);
+  const [openedDate, setOpenedDate] = useState("all");
   const [purchaseHistoryComplete, setPurchaseHistoryComplete] =
     useState(false);
   const [purchaseHistoryError, setPurchaseHistoryError] = useState<
@@ -2913,10 +3138,10 @@ export default function Home() {
         setUnreadAlertCount(alertResult.data.unread_count);
         setAlertError(alertResult.error);
         setSummary(positionData.summary ?? emptySummary);
-        const nextPurchaseDates = positionData.purchase_dates ?? [];
-        setPurchaseDates(nextPurchaseDates);
-        setPurchaseDate((current) =>
-          current === "all" || nextPurchaseDates.includes(current)
+        const nextOpenedDates = positionData.opened_dates ?? [];
+        setOpenedDates(nextOpenedDates);
+        setOpenedDate((current) =>
+          current === "all" || nextOpenedDates.includes(current)
             ? current
             : "all",
         );
@@ -3046,21 +3271,17 @@ export default function Home() {
 
   const displayedPositions = useMemo(() => {
     const selected =
-      purchaseDate === "all"
+      openedDate === "all"
         ? positions
-        : positions
-            .map((position) =>
-              positionForPurchaseDate(position, purchaseDate),
-            )
-            .filter((position): position is Position => position !== null);
+        : positions.filter((position) => position.opened_date === openedDate);
     return [...selected].sort(
         (left, right) =>
           toNumber(right.current_value) - toNumber(left.current_value),
       );
-  }, [positions, purchaseDate]);
+  }, [positions, openedDate]);
 
   const displayedSummary = useMemo<PositionSummary>(() => {
-    if (purchaseDate === "all") return summary;
+    if (openedDate === "all") return summary;
     return {
       current_value: displayedPositions.reduce(
         (total, position) => total + toNumber(position.current_value),
@@ -3076,10 +3297,10 @@ export default function Home() {
       ),
       count: displayedPositions.length,
     };
-  }, [displayedPositions, purchaseDate, summary]);
+  }, [displayedPositions, openedDate, summary]);
 
   const purchaseScopeLabel =
-    purchaseDate === "all" ? "全部买入批次" : formatPurchaseDate(purchaseDate);
+    openedDate === "all" ? "全部建仓" : formatPurchaseDate(openedDate);
 
   async function refresh() {
     if (!activeWalletId || refreshing) return;
@@ -3153,8 +3374,8 @@ export default function Home() {
     setMarkingAllAlerts(false);
     setEvents([]);
     setSummary(emptySummary);
-    setPurchaseDates([]);
-    setPurchaseDate("all");
+    setOpenedDates([]);
+    setOpenedDate("all");
     setPurchaseHistoryComplete(false);
     setPurchaseHistoryError(null);
     setAsOf(null);
@@ -3188,8 +3409,8 @@ export default function Home() {
         setAlertError(null);
         setEvents([]);
         setSummary(emptySummary);
-        setPurchaseDates([]);
-        setPurchaseDate("all");
+        setOpenedDates([]);
+        setOpenedDate("all");
         setPurchaseHistoryComplete(false);
         setPurchaseHistoryError(null);
         setAsOf(null);
@@ -3713,16 +3934,16 @@ export default function Home() {
               {view === "positions" && positions.length > 0 && (
                 <div className="positionTools">
                   <label className="purchaseDateFilter">
-                    <span>购买日期</span>
+                    <span>建仓日期</span>
                     <select
-                      aria-label="按购买日期筛选持仓"
-                      value={purchaseDate}
+                      aria-label="按建仓日期筛选持仓"
+                      value={openedDate}
                       onChange={(event) =>
-                        setPurchaseDate(event.target.value)
+                        setOpenedDate(event.target.value)
                       }
                     >
-                      <option value="all">All · 全部批次</option>
-                      {purchaseDates.map((date) => (
+                      <option value="all">All · 全部建仓</option>
+                      {openedDates.map((date) => (
                         <option key={date} value={date}>
                           {formatPurchaseDate(date)}
                         </option>
@@ -3740,7 +3961,7 @@ export default function Home() {
                 <div className="purchaseHistoryNotice" role="status">
                   <span aria-hidden="true">i</span>
                   <p>
-                    部分历史成交尚未完整回填，日期筛选暂时只包含已识别的买入批次
+                    部分历史成交尚未完整回填，标记“首次监测”的持仓将按系统首次发现日期归类
                     {purchaseHistoryError
                       ? `：${purchaseHistoryError}`
                       : "。"}
@@ -3817,17 +4038,17 @@ export default function Home() {
                     void markOverlapAlertRead(alertId)
                   }
                 />
-              ) : purchaseDate !== "all" ? (
+              ) : openedDate !== "all" ? (
                 <div className="emptyState">
                   <span className="emptyMark" aria-hidden="true">
                     日期
                   </span>
-                  <h2>这一天没有剩余持仓批次</h2>
-                  <p>请选择其他购买日期，或切换到 All 查看全部持仓。</p>
+                  <h2>这一天没有当前持仓</h2>
+                  <p>请选择其他建仓日期，或切换到 All 查看全部持仓。</p>
                   <button
                     className="secondaryButton"
                     type="button"
-                    onClick={() => setPurchaseDate("all")}
+                    onClick={() => setOpenedDate("all")}
                   >
                     查看全部持仓
                   </button>

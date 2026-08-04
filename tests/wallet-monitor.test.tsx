@@ -59,6 +59,16 @@ type MockPurchaseLot = {
   percent_pnl: number;
 };
 
+type MockCycleTrade = {
+  id: number;
+  type: "opened" | "increased" | "decreased";
+  size: number;
+  price: number;
+  amount: number;
+  timestamp: string;
+  transaction_hash: string | null;
+};
+
 type MockPosition = {
   wallet_id: number;
   asset_id: string;
@@ -78,6 +88,9 @@ type MockPosition = {
   end_date: string;
   first_opened_at: string;
   first_opened_at_source: "trade" | "first_seen";
+  opened_date: string;
+  cycle_trades: MockCycleTrade[];
+  cycle_history_complete: boolean;
   purchase_lots?: MockPurchaseLot[];
 };
 
@@ -105,6 +118,9 @@ function makePosition(
     end_date: "2026-08-30T00:00:00Z",
     first_opened_at: "2026-07-29T03:04:05Z",
     first_opened_at_source: "trade",
+    opened_date: "2026-07-29",
+    cycle_trades: [],
+    cycle_history_complete: true,
   };
 }
 
@@ -118,6 +134,9 @@ function positionPayload(
         (item.purchase_lots ?? []).map((lot) => lot.purchase_date),
       ),
     ),
+  ].sort((left, right) => right.localeCompare(left));
+  const openedDates = [
+    ...new Set(items.map((item) => item.opened_date)),
   ].sort((left, right) => right.localeCompare(left));
   return {
     items,
@@ -133,6 +152,7 @@ function positionPayload(
       cash_pnl: items.reduce((total, item) => total + item.cash_pnl, 0),
       count: items.length,
     },
+    opened_dates: openedDates,
     purchase_dates: purchaseDates,
     purchase_history_complete: items.every(
       (item) => (item.purchase_lots ?? []).length > 0,
@@ -354,6 +374,113 @@ describe("Polymarket 钱包监控页", () => {
     expect(screen.getAllByText("$8.94").length).toBeGreaterThan(0);
     expect(screen.getAllByText("$2.94").length).toBeGreaterThan(0);
     expect(screen.getByText("盈亏未计交易手续费", { exact: false })).toBeInTheDocument();
+  });
+
+  it("展示并保存大额固定份数规则及全部生效配置说明", async () => {
+    let submittedBody: Record<string, number> | null = null;
+    let savedSubscription: Record<string, unknown> | null = null;
+    const descriptions = [
+      "目标钱包单笔 BUY 成交金额达到或超过此值时，改用固定份数规则。",
+      "每笔达标成交贡献此份数；同轮多笔达标会相加，仍受全部风控限制。",
+      "仅在同轮没有达标大单时，按目标钱包净加仓金额计算；不足市场最小量会累计。",
+      "未达到强信号条件时，本策略在单个温度选项上的最高成本敞口。",
+      "目标钱包在该选项的剩余持仓成本超过此值后，启用强信号桶上限。",
+      "达到强信号条件后，单个温度选项允许的最高成本敞口。",
+      "同一温度事件下所有选项合计允许的最高成本敞口。",
+      "同一结算日期全部持仓合计允许的最高成本敞口。",
+      "当前跟单策略全部未平仓成本的最高合计值。",
+      "按北京时间统计每日实际买入金额，并与执行账户上限取更严格者。",
+      "当日已实现亏损达到此值后停止新增买入，并与执行账户限制取更严格者。",
+      "FAK 买入/卖出相对当前最优价格允许的最差偏移，超出范围不成交。",
+      "距市场准确结束时间少于此分钟数时停止新增买入。",
+    ];
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/settings") {
+        return jsonResponse({ copy_ratio_percent: 10 });
+      }
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/copy-trading/dashboard") {
+        return jsonResponse({
+          account: null,
+          subscription: savedSubscription,
+          positions: [],
+          orders: [],
+          signals: [],
+          portfolio: null,
+        });
+      }
+      if (
+        url.pathname === "/api/copy-trading/subscriptions" &&
+        method === "POST"
+      ) {
+        submittedBody = JSON.parse(String(init?.body)) as Record<string, number>;
+        savedSubscription = {
+          id: 71,
+          tracked_wallet_id: walletOne.id,
+          tracked_wallet_label: walletOne.label,
+          mode: "paper",
+          state: "disabled",
+          ...submittedBody,
+          open_exposure_usdc: 0,
+          daily_bought_usdc: 0,
+          daily_realized_pnl: 0,
+          last_trade_poll_at: null,
+          last_trade_error: null,
+          last_error: null,
+        };
+        return jsonResponse(savedSubscription, 201);
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+    await user.click(
+      await screen.findByRole("button", { name: "配置自动跟单" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("下单规模")).toBeInTheDocument();
+    expect(within(dialog).getByText("风险限额")).toBeInTheDocument();
+    expect(within(dialog).getByText("执行保护")).toBeInTheDocument();
+    for (const description of descriptions) {
+      expect(within(dialog).getByText(description)).toBeInTheDocument();
+    }
+
+    const threshold = within(dialog).getByRole("spinbutton", {
+      name: /单笔大额成交阈值/,
+    });
+    const shares = within(dialog).getByRole("spinbutton", {
+      name: /大额成交固定跟单份数/,
+    });
+    await user.clear(threshold);
+    await user.type(threshold, "125");
+    await user.clear(shares);
+    await user.type(shares, "7.5");
+    await user.click(within(dialog).getByRole("button", { name: "保存风控" }));
+
+    await waitFor(() => {
+      expect(submittedBody).toEqual(
+        expect.objectContaining({
+          tracked_wallet_id: walletOne.id,
+          large_trade_threshold_usdc: 125,
+          large_trade_fixed_shares: 7.5,
+          close_buffer_minutes: 15,
+          price_tolerance_ticks: 2,
+          price_tolerance_percent: 3,
+          order_ttl_minutes: 360,
+        }),
+      );
+    });
   });
 
   it("保存全局跟单比例并按新比例展示历史建议", async () => {
@@ -1115,9 +1242,11 @@ describe("Polymarket 钱包监控页", () => {
     expect(alertRequests).toBe(2);
   });
 
-  it("可按购买日期查看同一仓位的独立买入批次", async () => {
+  it("严格按建仓日期筛选并保留后续加仓后的完整仓位", async () => {
     const splitPosition = {
       ...makePosition("dated", "分批建仓市场", 120),
+      first_opened_at: "2026-07-31T03:00:00Z",
+      opened_date: "2026-07-31",
       size: 150,
       avg_price: 70 / 150,
       current_price: 0.8,
@@ -1125,6 +1254,26 @@ describe("Polymarket 钱包监控页", () => {
       current_value: 120,
       cash_pnl: 50,
       percent_pnl: (50 / 70) * 100,
+      cycle_trades: [
+        {
+          id: 1,
+          type: "opened" as const,
+          size: 100,
+          price: 0.4,
+          amount: 40,
+          timestamp: "2026-07-31T03:00:00Z",
+          transaction_hash: "0x1111111111111111111111111111111111111111",
+        },
+        {
+          id: 2,
+          type: "increased" as const,
+          size: 50,
+          price: 0.6,
+          amount: 30,
+          timestamp: "2026-08-01T03:00:00Z",
+          transaction_hash: null,
+        },
+      ],
       purchase_lots: [
         {
           purchase_date: "2026-07-31",
@@ -1164,24 +1313,38 @@ describe("Polymarket 钱包监控页", () => {
     render(<Home />);
 
     const dateFilter = await screen.findByRole("combobox", {
-      name: "按购买日期筛选持仓",
+      name: "按建仓日期筛选持仓",
     });
     expect(dateFilter).toHaveValue("all");
-    await user.selectOptions(dateFilter, "2026-08-01");
+    expect(
+      within(dateFilter).queryByRole("option", { name: "2026年8月1日" }),
+    ).not.toBeInTheDocument();
+    await user.selectOptions(dateFilter, "2026-07-31");
 
     const table = screen.getByRole("table");
-    expect(within(table).getByText("2026年8月1日")).toBeInTheDocument();
-    expect(within(table).getByText("$30.00")).toBeInTheDocument();
-    expect(within(table).getByText("$40.00")).toBeInTheDocument();
-    expect(within(table).getByText("$10.00")).toBeInTheDocument();
+    expect(within(table).getByText("2026年7月31日")).toBeInTheDocument();
+    expect(within(table).getByText("$70.00")).toBeInTheDocument();
+    expect(within(table).getByText("$120.00")).toBeInTheDocument();
+    expect(within(table).getByText("$50.00")).toBeInTheDocument();
 
     const summaryRegion = screen.getByRole("region", { name: "钱包总览" });
     const costCard = within(summaryRegion)
       .getByText("持仓成本")
       .closest("article");
     expect(costCard).not.toBeNull();
-    expect(within(costCard!).getByText("$30.00")).toBeInTheDocument();
-    expect(within(costCard!).getByText("2026年8月1日")).toBeInTheDocument();
+    expect(within(costCard!).getByText("$70.00")).toBeInTheDocument();
+    expect(within(costCard!).getByText("2026年7月31日")).toBeInTheDocument();
+
+    await user.click(within(table).getByRole("button", { name: "查看明细" }));
+    expect(within(table).getByText("建仓")).toBeInTheDocument();
+    expect(within(table).getByText("加仓")).toBeInTheDocument();
+    expect(within(table).getByText("无交易哈希")).toBeInTheDocument();
+    expect(
+      within(table).getByRole("link", { name: /0x1111…1111/ }),
+    ).toHaveAttribute(
+      "href",
+      "https://polygonscan.com/tx/0x1111111111111111111111111111111111111111",
+    );
   });
 
   it("仓位变动明细把链上赎回与主动清仓分开显示", async () => {

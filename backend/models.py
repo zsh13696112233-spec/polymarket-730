@@ -151,6 +151,14 @@ class CopySubscription(Base):
             name="ck_copy_subscriptions_ratio",
         ),
         CheckConstraint(
+            "large_trade_threshold_usdc > 0",
+            name="ck_copy_subscriptions_large_trade_threshold",
+        ),
+        CheckConstraint(
+            "large_trade_fixed_shares > 0",
+            name="ck_copy_subscriptions_large_trade_fixed_shares",
+        ),
+        CheckConstraint(
             "base_bucket_cap_usdc <= strong_bucket_cap_usdc",
             name="ck_copy_subscriptions_bucket_caps",
         ),
@@ -181,6 +189,12 @@ class CopySubscription(Base):
     market_scope: Mapped[str] = mapped_column(String(30), nullable=False, default="temperature")
     copy_ratio_percent: Mapped[Decimal] = mapped_column(
         PERCENT_TYPE, nullable=False, default=Decimal("2")
+    )
+    large_trade_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("100")
+    )
+    large_trade_fixed_shares: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("5")
     )
     base_bucket_cap_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("20")

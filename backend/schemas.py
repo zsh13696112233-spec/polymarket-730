@@ -80,6 +80,8 @@ class ExecutionAccountUpdate(APIModel):
 class CopySubscriptionConfig(APIModel):
     market_scope: Literal["temperature"] = "temperature"
     copy_ratio_percent: Decimal = Field(default=Decimal("2"), gt=0, le=100)
+    large_trade_threshold_usdc: Decimal = Field(default=Decimal("100"), gt=0)
+    large_trade_fixed_shares: Decimal = Field(default=Decimal("5"), gt=0)
     base_bucket_cap_usdc: Decimal = Field(default=Decimal("20"), ge=0)
     strong_threshold_usdc: Decimal = Field(default=Decimal("1000"), ge=0)
     strong_bucket_cap_usdc: Decimal = Field(default=Decimal("40"), ge=0)
@@ -123,6 +125,8 @@ class CopySubscriptionRead(APIModel):
     state: Literal["active", "paused", "exit_only", "closing", "disabled", "error"]
     market_scope: str
     copy_ratio_percent: DecimalNumber
+    large_trade_threshold_usdc: DecimalNumber
+    large_trade_fixed_shares: DecimalNumber
     base_bucket_cap_usdc: DecimalNumber
     strong_threshold_usdc: DecimalNumber
     strong_bucket_cap_usdc: DecimalNumber
@@ -314,6 +318,22 @@ class PurchaseLotRead(APIModel):
     percent_pnl: DecimalNumber
 
 
+class PositionCycleTradeRead(APIModel):
+    id: int
+    type: Literal["opened", "increased", "decreased"]
+    size: DecimalNumber
+    price: DecimalNumber
+    amount: DecimalNumber
+    timestamp: datetime
+    transaction_hash: str | None
+
+    @field_serializer("timestamp", when_used="json")
+    def serialize_timestamp(self, value: datetime) -> str:
+        serialized = _as_utc_iso(value)
+        assert serialized is not None
+        return serialized
+
+
 class PositionRead(APIModel):
     wallet_id: int
     asset_id: str
@@ -333,6 +353,9 @@ class PositionRead(APIModel):
     end_date: datetime | None
     first_opened_at: datetime | None = None
     first_opened_at_source: Literal["trade", "first_seen"] = "first_seen"
+    opened_date: date | None = None
+    cycle_trades: list[PositionCycleTradeRead] = Field(default_factory=list)
+    cycle_history_complete: bool = False
     purchase_lots: list[PurchaseLotRead] = Field(default_factory=list)
 
     @field_serializer("end_date", "first_opened_at", when_used="json")
@@ -350,6 +373,7 @@ class PositionSummary(APIModel):
 class PositionsResponse(APIModel):
     items: list[PositionRead]
     summary: PositionSummary
+    opened_dates: list[date] = Field(default_factory=list)
     purchase_dates: list[date] = Field(default_factory=list)
     purchase_history_complete: bool = False
     purchase_history_error: str | None = None

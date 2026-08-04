@@ -59,6 +59,10 @@ def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def compact_decimal(value: Decimal) -> str:
+    return format(value.normalize(), "f")
+
+
 def is_temperature_bucket(title: str, outcome: str) -> bool:
     """Recognize every bucket inside a highest/lowest-temperature market.
 
@@ -718,16 +722,59 @@ class CopyTradingEngine:
             if utcnow() >= cutoff:
                 self._mark_signals(signals, "skipped", "市场已进入结算前停止下单窗口")
                 return
-        candidate = (
-            leader_cost_increase * subscription.copy_ratio_percent / Decimal("100")
-            + position.pending_target_usdc
-        )
+        large_signals = [
+            signal
+            for signal in signals
+            if signal.trade.side == "BUY"
+            and signal.trade.amount >= subscription.large_trade_threshold_usdc
+        ]
+        fixed_share_buy = bool(large_signals)
+        active_signals = large_signals if fixed_share_buy else signals
+        if fixed_share_buy:
+            ignored_buy_signals = [
+                signal
+                for signal in signals
+                if signal.trade.side == "BUY" and signal not in large_signals
+            ]
+            netted_sell_signals = [signal for signal in signals if signal.trade.side != "BUY"]
+            self._mark_signals(
+                ignored_buy_signals,
+                "skipped",
+                "同轮命中大额固定份数规则，未计入比例跟单",
+            )
+            self._mark_signals(
+                netted_sell_signals,
+                "netted",
+                "同批成交最终仍为净加仓，卖出已计入目标净仓位",
+            )
         usage = await self._risk_usage(session, subscription, position)
         bucket_cap = (
             subscription.strong_bucket_cap_usdc
             if state.remaining_cost > subscription.strong_threshold_usdc
             else subscription.base_bucket_cap_usdc
         )
+        book = await self.client.fetch_order_book(state.asset_id)
+        if book.best_ask is None:
+            raise RuntimeError("订单簿没有可用卖价")
+        if fixed_share_buy:
+            requested_shares = subscription.large_trade_fixed_shares * len(large_signals)
+            if requested_shares < book.min_order_size:
+                self._mark_signals(
+                    active_signals,
+                    "skipped",
+                    (
+                        f"固定跟单 {compact_decimal(requested_shares)} 份低于市场最小买入量 "
+                        f"{compact_decimal(book.min_order_size)} 份"
+                    ),
+                )
+                return
+            candidate = requested_shares * book.best_ask
+        else:
+            requested_shares = ZERO
+            candidate = (
+                leader_cost_increase * subscription.copy_ratio_percent / Decimal("100")
+                + position.pending_target_usdc
+            )
         allowed, reason = allowed_buy_usdc(
             candidate,
             bucket_cap=bucket_cap,
@@ -735,19 +782,24 @@ class CopyTradingEngine:
             usage=usage,
         )
         if allowed <= ZERO:
-            self._mark_signals(signals, "skipped", reason or "风控拒绝")
+            self._mark_signals(active_signals, "skipped", reason or "风控拒绝")
             return
-        book = await self.client.fetch_order_book(state.asset_id)
-        if book.best_ask is None:
-            raise RuntimeError("订单簿没有可用卖价")
+        if fixed_share_buy and allowed < candidate:
+            self._mark_signals(
+                active_signals,
+                "skipped",
+                f"风控剩余额度不足以完成固定 {compact_decimal(requested_shares)} 份下单",
+            )
+            return
         estimated_size = allowed / book.best_ask
         if estimated_size < book.min_order_size:
             position.pending_target_usdc = min(candidate, max(ZERO, bucket_cap - usage.bucket))
             position.updated_at = utcnow()
-            self._mark_signals(signals, "deferred", "低于市场最小买入量，已累计")
+            self._mark_signals(active_signals, "deferred", "低于市场最小买入量，已累计")
             return
         position.neg_risk = book.neg_risk
-        position.pending_target_usdc = ZERO
+        if not fixed_share_buy:
+            position.pending_target_usdc = ZERO
         worst_price = market_worst_price(
             book.best_ask,
             book.tick_size,
@@ -758,13 +810,13 @@ class CopyTradingEngine:
             session,
             subscription,
             position,
-            signals=signals,
+            signals=active_signals,
             side="BUY",
             amount=allowed,
             reference_price=book.best_ask,
             worst_price=worst_price,
             book=book,
-            reason="跟随目标钱包净加仓",
+            reason=("大额目标成交固定份数跟单" if fixed_share_buy else "跟随目标钱包净加仓"),
         )
 
     async def _fast_follow_sell(

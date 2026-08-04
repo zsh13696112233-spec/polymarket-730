@@ -1289,6 +1289,140 @@ summary:focus-visible {
   font-weight: 650;
 }
 
+.positionDetailToggle {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.positionDetailToggle span {
+  transition: transform 140ms ease;
+}
+
+.positionDetailToggle[aria-expanded="true"] span {
+  transform: rotate(180deg);
+}
+
+.positionsTable .positionDetailRow:hover {
+  background: transparent;
+}
+
+.positionsTable .positionDetailRow > td {
+  height: auto;
+  padding: 0;
+  background: #f8faf9;
+}
+
+.positionCycleDetails {
+  padding: 15px 19px 17px;
+  border-bottom: 1px solid var(--line);
+}
+
+.positionCycleHeading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 11px;
+}
+
+.positionCycleHeading > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.positionCycleHeading span,
+.positionCycleHeading small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.positionCycleHeading strong {
+  font-size: 12px;
+}
+
+.cycleHistoryWarning,
+.emptyCycleTrades {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: var(--warning-soft);
+  color: var(--muted-strong);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.cycleHistoryWarning {
+  margin-bottom: 9px;
+}
+
+.cycleTradeList {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+}
+
+.cycleTradeRow {
+  display: grid;
+  min-height: 39px;
+  align-items: center;
+  grid-template-columns: 58px minmax(150px, 1fr) 100px 80px 100px minmax(105px, auto);
+  gap: 11px;
+  padding: 7px 11px;
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cycleTradeRow strong {
+  color: var(--ink);
+  text-align: right;
+}
+
+.cycleTradeType {
+  justify-self: start;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.cycleTradeType.opened,
+.cycleTradeType.increased {
+  background: var(--profit-soft);
+  color: var(--profit);
+}
+
+.cycleTradeType.decreased {
+  background: var(--loss-soft);
+  color: var(--loss);
+}
+
+.cycleTxLink {
+  justify-self: end;
+  color: var(--brand);
+  font-size: 9px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cycleTxLink.empty {
+  color: var(--muted);
+}
+
 .strongNumber {
   font-weight: 740;
 }
@@ -2506,6 +2640,56 @@ summary:focus-visible {
     margin-top: 14px;
   }
 
+  .positionDetailToggle.mobile {
+    width: 100%;
+    min-height: 36px;
+    justify-content: space-between;
+    margin-top: 14px;
+    padding: 0 11px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface-muted);
+    font-size: 10px;
+  }
+
+  .positionCard .positionCycleDetails {
+    margin-top: 9px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #f8faf9;
+  }
+
+  .positionCycleHeading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .cycleTradeRow {
+    grid-template-columns: auto 1fr auto;
+    gap: 6px 10px;
+    padding: 10px;
+  }
+
+  .cycleTradeRow time {
+    text-align: right;
+  }
+
+  .cycleTradeRow > span:nth-of-type(2),
+  .cycleTradeRow > span:nth-of-type(3) {
+    grid-row: 2;
+  }
+
+  .cycleTradeRow strong {
+    grid-row: 2;
+  }
+
+  .cycleTxLink {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
   .mobileMarketButton {
     display: flex;
     min-height: 39px;
@@ -3133,6 +3317,20 @@ summary:focus-visible {
 
 .copyTradingModal {
   width: min(780px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+.copyTradingFieldGroups {
+  display: grid;
+  gap: 20px;
+}
+
+.copyTradingFieldGroup h3 {
+  margin: 0 0 11px;
+  color: var(--brand-dark);
+  font-size: 12px;
+  letter-spacing: 0.02em;
 }
 
 .copyTradingFormGrid {
@@ -3154,6 +3352,20 @@ summary:focus-visible {
 .unitInput b {
   color: var(--muted);
   font-size: 11px;
+}
+
+.copyTradingField {
+  margin-bottom: 0;
+}
+
+.copyTradingField > small {
+  display: block;
+  min-height: 30px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.55;
 }
 
 @media (max-width: 900px) {

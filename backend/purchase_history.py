@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from backend.models import CurrentPosition, WalletTrade
@@ -22,6 +23,14 @@ class PurchaseLot:
     current_value: Decimal
     cash_pnl: Decimal
     percent_pnl: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class ActivePositionCycle:
+    opened_at: datetime
+    opened_at_source: Literal["trade", "first_seen"]
+    trades: tuple[WalletTrade, ...]
+    complete: bool
 
 
 @dataclass(slots=True)
@@ -111,6 +120,46 @@ def _purchase_date(trade: WalletTrade) -> date:
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
     return timestamp.astimezone(PURCHASE_TIMEZONE).date()
+
+
+def opened_date(opened_at: datetime) -> date:
+    timestamp = opened_at
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(PURCHASE_TIMEZONE).date()
+
+
+def active_position_cycle(
+    position: CurrentPosition,
+    trades: list[WalletTrade],
+) -> ActivePositionCycle:
+    """Find the opening trade for the current uninterrupted positive-balance cycle."""
+    ordered = [
+        trade
+        for trade in sorted(trades, key=lambda item: (item.timestamp, item.id))
+        if trade.size > ZERO and trade.side in {"BUY", "SELL"}
+    ]
+    balance = position.size
+    for index in range(len(ordered) - 1, -1, -1):
+        trade = ordered[index]
+        previous_balance = balance - trade.size if trade.side == "BUY" else balance + trade.size
+        if trade.side == "BUY" and abs(previous_balance) <= SIZE_TOLERANCE:
+            return ActivePositionCycle(
+                opened_at=trade.timestamp,
+                opened_at_source="trade",
+                trades=tuple(ordered[index:]),
+                complete=True,
+            )
+        balance = previous_balance
+
+    first_seen_at = position.first_seen_at
+    known_cycle_trades = tuple(trade for trade in ordered if trade.timestamp >= first_seen_at)
+    return ActivePositionCycle(
+        opened_at=first_seen_at,
+        opened_at_source="first_seen",
+        trades=known_cycle_trades,
+        complete=False,
+    )
 
 
 def build_purchase_lots(

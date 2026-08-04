@@ -42,7 +42,12 @@ from backend.polymarket import (
     PolymarketAPIError,
     PolymarketClient,
 )
-from backend.purchase_history import build_purchase_lots
+from backend.purchase_history import (
+    ActivePositionCycle,
+    active_position_cycle,
+    build_purchase_lots,
+    opened_date,
+)
 from backend.schemas import (
     CopyDashboardRead,
     CopyOrderRead,
@@ -62,6 +67,7 @@ from backend.schemas import (
     GlobalSettingsRead,
     GlobalSettingsUpdate,
     HealthRead,
+    PositionCycleTradeRead,
     PositionOverlapAlertRead,
     PositionOverlapAlertsResponse,
     PositionOverlapDetail,
@@ -239,6 +245,27 @@ def event_read(event: PositionEvent, ratio_percent: Decimal) -> EventRead:
     )
 
 
+def cycle_trade_reads(cycle: ActivePositionCycle) -> list[PositionCycleTradeRead]:
+    return [
+        PositionCycleTradeRead(
+            id=trade.id,
+            type=(
+                "opened"
+                if cycle.complete and index == 0 and trade.side == "BUY"
+                else "increased"
+                if trade.side == "BUY"
+                else "decreased"
+            ),
+            size=trade.size,
+            price=trade.price,
+            amount=trade.amount,
+            timestamp=trade.timestamp,
+            transaction_hash=trade.transaction_hash,
+        )
+        for index, trade in enumerate(cycle.trades)
+    ]
+
+
 async def position_read_with_lots(
     session: Any,
     position: CurrentPosition,
@@ -257,11 +284,14 @@ async def position_read_with_lots(
     )
     lots_by_asset, _ = build_purchase_lots([position], trades)
     lots = [PurchaseLotRead.model_validate(lot) for lot in lots_by_asset.get(position.asset_id, [])]
-    first_opened_at, first_opened_at_source = first_opened_metadata(position, trades)
+    cycle = active_position_cycle(position, trades)
     return PositionRead.model_validate(position).model_copy(
         update={
-            "first_opened_at": first_opened_at,
-            "first_opened_at_source": first_opened_at_source,
+            "first_opened_at": cycle.opened_at,
+            "first_opened_at_source": cycle.opened_at_source,
+            "opened_date": opened_date(cycle.opened_at),
+            "cycle_trades": cycle_trade_reads(cycle),
+            "cycle_history_complete": cycle.complete,
             "purchase_lots": lots,
         }
     )
@@ -271,13 +301,8 @@ def first_opened_metadata(
     position: CurrentPosition,
     trades: list[WalletTrade],
 ) -> tuple[datetime, str]:
-    first_buy = min(
-        (trade.timestamp for trade in trades if trade.side == "BUY"),
-        default=None,
-    )
-    if first_buy is not None:
-        return first_buy, "trade"
-    return position.first_seen_at, "first_seen"
+    cycle = active_position_cycle(position, trades)
+    return cycle.opened_at, cycle.opened_at_source
 
 
 def overlap_alert_read(
@@ -1374,6 +1399,7 @@ def create_app(
         for trade in trades:
             trades_by_asset.setdefault(trade.asset_id, []).append(trade)
         position_items: list[PositionRead] = []
+        opened_dates = set()
         purchase_dates = set()
         for position in positions:
             purchase_lots = [
@@ -1381,15 +1407,17 @@ def create_app(
                 for lot in purchase_lots_by_asset.get(position.asset_id, [])
             ]
             purchase_dates.update(lot.purchase_date for lot in purchase_lots)
-            first_opened_at, first_opened_at_source = first_opened_metadata(
-                position,
-                trades_by_asset.get(position.asset_id, []),
-            )
+            cycle = active_position_cycle(position, trades_by_asset.get(position.asset_id, []))
+            position_opened_date = opened_date(cycle.opened_at)
+            opened_dates.add(position_opened_date)
             position_items.append(
                 PositionRead.model_validate(position).model_copy(
                     update={
-                        "first_opened_at": first_opened_at,
-                        "first_opened_at_source": first_opened_at_source,
+                        "first_opened_at": cycle.opened_at,
+                        "first_opened_at_source": cycle.opened_at_source,
+                        "opened_date": position_opened_date,
+                        "cycle_trades": cycle_trade_reads(cycle),
+                        "cycle_history_complete": cycle.complete,
                         "purchase_lots": purchase_lots,
                     }
                 )
@@ -1406,6 +1434,7 @@ def create_app(
                 cash_pnl=cash_pnl,
                 count=len(positions),
             ),
+            opened_dates=sorted(opened_dates, reverse=True),
             purchase_dates=sorted(purchase_dates, reverse=True),
             purchase_history_complete=(
                 wallet.trade_history_synced_at is not None

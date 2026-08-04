@@ -5,6 +5,8 @@ from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from backend.copy_trading import (
     RiskUsage,
     allowed_buy_usdc,
@@ -12,7 +14,7 @@ from backend.copy_trading import (
     market_worst_price,
     tolerated_price,
 )
-from backend.models import CopySubscription
+from backend.models import CopyPosition, CopySubscription
 from backend.monitor import utcnow
 from backend.polymarket import OrderBookLevel, OrderBookSnapshot, TradeSnapshot
 from backend.tests.conftest import position
@@ -40,6 +42,64 @@ def move_fast_baseline_to_past(client, subscription_id: int) -> None:
 
     assert client.portal is not None
     client.portal.call(move)
+
+
+def fast_temperature_trade(
+    amount: str,
+    transaction_hash: str,
+    *,
+    asset_id: str = "asset-large-rule",
+) -> TradeSnapshot:
+    price = Decimal("0.50")
+    return TradeSnapshot(
+        asset_id=asset_id,
+        condition_id="0x" + "8" * 64,
+        side="BUY",
+        size=Decimal(amount) / price,
+        price=price,
+        timestamp=utcnow(),
+        transaction_hash=transaction_hash,
+        title="Will the highest temperature in London be 30°C on August 3?",
+        outcome="Yes",
+        outcome_index=0,
+        event_slug="highest-temperature-in-london-on-august-3-2026",
+        market_slug="highest-temperature-in-london-on-august-3-2026-30c",
+    )
+
+
+def install_fast_book(
+    fake,
+    *,
+    asset_id: str = "asset-large-rule",
+    ask: str = "0.50",
+    min_order_size: str = "5",
+    ask_depth: str = "1000",
+) -> None:
+    async def fetch_order_book(_: str) -> OrderBookSnapshot:
+        ask_price = Decimal(ask)
+        return OrderBookSnapshot(
+            asset_id=asset_id,
+            bids=(OrderBookLevel(ask_price - Decimal("0.01"), Decimal("1000")),),
+            asks=(OrderBookLevel(ask_price, Decimal(ask_depth)),),
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal(min_order_size),
+            neg_risk=False,
+        )
+
+    fake.fetch_order_book = fetch_order_book  # type: ignore[attr-defined]
+
+
+def pending_target_usdc(client, subscription_id: int) -> Decimal:
+    async def read() -> Decimal:
+        async with client.app.state.database.sessions() as session:
+            position_row = await session.scalar(
+                select(CopyPosition).where(CopyPosition.subscription_id == subscription_id)
+            )
+            assert position_row is not None
+            return position_row.pending_target_usdc
+
+    assert client.portal is not None
+    return client.portal.call(read)
 
 
 def test_temperature_scope_accepts_all_highest_and_lowest_temperature_buckets():
@@ -317,6 +377,8 @@ def test_copy_subscription_api_defaults_and_state_transitions(app_client_factory
     assert subscription["mode"] == "paper"
     assert subscription["state"] == "disabled"
     assert subscription["copy_ratio_percent"] == 2.0
+    assert subscription["large_trade_threshold_usdc"] == 100.0
+    assert subscription["large_trade_fixed_shares"] == 5.0
     assert subscription["base_bucket_cap_usdc"] == 20.0
     assert subscription["strong_bucket_cap_usdc"] == 40.0
     assert subscription["market_slippage_cents"] == 5.0
@@ -431,6 +493,222 @@ def test_invalid_cap_order_is_rejected(app_client_factory):
     assert "普通温度桶" in response.json()["detail"]
 
 
+def test_large_trade_settings_are_positive_and_persisted(app_client_factory):
+    client, _ = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
+    ).json()
+    for field in ("large_trade_threshold_usdc", "large_trade_fixed_shares"):
+        response = client.post(
+            "/api/copy-trading/subscriptions",
+            json={"tracked_wallet_id": tracked["id"], field: 0},
+        )
+        assert response.status_code == 422
+
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    updated = client.put(
+        f"/api/copy-trading/subscriptions/{subscription['id']}",
+        json={
+            "large_trade_threshold_usdc": 125.5,
+            "large_trade_fixed_shares": 7.25,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["large_trade_threshold_usdc"] == 125.5
+    assert updated.json()["large_trade_fixed_shares"] == 7.25
+
+
+def test_large_trade_at_threshold_requests_fixed_shares(app_client_factory):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    fake.trades = [fast_temperature_trade("100", "0xlarge-threshold")]
+    install_fast_book(fake)
+
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+    dashboard = client.get(
+        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
+    ).json()
+
+    assert len(dashboard["orders"]) == 1
+    assert Decimal(str(dashboard["orders"][0]["requested_size"])) == Decimal("5")
+    assert Decimal(str(dashboard["orders"][0]["requested_usdc"])) == Decimal("2.5")
+    assert dashboard["orders"][0]["reason"] == "大额目标成交固定份数跟单"
+    assert dashboard["signals"][0]["status"] == "followed"
+
+
+def test_trade_below_large_threshold_uses_ratio_and_defers(app_client_factory):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    fake.trades = [fast_temperature_trade("99.99", "0xbelow-threshold")]
+    install_fast_book(fake)
+
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+    dashboard = client.get(
+        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
+    ).json()
+
+    assert dashboard["orders"] == []
+    assert dashboard["signals"][0]["status"] == "deferred"
+    assert abs(pending_target_usdc(client, subscription["id"]) - Decimal("1.9998")) < Decimal(
+        "0.0000001"
+    )
+
+
+def test_multiple_large_trades_combine_and_ignore_small_trade(app_client_factory):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    fake.trades = [
+        fast_temperature_trade("100", "0xlarge-one"),
+        fast_temperature_trade("10", "0xsmall-ignored"),
+        fast_temperature_trade("125", "0xlarge-two"),
+    ]
+    install_fast_book(fake)
+
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+    dashboard = client.get(
+        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
+    ).json()
+
+    assert len(dashboard["orders"]) == 1
+    assert Decimal(str(dashboard["orders"][0]["requested_size"])) == Decimal("10")
+    statuses = {
+        Decimal(str(signal["leader_amount"])): (signal["status"], signal["reason"])
+        for signal in dashboard["signals"]
+    }
+    assert statuses[Decimal("100")][0] == "followed"
+    assert statuses[Decimal("125")][0] == "followed"
+    assert statuses[Decimal("10")] == (
+        "skipped",
+        "同轮命中大额固定份数规则，未计入比例跟单",
+    )
+    assert Decimal(str(dashboard["positions"][0]["pending_target_usdc"])) == 0
+
+
+def test_large_trade_preserves_previous_pending_ratio_amount(app_client_factory):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    fake.trades = [fast_temperature_trade("50", "0xpending-small")]
+    install_fast_book(fake)
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+
+    fake.trades.append(fast_temperature_trade("100", "0xpending-large"))
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+    dashboard = client.get(
+        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
+    ).json()
+
+    assert len(dashboard["orders"]) == 1
+    assert Decimal(str(dashboard["orders"][0]["requested_size"])) == Decimal("5")
+    assert Decimal(str(dashboard["positions"][0]["pending_target_usdc"])) == Decimal("1")
+
+
+def test_fixed_shares_below_market_minimum_are_skipped(app_client_factory):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"], "large_trade_fixed_shares": 4},
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    fake.trades = [fast_temperature_trade("100", "0xfixed-below-minimum")]
+    install_fast_book(fake, min_order_size="5")
+
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+    dashboard = client.get(
+        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
+    ).json()
+
+    assert dashboard["orders"] == []
+    assert dashboard["signals"][0]["status"] == "skipped"
+    assert "低于市场最小买入量 5 份" in dashboard["signals"][0]["reason"]
+
+
+def test_fixed_shares_are_not_reduced_by_remaining_risk_cap(app_client_factory):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"], "base_bucket_cap_usdc": 2},
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    fake.trades = [fast_temperature_trade("100", "0xfixed-risk-cap")]
+    install_fast_book(fake)
+
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+    dashboard = client.get(
+        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
+    ).json()
+
+    assert dashboard["orders"] == []
+    assert dashboard["signals"][0]["status"] == "skipped"
+    assert dashboard["signals"][0]["reason"] == "风控剩余额度不足以完成固定 5 份下单"
+
+
 def test_fast_paper_engine_buys_at_current_ask_not_leader_average(app_client_factory):
     client, fake = app_client_factory([[]])
     tracked = client.post(
@@ -439,7 +717,7 @@ def test_fast_paper_engine_buys_at_current_ask_not_leader_average(app_client_fac
     ).json()
     subscription = client.post(
         "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
+        json={"tracked_wallet_id": tracked["id"], "large_trade_threshold_usdc": 1000},
     ).json()
     client.post(
         f"/api/copy-trading/subscriptions/{subscription['id']}/action",
@@ -545,7 +823,8 @@ def test_fast_buy_uses_precise_gamma_end_time_instead_of_date_only_midnight(
     assert client.portal is not None
     client.portal.call(client.app.state.monitor.sync_wallet, tracked["id"])
     subscription = client.post(
-        "/api/copy-trading/subscriptions", json={"tracked_wallet_id": tracked["id"]}
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"]},
     ).json()
     client.post(
         f"/api/copy-trading/subscriptions/{subscription['id']}/action",
@@ -645,7 +924,8 @@ def test_fast_engine_sells_same_fraction_as_leader(app_client_factory):
         "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
     ).json()
     subscription = client.post(
-        "/api/copy-trading/subscriptions", json={"tracked_wallet_id": tracked["id"]}
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": tracked["id"], "large_trade_threshold_usdc": 1000},
     ).json()
     client.post(
         f"/api/copy-trading/subscriptions/{subscription['id']}/action",

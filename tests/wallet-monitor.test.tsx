@@ -257,14 +257,16 @@ afterEach(() => {
 });
 
 describe("Polymarket 钱包监控页", () => {
-  it("展示模拟跟单当前持仓估值并可切换历史盈亏", async () => {
+  it("展示实盘跟单当前持仓估值并可切换历史盈亏", async () => {
     const subscription = {
       id: 1,
       tracked_wallet_id: walletOne.id,
       tracked_wallet_label: walletOne.label,
-      mode: "paper",
+      enabled: true,
       state: "active",
       copy_ratio_percent: 2,
+      position_cap_usdc: 20,
+      total_exposure_cap_usdc: 80,
       open_exposure_usdc: 6,
       daily_bought_usdc: 6,
       daily_buy_limit_usdc: 80,
@@ -274,7 +276,7 @@ describe("Polymarket 钱包监控页", () => {
     };
     const currentCopyPosition = {
       id: 11,
-      title: "Paris 37°C 模拟持仓",
+      title: "Paris 37°C 实盘持仓",
       outcome: "Yes",
       event_slug: "highest-temperature-in-paris-on-august-3-2026",
       attributed_size: 12.765957,
@@ -335,6 +337,7 @@ describe("Polymarket 钱包监控页", () => {
       }
       if (url.pathname === "/api/copy-trading/dashboard") {
         return jsonResponse({
+          live_copy_enabled: true,
           account: null,
           subscription,
           positions: [currentCopyPosition, historicalCopyPosition],
@@ -357,8 +360,9 @@ describe("Polymarket 钱包监控页", () => {
     const user = userEvent.setup();
     render(<Home />);
 
-    expect(await screen.findByText("模拟跟单持仓")).toBeInTheDocument();
-    expect(screen.getAllByText("Paris 37°C 模拟持仓").length).toBeGreaterThan(0);
+    expect(await screen.findByText("实盘归因持仓")).toBeInTheDocument();
+    expect(screen.getAllByText("Paris 37°C 实盘持仓").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "关闭实盘跟单" })).toBeInTheDocument();
     expect(screen.getAllByText("47¢").length).toBeGreaterThan(0);
     expect(screen.getAllByText("46¢").length).toBeGreaterThan(0);
     expect(screen.getAllByText("-$0.13").length).toBeGreaterThan(0);
@@ -375,13 +379,179 @@ describe("Polymarket 钱包监控页", () => {
     ).toBeInTheDocument();
   });
 
+  it("按钱包显示实盘状态并通过确认开关启用", async () => {
+    let submittedBody: unknown;
+    const subscription = {
+      id: 81,
+      tracked_wallet_id: walletOne.id,
+      tracked_wallet_label: walletOne.label,
+      enabled: false,
+      state: "disabled",
+      copy_ratio_percent: 10,
+      position_cap_usdc: 20,
+      total_exposure_cap_usdc: 80,
+      market_slippage_cents: 5,
+      open_exposure_usdc: 0,
+      daily_bought_usdc: 0,
+      daily_realized_pnl: 0,
+      last_error: null,
+    };
+    const account = {
+      wallet_id: myWallet.id,
+      signer_address: myWallet.address,
+      funder_address: myWallet.address,
+      signature_type: 3,
+      status: "ready",
+      credentials_configured: true,
+      budget_usdc: 400,
+      cash_reserve_usdc: 240,
+      collateral_balance: 400,
+      last_error: null,
+    };
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/settings") {
+        return jsonResponse({ copy_ratio_percent: 10 });
+      }
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne, myWallet]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/copy-trading/subscriptions" && method === "GET") {
+        return jsonResponse([subscription]);
+      }
+      if (url.pathname === "/api/copy-trading/dashboard") {
+        return jsonResponse({
+          live_copy_enabled: true,
+          account,
+          subscription,
+          positions: [],
+          orders: [],
+          portfolio: null,
+        });
+      }
+      if (
+        url.pathname === `/api/copy-trading/subscriptions/${subscription.id}/enabled` &&
+        method === "PUT"
+      ) {
+        submittedBody = JSON.parse(String(init?.body));
+        return jsonResponse({ ...subscription, enabled: true, state: "active" });
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<Home />);
+
+    expect(await screen.findByText("已关闭")).toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("button", { name: "开启实盘跟单" }),
+    );
+    await waitFor(() => {
+      expect(submittedBody).toEqual({ enabled: true, confirm_live: true });
+    });
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("在界面修改执行钱包现金保留额并保留其余全局风控", async () => {
+    let submittedBody: Record<string, unknown> | null = null;
+    const account = {
+      wallet_id: myWallet.id,
+      signer_address: myWallet.address,
+      funder_address: myWallet.proxy_wallet,
+      signature_type: 3,
+      status: "insufficient_balance",
+      credentials_configured: true,
+      budget_usdc: 400,
+      cash_reserve_usdc: 240,
+      max_total_exposure_usdc: 160,
+      daily_buy_limit_usdc: 80,
+      daily_loss_limit_usdc: 40,
+      auto_redeem: true,
+      collateral_balance: 168.63,
+      last_error: null,
+    };
+
+    mockFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.pathname === "/api/settings") {
+        return jsonResponse({ copy_ratio_percent: 10 });
+      }
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne, myWallet]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(emptyEvents());
+      }
+      if (url.pathname === "/api/copy-trading/subscriptions") {
+        return jsonResponse([]);
+      }
+      if (url.pathname === "/api/copy-trading/dashboard") {
+        return jsonResponse({
+          live_copy_enabled: true,
+          account,
+          subscription: null,
+          positions: [],
+          orders: [],
+          portfolio: null,
+        });
+      }
+      if (url.pathname === "/api/copy-trading/account" && method === "PUT") {
+        submittedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({
+          ...account,
+          ...submittedBody,
+          status: "configured",
+          collateral_balance: null,
+        });
+      }
+      throw new Error(`未处理的请求：${method} ${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: "资金风控" }));
+    const dialog = screen.getByRole("dialog", { name: "执行钱包资金风控" });
+    const reserve = within(dialog).getByRole("spinbutton", { name: /现金保留额/ });
+    await user.clear(reserve);
+    await user.type(reserve, "100");
+    expect(within(dialog).getByText("$68.63")).toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "保存资金风控" }),
+    );
+
+    await waitFor(() => {
+      expect(submittedBody).toEqual({
+        wallet_id: myWallet.id,
+        signer_address: myWallet.address,
+        funder_address: myWallet.proxy_wallet,
+        signature_type: 3,
+        budget_usdc: 400,
+        cash_reserve_usdc: 100,
+        max_total_exposure_usdc: 160,
+        daily_buy_limit_usdc: 80,
+        daily_loss_limit_usdc: 40,
+        auto_redeem: true,
+      });
+    });
+  });
+
   it("只展示并保存四项低频跟单配置", async () => {
     let submittedBody: Record<string, number> | null = null;
     let savedSubscription: Record<string, unknown> | null = null;
     const descriptions = [
       "观察钱包首次建仓时，按其建仓成本的一定比例执行一次买入。",
       "每个市场周期首次建仓允许投入的最高金额。",
-      "当前跟单策略全部未平仓成本的最高合计值。",
+      "该观察钱包运行时预留的最高额度；多个钱包的额度共享执行账户总上限。",
       "FAK 买入/卖出相对当前最优价格允许的最差偏移，超出范围不成交。",
     ];
 
@@ -401,6 +571,7 @@ describe("Polymarket 钱包监控页", () => {
       }
       if (url.pathname === "/api/copy-trading/dashboard") {
         return jsonResponse({
+          live_copy_enabled: true,
           account: null,
           subscription: savedSubscription,
           positions: [],
@@ -417,7 +588,7 @@ describe("Polymarket 钱包监控页", () => {
           id: 71,
           tracked_wallet_id: walletOne.id,
           tracked_wallet_label: walletOne.label,
-          mode: "paper",
+          enabled: false,
           state: "disabled",
           ...submittedBody,
           open_exposure_usdc: 0,
@@ -433,7 +604,7 @@ describe("Polymarket 钱包监控页", () => {
     const user = userEvent.setup();
     render(<Home />);
     await user.click(
-      await screen.findByRole("button", { name: "配置自动跟单" }),
+      await screen.findByRole("button", { name: "配置实盘跟单" }),
     );
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("低频跟单设置")).toBeInTheDocument();

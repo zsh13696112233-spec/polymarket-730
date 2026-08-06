@@ -30,7 +30,6 @@ from backend.trading import (
     OfficialClobTrader,
     TradeResult,
     TradingUnavailable,
-    simulate_market_order,
 )
 
 ZERO = Decimal("0")
@@ -60,6 +59,7 @@ def market_worst_price(
 class RiskUsage:
     position: Decimal = ZERO
     total: Decimal = ZERO
+    global_total: Decimal = ZERO
     bought_today: Decimal = ZERO
     realized_loss_today: Decimal = ZERO
     wallet_capital: Decimal = ZERO
@@ -79,13 +79,13 @@ def allowed_buy_usdc(
         "单仓最大投入已满": subscription.position_cap_usdc - usage.position,
         "跟单总敞口已满": subscription.total_exposure_cap_usdc - usage.total,
         "执行钱包当日买入额度已满": usage.account_daily_buy_limit - usage.bought_today,
-        "执行钱包可用预算不足": usage.wallet_capital - usage.total,
+        "执行钱包可用预算不足": usage.wallet_capital - usage.global_total,
     }
     allowed = min([requested, *limits.values()])
     if allowed > ZERO:
         return allowed, None
-        reason = next((label for label, value in limits.items() if value <= ZERO), "风险额度不足")
-        return ZERO, reason
+    reason = next((label for label, value in limits.items() if value <= ZERO), "风险额度不足")
+    return ZERO, reason
 
 
 async def latest_event_id(session: object, wallet_id: int) -> int:
@@ -284,7 +284,29 @@ class CopyTradingEngine:
                 + 1
             )
             account = await session.get(ExecutionAccount, 1)
-            mode = subscription.mode
+
+        if not self.settings.live_copy_enabled:
+            await self._record_skip(subscription_id, event, "自动实盘已被系统紧急停用")
+            return
+        if account is None or account.status != "ready":
+            await self._record_skip(subscription_id, event, "执行账户尚未通过余额验证")
+            return
+        trader = await self._trader()
+        balance = await trader.collateral_balance()
+        account.collateral_balance = balance
+        account.last_balance_at = utcnow()
+        account.status = "ready" if balance > account.cash_reserve_usdc else "insufficient_balance"
+        async with self.database.sessions() as session:
+            stored_account = await session.get(ExecutionAccount, account.id)
+            assert stored_account is not None
+            stored_account.collateral_balance = balance
+            stored_account.last_balance_at = account.last_balance_at
+            stored_account.status = account.status
+            stored_account.updated_at = utcnow()
+            await session.commit()
+        if account.status != "ready":
+            await self._record_skip(subscription_id, event, "执行钱包余额未高于现金保留额")
+            return
 
         book = await self.client.fetch_order_book(event.asset_id)
         if book.best_ask is None:
@@ -335,7 +357,6 @@ class CopyTradingEngine:
                 position_id=position.id,
                 event=event,
                 side="BUY",
-                mode=mode,
                 amount=allowed,
                 price=worst_price,
                 reference=book.best_ask,
@@ -403,7 +424,6 @@ class CopyTradingEngine:
                 position.updated_at = utcnow()
                 await session.commit()
                 redemption_id = redemption.id
-                mode = subscription.mode
             else:
                 prior_order = await session.scalar(
                     select(CopyOrder.id).where(
@@ -415,11 +435,10 @@ class CopyTradingEngine:
                 if prior_order is not None:
                     return
                 size = position.attributed_size
-                mode = subscription.mode
                 position_id = position.id
                 neg_risk = bool(position.neg_risk)
         if redeem:
-            await self._execute_redemption(redemption_id, event_id, mode)
+            await self._execute_redemption(redemption_id, event_id)
             return
 
         book = await self.client.fetch_order_book(event.asset_id)
@@ -436,7 +455,6 @@ class CopyTradingEngine:
                 position_id=position_id,
                 event=event,
                 side="SELL",
-                mode=mode,
                 amount=size,
                 price=worst_price,
                 reference=book.best_bid,
@@ -465,7 +483,6 @@ class CopyTradingEngine:
         position_id: int | None,
         event: PositionEvent | None,
         side: str,
-        mode: str,
         amount: Decimal,
         price: Decimal,
         reference: Decimal,
@@ -491,7 +508,6 @@ class CopyTradingEngine:
             asset_id=resolved_asset_id,
             condition_id=resolved_condition_id,
             side=side,
-            mode=mode,
             requested_size=requested_size,
             requested_usdc=requested_usdc,
             limit_price=price,
@@ -510,47 +526,54 @@ class CopyTradingEngine:
     async def _execute_order(
         self, order_id: int, request: MarketTradeRequest, book: OrderBookSnapshot
     ) -> None:
+        buy_blocked = False
         async with self.database.sessions() as session:
             order = await session.get(CopyOrder, order_id)
             if order is None or order.status != "planned":
                 return
-            mode = order.mode
-        if mode == "paper":
-            result = simulate_market_order(request, book)
-        else:
-            if not self.settings.live_copy_enabled:
-                await self._mark_order_failed(order_id, "自动实盘仍由服务端锁定")
+            subscription = (
+                await session.get(CopySubscription, order.subscription_id)
+                if order.subscription_id is not None
+                else None
+            )
+            if order.side == "BUY" and subscription is not None and subscription.state != "active":
+                buy_blocked = True
+        if buy_blocked:
+            await self._mark_order_failed(order_id, "实盘跟单已关闭，新买入已取消")
+            return
+        if request.side == "BUY" and not self.settings.live_copy_enabled:
+            await self._mark_order_failed(order_id, "自动实盘已被系统紧急停用")
+            return
+        trader = await self._trader()
+        prepared = await trader.prepare_market(request)
+        async with self.database.sessions() as session:
+            order = await session.get(CopyOrder, order_id)
+            if order is None or order.status != "planned":
                 return
-            trader = await self._trader()
-            prepared = await trader.prepare_market(request)
+            order.signed_order_hash = prepared.signed_order_hash
+            order.status = "signed"
+            order.updated_at = utcnow()
+            await session.commit()
+        try:
+            result = await trader.submit_prepared_market(prepared)
+        except TradingUnavailable as error:
+            # A signed request may have reached the exchange. Never resubmit it blindly.
             async with self.database.sessions() as session:
                 order = await session.get(CopyOrder, order_id)
-                if order is None or order.status != "planned":
-                    return
-                order.signed_order_hash = prepared.signed_order_hash
-                order.status = "signed"
-                order.updated_at = utcnow()
-                await session.commit()
-            try:
-                result = await trader.submit_prepared_market(prepared)
-            except TradingUnavailable as error:
-                # A signed request may have reached the exchange. Never resubmit it blindly.
-                async with self.database.sessions() as session:
-                    order = await session.get(CopyOrder, order_id)
-                    if order is not None:
-                        order.status = "reconciliation_pending"
-                        order.reason = str(error)[:1000]
-                        order.updated_at = utcnow()
-                        await session.commit()
-                return
-            if result.external_trade_id and result.fee_usdc == ZERO:
-                for attempt in range(3):
-                    fee = await trader.trade_fee(result.external_trade_id)
-                    if fee > ZERO:
-                        result = replace(result, fee_usdc=fee)
-                        break
-                    if attempt < 2:
-                        await asyncio.sleep(1)
+                if order is not None:
+                    order.status = "reconciliation_pending"
+                    order.reason = str(error)[:1000]
+                    order.updated_at = utcnow()
+                    await session.commit()
+            return
+        if result.external_trade_id and result.fee_usdc == ZERO:
+            for attempt in range(3):
+                fee = await trader.trade_fee(result.external_trade_id)
+                if fee > ZERO:
+                    result = replace(result, fee_usdc=fee)
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(1)
         await self._apply_result(order_id, result)
 
     async def _apply_result(self, order_id: int, result: TradeResult) -> None:
@@ -574,7 +597,7 @@ class CopyTradingEngine:
             )
             if result.filled_size > ZERO:
                 fingerprint = hashlib.sha256(
-                    f"{order.id}|{result.external_trade_id or result.external_order_id or 'paper'}|"
+                    f"{order.id}|{result.external_trade_id or result.external_order_id or 'local'}|"
                     f"{result.filled_size}|{result.filled_usdc}".encode()
                 ).hexdigest()
                 existing = await session.scalar(
@@ -652,7 +675,6 @@ class CopyTradingEngine:
             position_id=None,
             event=event,
             side="BUY",
-            mode="paper",
             amount=ZERO,
             price=event.after_avg_price or Decimal("0.01"),
             reference=event.after_avg_price or Decimal("0.01"),
@@ -678,7 +700,8 @@ class CopyTradingEngine:
                     await session.scalars(
                         select(CopyPosition).where(
                             CopyPosition.subscription_id == subscription_id,
-                            CopyPosition.attributed_size > ZERO,
+                            (CopyPosition.attributed_size > ZERO)
+                            | (CopyPosition.reserved_buy_usdc > ZERO),
                         )
                     )
                 ).all()
@@ -687,20 +710,40 @@ class CopyTradingEngine:
                 (
                     await session.scalars(
                         select(CopyLedger).where(
-                            CopyLedger.subscription_id == subscription_id,
                             CopyLedger.timestamp >= utc_start,
                         )
                     )
                 ).all()
             )
+            global_positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(
+                            (CopyPosition.attributed_size > ZERO)
+                            | (CopyPosition.reserved_buy_usdc > ZERO),
+                        )
+                    )
+                ).all()
+            )
         total = sum((p.attributed_cost + p.reserved_buy_usdc for p in positions), ZERO)
+        global_total = sum(
+            (p.attributed_cost + p.reserved_buy_usdc for p in global_positions),
+            ZERO,
+        )
         bought = sum((row.amount_usdc for row in ledger if row.type == "buy"), ZERO)
         realized = sum((row.realized_pnl for row in ledger), ZERO)
         if account is None:
-            return RiskUsage(total=total, wallet_capital=Decimal("999999999"), bought_today=bought)
-        capital = max(ZERO, account.budget_usdc - account.cash_reserve_usdc)
+            return RiskUsage(
+                total=total,
+                global_total=global_total,
+                wallet_capital=Decimal("999999999"),
+                bought_today=bought,
+            )
+        balance = account.collateral_balance or ZERO
+        capital = max(ZERO, min(account.budget_usdc, balance) - account.cash_reserve_usdc)
         return RiskUsage(
             total=total,
+            global_total=global_total,
             bought_today=bought,
             realized_loss_today=max(ZERO, -realized),
             wallet_capital=min(capital, account.max_total_exposure_usdc),
@@ -708,7 +751,7 @@ class CopyTradingEngine:
             account_daily_loss_limit=account.daily_loss_limit_usdc,
         )
 
-    async def _execute_redemption(self, redemption_id: int, event_id: int, mode: str) -> None:
+    async def _execute_redemption(self, redemption_id: int, event_id: int) -> None:
         async with self.database.sessions() as session:
             redemption = await session.get(CopyRedemption, redemption_id)
             event = await session.get(PositionEvent, event_id)
@@ -718,28 +761,17 @@ class CopyTradingEngine:
             if position is None:
                 return
             size = redemption.size
-            if mode == "paper":
-                payout_per_share = (
-                    event.payout_amount / event.before_size
-                    if event.payout_amount is not None and event.before_size > ZERO
-                    else ONE
-                )
-                payout = size * payout_per_share
-                transaction_hash = event.transaction_hash
-            else:
-                payout = None
-                transaction_hash = None
-                condition_id = position.condition_id
-                outcome_index = position.outcome_index
-                neg_risk = bool(position.neg_risk)
-        if mode == "live":
-            trader = await self._trader()
-            transaction_hash = await trader.redeem(
-                condition_id=condition_id,
-                size=size,
-                outcome_index=outcome_index,
-                neg_risk=neg_risk,
-            )
+            payout = None
+            condition_id = position.condition_id
+            outcome_index = position.outcome_index
+            neg_risk = bool(position.neg_risk)
+        trader = await self._trader()
+        transaction_hash = await trader.redeem(
+            condition_id=condition_id,
+            size=size,
+            outcome_index=outcome_index,
+            neg_risk=neg_risk,
+        )
         async with self.database.sessions() as session:
             redemption = await session.get(CopyRedemption, redemption_id)
             if redemption is None or redemption.status != "pending":
@@ -879,7 +911,6 @@ class CopyTradingEngine:
                     asset_id=current.asset_id,
                     condition_id=current.condition_id,
                     side="SELL",
-                    mode=subscription.mode,
                     amount=size,
                     price=worst_price,
                     reference=book.best_bid,
@@ -954,9 +985,9 @@ class CopyTradingEngine:
             account is None
             or not account.keychain_service
             or not account.keychain_account
-            or account.signature_type != 1
+            or account.signature_type not in {1, 3}
         ):
-            raise TradingUnavailable("V2 实盘要求已配置的 Magic/Proxy 签名类型 1")
+            raise TradingUnavailable("V2 实盘要求已配置的 Proxy 或 Deposit Wallet")
         key = (
             account.keychain_service,
             account.keychain_account,
@@ -971,7 +1002,7 @@ class CopyTradingEngine:
                     service=account.keychain_service,
                     account=account.keychain_account,
                 ),
-                signature_type=1,
+                signature_type=account.signature_type,
                 funder_address=account.funder_address,
                 relayer_url=self.settings.relayer_api_url,
                 rpc_url=self.settings.polygon_rpc_url,

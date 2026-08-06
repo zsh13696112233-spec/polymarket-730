@@ -107,7 +107,7 @@ class ExecutionAccount(Base):
     )
     signer_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
     funder_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
-    signature_type: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    signature_type: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     keychain_service: Mapped[str | None] = mapped_column(String(200), nullable=True)
     keychain_account: Mapped[str | None] = mapped_column(String(200), nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="unconfigured")
@@ -140,12 +140,6 @@ class CopySubscription(Base):
     __tablename__ = "copy_subscriptions"
     __table_args__ = (
         UniqueConstraint("tracked_wallet_id", name="uq_copy_subscriptions_tracked_wallet"),
-        Index(
-            "uq_copy_subscriptions_single_live",
-            "mode",
-            unique=True,
-            sqlite_where=text("mode = 'live' AND state != 'disabled'"),
-        ),
         CheckConstraint(
             "copy_ratio_percent > 0 AND copy_ratio_percent <= 100",
             name="ck_copy_subscriptions_ratio",
@@ -164,7 +158,6 @@ class CopySubscription(Base):
     tracked_wallet_id: Mapped[int] = mapped_column(
         ForeignKey("watched_wallets.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="paper")
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="disabled")
     copy_ratio_percent: Mapped[Decimal] = mapped_column(
         PERCENT_TYPE, nullable=False, default=Decimal("10")
@@ -250,7 +243,6 @@ class CopyOrder(Base):
     asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
     condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
     side: Mapped[str] = mapped_column(String(4), nullable=False)
-    mode: Mapped[str] = mapped_column(String(20), nullable=False)
     requested_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     requested_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     limit_price: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)

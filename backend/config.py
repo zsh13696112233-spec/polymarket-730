@@ -25,7 +25,7 @@ class Settings:
     request_timeout_seconds: float = 12.0
     max_backoff_seconds: float = 300.0
     start_monitor: bool = True
-    live_copy_enabled: bool = False
+    live_copy_enabled: bool = True
     cors_origins: tuple[str, ...] = field(
         default=(
             "http://127.0.0.1:3000",
@@ -60,7 +60,7 @@ class Settings:
             max_backoff_seconds=float(os.getenv("POLYMARKET_MAX_BACKOFF_SECONDS", "300")),
             start_monitor=os.getenv("POLYMARKET_START_MONITOR", "1").lower()
             not in {"0", "false", "no"},
-            live_copy_enabled=os.getenv("POLYMARKET_LIVE_COPY_ENABLED", "0").lower()
+            live_copy_enabled=os.getenv("POLYMARKET_LIVE_COPY_ENABLED", "1").lower()
             in {"1", "true", "yes"},
         )
 

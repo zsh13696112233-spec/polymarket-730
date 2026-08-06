@@ -151,8 +151,8 @@ class OfficialClobTrader:
             raise TradingUnavailable("缺少官方 py-clob-client，实盘下单已拒绝") from error
 
         try:
-            if self.signature_type != 1:
-                raise TradingUnavailable("V2 实盘只允许 Magic/Proxy 签名类型 1")
+            if self.signature_type not in {1, 3}:
+                raise TradingUnavailable("V2 实盘只允许 Proxy 或 Deposit Wallet")
             client = self._client_sync()
             args = MarketOrderArgs(
                 token_id=request.asset_id,
@@ -300,8 +300,8 @@ class OfficialClobTrader:
             from py_clob_client_v2.constants import POLYGON
         except ImportError as error:
             raise TradingUnavailable("缺少 py-clob-client-v2，实盘功能不可用") from error
-        if self.signature_type != 1:
-            raise TradingUnavailable("V2 实盘只允许 Magic/Proxy 签名类型 1")
+        if self.signature_type not in {1, 3}:
+            raise TradingUnavailable("V2 实盘只允许 Proxy 或 Deposit Wallet")
         if not self.funder_address:
             raise TradingUnavailable("V2 实盘必须配置 Proxy 资金钱包地址")
         private_key = self.keychain.get_secret(self.key_reference)
@@ -314,7 +314,7 @@ class OfficialClobTrader:
         if self.funder_address:
             kwargs["funder"] = self.funder_address
         client = ClobClient(**kwargs)
-        client.set_api_creds(client.create_or_derive_api_creds())
+        client.set_api_creds(client.create_or_derive_api_key())
         return client
 
     def _collateral_balance_sync(self) -> Decimal:
@@ -471,6 +471,8 @@ class OfficialClobTrader:
         private_key = self.keychain.get_secret(self.key_reference)
         if self.signature_type == 0:
             return self._redeem_eoa(private_key, destination, data)
+        if self.signature_type == 3:
+            raise TradingUnavailable("Deposit Wallet 自动赎回需要 Relayer API 凭证")
         try:
             from py_builder_relayer_client.client import RelayClient
             from py_builder_relayer_client.models import RelayerTxType, Transaction

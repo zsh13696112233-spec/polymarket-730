@@ -68,7 +68,7 @@ class ExecutionAccountUpdate(APIModel):
     wallet_id: int = Field(gt=0)
     signer_address: str | None = Field(default=None, max_length=42)
     funder_address: str | None = Field(default=None, max_length=42)
-    signature_type: Literal[1] = 1
+    signature_type: Literal[1, 3] = 3
     budget_usdc: Decimal = Field(default=Decimal("400"), ge=0)
     cash_reserve_usdc: Decimal = Field(default=Decimal("240"), ge=0)
     max_total_exposure_usdc: Decimal = Field(default=Decimal("160"), ge=0)
@@ -85,9 +85,9 @@ class CopySubscriptionConfig(APIModel):
 
 
 class CopySubscriptionCreate(CopySubscriptionConfig):
+    model_config = ConfigDict(extra="forbid")
+
     tracked_wallet_id: int = Field(gt=0)
-    mode: Literal["paper", "live"] = "paper"
-    confirm_live: bool = False
 
 
 class CopySubscriptionUpdate(CopySubscriptionConfig):
@@ -95,12 +95,11 @@ class CopySubscriptionUpdate(CopySubscriptionConfig):
 
 
 class CopySubscriptionAction(APIModel):
-    action: Literal["activate", "pause", "resume", "exit_only", "close", "disable"]
-    confirm_live: bool = False
+    action: Literal["close"]
 
 
-class CopySubscriptionModeUpdate(APIModel):
-    mode: Literal["paper", "live"]
+class CopySubscriptionEnabledUpdate(APIModel):
+    enabled: bool
     confirm_live: bool = False
 
 
@@ -108,7 +107,7 @@ class CopySubscriptionRead(APIModel):
     id: int
     tracked_wallet_id: int
     tracked_wallet_label: str | None = None
-    mode: Literal["paper", "live"]
+    enabled: bool = False
     state: Literal["active", "paused", "exit_only", "closing", "disabled", "error"]
     copy_ratio_percent: DecimalNumber
     position_cap_usdc: DecimalNumber
@@ -175,7 +174,6 @@ class CopyOrderRead(APIModel):
     leader_event_id: int | None
     asset_id: str
     side: Literal["BUY", "SELL"]
-    mode: Literal["paper", "live"]
     source: Literal["copy", "rehearsal"]
     signed_order_hash: str | None
     requested_size: DecimalNumber
@@ -212,6 +210,7 @@ class CopyPortfolioSummaryRead(APIModel):
 
 
 class CopyDashboardRead(APIModel):
+    live_copy_enabled: bool
     account: ExecutionAccountRead | None
     subscription: CopySubscriptionRead | None
     positions: list[CopyPositionRead]
@@ -222,7 +221,7 @@ class CopyDashboardRead(APIModel):
 class RehearsalPreviewRequest(APIModel):
     market_url: str = Field(min_length=1, max_length=1000)
     outcome: str = Field(min_length=1, max_length=200)
-    max_total_usdc: Decimal = Field(default=Decimal("5"), gt=0, le=5)
+    max_total_usdc: Decimal = Field(default=Decimal("1"), gt=0, le=1)
 
 
 class RehearsalPreviewRead(APIModel):
@@ -240,7 +239,7 @@ class RehearsalPreviewRead(APIModel):
 
 class RehearsalExecuteRequest(APIModel):
     confirmation_id: str = Field(min_length=20, max_length=200)
-    confirmation_text: Literal["确认执行5美元演练"]
+    confirmation_text: Literal["确认执行1美元演练"]
 
 
 class CopyRecommendation(APIModel):

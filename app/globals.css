@@ -363,6 +363,34 @@ summary:focus-visible {
   letter-spacing: 0.03em;
 }
 
+.walletCopyStatus {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(107, 114, 128, 0.1);
+  color: var(--muted-strong);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.walletCopyStatus.enabled {
+  background: rgba(24, 163, 127, 0.14);
+  color: #08795d;
+}
+
+.walletCopyStatus.exit,
+.walletCopyStatus.closing {
+  background: rgba(217, 149, 31, 0.14);
+  color: #95620d;
+}
+
+.walletCopyStatus.error {
+  background: rgba(179, 52, 52, 0.12);
+  color: #a02d2d;
+}
+
 .addTab {
   display: grid;
   width: 36px;
@@ -2963,6 +2991,13 @@ summary:focus-visible {
   flex: 1;
 }
 
+.executionAccountActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .copyTradingMetrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -3015,6 +3050,12 @@ summary:focus-visible {
 
 .copyTradingActions .dangerButton {
   color: #b33434;
+}
+
+.copyTradingActions .liveToggleButton.enabled {
+  border-color: rgba(179, 52, 52, 0.25);
+  background: rgba(179, 52, 52, 0.06);
+  color: #a02d2d;
 }
 
 .copyPositionSection {
@@ -3337,6 +3378,19 @@ summary:focus-visible {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+}
+
+.executionRiskGrid {
+  margin-top: 8px;
+}
+
+.executionRiskPreview {
+  margin: 16px 0 0;
+  padding: 11px 13px;
+  border-radius: 10px;
+  background: rgba(24, 163, 127, 0.1);
+  color: var(--brand-dark);
+  font-size: 13px;
 }
 
 .unitInput {

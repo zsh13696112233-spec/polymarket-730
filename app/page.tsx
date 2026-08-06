@@ -29,6 +29,10 @@ type ExecutionAccount = {
   credentials_configured: boolean;
   budget_usdc: Numeric;
   cash_reserve_usdc: Numeric;
+  max_total_exposure_usdc: Numeric;
+  daily_buy_limit_usdc: Numeric;
+  daily_loss_limit_usdc: Numeric;
+  auto_redeem: boolean;
   collateral_balance: Numeric | null;
   last_error: string | null;
 };
@@ -37,7 +41,7 @@ type CopySubscription = {
   id: number | string;
   tracked_wallet_id: number | string;
   tracked_wallet_label: string | null;
-  mode: "paper" | "live";
+  enabled: boolean;
   state:
     | "active"
     | "paused"
@@ -120,6 +124,7 @@ type RehearsalPreview = {
 };
 
 type CopyDashboard = {
+  live_copy_enabled: boolean;
   account: ExecutionAccount | null;
   subscription: CopySubscription | null;
   positions: CopyPosition[];
@@ -2171,6 +2176,15 @@ const copyStateLabels: Record<CopySubscription["state"], string> = {
   error: "已熔断",
 };
 
+function copyTabStatus(subscription: CopySubscription | undefined) {
+  if (!subscription) return { label: "未配置", tone: "unconfigured" };
+  if (subscription.state === "active") return { label: "实盘开", tone: "enabled" };
+  if (subscription.state === "exit_only") return { label: "已关闭 · 仅退出", tone: "exit" };
+  if (subscription.state === "closing") return { label: "清仓中", tone: "closing" };
+  if (subscription.state === "error") return { label: "已熔断", tone: "error" };
+  return { label: "已关闭", tone: "disabled" };
+}
+
 const copyPositionStatusLabels: Record<string, string> = {
   opening: "建仓中",
   open: "持仓中",
@@ -2179,7 +2193,6 @@ const copyPositionStatusLabels: Record<string, string> = {
   redeeming: "赎回中",
   manual_exit: "需手工处理余仓",
   not_opened: "未成交",
-  paper_archived: "模拟归档",
 };
 
 function CopyPnlValue({
@@ -2222,11 +2235,11 @@ function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
   };
 
   return (
-    <section className="copyPositionSection" aria-label="模拟跟单持仓明细">
+    <section className="copyPositionSection" aria-label="实盘跟单持仓明细">
       <div className="copyPositionHeader">
         <div>
           <strong>
-            {dashboard.subscription?.mode === "paper" ? "模拟跟单持仓" : "实盘归因持仓"}
+            实盘归因持仓
           </strong>
           <span>按当前买一价估算可卖出价值 · 实盘成本计入已回报的实际费用</span>
         </div>
@@ -2280,7 +2293,7 @@ function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
       )}
       {displayed.length === 0 ? (
         <p className="copyPositionEmpty">
-          {view === "open" ? "当前还没有模拟归因持仓。" : "暂时没有已清仓或已赎回记录。"}
+          {view === "open" ? "当前还没有实盘归因持仓。" : "暂时没有已清仓或已赎回记录。"}
         </p>
       ) : (
         <>
@@ -2425,7 +2438,7 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
       setPreview(
         await request<RehearsalPreview>("/api/copy-trading/rehearsal/preview", {
           method: "POST",
-          body: JSON.stringify({ market_url: marketUrl, outcome, max_total_usdc: 5 }),
+          body: JSON.stringify({ market_url: marketUrl, outcome, max_total_usdc: 1 }),
         }),
       );
     } catch (previewError) {
@@ -2444,7 +2457,7 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
         method: "POST",
         body: JSON.stringify({
           confirmation_id: preview.confirmation_id,
-          confirmation_text: "确认执行5美元演练",
+          confirmation_text: "确认执行1美元演练",
         }),
       });
       setResult(order);
@@ -2457,9 +2470,9 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <section className="copyTradingFieldGroup" aria-label="5 美元手工市场演练">
-      <h3>$5 手工市场演练</h3>
-      <p>仅买入一次，不自动卖回，也不会计入自动跟单持仓。</p>
+    <section className="copyTradingFieldGroup" aria-label="1 美元手工市场演练">
+      <h3>$1 真实下单演练</h3>
+      <p>会真实花费资金并买入一次，不自动卖回，也不会计入自动跟单持仓。</p>
       <form className="copyTradingFormGrid" onSubmit={loadPreview}>
         <label className="field copyTradingField">
           <span>市场链接</span>
@@ -2483,7 +2496,7 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
           />
         </label>
         <button type="submit" disabled={!enabled || busy}>
-          {busy ? "检查中…" : "预览 $5 买入"}
+          {busy ? "检查中…" : "预览 $1 买入"}
         </button>
       </form>
       {!enabled && <small>先验证 V2 执行钱包后才能演练。</small>}
@@ -2514,22 +2527,25 @@ function CopyTradingPanel({
   error,
   busy,
   onConfigure,
-  onAction,
-  onMode,
+  onToggle,
+  onClosePositions,
   onSetupAccount,
+  onConfigureAccountRisk,
   onVerifyAccount,
 }: {
   dashboard: CopyDashboard | null;
   error: string | null;
   busy: boolean;
   onConfigure: () => void;
-  onAction: (action: string) => void;
-  onMode: (mode: "paper" | "live") => void;
+  onToggle: (enabled: boolean) => void;
+  onClosePositions: () => void;
   onSetupAccount: () => void;
+  onConfigureAccountRisk: () => void;
   onVerifyAccount: () => void;
 }) {
   const subscription = dashboard?.subscription ?? null;
   const account = dashboard?.account ?? null;
+  const liveCopyEnabled = dashboard?.live_copy_enabled ?? false;
   const openPositions =
     dashboard?.positions.filter(
       (position) => toNumber(position.attributed_size) > 0,
@@ -2539,28 +2555,25 @@ function CopyTradingPanel({
     <section className="copyTradingPanel" aria-label="自动跟单">
       <div className="copyTradingLead">
         <span className="eyebrow">单执行钱包 · V2</span>
-        <h2>自动跟单</h2>
+        <h2>实盘自动跟单</h2>
         <p>
           每 15 秒确认一次持仓变化：只跟随建仓、清仓和赎回；加仓与减仓仅记录，不自动下单。
         </p>
       </div>
       {!subscription ? (
         <div className="copyTradingEmpty">
-          <strong>当前钱包尚未配置</strong>
+          <strong>当前钱包尚未配置实盘跟单</strong>
           <span>默认按建仓成本的 10% 跟单，单仓最多 $20，总敞口最多 $160。</span>
           <button className="primaryButton" type="button" onClick={onConfigure}>
-            配置自动跟单
+            配置实盘跟单
           </button>
         </div>
       ) : (
         <>
           <div className="copyTradingMetrics">
             <div>
-              <span>模式 / 状态</span>
-              <strong>
-                {subscription.mode === "paper" ? "模拟盘" : "实盘"} ·{" "}
-                {copyStateLabels[subscription.state]}
-              </strong>
+              <span>实盘状态</span>
+              <strong>{copyStateLabels[subscription.state]}</strong>
             </div>
             <div>
               <span>当前归因敞口</span>
@@ -2583,48 +2596,41 @@ function CopyTradingPanel({
             <button type="button" onClick={onConfigure} disabled={busy}>
               风控设置
             </button>
-            {subscription.state === "active" ? (
-              <button type="button" onClick={() => onAction("pause")} disabled={busy}>
-                暂停并撤单
-              </button>
-            ) : (
-              <button
-                className="primaryButton"
-                type="button"
-                onClick={() =>
-                  onAction(subscription.state === "disabled" ? "activate" : "resume")
-                }
-                disabled={busy || subscription.state === "closing"}
-              >
-                {busy ? "处理中…" : "启动跟单"}
-              </button>
-            )}
             <button
+              className={subscription.enabled ? "liveToggleButton enabled" : "primaryButton"}
               type="button"
-              onClick={() => onAction("exit_only")}
-              disabled={busy || subscription.state === "closing"}
+              onClick={() => onToggle(!subscription.enabled)}
+              disabled={
+                busy ||
+                subscription.state === "closing" ||
+                (!subscription.enabled &&
+                  (!liveCopyEnabled || account?.status !== "ready"))
+              }
             >
-              仅退出
+              {busy
+                ? "处理中…"
+                : subscription.enabled
+                  ? "关闭实盘跟单"
+                  : "开启实盘跟单"}
             </button>
             <button
               className="dangerButton"
               type="button"
-              onClick={() => onAction("close")}
+              onClick={onClosePositions}
               disabled={busy || subscription.state === "closing"}
             >
               关闭并清仓
             </button>
-            <button
-              type="button"
-              onClick={() => onMode("paper")}
-              disabled
-            >
-              自动实盘暂未解锁
-            </button>
           </div>
+          {!liveCopyEnabled && (
+            <p className="keychainHint">自动实盘已被系统紧急停用，当前不能开启新买入。</p>
+          )}
+          {liveCopyEnabled && account?.status !== "ready" && !subscription.enabled && (
+            <p className="keychainHint">先完成执行钱包验证并确保余额高于现金保留额，才能开启实盘。</p>
+          )}
           {dashboard && <CopyTradingPositions dashboard={dashboard} />}
           <p className="privacyNote">
-            盘口保护 ±{formatRatioPart(subscription.market_slippage_cents)}¢；市场没有开放交易时不会下单。
+            关闭开关后停止新买入，但保留归因仓位并继续跟随清仓和赎回。盘口保护 ±{formatRatioPart(subscription.market_slippage_cents)}¢。
           </p>
         </>
       )}
@@ -2636,21 +2642,39 @@ function CopyTradingPanel({
               ? "尚未配置"
               : account.status === "ready"
                 ? `已验证 · ${formatMoney(account.collateral_balance)}`
+                : account.status === "insufficient_balance"
+                  ? `已验证 · 余额 ${formatMoney(account.collateral_balance)} · 低于现金保留额`
+                  : account.status === "error"
+                    ? "验证失败"
                 : account.credentials_configured
                   ? "密钥已配置，等待余额验证"
                   : "等待导入钥匙串密钥"}
           </strong>
         </div>
-        {!account ? (
-          <button type="button" onClick={onSetupAccount} disabled={busy}>
-            绑定我的钱包
-          </button>
-        ) : account.status !== "ready" ? (
-          <button type="button" onClick={onVerifyAccount} disabled={busy}>
-            验证密钥与余额
-          </button>
-        ) : null}
+        <div className="executionAccountActions">
+          {!account ? (
+            <button type="button" onClick={onSetupAccount} disabled={busy}>
+              绑定我的钱包
+            </button>
+          ) : (
+            <>
+              <button type="button" onClick={onConfigureAccountRisk} disabled={busy}>
+                资金风控
+              </button>
+              {account.status !== "ready" && (
+                <button type="button" onClick={onVerifyAccount} disabled={busy}>
+                  {busy ? "正在验证…" : account.status === "insufficient_balance" ? "重新验证" : "验证密钥与余额"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
+      {account?.status === "insufficient_balance" && (
+        <p className="keychainHint">
+          钱包验证已经通过；当前余额 {formatMoney(account.collateral_balance)} 低于现金保留额 {formatMoney(account.cash_reserve_usdc)}。请补充余额或调整资金参数。
+        </p>
+      )}
       {account && !account.credentials_configured && account.signer_address && (
         <p className="keychainHint">
           在终端运行：
@@ -2659,7 +2683,7 @@ function CopyTradingPanel({
           </code>
         </p>
       )}
-      {account && account.credentials_configured && account.signer_address && (
+      {account && account.credentials_configured && account.signer_address && account.signature_type === 1 && (
         <p className="keychainHint">
           Proxy 钱包自动赎回还需 Builder 凭证：
           <code>
@@ -2667,13 +2691,196 @@ function CopyTradingPanel({
           </code>
         </p>
       )}
+      {account && account.credentials_configured && account.signature_type === 3 && (
+        <p className="keychainHint">
+          Deposit Wallet 自动赎回需要 Relayer API 凭证；普通余额验证和下单不受影响。
+        </p>
+      )}
       {(error || subscription?.last_error || account?.last_error) && (
         <p className="copyTradingError" role="alert">
           {error || subscription?.last_error || account?.last_error}
         </p>
       )}
-      <RehearsalPanel enabled={account?.status === "ready"} />
+      <RehearsalPanel enabled={liveCopyEnabled && account?.status === "ready"} />
     </section>
+  );
+}
+
+function ExecutionRiskModal({
+  open,
+  account,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  account: ExecutionAccount | null;
+  onClose: () => void;
+  onSaved: (account: ExecutionAccount) => void;
+}) {
+  const [values, setValues] = useState({
+    budget_usdc: String(account?.budget_usdc ?? 400),
+    cash_reserve_usdc: String(account?.cash_reserve_usdc ?? 240),
+    max_total_exposure_usdc: String(account?.max_total_exposure_usdc ?? 160),
+    daily_buy_limit_usdc: String(account?.daily_buy_limit_usdc ?? 80),
+    daily_loss_limit_usdc: String(account?.daily_loss_limit_usdc ?? 40),
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open || !account) return null;
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!account) return;
+    const numbers = Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [key, Number(value)]),
+    ) as Record<keyof typeof values, number>;
+    if (Object.values(numbers).some((value) => !Number.isFinite(value) || value < 0)) {
+      setError("资金参数必须是大于或等于 0 的有效金额");
+      return;
+    }
+    if (numbers.cash_reserve_usdc > numbers.budget_usdc) {
+      setError("现金保留额不能高于钱包预算");
+      return;
+    }
+    if (
+      numbers.max_total_exposure_usdc >
+      numbers.budget_usdc - numbers.cash_reserve_usdc
+    ) {
+      setError("总敞口不能高于预算扣除现金保留额");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await request<ExecutionAccount>("/api/copy-trading/account", {
+        method: "PUT",
+        body: JSON.stringify({
+          wallet_id: Number(account.wallet_id),
+          signer_address: account.signer_address,
+          funder_address: account.funder_address,
+          signature_type: account.signature_type ?? 3,
+          ...numbers,
+          auto_redeem: account.auto_redeem ?? true,
+        }),
+      });
+      onSaved(updated);
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error ? submitError.message : "无法保存执行钱包资金风控",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const fields: Array<{
+    key: keyof typeof values;
+    label: string;
+    description: string;
+  }> = [
+    {
+      key: "budget_usdc",
+      label: "钱包预算",
+      description: "自动跟单可以纳入计算的资金总额。",
+    },
+    {
+      key: "cash_reserve_usdc",
+      label: "现金保留额",
+      description: "这部分余额不会用于自动跟单；当前限制 $240 在这里调整。",
+    },
+    {
+      key: "max_total_exposure_usdc",
+      label: "账户总敞口上限",
+      description: "所有观察钱包的自动跟单仓位合计上限。",
+    },
+    {
+      key: "daily_buy_limit_usdc",
+      label: "每日买入上限",
+      description: "所有观察钱包每天累计允许买入的金额。",
+    },
+    {
+      key: "daily_loss_limit_usdc",
+      label: "每日亏损熔断",
+      description: "所有观察钱包当天累计实现亏损达到该值后停止新买入。",
+    },
+  ];
+  const currentBalance =
+    account.collateral_balance === null
+      ? null
+      : toNumber(account.collateral_balance);
+  const estimatedCapacity =
+    currentBalance === null
+      ? null
+      : Math.max(
+          0,
+          Math.min(
+            toNumber(values.max_total_exposure_usdc),
+            Math.min(toNumber(values.budget_usdc), currentBalance) -
+              toNumber(values.cash_reserve_usdc),
+          ),
+        );
+
+  return (
+    <div className="modalBackdrop" role="presentation">
+      <section
+        className="modal copyTradingModal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="execution-risk-title"
+      >
+        <div className="modalHeader">
+          <div>
+            <span className="eyebrow">唯一执行钱包 · 全局共享</span>
+            <h2 id="execution-risk-title">执行钱包资金风控</h2>
+          </div>
+          <button className="closeButton" type="button" onClick={onClose}>×</button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="copyTradingFormGrid executionRiskGrid">
+            {fields.map((field) => (
+              <label className="field copyTradingField" key={field.key}>
+                <span>{field.label}</span>
+                <div className="unitInput">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    required
+                    value={values[field.key]}
+                    onChange={(event) =>
+                      setValues((current) => ({
+                        ...current,
+                        [field.key]: event.target.value,
+                      }))
+                    }
+                    disabled={submitting}
+                  />
+                  <b>USDC</b>
+                </div>
+                <small>{field.description}</small>
+              </label>
+            ))}
+          </div>
+          {currentBalance !== null && (
+            <p className="executionRiskPreview">
+              当前余额 {formatMoney(currentBalance)} · 按以上参数最多可分配{" "}
+              <strong>{formatMoney(estimatedCapacity)}</strong>
+            </p>
+          )}
+          <p className="privacyNote">
+            保存后需要重新验证执行钱包。可分配额度还需覆盖已开启钱包的固定额度和已关闭钱包的实际持仓；系统不会自动调整金额或充值。
+          </p>
+          {error && <p className="formError" role="alert">{error}</p>}
+          <div className="modalActions">
+            <button className="secondaryButton" type="button" onClick={onClose}>取消</button>
+            <button className="primaryButton" type="submit" disabled={submitting}>
+              {submitting ? "正在保存…" : "保存资金风控"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -2762,9 +2969,9 @@ function CopyTradingModal({
         },
         {
           key: "total_exposure_cap_usdc",
-          label: "总敞口上限",
+          label: "钱包固定额度",
           unit: "USDC",
-          description: "当前跟单策略全部未平仓成本的最高合计值。",
+          description: "该观察钱包运行时预留的最高额度；多个钱包的额度共享执行账户总上限。",
           min: "0",
         },
         {
@@ -2785,7 +2992,7 @@ function CopyTradingModal({
         <div className="modalHeader">
           <div>
             <span className="eyebrow">按观察钱包独立配置</span>
-            <h2>{subscription ? "修改自动跟单风控" : "配置自动跟单"}</h2>
+            <h2>{subscription ? "修改实盘跟单风控" : "配置实盘跟单"}</h2>
           </div>
           <button className="closeButton" type="button" onClick={onClose}>×</button>
         </div>
@@ -2823,7 +3030,7 @@ function CopyTradingModal({
             ))}
           </div>
           <p className="privacyNote">
-            系统仅处理建仓、清仓、赎回三类稳定持仓事件。加仓和减仓仍会记录，但不会自动下单。
+            保存配置不会自动开启。每次开启实盘都需要再次确认；系统仅处理建仓、清仓、赎回三类稳定持仓事件。
           </p>
           {error && <p className="formError" role="alert">{error}</p>}
           <div className="modalActions">
@@ -2844,7 +3051,9 @@ export default function Home() {
   });
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [copyTradingModalOpen, setCopyTradingModalOpen] = useState(false);
+  const [executionRiskModalOpen, setExecutionRiskModalOpen] = useState(false);
   const [copyDashboard, setCopyDashboard] = useState<CopyDashboard | null>(null);
+  const [copySubscriptions, setCopySubscriptions] = useState<CopySubscription[]>([]);
   const [copyTradingError, setCopyTradingError] = useState<string | null>(null);
   const [copyTradingBusy, setCopyTradingBusy] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(
@@ -2965,6 +3174,14 @@ export default function Home() {
       );
       if (activeWalletRef.current !== walletId) return;
       setCopyDashboard(dashboard);
+      if (dashboard.subscription) {
+        setCopySubscriptions((current) => [
+          ...current.filter(
+            (item) => String(item.id) !== String(dashboard.subscription?.id),
+          ),
+          dashboard.subscription as CopySubscription,
+        ]);
+      }
       setCopyTradingError(null);
     } catch (dashboardError) {
       if (activeWalletRef.current !== walletId) return;
@@ -2973,6 +3190,16 @@ export default function Home() {
           ? dashboardError.message
           : "无法读取自动跟单状态",
       );
+    }
+  }, []);
+
+  const loadCopySubscriptions = useCallback(async () => {
+    try {
+      setCopySubscriptions(
+        await request<CopySubscription[]>("/api/copy-trading/subscriptions"),
+      );
+    } catch {
+      // The selected wallet dashboard still shows the detailed error.
     }
   }, []);
 
@@ -3097,6 +3324,11 @@ export default function Home() {
   }, [loadGlobalSettings]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => void loadCopySubscriptions(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadCopySubscriptions]);
+
+  useEffect(() => {
     if (!activeWalletId) return;
     const timer = window.setTimeout(
       () => {
@@ -3154,7 +3386,8 @@ export default function Home() {
 
   useEffect(() => {
     const fallbackRefresh = window.setInterval(() => {
-      void loadWallets();
+        void loadWallets();
+        void loadCopySubscriptions();
       const walletId = activeWalletRef.current;
       if (walletId) {
         void loadContent(walletId, true);
@@ -3162,10 +3395,20 @@ export default function Home() {
       }
     }, 30_000);
     return () => window.clearInterval(fallbackRefresh);
-  }, [loadContent, loadCopyDashboard, loadWallets]);
+  }, [loadContent, loadCopyDashboard, loadCopySubscriptions, loadWallets]);
 
   const activeWallet = wallets.find(
     (wallet) => String(wallet.id) === activeWalletId,
+  );
+  const copySubscriptionMap = useMemo(
+    () =>
+      new Map(
+        copySubscriptions.map((subscription) => [
+          String(subscription.tracked_wallet_id),
+          subscription,
+        ]),
+      ),
+    [copySubscriptions],
   );
   const status = syncStatus(activeWallet?.status ?? "pending", streamConnected);
   const overlapMap = useMemo(
@@ -3489,13 +3732,22 @@ export default function Home() {
         myWalletRef.current.proxy_wallet || signerAddress,
       );
       if (!funderAddress) return;
+      const existingAccount = copyDashboard?.account;
       await request<ExecutionAccount>("/api/copy-trading/account", {
         method: "PUT",
         body: JSON.stringify({
           wallet_id: Number(myWalletRef.current.id),
           signer_address: signerAddress,
           funder_address: funderAddress,
-          signature_type: 1,
+          signature_type: existingAccount?.signature_type ?? 3,
+          budget_usdc: Number(existingAccount?.budget_usdc ?? 400),
+          cash_reserve_usdc: Number(existingAccount?.cash_reserve_usdc ?? 240),
+          max_total_exposure_usdc: Number(
+            existingAccount?.max_total_exposure_usdc ?? 160,
+          ),
+          daily_buy_limit_usdc: Number(existingAccount?.daily_buy_limit_usdc ?? 80),
+          daily_loss_limit_usdc: Number(existingAccount?.daily_loss_limit_usdc ?? 40),
+          auto_redeem: existingAccount?.auto_redeem ?? true,
         }),
       });
       if (activeWalletRef.current) {
@@ -3529,73 +3781,66 @@ export default function Home() {
     }
   }
 
-  async function copyTradingAction(action: string) {
+  async function setCopyTradingEnabled(enabled: boolean) {
     const subscription = copyDashboard?.subscription;
     if (!subscription) return;
-    if (
-      action === "close" &&
-      !window.confirm("确认关闭策略并卖出全部自动跟单归因持仓？")
-    ) {
+    if (enabled && !window.confirm(
+      "确认开启真实资金自动跟单？系统将按当前钱包配置和共享资金上限自动下单。",
+    )) {
       return;
     }
     setCopyTradingBusy(true);
     setCopyTradingError(null);
     try {
-      const confirmLive = subscription.mode === "live" &&
-        (action === "activate" || action === "resume");
-      if (
-        confirmLive &&
-        !window.confirm("确认启动实盘自动下单？实盘可能产生实际亏损。")
-      ) {
-        return;
-      }
-      await request<CopySubscription>(
-        `/api/copy-trading/subscriptions/${subscription.id}/action`,
+      const updated = await request<CopySubscription>(
+        `/api/copy-trading/subscriptions/${subscription.id}/enabled`,
         {
-          method: "POST",
-          body: JSON.stringify({ action, confirm_live: confirmLive }),
+          method: "PUT",
+          body: JSON.stringify({ enabled, confirm_live: enabled }),
         },
       );
+      setCopySubscriptions((current) => [
+        ...current.filter((item) => String(item.id) !== String(updated.id)),
+        updated,
+      ]);
       if (activeWalletRef.current) {
         await loadCopyDashboard(activeWalletRef.current);
       }
-    } catch (actionError) {
+    } catch (toggleError) {
       setCopyTradingError(
-        actionError instanceof Error ? actionError.message : "策略操作失败",
+        toggleError instanceof Error ? toggleError.message : "实盘开关操作失败",
       );
     } finally {
       setCopyTradingBusy(false);
     }
   }
 
-  async function switchCopyMode(mode: "paper" | "live") {
+  async function closeCopyTradingPositions() {
     const subscription = copyDashboard?.subscription;
     if (!subscription) return;
-    const live = mode === "live";
-    if (
-      live &&
-      !window.confirm(
-        "确认切换实盘？模拟持仓会归档，系统只跟随确认后的新信号，不会补单。",
-      )
-    ) {
+    if (!window.confirm("确认停止跟单并卖出全部自动跟单归因持仓？")) {
       return;
     }
     setCopyTradingBusy(true);
     setCopyTradingError(null);
     try {
-      await request<CopySubscription>(
-        `/api/copy-trading/subscriptions/${subscription.id}/mode`,
+      const updated = await request<CopySubscription>(
+        `/api/copy-trading/subscriptions/${subscription.id}/action`,
         {
-          method: "PUT",
-          body: JSON.stringify({ mode, confirm_live: live }),
+          method: "POST",
+          body: JSON.stringify({ action: "close" }),
         },
       );
+      setCopySubscriptions((current) => [
+        ...current.filter((item) => String(item.id) !== String(updated.id)),
+        updated,
+      ]);
       if (activeWalletRef.current) {
         await loadCopyDashboard(activeWalletRef.current);
       }
-    } catch (modeError) {
+    } catch (closeError) {
       setCopyTradingError(
-        modeError instanceof Error ? modeError.message : "无法切换跟单模式",
+        closeError instanceof Error ? closeError.message : "无法关闭并清仓",
       );
     } finally {
       setCopyTradingBusy(false);
@@ -3687,6 +3932,9 @@ export default function Home() {
             <div className="walletTabs" role="tablist" aria-label="选择钱包">
               {wallets.map((wallet) => {
                 const selected = String(wallet.id) === activeWalletId;
+                const copyStatus = copyTabStatus(
+                  copySubscriptionMap.get(String(wallet.id)),
+                );
                 return (
                   <button
                     type="button"
@@ -3700,6 +3948,9 @@ export default function Home() {
                     <small>
                       {shortenAddress(wallet.proxy_wallet || wallet.address)}
                     </small>
+                    <b className={`walletCopyStatus ${copyStatus.tone}`}>
+                      {copyStatus.label}
+                    </b>
                   </button>
                 );
               })}
@@ -3769,9 +4020,10 @@ export default function Home() {
             error={copyTradingError}
             busy={copyTradingBusy}
             onConfigure={() => setCopyTradingModalOpen(true)}
-            onAction={(action) => void copyTradingAction(action)}
-            onMode={(mode) => void switchCopyMode(mode)}
+            onToggle={(enabled) => void setCopyTradingEnabled(enabled)}
+            onClosePositions={() => void closeCopyTradingPositions()}
             onSetupAccount={() => void setupExecutionAccount()}
+            onConfigureAccountRisk={() => setExecutionRiskModalOpen(true)}
             onVerifyAccount={() => void verifyExecutionAccount()}
           />
 
@@ -4027,12 +4279,33 @@ export default function Home() {
         onSaved={(subscription) => {
           setCopyTradingModalOpen(false);
           setCopyTradingError(null);
+          setCopySubscriptions((current) => [
+            ...current.filter((item) => String(item.id) !== String(subscription.id)),
+            subscription,
+          ]);
           setCopyDashboard((current) =>
             current ? { ...current, subscription } : current,
           );
           if (activeWalletRef.current) {
             void loadCopyDashboard(activeWalletRef.current);
           }
+        }}
+      />
+      <ExecutionRiskModal
+        key={
+          executionRiskModalOpen
+            ? `execution-risk-${copyDashboard?.account?.cash_reserve_usdc ?? "none"}`
+            : "execution-risk-closed"
+        }
+        open={executionRiskModalOpen}
+        account={copyDashboard?.account ?? null}
+        onClose={() => setExecutionRiskModalOpen(false)}
+        onSaved={(account) => {
+          setExecutionRiskModalOpen(false);
+          setCopyTradingError(null);
+          setCopyDashboard((current) =>
+            current ? { ...current, account } : current,
+          );
         }}
       />
       <DeleteWalletModal

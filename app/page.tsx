@@ -46,27 +46,12 @@ type CopySubscription = {
     | "disabled"
     | "error";
   copy_ratio_percent: Numeric;
-  large_trade_threshold_usdc: Numeric;
-  large_trade_fixed_shares: Numeric;
-  base_bucket_cap_usdc: Numeric;
-  strong_threshold_usdc: Numeric;
-  strong_bucket_cap_usdc: Numeric;
-  event_cap_usdc: Numeric;
-  settlement_day_cap_usdc: Numeric;
+  position_cap_usdc: Numeric;
   total_exposure_cap_usdc: Numeric;
-  daily_buy_limit_usdc: Numeric;
-  daily_loss_limit_usdc: Numeric;
   market_slippage_cents: Numeric;
-  price_tolerance_ticks: number;
-  price_tolerance_percent: Numeric;
-  order_ttl_minutes: number;
-  close_buffer_minutes: number;
   open_exposure_usdc: Numeric;
   daily_bought_usdc: Numeric;
   daily_realized_pnl: Numeric;
-  fast_poll_started_at: string | null;
-  last_trade_poll_at: string | null;
-  last_trade_error: string | null;
   last_error: string | null;
 };
 
@@ -75,6 +60,7 @@ type CopyPosition = {
   title: string;
   outcome: string;
   event_slug: string | null;
+  cycle_no: number;
   attributed_size: Numeric;
   attributed_cost: Numeric;
   realized_pnl: Numeric;
@@ -114,28 +100,23 @@ type CopyOrder = {
   filled_usdc: Numeric;
   reference_price: Numeric | null;
   limit_price: Numeric;
-  order_type: string;
+  source: "copy" | "rehearsal";
   status: string;
   reason: string | null;
   created_at: string;
 };
 
-type CopyTradeSignal = {
-  id: number | string;
-  wallet_trade_id: number | string;
-  order_id: number | string | null;
+type RehearsalPreview = {
+  confirmation_id: string;
+  market_url: string;
   asset_id: string;
-  title: string | null;
-  outcome: string | null;
-  side: "BUY" | "SELL";
-  leader_size: Numeric;
-  leader_amount: Numeric;
-  leader_price: Numeric;
-  traded_at: string;
-  detected_at: string;
-  processed_at: string | null;
-  status: string;
-  reason: string | null;
+  condition_id: string;
+  title: string;
+  outcome: string;
+  best_ask: Numeric;
+  fee_rate_bps: number;
+  max_total_usdc: Numeric;
+  expires_at: string;
 };
 
 type CopyDashboard = {
@@ -143,7 +124,6 @@ type CopyDashboard = {
   subscription: CopySubscription | null;
   positions: CopyPosition[];
   orders: CopyOrder[];
-  signals: CopyTradeSignal[];
   portfolio?: CopyPortfolioSummary;
 };
 
@@ -2191,28 +2171,14 @@ const copyStateLabels: Record<CopySubscription["state"], string> = {
   error: "已熔断",
 };
 
-const copySignalLabels: Record<string, string> = {
-  pending: "等待处理",
-  submitted: "订单确认中",
-  followed: "已跟随",
-  netted: "已净额抵消",
-  deferred: "金额累计中",
-  skipped: "已跳过",
-  failed: "未成交",
-};
-
-function formatSignalLag(signal: CopyTradeSignal) {
-  const traded = new Date(signal.traded_at).getTime();
-  const detected = new Date(signal.detected_at).getTime();
-  if (!Number.isFinite(traded) || !Number.isFinite(detected)) return "延迟未知";
-  const seconds = Math.max(0, (detected - traded) / 1000);
-  return `检测延迟 ${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} 秒`;
-}
-
 const copyPositionStatusLabels: Record<string, string> = {
+  opening: "建仓中",
   open: "持仓中",
   closed: "已清仓",
   redeemed: "已赎回",
+  redeeming: "赎回中",
+  manual_exit: "需手工处理余仓",
+  not_opened: "未成交",
   paper_archived: "模拟归档",
 };
 
@@ -2262,7 +2228,7 @@ function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
           <strong>
             {dashboard.subscription?.mode === "paper" ? "模拟跟单持仓" : "实盘归因持仓"}
           </strong>
-          <span>按当前买一价估算可卖出价值 · 盈亏未计交易手续费</span>
+          <span>按当前买一价估算可卖出价值 · 实盘成本计入已回报的实际费用</span>
         </div>
         <div className="copyPositionTabs" role="tablist" aria-label="跟单持仓范围">
           <button
@@ -2442,6 +2408,107 @@ function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
   );
 }
 
+function RehearsalPanel({ enabled }: { enabled: boolean }) {
+  const [marketUrl, setMarketUrl] = useState("");
+  const [outcome, setOutcome] = useState("");
+  const [preview, setPreview] = useState<RehearsalPreview | null>(null);
+  const [result, setResult] = useState<CopyOrder | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadPreview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      setPreview(
+        await request<RehearsalPreview>("/api/copy-trading/rehearsal/preview", {
+          method: "POST",
+          body: JSON.stringify({ market_url: marketUrl, outcome, max_total_usdc: 5 }),
+        }),
+      );
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : "无法生成演练预览");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function execute() {
+    if (!preview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const order = await request<CopyOrder>("/api/copy-trading/rehearsal/execute", {
+        method: "POST",
+        body: JSON.stringify({
+          confirmation_id: preview.confirmation_id,
+          confirmation_text: "确认执行5美元演练",
+        }),
+      });
+      setResult(order);
+      setPreview(null);
+    } catch (executeError) {
+      setError(executeError instanceof Error ? executeError.message : "演练执行失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="copyTradingFieldGroup" aria-label="5 美元手工市场演练">
+      <h3>$5 手工市场演练</h3>
+      <p>仅买入一次，不自动卖回，也不会计入自动跟单持仓。</p>
+      <form className="copyTradingFormGrid" onSubmit={loadPreview}>
+        <label className="field copyTradingField">
+          <span>市场链接</span>
+          <input
+            type="url"
+            value={marketUrl}
+            onChange={(event) => setMarketUrl(event.target.value)}
+            placeholder="https://polymarket.com/event/..."
+            required
+            disabled={!enabled || busy}
+          />
+        </label>
+        <label className="field copyTradingField">
+          <span>Outcome</span>
+          <input
+            value={outcome}
+            onChange={(event) => setOutcome(event.target.value)}
+            placeholder="例如 Yes 或球队名称"
+            required
+            disabled={!enabled || busy}
+          />
+        </label>
+        <button type="submit" disabled={!enabled || busy}>
+          {busy ? "检查中…" : "预览 $5 买入"}
+        </button>
+      </form>
+      {!enabled && <small>先验证 V2 执行钱包后才能演练。</small>}
+      {preview && (
+        <div className="privacyNote">
+          <strong>{preview.title} · {preview.outcome}</strong>
+          <span>
+            当前卖一 {formatPrice(preview.best_ask)}，动态费率 {preview.fee_rate_bps} bps，
+            含费用硬上限 {formatMoney(preview.max_total_usdc)}。
+          </span>
+          <button className="dangerButton" type="button" onClick={execute} disabled={busy}>
+            二次确认：执行单边 FAK BUY
+          </button>
+        </div>
+      )}
+      {result && (
+        <p className="privacyNote">
+          演练成功：成交 {formatShares(result.filled_size)}，支出 {formatMoney(result.filled_usdc)}。
+        </p>
+      )}
+      {error && <p className="copyTradingError" role="alert">{error}</p>}
+    </section>
+  );
+}
+
 function CopyTradingPanel({
   dashboard,
   error,
@@ -2467,24 +2534,20 @@ function CopyTradingPanel({
     dashboard?.positions.filter(
       (position) => toNumber(position.attributed_size) > 0,
     ).length ?? 0;
-  const recentSignals = (dashboard?.signals ?? []).slice(0, 8);
-  const ordersById = new Map(
-    (dashboard?.orders ?? []).map((order) => [String(order.id), order]),
-  );
 
   return (
     <section className="copyTradingPanel" aria-label="自动跟单">
       <div className="copyTradingLead">
-        <span className="eyebrow">单执行钱包 · V1</span>
+        <span className="eyebrow">单执行钱包 · V2</span>
         <h2>自动跟单</h2>
         <p>
-          每秒检测最高/最低气温市场成交；按当前盘口使用 FAK 立即跟随，未成交部分自动取消。
+          每 15 秒确认一次持仓变化：只跟随建仓、清仓和赎回；加仓与减仓仅记录，不自动下单。
         </p>
       </div>
       {!subscription ? (
         <div className="copyTradingEmpty">
           <strong>当前钱包尚未配置</strong>
-          <span>默认模拟盘、$100 大单跟 5 份、其余按 2% 比例。</span>
+          <span>默认按建仓成本的 10% 跟单，单仓最多 $20，总敞口最多 $160。</span>
           <button className="primaryButton" type="button" onClick={onConfigure}>
             配置自动跟单
           </button>
@@ -2504,19 +2567,16 @@ function CopyTradingPanel({
               <strong>{formatMoney(subscription.open_exposure_usdc)}</strong>
             </div>
             <div>
-              <span>今日买入</span>
-              <strong>
-                {formatMoney(subscription.daily_bought_usdc)} /{" "}
-                {formatMoney(subscription.daily_buy_limit_usdc)}
-              </strong>
+              <span>今日跟单买入</span>
+              <strong>{formatMoney(subscription.daily_bought_usdc)}</strong>
             </div>
             <div>
               <span>归因持仓</span>
               <strong>{openPositions} 个</strong>
             </div>
             <div>
-              <span>快速检测</span>
-              <strong>{formatDateTime(subscription.last_trade_poll_at)}</strong>
+              <span>跟单规则</span>
+              <strong>建仓一次 · 归零清仓 · 赎回一次</strong>
             </div>
           </div>
           <div className="copyTradingActions">
@@ -2556,68 +2616,16 @@ function CopyTradingPanel({
             </button>
             <button
               type="button"
-              onClick={() => onMode(subscription.mode === "paper" ? "live" : "paper")}
-              disabled={busy}
+              onClick={() => onMode("paper")}
+              disabled
             >
-              切换{subscription.mode === "paper" ? "实盘" : "模拟盘"}
+              自动实盘暂未解锁
             </button>
           </div>
           {dashboard && <CopyTradingPositions dashboard={dashboard} />}
-          <section className="copySignalFeed" aria-label="最近快速跟单">
-            <div className="copySignalFeedHeader">
-              <strong>最近快速跟单</strong>
-              <span>盘口保护 ±{formatRatioPart(subscription.market_slippage_cents)}¢</span>
-            </div>
-            {recentSignals.length === 0 ? (
-              <p>基线建立后，目标钱包的新成交会显示在这里。</p>
-            ) : (
-              <div className="copySignalList">
-                {recentSignals.map((signal) => {
-                  const order = signal.order_id
-                    ? ordersById.get(String(signal.order_id))
-                    : undefined;
-                  const actualAverage =
-                    order && toNumber(order.filled_size) > 0
-                      ? toNumber(order.filled_usdc) / toNumber(order.filled_size)
-                      : null;
-                  return (
-                    <article className="copySignalItem" key={signal.id}>
-                      <div>
-                        <span className={`copySignalSide ${signal.side.toLowerCase()}`}>
-                          {signal.side === "BUY" ? "买入" : "卖出"}
-                        </span>
-                        <strong>{signal.title || "未命名温度市场"}</strong>
-                        <small>{signal.outcome || ""}</small>
-                      </div>
-                      <div>
-                        <span>目标成交</span>
-                        <strong>
-                          {formatMoney(signal.leader_amount)} @ {formatPrice(signal.leader_price)}
-                        </strong>
-                        <small>{formatSignalLag(signal)}</small>
-                      </div>
-                      <div>
-                        <span>{copySignalLabels[signal.status] ?? signal.status}</span>
-                        <strong>
-                          {order
-                            ? `目标 ${formatMoney(order.requested_usdc)}`
-                            : "—"}
-                        </strong>
-                        <small>
-                          {order && actualAverage !== null
-                            ? `实际 ${formatMoney(order.filled_usdc)} @ ${formatPrice(actualAverage)}`
-                            : signal.reason || formatDateTime(signal.detected_at)}
-                        </small>
-                        {order && actualAverage !== null && signal.reason && (
-                          <small>{signal.reason}</small>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+          <p className="privacyNote">
+            盘口保护 ±{formatRatioPart(subscription.market_slippage_cents)}¢；市场没有开放交易时不会下单。
+          </p>
         </>
       )}
       <div className="executionAccountRow">
@@ -2653,17 +2661,18 @@ function CopyTradingPanel({
       )}
       {account && account.credentials_configured && account.signer_address && (
         <p className="keychainHint">
-          代理 / Safe 钱包自动赎回还需 Builder 凭证：
+          Proxy 钱包自动赎回还需 Builder 凭证：
           <code>
             uv run python -m backend.copy_cli set-builder-creds --account {account.signer_address}
           </code>
         </p>
       )}
-      {(error || subscription?.last_trade_error || subscription?.last_error || account?.last_error) && (
+      {(error || subscription?.last_error || account?.last_error) && (
         <p className="copyTradingError" role="alert">
-          {error || subscription?.last_trade_error || subscription?.last_error || account?.last_error}
+          {error || subscription?.last_error || account?.last_error}
         </p>
       )}
+      <RehearsalPanel enabled={account?.status === "ready"} />
     </section>
   );
 }
@@ -2682,26 +2691,10 @@ function CopyTradingModal({
   onSaved: (subscription: CopySubscription) => void;
 }) {
   const defaults = {
-    copy_ratio_percent: String(subscription?.copy_ratio_percent ?? 2),
-    large_trade_threshold_usdc: String(
-      subscription?.large_trade_threshold_usdc ?? 100,
-    ),
-    large_trade_fixed_shares: String(
-      subscription?.large_trade_fixed_shares ?? 5,
-    ),
-    base_bucket_cap_usdc: String(subscription?.base_bucket_cap_usdc ?? 20),
-    strong_threshold_usdc: String(subscription?.strong_threshold_usdc ?? 1000),
-    strong_bucket_cap_usdc: String(subscription?.strong_bucket_cap_usdc ?? 40),
-    event_cap_usdc: String(subscription?.event_cap_usdc ?? 60),
-    settlement_day_cap_usdc: String(subscription?.settlement_day_cap_usdc ?? 100),
+    copy_ratio_percent: String(subscription?.copy_ratio_percent ?? 10),
+    position_cap_usdc: String(subscription?.position_cap_usdc ?? 20),
     total_exposure_cap_usdc: String(subscription?.total_exposure_cap_usdc ?? 160),
-    daily_buy_limit_usdc: String(subscription?.daily_buy_limit_usdc ?? 80),
-    daily_loss_limit_usdc: String(subscription?.daily_loss_limit_usdc ?? 40),
     market_slippage_cents: String(subscription?.market_slippage_cents ?? 5),
-    close_buffer_minutes: String(subscription?.close_buffer_minutes ?? 15),
-    price_tolerance_ticks: String(subscription?.price_tolerance_ticks ?? 2),
-    price_tolerance_percent: String(subscription?.price_tolerance_percent ?? 3),
-    order_ttl_minutes: String(subscription?.order_ttl_minutes ?? 360),
   };
   const [values, setValues] = useState(defaults);
   const [submitting, setSubmitting] = useState(false);
@@ -2750,70 +2743,22 @@ function CopyTradingModal({
   };
   const fieldGroups: Array<{ title: string; fields: FieldConfig[] }> = [
     {
-      title: "下单规模",
+      title: "低频跟单设置",
       fields: [
-        {
-          key: "large_trade_threshold_usdc",
-          label: "单笔大额成交阈值",
-          unit: "USDC",
-          description: "目标钱包单笔 BUY 成交金额达到或超过此值时，改用固定份数规则。",
-          min: "0.01",
-        },
-        {
-          key: "large_trade_fixed_shares",
-          label: "大额成交固定跟单份数",
-          unit: "shares",
-          description: "每笔达标成交贡献此份数；同轮多笔达标会相加，仍受全部风控限制。",
-          min: "0.01",
-          step: "0.01",
-        },
         {
           key: "copy_ratio_percent",
           label: "跟单比例",
           unit: "%",
-          description: "仅在同轮没有达标大单时，按目标钱包净加仓金额计算；不足市场最小量会累计。",
+          description: "观察钱包首次建仓时，按其建仓成本的一定比例执行一次买入。",
           min: "0.01",
           max: "100",
         },
-      ],
-    },
-    {
-      title: "风险限额",
-      fields: [
         {
-          key: "base_bucket_cap_usdc",
-          label: "普通温度桶上限",
+          key: "position_cap_usdc",
+          label: "单仓最大投入",
           unit: "USDC",
-          description: "未达到强信号条件时，本策略在单个温度选项上的最高成本敞口。",
-          min: "0",
-        },
-        {
-          key: "strong_threshold_usdc",
-          label: "强信号持仓成本阈值",
-          unit: "USDC",
-          description: "目标钱包在该选项的剩余持仓成本超过此值后，启用强信号桶上限。",
-          min: "0",
-        },
-        {
-          key: "strong_bucket_cap_usdc",
-          label: "强信号温度桶上限",
-          unit: "USDC",
-          description: "达到强信号条件后，单个温度选项允许的最高成本敞口。",
-          min: "0",
-        },
-        {
-          key: "event_cap_usdc",
-          label: "单事件上限",
-          unit: "USDC",
-          description: "同一温度事件下所有选项合计允许的最高成本敞口。",
-          min: "0",
-        },
-        {
-          key: "settlement_day_cap_usdc",
-          label: "单结算日上限",
-          unit: "USDC",
-          description: "同一结算日期全部持仓合计允许的最高成本敞口。",
-          min: "0",
+          description: "每个市场周期首次建仓允许投入的最高金额。",
+          min: "0.01",
         },
         {
           key: "total_exposure_cap_usdc",
@@ -2823,40 +2768,12 @@ function CopyTradingModal({
           min: "0",
         },
         {
-          key: "daily_buy_limit_usdc",
-          label: "每日买入上限",
-          unit: "USDC",
-          description: "按北京时间统计每日实际买入金额，并与执行账户上限取更严格者。",
-          min: "0",
-        },
-        {
-          key: "daily_loss_limit_usdc",
-          label: "每日已实现亏损熔断",
-          unit: "USDC",
-          description: "当日已实现亏损达到此值后停止新增买入，并与执行账户限制取更严格者。",
-          min: "0",
-        },
-      ],
-    },
-    {
-      title: "执行保护",
-      fields: [
-        {
           key: "market_slippage_cents",
-          label: "当前盘口保护范围",
+          label: "盘口保护",
           unit: "¢",
           description: "FAK 买入/卖出相对当前最优价格允许的最差偏移，超出范围不成交。",
           min: "0",
           max: "50",
-        },
-        {
-          key: "close_buffer_minutes",
-          label: "结算前停止下单",
-          unit: "分钟",
-          description: "距市场准确结束时间少于此分钟数时停止新增买入。",
-          min: "0",
-          max: "1440",
-          step: "1",
         },
       ],
     },
@@ -2906,7 +2823,7 @@ function CopyTradingModal({
             ))}
           </div>
           <p className="privacyNote">
-            每秒检测公开成交；按当前卖一/买一使用 FAK 立即成交，最差价格不超过当前盘口 ± 配置范围，未成交部分自动取消。
+            系统仅处理建仓、清仓、赎回三类稳定持仓事件。加仓和减仓仍会记录，但不会自动下单。
           </p>
           {error && <p className="formError" role="alert">{error}</p>}
           <div className="modalActions">
@@ -3568,26 +3485,17 @@ export default function Home() {
       );
       if (!signerAddress) return;
       const funderAddress = window.prompt(
-        "资金钱包地址（Polymarket Proxy / Safe；EOA 模式填同一地址）",
+        "Polymarket Proxy 资金钱包地址",
         myWalletRef.current.proxy_wallet || signerAddress,
       );
       if (!funderAddress) return;
-      const suggestedType =
-        signerAddress.toLowerCase() === funderAddress.toLowerCase() ? "0" : "2";
-      const signatureType = window.prompt(
-        "签名类型：0=EOA，1=Magic/Proxy，2=Safe",
-        suggestedType,
-      );
-      if (!signatureType || !["0", "1", "2"].includes(signatureType)) {
-        throw new Error("签名类型只能是 0、1 或 2");
-      }
       await request<ExecutionAccount>("/api/copy-trading/account", {
         method: "PUT",
         body: JSON.stringify({
           wallet_id: Number(myWalletRef.current.id),
           signer_address: signerAddress,
           funder_address: funderAddress,
-          signature_type: Number(signatureType),
+          signature_type: 1,
         }),
       });
       if (activeWalletRef.current) {

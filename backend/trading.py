@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import hashlib
 import json
 import threading
 import time
@@ -13,22 +15,14 @@ from backend.polymarket import OrderBookSnapshot
 
 ZERO = Decimal("0")
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+V2_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
+V2_NEG_RISK_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
 
 
 class TradingUnavailable(RuntimeError):
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class TradeRequest:
-    asset_id: str
-    side: str
-    size: Decimal
-    limit_price: Decimal
-    expiration: int
-    neg_risk: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,46 +41,17 @@ class TradeResult:
     filled_size: Decimal = ZERO
     filled_usdc: Decimal = ZERO
     average_price: Decimal | None = None
+    fee_usdc: Decimal = ZERO
+    signed_order_hash: str | None = None
+    external_trade_id: str | None = None
     reason: str | None = None
 
 
-def simulate_limit_order(request: TradeRequest, book: OrderBookSnapshot) -> TradeResult:
-    levels = (
-        sorted(book.asks, key=lambda level: level.price)
-        if request.side == "BUY"
-        else sorted(book.bids, key=lambda level: level.price, reverse=True)
-    )
-    remaining = request.size
-    filled_size = ZERO
-    filled_usdc = ZERO
-    for level in levels:
-        marketable = (
-            level.price <= request.limit_price
-            if request.side == "BUY"
-            else level.price >= request.limit_price
-        )
-        if not marketable:
-            break
-        size = min(remaining, level.size)
-        filled_size += size
-        filled_usdc += size * level.price
-        remaining -= size
-        if remaining <= ZERO:
-            break
-    average = filled_usdc / filled_size if filled_size > ZERO else None
-    if remaining <= ZERO:
-        status = "filled"
-    elif filled_size > ZERO:
-        status = "partially_filled"
-    else:
-        status = "open"
-    return TradeResult(
-        status=status,
-        external_order_id=None,
-        filled_size=filled_size,
-        filled_usdc=filled_usdc,
-        average_price=average,
-    )
+@dataclass(frozen=True, slots=True)
+class PreparedMarketOrder:
+    request: MarketTradeRequest
+    signed_order: Any
+    signed_order_hash: str
 
 
 def simulate_market_order(
@@ -142,7 +107,7 @@ def simulate_market_order(
 
 
 class OfficialClobTrader:
-    """Thin adapter around Polymarket's official py-clob-client package."""
+    """Thin adapter around Polymarket's V2 CLOB client and pUSD collateral."""
 
     def __init__(
         self,
@@ -165,15 +130,19 @@ class OfficialClobTrader:
         self._client: Any | None = None
         self._client_lock = threading.Lock()
 
-    async def submit(self, request: TradeRequest) -> TradeResult:
-        return await asyncio.to_thread(self._submit_sync, request)
-
     async def submit_market(self, request: MarketTradeRequest) -> TradeResult:
-        return await asyncio.to_thread(self._submit_market_sync, request)
+        prepared = await self.prepare_market(request)
+        return await self.submit_prepared_market(prepared)
 
-    def _submit_market_sync(self, request: MarketTradeRequest) -> TradeResult:
+    async def prepare_market(self, request: MarketTradeRequest) -> PreparedMarketOrder:
+        return await asyncio.to_thread(self._prepare_market_sync, request)
+
+    async def submit_prepared_market(self, prepared: PreparedMarketOrder) -> TradeResult:
+        return await asyncio.to_thread(self._submit_prepared_market_sync, prepared)
+
+    def _prepare_market_sync(self, request: MarketTradeRequest) -> PreparedMarketOrder:
         try:
-            from py_clob_client.clob_types import (
+            from py_clob_client_v2.clob_types import (
                 MarketOrderArgs,
                 OrderType,
                 PartialCreateOrderOptions,
@@ -182,6 +151,8 @@ class OfficialClobTrader:
             raise TradingUnavailable("缺少官方 py-clob-client，实盘下单已拒绝") from error
 
         try:
+            if self.signature_type != 1:
+                raise TradingUnavailable("V2 实盘只允许 Magic/Proxy 签名类型 1")
             client = self._client_sync()
             args = MarketOrderArgs(
                 token_id=request.asset_id,
@@ -192,18 +163,38 @@ class OfficialClobTrader:
             )
             options = PartialCreateOrderOptions(neg_risk=request.neg_risk)
             signed_order = client.create_market_order(args, options)
-            response = client.post_order(signed_order, OrderType.FAK)
         except Exception as error:
-            raise TradingUnavailable(f"Polymarket FAK 市价下单失败：{error}") from error
+            if isinstance(error, TradingUnavailable):
+                raise
+            raise TradingUnavailable(f"Polymarket V2 FAK 签名失败：{error}") from error
+        canonical = json.dumps(
+            dataclasses.asdict(signed_order), sort_keys=True, separators=(",", ":"), default=str
+        )
+        signed_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+        return PreparedMarketOrder(request, signed_order, signed_hash)
+
+    def _submit_prepared_market_sync(self, prepared: PreparedMarketOrder) -> TradeResult:
+        try:
+            from py_clob_client_v2.clob_types import OrderType
+        except ImportError as error:
+            raise TradingUnavailable("缺少 py-clob-client-v2，实盘下单已拒绝") from error
+        request = prepared.request
+        try:
+            response = self._client_sync().post_order(prepared.signed_order, OrderType.FAK)
+        except Exception as error:
+            raise TradingUnavailable(f"Polymarket V2 FAK 提交结果不明：{error}") from error
         if not isinstance(response, dict):
             raise TradingUnavailable("Polymarket 实盘下单返回格式无效")
         if response.get("success") is False or response.get("errorMsg"):
             return TradeResult(
                 status="unfilled",
                 external_order_id=None,
+                signed_order_hash=prepared.signed_order_hash,
                 reason=str(response.get("errorMsg") or "Polymarket 拒绝订单"),
             )
         order_id = response.get("orderID") or response.get("orderId") or response.get("id")
+        trade_ids = response.get("tradeIDs") or response.get("tradeIds") or []
+        trade_id = str(trade_ids[0]) if isinstance(trade_ids, list) and trade_ids else None
         try:
             making = Decimal(str(response.get("makingAmount") or 0))
             taking = Decimal(str(response.get("takingAmount") or 0))
@@ -225,6 +216,9 @@ class OfficialClobTrader:
                 filled_size=filled_size,
                 filled_usdc=filled_usdc,
                 average_price=filled_usdc / filled_size,
+                fee_usdc=self._fee_for_trade_sync(trade_id),
+                signed_order_hash=prepared.signed_order_hash,
+                external_trade_id=trade_id,
                 reason=None if fully_filled else "FAK 部分成交，剩余已取消",
             )
         if order_id:
@@ -234,75 +228,43 @@ class OfficialClobTrader:
                     return TradeResult(
                         status="unfilled",
                         external_order_id=str(order_id),
+                        signed_order_hash=prepared.signed_order_hash,
                         reason="FAK 未成交，订单已取消",
                     )
-                return result
+                return dataclasses.replace(
+                    result,
+                    signed_order_hash=prepared.signed_order_hash,
+                    external_trade_id=trade_id,
+                    fee_usdc=self._fee_for_trade_sync(trade_id),
+                )
             except TradingUnavailable:
                 # A successful POST with an order id is not retried. Returning the
                 # accepted id lets the engine reconcile it without duplicating a market order.
-                return TradeResult(status="submitted", external_order_id=str(order_id))
+                return TradeResult(
+                    status="submitted",
+                    external_order_id=str(order_id),
+                    signed_order_hash=prepared.signed_order_hash,
+                    external_trade_id=trade_id,
+                )
         raise TradingUnavailable("FAK 市价订单已提交但没有返回订单编号，结果无法确认")
-
-    def _submit_sync(self, request: TradeRequest) -> TradeResult:
-        try:
-            from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import (
-                OrderArgs,
-                OrderType,
-                PartialCreateOrderOptions,
-            )
-            from py_clob_client.constants import POLYGON
-        except ImportError as error:
-            raise TradingUnavailable("缺少官方 py-clob-client，实盘下单已拒绝") from error
-
-        private_key = self.keychain.get_secret(self.key_reference)
-        kwargs: dict[str, Any] = {
-            "host": self.host,
-            "key": private_key,
-            "chain_id": POLYGON,
-            "signature_type": self.signature_type,
-        }
-        if self.funder_address:
-            kwargs["funder"] = self.funder_address
-        try:
-            client = ClobClient(**kwargs)
-            client.set_api_creds(client.create_or_derive_api_creds())
-            args = OrderArgs(
-                token_id=request.asset_id,
-                price=float(request.limit_price),
-                size=float(request.size),
-                side="BUY" if request.side == "BUY" else "SELL",
-                expiration=request.expiration,
-            )
-            options = PartialCreateOrderOptions(neg_risk=request.neg_risk)
-            # Tick size is fetched by the official client when omitted; only the
-            # neg-risk flag must be explicit for multi-outcome temperature events.
-            signed_order = client.create_order(args, options)
-            response = client.post_order(signed_order, OrderType.GTD)
-        except Exception as error:
-            raise TradingUnavailable(f"Polymarket 实盘下单失败：{error}") from error
-        if not isinstance(response, dict):
-            raise TradingUnavailable("Polymarket 实盘下单返回格式无效")
-        if response.get("success") is False or response.get("errorMsg"):
-            raise TradingUnavailable(str(response.get("errorMsg") or "Polymarket 拒绝订单"))
-        order_id = response.get("orderID") or response.get("orderId") or response.get("id")
-        status = str(response.get("status") or "open").lower()
-        normalized = {"live": "open", "matched": "filled"}.get(status, status)
-        if order_id:
-            try:
-                return self._order_status_sync(str(order_id))
-            except TradingUnavailable:
-                pass
-        return TradeResult(
-            status=normalized,
-            external_order_id=str(order_id) if order_id else None,
-        )
 
     async def cancel(self, external_order_id: str) -> None:
         await asyncio.to_thread(self._cancel_sync, external_order_id)
 
     async def collateral_balance(self) -> Decimal:
         return await asyncio.to_thread(self._collateral_balance_sync)
+
+    async def collateral_allowances(self) -> dict[str, Decimal]:
+        return await asyncio.to_thread(self._collateral_allowances_sync)
+
+    async def outcome_balance(self, asset_id: str) -> Decimal:
+        return await asyncio.to_thread(self._outcome_balance_sync, asset_id)
+
+    async def trade_fee(self, external_trade_id: str) -> Decimal:
+        return await asyncio.to_thread(self._fee_for_trade_sync, external_trade_id)
+
+    async def signer_address(self) -> str:
+        return await asyncio.to_thread(lambda: str(self._client_sync().get_address()).lower())
 
     async def order_status(self, external_order_id: str) -> TradeResult:
         return await asyncio.to_thread(self._order_status_sync, external_order_id)
@@ -334,10 +296,14 @@ class OfficialClobTrader:
 
     def _build_client_sync(self) -> Any:
         try:
-            from py_clob_client.client import ClobClient
-            from py_clob_client.constants import POLYGON
+            from py_clob_client_v2.client import ClobClient
+            from py_clob_client_v2.constants import POLYGON
         except ImportError as error:
-            raise TradingUnavailable("缺少官方 py-clob-client，实盘功能不可用") from error
+            raise TradingUnavailable("缺少 py-clob-client-v2，实盘功能不可用") from error
+        if self.signature_type != 1:
+            raise TradingUnavailable("V2 实盘只允许 Magic/Proxy 签名类型 1")
+        if not self.funder_address:
+            raise TradingUnavailable("V2 实盘必须配置 Proxy 资金钱包地址")
         private_key = self.keychain.get_secret(self.key_reference)
         kwargs: dict[str, Any] = {
             "host": self.host,
@@ -353,7 +319,7 @@ class OfficialClobTrader:
 
     def _collateral_balance_sync(self) -> Decimal:
         try:
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
         except ImportError as error:
             raise TradingUnavailable("官方客户端不支持余额查询") from error
         try:
@@ -366,6 +332,62 @@ class OfficialClobTrader:
             raise TradingUnavailable(f"无法验证执行钱包余额：{error}") from error
         # The CLOB endpoint currently returns collateral in six-decimal base units.
         return balance / Decimal("1000000")
+
+    def _collateral_allowances_sync(self) -> dict[str, Decimal]:
+        try:
+            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
+
+            payload = self._client_sync().get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            raw = payload.get("allowances", {}) if isinstance(payload, dict) else {}
+            if not isinstance(raw, dict):
+                return {}
+            return {
+                str(address).lower(): Decimal(str(value)) / Decimal("1000000")
+                for address, value in raw.items()
+            }
+        except Exception as error:
+            raise TradingUnavailable(f"无法验证 pUSD 授权：{error}") from error
+
+    def _outcome_balance_sync(self, asset_id: str) -> Decimal:
+        try:
+            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
+        except ImportError as error:
+            raise TradingUnavailable("官方 V2 客户端不支持 outcome token 余额查询") from error
+        try:
+            payload = self._client_sync().get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=asset_id)
+            )
+            raw = payload.get("balance") if isinstance(payload, dict) else None
+            return Decimal(str(raw)) / Decimal("1000000")
+        except Exception as error:
+            raise TradingUnavailable(f"无法验证 outcome token 余额：{error}") from error
+
+    def _fee_for_trade_sync(self, trade_id: str | None) -> Decimal:
+        if not trade_id:
+            return ZERO
+        try:
+            from py_clob_client_v2.clob_types import TradeParams
+
+            payload = self._client_sync().get_trades(TradeParams(id=trade_id))
+            rows = payload.get("trades", []) if isinstance(payload, dict) else []
+            row = next((item for item in rows if isinstance(item, dict)), None)
+            if row is None:
+                return ZERO
+            for key in ("fee_usdc", "feeAmount", "fee_amount", "taker_fee"):
+                raw = row.get(key)
+                if raw not in (None, ""):
+                    fee = Decimal(str(raw))
+                    return fee / Decimal("1000000") if fee >= Decimal("1000") else fee
+            fee_bps = Decimal(str(row.get("fee_rate_bps") or row.get("feeRateBps") or 0))
+            size = Decimal(str(row.get("size") or row.get("matched_size") or 0))
+            price = Decimal(str(row.get("price") or 0))
+            return size * price * fee_bps / Decimal("10000")
+        except Exception:
+            # The order remains reconcilable by trade id. A later status refresh can
+            # fill the fee rather than inventing a value.
+            return ZERO
 
     def _order_status_sync(self, external_order_id: str) -> TradeResult:
         try:
@@ -427,7 +449,7 @@ class OfficialClobTrader:
             signature = "redeemPositions(address,bytes32,bytes32,uint256[])"
             arguments = encode(
                 ["address", "bytes32", "bytes32", "uint256[]"],
-                [USDC_ADDRESS, bytes(32), condition_bytes, [1, 2]],
+                [PUSD_ADDRESS, bytes(32), condition_bytes, [1, 2]],
             )
             destination = CTF_ADDRESS
         data = "0x" + (keccak(text=signature)[:4] + arguments).hex()

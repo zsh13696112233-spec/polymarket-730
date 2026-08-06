@@ -18,13 +18,14 @@ class Settings:
     relayer_api_url: str = "https://relayer-v2.polymarket.com"
     polygon_rpc_url: str = "https://polygon.drpc.org"
     poll_interval_seconds: float = 15.0
-    copy_poll_interval_seconds: float = 1.0
-    quiet_window_seconds: float = 45.0
-    hard_window_seconds: float = 180.0
+    copy_poll_interval_seconds: float = 15.0
+    quiet_window_seconds: float = 15.0
+    hard_window_seconds: float = 60.0
     max_wallet_concurrency: int = 3
     request_timeout_seconds: float = 12.0
     max_backoff_seconds: float = 300.0
     start_monitor: bool = True
+    live_copy_enabled: bool = False
     cors_origins: tuple[str, ...] = field(
         default=(
             "http://127.0.0.1:3000",
@@ -50,15 +51,17 @@ class Settings:
             polygon_rpc_url=os.getenv("POLYMARKET_POLYGON_RPC_URL", "https://polygon.drpc.org"),
             poll_interval_seconds=float(os.getenv("POLYMARKET_POLL_INTERVAL_SECONDS", "15")),
             copy_poll_interval_seconds=float(
-                os.getenv("POLYMARKET_COPY_POLL_INTERVAL_SECONDS", "1")
+                os.getenv("POLYMARKET_COPY_POLL_INTERVAL_SECONDS", "15")
             ),
-            quiet_window_seconds=float(os.getenv("POLYMARKET_SETTLE_QUIET_SECONDS", "45")),
-            hard_window_seconds=float(os.getenv("POLYMARKET_SETTLE_HARD_SECONDS", "180")),
+            quiet_window_seconds=float(os.getenv("POLYMARKET_SETTLE_QUIET_SECONDS", "15")),
+            hard_window_seconds=float(os.getenv("POLYMARKET_SETTLE_HARD_SECONDS", "60")),
             max_wallet_concurrency=int(os.getenv("POLYMARKET_MAX_CONCURRENCY", "3")),
             request_timeout_seconds=float(os.getenv("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "12")),
             max_backoff_seconds=float(os.getenv("POLYMARKET_MAX_BACKOFF_SECONDS", "300")),
             start_monitor=os.getenv("POLYMARKET_START_MONITOR", "1").lower()
             not in {"0", "false", "no"},
+            live_copy_enabled=os.getenv("POLYMARKET_LIVE_COPY_ENABLED", "0").lower()
+            in {"1", "true", "yes"},
         )
 
     def ensure_sqlite_directory(self) -> None:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -26,7 +28,6 @@ from backend.models import (
     CopyOrder,
     CopyPosition,
     CopySubscription,
-    CopyTradeSignal,
     CurrentPosition,
     ExecutionAccount,
     GlobalSettings,
@@ -59,7 +60,6 @@ from backend.schemas import (
     CopySubscriptionModeUpdate,
     CopySubscriptionRead,
     CopySubscriptionUpdate,
-    CopyTradeSignalRead,
     EventRead,
     EventsResponse,
     ExecutionAccountRead,
@@ -77,11 +77,20 @@ from backend.schemas import (
     PositionsResponse,
     PositionSummary,
     PurchaseLotRead,
+    RehearsalExecuteRequest,
+    RehearsalPreviewRead,
+    RehearsalPreviewRequest,
     WalletCreate,
     WalletRead,
     WalletUpdate,
 )
-from backend.trading import OfficialClobTrader, TradingUnavailable
+from backend.trading import (
+    V2_EXCHANGE_ADDRESS,
+    V2_NEG_RISK_EXCHANGE_ADDRESS,
+    MarketTradeRequest,
+    OfficialClobTrader,
+    TradingUnavailable,
+)
 
 
 def wallet_is_stale(wallet: WatchedWallet, settings: Settings) -> bool:
@@ -124,17 +133,10 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def validate_copy_caps(payload: CopySubscriptionCreate | CopySubscriptionUpdate) -> None:
-    ordered = [
-        payload.base_bucket_cap_usdc,
-        payload.strong_bucket_cap_usdc,
-        payload.event_cap_usdc,
-        payload.settlement_day_cap_usdc,
-        payload.total_exposure_cap_usdc,
-    ]
-    if ordered != sorted(ordered):
+    if payload.position_cap_usdc > payload.total_exposure_cap_usdc:
         raise HTTPException(
             status_code=422,
-            detail="限额必须满足：普通温度桶 ≤ 强信号桶 ≤ 单事件 ≤ 单结算日 ≤ 总敞口",
+            detail="单仓最大投入不能高于总敞口上限",
         )
 
 
@@ -369,6 +371,7 @@ def create_app(
         application.state.monitor = monitor
         application.state.keychain = keychain
         application.state.copy_engine = copy_engine
+        application.state.rehearsal_previews = {}
         if resolved_settings.start_monitor:
             monitor.start()
             copy_engine.start()
@@ -529,8 +532,29 @@ def create_app(
                 relayer_url=settings_for_request.relayer_api_url,
                 rpc_url=settings_for_request.polygon_rpc_url,
             )
+            execution_wallet = await session.get(WatchedWallet, account.wallet_id)
             try:
-                balance = await trader.collateral_balance()
+                signer_address, balance, allowances = await asyncio.gather(
+                    trader.signer_address(),
+                    trader.collateral_balance(),
+                    trader.collateral_allowances(),
+                )
+                if signer_address != (account.signer_address or "").lower():
+                    raise TradingUnavailable("钥匙串私钥与配置的签名地址不一致")
+                if (
+                    execution_wallet is None
+                    or (account.funder_address or "").lower()
+                    != execution_wallet.proxy_wallet.lower()
+                ):
+                    raise TradingUnavailable("Proxy 资金地址与“我的钱包”不一致")
+                required_exchanges = {
+                    V2_EXCHANGE_ADDRESS.lower(),
+                    V2_NEG_RISK_EXCHANGE_ADDRESS.lower(),
+                }
+                if any(
+                    allowances.get(address, Decimal("0")) <= 0 for address in required_exchanges
+                ):
+                    raise TradingUnavailable("pUSD 尚未授权给 V2 Exchange 合约")
             except (KeychainError, TradingUnavailable) as error:
                 account.status = "error"
                 account.last_error = str(error)[:1000]
@@ -546,6 +570,197 @@ def create_app(
             account.updated_at = utcnow()
             await session.commit()
             return execution_account_read(account)  # type: ignore[return-value]
+
+    @application.post(
+        "/api/copy-trading/rehearsal/preview",
+        response_model=RehearsalPreviewRead,
+    )
+    async def preview_rehearsal(
+        payload: RehearsalPreviewRequest,
+        request: Request,
+    ) -> RehearsalPreviewRead:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is None or account.status != "ready" or account.signature_type != 1:
+                raise HTTPException(status_code=409, detail="请先完成 Magic/Proxy V2 执行钱包验证")
+        try:
+            market = await request.app.state.polymarket_client.resolve_market_outcome(
+                payload.market_url, payload.outcome
+            )
+            book = await request.app.state.polymarket_client.fetch_order_book(market.asset_id)
+        except (InvalidWalletInput, PolymarketAPIError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if book.best_ask is None:
+            raise HTTPException(status_code=409, detail="市场当前没有可成交卖盘")
+        fee_multiplier = Decimal("1") + Decimal(market.fee_rate_bps) / Decimal("10000")
+        buy_amount = payload.max_total_usdc / fee_multiplier
+        if buy_amount / book.best_ask < book.min_order_size:
+            raise HTTPException(status_code=422, detail="5 美元硬上限低于该市场最小下单份数")
+        confirmation_id = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=5)
+        preview = RehearsalPreviewRead(
+            confirmation_id=confirmation_id,
+            market_url=payload.market_url,
+            asset_id=market.asset_id,
+            condition_id=market.condition_id,
+            title=market.title,
+            outcome=market.outcome,
+            best_ask=book.best_ask,
+            fee_rate_bps=market.fee_rate_bps,
+            max_total_usdc=payload.max_total_usdc,
+            expires_at=expires_at,
+        )
+        request.app.state.rehearsal_previews[confirmation_id] = {
+            "preview": preview,
+            "buy_amount": buy_amount,
+            "neg_risk": market.neg_risk,
+        }
+        return preview
+
+    @application.post(
+        "/api/copy-trading/rehearsal/execute",
+        response_model=CopyOrderRead,
+    )
+    async def execute_rehearsal(
+        payload: RehearsalExecuteRequest,
+        request: Request,
+    ) -> CopyOrderRead:
+        stored = request.app.state.rehearsal_previews.pop(payload.confirmation_id, None)
+        if stored is None:
+            raise HTTPException(status_code=409, detail="演练确认已失效，请重新预览")
+        preview: RehearsalPreviewRead = stored["preview"]
+        if preview.expires_at < utcnow():
+            raise HTTPException(status_code=409, detail="演练确认已过期，请重新预览")
+        database: Database = request.app.state.database
+        keychain: MacOSKeychain = request.app.state.keychain
+        settings_for_request: Settings = request.app.state.settings
+        async with database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if (
+                account is None
+                or account.status != "ready"
+                or account.signature_type != 1
+                or not account.keychain_service
+                or not account.keychain_account
+            ):
+                raise HTTPException(status_code=409, detail="V2 执行钱包当前不可用")
+            trader = OfficialClobTrader(
+                host=settings_for_request.clob_api_url,
+                keychain=keychain,
+                key_reference=KeychainReference(
+                    service=account.keychain_service,
+                    account=account.keychain_account,
+                ),
+                signature_type=1,
+                funder_address=account.funder_address,
+                relayer_url=settings_for_request.relayer_api_url,
+                rpc_url=settings_for_request.polygon_rpc_url,
+            )
+        book = await request.app.state.polymarket_client.fetch_order_book(preview.asset_id)
+        if book.best_ask is None:
+            raise HTTPException(status_code=409, detail="市场已不再开放交易")
+        worst_price = min(
+            Decimal("0.99"),
+            book.best_ask + Decimal("0.05"),
+        )
+        buy_amount: Decimal = stored["buy_amount"]
+        trade_request = MarketTradeRequest(
+            asset_id=preview.asset_id,
+            side="BUY",
+            amount=buy_amount,
+            worst_price=worst_price,
+            neg_risk=stored["neg_risk"],
+        )
+        now = utcnow()
+        order = CopyOrder(
+            subscription_id=None,
+            copy_position_id=None,
+            leader_event_id=None,
+            idempotency_key=f"rehearsal:{payload.confirmation_id}",
+            source="rehearsal",
+            signed_order_hash=None,
+            asset_id=preview.asset_id,
+            condition_id=preview.condition_id,
+            side="BUY",
+            mode="live",
+            requested_size=buy_amount / worst_price,
+            requested_usdc=buy_amount,
+            limit_price=worst_price,
+            reference_price=book.best_ask,
+            filled_size=Decimal("0"),
+            filled_usdc=Decimal("0"),
+            fee_usdc=Decimal("0"),
+            status="planned",
+            reason=None,
+            external_order_id=None,
+            external_trade_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        async with database.sessions() as session:
+            session.add(order)
+            await session.commit()
+            order_id = order.id
+        before_pusd, before_token = await asyncio.gather(
+            trader.collateral_balance(), trader.outcome_balance(preview.asset_id)
+        )
+        try:
+            prepared = await trader.prepare_market(trade_request)
+            async with database.sessions() as session:
+                planned = await session.get(CopyOrder, order_id)
+                assert planned is not None
+                planned.signed_order_hash = prepared.signed_order_hash
+                planned.status = "signed"
+                planned.updated_at = utcnow()
+                await session.commit()
+            result = await trader.submit_prepared_market(prepared)
+        except TradingUnavailable as error:
+            async with database.sessions() as session:
+                planned = await session.get(CopyOrder, order_id)
+                assert planned is not None
+                planned.status = "reconciliation_pending"
+                planned.reason = str(error)[:1000]
+                planned.updated_at = utcnow()
+                await session.commit()
+            raise HTTPException(
+                status_code=502,
+                detail="演练提交结果待对账；系统不会自动重试",
+            ) from error
+        if result.external_trade_id and result.fee_usdc == 0:
+            for attempt in range(3):
+                fee = await trader.trade_fee(result.external_trade_id)
+                if fee > 0:
+                    result = replace(result, fee_usdc=fee)
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(1)
+        await request.app.state.copy_engine._apply_result(order_id, result)
+        total_spent = result.filled_usdc + result.fee_usdc
+        if total_spent > preview.max_total_usdc:
+            raise HTTPException(status_code=500, detail="演练订单超过 5 美元硬上限，已标记审计")
+        money_ok = False
+        token_ok = False
+        for attempt in range(10):
+            after_pusd, after_token = await asyncio.gather(
+                trader.collateral_balance(), trader.outcome_balance(preview.asset_id)
+            )
+            money_ok = abs((before_pusd - after_pusd) - total_spent) <= Decimal("0.02")
+            token_ok = abs((after_token - before_token) - result.filled_size) <= Decimal("0.0001")
+            if money_ok and token_ok:
+                break
+            if attempt < 9:
+                await asyncio.sleep(1)
+        async with database.sessions() as session:
+            completed = await session.get(CopyOrder, order_id)
+            assert completed is not None
+            if result.filled_size <= 0 or not money_ok or not token_ok:
+                completed.status = "reconciliation_pending"
+                completed.reason = "订单成交与 pUSD/outcome token 余额尚未一致"
+                completed.updated_at = utcnow()
+                await session.commit()
+                raise HTTPException(status_code=502, detail=completed.reason)
+            return CopyOrderRead.model_validate(completed)
 
     @application.get(
         "/api/copy-trading/subscriptions",
@@ -576,8 +791,8 @@ def create_app(
         request: Request,
     ) -> CopySubscriptionRead:
         validate_copy_caps(payload)
-        if payload.mode == "live" and not payload.confirm_live:
-            raise HTTPException(status_code=422, detail="创建实盘策略需要明确确认")
+        if payload.mode == "live":
+            raise HTTPException(status_code=409, detail="自动实盘本阶段仍由服务端锁定")
         database: Database = request.app.state.database
         async with database.sessions() as session:
             wallet = await session.get(WatchedWallet, payload.tracked_wallet_id)
@@ -665,6 +880,8 @@ def create_app(
                         detail="实盘仍有归因持仓，请先使用“关闭并清仓”后再切换模拟盘",
                     )
             if payload.mode == "live":
+                if not request.app.state.settings.live_copy_enabled:
+                    raise HTTPException(status_code=409, detail="自动实盘本阶段仍由服务端锁定")
                 if not payload.confirm_live:
                     raise HTTPException(status_code=422, detail="切换实盘需要明确确认")
                 account = await session.get(ExecutionAccount, 1)
@@ -703,7 +920,6 @@ def create_app(
                     position.attributed_size = Decimal("0")
                     position.attributed_cost = Decimal("0")
                     position.reserved_buy_usdc = Decimal("0")
-                    position.pending_target_usdc = Decimal("0")
                     position.updated_at = utcnow()
             subscription.mode = payload.mode
             baseline = await latest_event_id(session, subscription.tracked_wallet_id)
@@ -771,13 +987,15 @@ def create_app(
                 subscription.updated_at = utcnow()
                 await session.commit()
             await engine.cancel_open_orders(subscription_id)
-        needs_fast_baseline = False
+        needs_new_baseline = False
         async with database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
             if subscription is None:
                 raise HTTPException(status_code=404, detail="跟单策略不存在")
             if payload.action in {"activate", "resume"}:
                 if subscription.mode == "live":
+                    if not request.app.state.settings.live_copy_enabled:
+                        raise HTTPException(status_code=409, detail="自动实盘本阶段仍由服务端锁定")
                     if not payload.confirm_live:
                         raise HTTPException(status_code=422, detail="启动实盘需要明确确认")
                     account = await session.get(ExecutionAccount, 1)
@@ -792,19 +1010,20 @@ def create_app(
                     )
                     if other_live is not None:
                         raise HTTPException(status_code=409, detail="已有其他实盘跟单目标")
-                baseline = await latest_event_id(session, subscription.tracked_wallet_id)
-                subscription.baseline_event_id = baseline
-                subscription.last_processed_event_id = baseline
+                if payload.action == "activate":
+                    baseline = await latest_event_id(session, subscription.tracked_wallet_id)
+                    subscription.baseline_event_id = baseline
+                    subscription.last_processed_event_id = baseline
+                    subscription.enabled_at = utcnow()
+                    needs_new_baseline = True
                 subscription.state = "paused"
-                subscription.enabled_at = utcnow()
                 subscription.last_error = None
-                needs_fast_baseline = True
             elif payload.action == "exit_only":
                 if subscription.state == "paused":
                     subscription.last_processed_event_id = await latest_event_id(
                         session, subscription.tracked_wallet_id
                     )
-                    needs_fast_baseline = True
+                    needs_new_baseline = True
                 subscription.state = "exit_only"
             elif payload.action == "close":
                 subscription.state = "closing"
@@ -812,7 +1031,7 @@ def create_app(
                 raise HTTPException(status_code=422, detail="不支持的策略操作")
             subscription.updated_at = utcnow()
             await session.commit()
-        if needs_fast_baseline:
+        if needs_new_baseline:
             await engine.prime_subscription(subscription_id)
         async with database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
@@ -842,7 +1061,6 @@ def create_app(
             )
             positions: list[CopyPosition] = []
             orders: list[CopyOrder] = []
-            signals: list[CopyTradeSignal] = []
             fill_totals: dict[int, dict[str, Decimal]] = {}
             subscription_response = None
             if subscription is not None:
@@ -862,17 +1080,6 @@ def create_app(
                             select(CopyOrder)
                             .where(CopyOrder.subscription_id == subscription.id)
                             .order_by(CopyOrder.created_at.desc())
-                            .limit(100)
-                        )
-                    ).all()
-                )
-                signals = list(
-                    (
-                        await session.scalars(
-                            select(CopyTradeSignal)
-                            .options(selectinload(CopyTradeSignal.trade))
-                            .where(CopyTradeSignal.subscription_id == subscription.id)
-                            .order_by(CopyTradeSignal.detected_at.desc(), CopyTradeSignal.id.desc())
                             .limit(100)
                         )
                     ).all()
@@ -1025,26 +1232,6 @@ def create_app(
                 subscription=subscription_response,
                 positions=position_responses,
                 orders=[CopyOrderRead.model_validate(item) for item in orders],
-                signals=[
-                    CopyTradeSignalRead(
-                        id=item.id,
-                        wallet_trade_id=item.wallet_trade_id,
-                        order_id=item.order_id,
-                        asset_id=item.trade.asset_id,
-                        title=item.trade.title,
-                        outcome=item.trade.outcome,
-                        side=item.trade.side,
-                        leader_size=item.trade.size,
-                        leader_amount=item.trade.amount,
-                        leader_price=item.trade.price,
-                        traded_at=item.trade.timestamp,
-                        detected_at=item.detected_at,
-                        processed_at=item.processed_at,
-                        status=item.status,
-                        reason=item.reason,
-                    )
-                    for item in signals
-                ],
                 portfolio=CopyPortfolioSummaryRead(
                     open_cost_usdc=open_cost,
                     market_value_usdc=market_value,

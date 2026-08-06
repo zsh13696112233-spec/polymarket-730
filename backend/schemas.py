@@ -68,7 +68,7 @@ class ExecutionAccountUpdate(APIModel):
     wallet_id: int = Field(gt=0)
     signer_address: str | None = Field(default=None, max_length=42)
     funder_address: str | None = Field(default=None, max_length=42)
-    signature_type: int = Field(default=0, ge=0, le=2)
+    signature_type: Literal[1] = 1
     budget_usdc: Decimal = Field(default=Decimal("400"), ge=0)
     cash_reserve_usdc: Decimal = Field(default=Decimal("240"), ge=0)
     max_total_exposure_usdc: Decimal = Field(default=Decimal("160"), ge=0)
@@ -78,23 +78,10 @@ class ExecutionAccountUpdate(APIModel):
 
 
 class CopySubscriptionConfig(APIModel):
-    market_scope: Literal["temperature"] = "temperature"
-    copy_ratio_percent: Decimal = Field(default=Decimal("2"), gt=0, le=100)
-    large_trade_threshold_usdc: Decimal = Field(default=Decimal("100"), gt=0)
-    large_trade_fixed_shares: Decimal = Field(default=Decimal("5"), gt=0)
-    base_bucket_cap_usdc: Decimal = Field(default=Decimal("20"), ge=0)
-    strong_threshold_usdc: Decimal = Field(default=Decimal("1000"), ge=0)
-    strong_bucket_cap_usdc: Decimal = Field(default=Decimal("40"), ge=0)
-    event_cap_usdc: Decimal = Field(default=Decimal("60"), ge=0)
-    settlement_day_cap_usdc: Decimal = Field(default=Decimal("100"), ge=0)
+    copy_ratio_percent: Decimal = Field(default=Decimal("10"), gt=0, le=100)
+    position_cap_usdc: Decimal = Field(default=Decimal("20"), gt=0)
     total_exposure_cap_usdc: Decimal = Field(default=Decimal("160"), ge=0)
-    daily_buy_limit_usdc: Decimal = Field(default=Decimal("80"), ge=0)
-    daily_loss_limit_usdc: Decimal = Field(default=Decimal("40"), ge=0)
     market_slippage_cents: Decimal = Field(default=Decimal("5"), ge=0, le=50)
-    price_tolerance_ticks: int = Field(default=2, ge=0, le=20)
-    price_tolerance_percent: Decimal = Field(default=Decimal("3"), ge=0, le=100)
-    order_ttl_minutes: int = Field(default=360, ge=1, le=1440)
-    close_buffer_minutes: int = Field(default=15, ge=0, le=1440)
 
 
 class CopySubscriptionCreate(CopySubscriptionConfig):
@@ -123,30 +110,14 @@ class CopySubscriptionRead(APIModel):
     tracked_wallet_label: str | None = None
     mode: Literal["paper", "live"]
     state: Literal["active", "paused", "exit_only", "closing", "disabled", "error"]
-    market_scope: str
     copy_ratio_percent: DecimalNumber
-    large_trade_threshold_usdc: DecimalNumber
-    large_trade_fixed_shares: DecimalNumber
-    base_bucket_cap_usdc: DecimalNumber
-    strong_threshold_usdc: DecimalNumber
-    strong_bucket_cap_usdc: DecimalNumber
-    event_cap_usdc: DecimalNumber
-    settlement_day_cap_usdc: DecimalNumber
+    position_cap_usdc: DecimalNumber
     total_exposure_cap_usdc: DecimalNumber
-    daily_buy_limit_usdc: DecimalNumber
-    daily_loss_limit_usdc: DecimalNumber
     market_slippage_cents: DecimalNumber
-    price_tolerance_ticks: int
-    price_tolerance_percent: DecimalNumber
-    order_ttl_minutes: int
-    close_buffer_minutes: int
     baseline_event_id: int
     last_processed_event_id: int
     enabled_at: datetime | None
     last_processed_at: datetime | None
-    fast_poll_started_at: datetime | None
-    last_trade_poll_at: datetime | None
-    last_trade_error: str | None
     last_error: str | None
     open_exposure_usdc: DecimalNumber = Decimal("0")
     daily_bought_usdc: DecimalNumber = Decimal("0")
@@ -155,8 +126,6 @@ class CopySubscriptionRead(APIModel):
     @field_serializer(
         "enabled_at",
         "last_processed_at",
-        "fast_poll_started_at",
-        "last_trade_poll_at",
         when_used="json",
     )
     def serialize_subscription_dates(self, value: datetime | None) -> str | None:
@@ -174,12 +143,10 @@ class CopyPositionRead(APIModel):
     neg_risk: bool | None
     event_slug: str | None
     settlement_date: str | None
+    cycle_no: int
     attributed_size: DecimalNumber
     attributed_cost: DecimalNumber
     reserved_buy_usdc: DecimalNumber
-    pending_target_usdc: DecimalNumber
-    leader_size: DecimalNumber
-    leader_remaining_cost: DecimalNumber
     realized_pnl: DecimalNumber
     status: str
     updated_at: datetime
@@ -204,12 +171,13 @@ class CopyPositionRead(APIModel):
 
 class CopyOrderRead(APIModel):
     id: int
-    subscription_id: int
+    subscription_id: int | None
     leader_event_id: int | None
     asset_id: str
     side: Literal["BUY", "SELL"]
     mode: Literal["paper", "live"]
-    order_type: str
+    source: Literal["copy", "rehearsal"]
+    signed_order_hash: str | None
     requested_size: DecimalNumber
     requested_usdc: DecimalNumber
     limit_price: DecimalNumber
@@ -220,10 +188,10 @@ class CopyOrderRead(APIModel):
     status: str
     reason: str | None
     external_order_id: str | None
-    expires_at: datetime | None
+    external_trade_id: str | None
     created_at: datetime
 
-    @field_serializer("expires_at", "created_at", when_used="json")
+    @field_serializer("created_at", when_used="json")
     def serialize_order_dates(self, value: datetime | None) -> str | None:
         return _as_utc_iso(value)
 
@@ -248,30 +216,31 @@ class CopyDashboardRead(APIModel):
     subscription: CopySubscriptionRead | None
     positions: list[CopyPositionRead]
     orders: list[CopyOrderRead]
-    signals: list[CopyTradeSignalRead]
     portfolio: CopyPortfolioSummaryRead
 
 
-class CopyTradeSignalRead(APIModel):
-    id: int
-    wallet_trade_id: int
-    order_id: int | None
-    asset_id: str
-    title: str | None
-    outcome: str | None
-    side: Literal["BUY", "SELL"]
-    leader_size: DecimalNumber
-    leader_amount: DecimalNumber
-    leader_price: DecimalNumber
-    traded_at: datetime
-    detected_at: datetime
-    processed_at: datetime | None
-    status: str
-    reason: str | None
+class RehearsalPreviewRequest(APIModel):
+    market_url: str = Field(min_length=1, max_length=1000)
+    outcome: str = Field(min_length=1, max_length=200)
+    max_total_usdc: Decimal = Field(default=Decimal("5"), gt=0, le=5)
 
-    @field_serializer("traded_at", "detected_at", "processed_at", when_used="json")
-    def serialize_signal_dates(self, value: datetime | None) -> str | None:
-        return _as_utc_iso(value)
+
+class RehearsalPreviewRead(APIModel):
+    confirmation_id: str
+    market_url: str
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    best_ask: DecimalNumber
+    fee_rate_bps: int
+    max_total_usdc: DecimalNumber
+    expires_at: datetime
+
+
+class RehearsalExecuteRequest(APIModel):
+    confirmation_id: str = Field(min_length=20, max_length=200)
+    confirmation_text: Literal["确认执行5美元演练"]
 
 
 class CopyRecommendation(APIModel):

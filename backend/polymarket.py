@@ -135,6 +135,18 @@ class OrderBookSnapshot:
         return min((level.price for level in self.asks), default=None)
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedMarketOutcome:
+    market_url: str
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    outcome_index: int
+    neg_risk: bool
+    fee_rate_bps: int
+
+
 def fingerprint_trades(
     proxy_wallet: str,
     trades: list[TradeSnapshot],
@@ -297,6 +309,79 @@ class PolymarketClient:
             tick_size=tick_size if tick_size > ZERO else Decimal("0.01"),
             min_order_size=min_order_size if min_order_size > ZERO else Decimal("5"),
             neg_risk=bool(payload.get("neg_risk", False)),
+        )
+
+    async def resolve_market_outcome(self, market_url: str, outcome: str) -> ResolvedMarketOutcome:
+        parsed = urlparse(market_url.strip())
+        slug = parsed.path.rstrip("/").split("/")[-1]
+        if not slug:
+            raise InvalidWalletInput("市场链接无效")
+
+        markets_payload = await self._get_json(
+            f"{self.gamma_api_url}/markets", params={"slug": slug, "limit": 10}
+        )
+        markets = markets_payload if isinstance(markets_payload, list) else []
+        if not markets:
+            events_payload = await self._get_json(
+                f"{self.gamma_api_url}/events", params={"slug": slug, "limit": 10}
+            )
+            events = events_payload if isinstance(events_payload, list) else []
+            for event in events:
+                if isinstance(event, dict) and isinstance(event.get("markets"), list):
+                    markets.extend(event["markets"])
+
+        def as_list(value: Any) -> list[Any]:
+            if isinstance(value, list):
+                return value
+            if isinstance(value, str):
+                try:
+                    parsed_value = json.loads(value)
+                    return parsed_value if isinstance(parsed_value, list) else []
+                except ValueError:
+                    return []
+            return []
+
+        wanted = outcome.strip().casefold()
+        matches: list[tuple[dict[str, Any], list[Any], int]] = []
+        for market in markets:
+            if not isinstance(market, dict):
+                continue
+            outcomes = as_list(market.get("outcomes"))
+            tokens = as_list(market.get("clobTokenIds"))
+            if len(outcomes) != len(tokens):
+                continue
+            for index, label in enumerate(outcomes):
+                if str(label).strip().casefold() != wanted:
+                    continue
+                closed = str(market.get("closed", "false")).lower() == "true"
+                inactive = str(market.get("active", "true")).lower() == "false"
+                if closed or inactive:
+                    raise PolymarketAPIError("该市场当前不开放交易")
+                matches.append((market, tokens, index))
+        if not matches:
+            raise PolymarketAPIError("没有在该市场中找到指定 outcome")
+        if len(matches) > 1:
+            raise PolymarketAPIError("该链接包含多个同名 outcome，请使用具体市场链接")
+        market, tokens, index = matches[0]
+        asset_id = str(tokens[index])
+        fee_payload = await self._get_json(
+            f"{self.clob_api_url}/fee-rate", params={"token_id": asset_id}
+        )
+        fee_bps = int(
+            (fee_payload.get("base_fee") or fee_payload.get("fee_rate_bps") or 0)
+            if isinstance(fee_payload, dict)
+            else 0
+        )
+        outcomes = as_list(market.get("outcomes"))
+        return ResolvedMarketOutcome(
+            market_url=market_url,
+            asset_id=asset_id,
+            condition_id=str(market.get("conditionId") or ""),
+            title=str(market.get("question") or market.get("title") or slug),
+            outcome=str(outcomes[index]),
+            outcome_index=index,
+            neg_risk=bool(market.get("negRisk", False)),
+            fee_rate_bps=fee_bps,
         )
 
     async def fetch_market_end_date(

@@ -270,8 +270,6 @@ describe("Polymarket 钱包监控页", () => {
       daily_buy_limit_usdc: 80,
       daily_realized_pnl: 2,
       market_slippage_cents: 5,
-      last_trade_poll_at: "2026-08-02T10:00:00Z",
-      last_trade_error: null,
       last_error: null,
     };
     const currentCopyPosition = {
@@ -341,7 +339,6 @@ describe("Polymarket 钱包监控页", () => {
           subscription,
           positions: [currentCopyPosition, historicalCopyPosition],
           orders: [],
-          signals: [],
           portfolio: {
             open_cost_usdc: 6,
             market_value_usdc: 5.87234,
@@ -373,26 +370,19 @@ describe("Polymarket 钱包监控页", () => {
     expect(screen.getAllByText("已清仓").length).toBeGreaterThan(0);
     expect(screen.getAllByText("$8.94").length).toBeGreaterThan(0);
     expect(screen.getAllByText("$2.94").length).toBeGreaterThan(0);
-    expect(screen.getByText("盈亏未计交易手续费", { exact: false })).toBeInTheDocument();
+    expect(
+      screen.getByText("实盘成本计入已回报的实际费用", { exact: false }),
+    ).toBeInTheDocument();
   });
 
-  it("展示并保存大额固定份数规则及全部生效配置说明", async () => {
+  it("只展示并保存四项低频跟单配置", async () => {
     let submittedBody: Record<string, number> | null = null;
     let savedSubscription: Record<string, unknown> | null = null;
     const descriptions = [
-      "目标钱包单笔 BUY 成交金额达到或超过此值时，改用固定份数规则。",
-      "每笔达标成交贡献此份数；同轮多笔达标会相加，仍受全部风控限制。",
-      "仅在同轮没有达标大单时，按目标钱包净加仓金额计算；不足市场最小量会累计。",
-      "未达到强信号条件时，本策略在单个温度选项上的最高成本敞口。",
-      "目标钱包在该选项的剩余持仓成本超过此值后，启用强信号桶上限。",
-      "达到强信号条件后，单个温度选项允许的最高成本敞口。",
-      "同一温度事件下所有选项合计允许的最高成本敞口。",
-      "同一结算日期全部持仓合计允许的最高成本敞口。",
+      "观察钱包首次建仓时，按其建仓成本的一定比例执行一次买入。",
+      "每个市场周期首次建仓允许投入的最高金额。",
       "当前跟单策略全部未平仓成本的最高合计值。",
-      "按北京时间统计每日实际买入金额，并与执行账户上限取更严格者。",
-      "当日已实现亏损达到此值后停止新增买入，并与执行账户限制取更严格者。",
       "FAK 买入/卖出相对当前最优价格允许的最差偏移，超出范围不成交。",
-      "距市场准确结束时间少于此分钟数时停止新增买入。",
     ];
 
     mockFetch((url, init) => {
@@ -415,7 +405,6 @@ describe("Polymarket 钱包监控页", () => {
           subscription: savedSubscription,
           positions: [],
           orders: [],
-          signals: [],
           portfolio: null,
         });
       }
@@ -434,8 +423,6 @@ describe("Polymarket 钱包监控页", () => {
           open_exposure_usdc: 0,
           daily_bought_usdc: 0,
           daily_realized_pnl: 0,
-          last_trade_poll_at: null,
-          last_trade_error: null,
           last_error: null,
         };
         return jsonResponse(savedSubscription, 201);
@@ -449,35 +436,31 @@ describe("Polymarket 钱包监控页", () => {
       await screen.findByRole("button", { name: "配置自动跟单" }),
     );
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText("下单规模")).toBeInTheDocument();
-    expect(within(dialog).getByText("风险限额")).toBeInTheDocument();
-    expect(within(dialog).getByText("执行保护")).toBeInTheDocument();
+    expect(within(dialog).getByText("低频跟单设置")).toBeInTheDocument();
     for (const description of descriptions) {
       expect(within(dialog).getByText(description)).toBeInTheDocument();
     }
 
-    const threshold = within(dialog).getByRole("spinbutton", {
-      name: /单笔大额成交阈值/,
+    const ratio = within(dialog).getByRole("spinbutton", {
+      name: /跟单比例/,
     });
-    const shares = within(dialog).getByRole("spinbutton", {
-      name: /大额成交固定跟单份数/,
+    const positionCap = within(dialog).getByRole("spinbutton", {
+      name: /单仓最大投入/,
     });
-    await user.clear(threshold);
-    await user.type(threshold, "125");
-    await user.clear(shares);
-    await user.type(shares, "7.5");
+    await user.clear(ratio);
+    await user.type(ratio, "12");
+    await user.clear(positionCap);
+    await user.type(positionCap, "18");
     await user.click(within(dialog).getByRole("button", { name: "保存风控" }));
 
     await waitFor(() => {
       expect(submittedBody).toEqual(
         expect.objectContaining({
           tracked_wallet_id: walletOne.id,
-          large_trade_threshold_usdc: 125,
-          large_trade_fixed_shares: 7.5,
-          close_buffer_minutes: 15,
-          price_tolerance_ticks: 2,
-          price_tolerance_percent: 3,
-          order_ttl_minutes: 360,
+          copy_ratio_percent: 12,
+          position_cap_usdc: 18,
+          total_exposure_cap_usdc: 160,
+          market_slippage_cents: 5,
         }),
       );
     });

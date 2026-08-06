@@ -1,1193 +1,465 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import timedelta
+import sqlite3
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from alembic import command
+from alembic.config import Config as AlembicConfig
+from pydantic import ValidationError
+from sqlalchemy import func, select
 
-from backend.copy_trading import (
-    RiskUsage,
-    allowed_buy_usdc,
-    is_temperature_bucket,
-    market_worst_price,
-    tolerated_price,
-)
-from backend.models import CopyLedger, CopyPosition, CopyRedemption, CopySubscription
+from backend.copy_trading import RiskUsage, allowed_buy_usdc, market_worst_price
+from backend.models import CopyOrder, CopyRedemption, CopySubscription, PositionEvent
 from backend.monitor import utcnow
-from backend.polymarket import MarketResolution, OrderBookLevel, OrderBookSnapshot, TradeSnapshot
-from backend.tests.conftest import position
+from backend.polymarket import OrderBookLevel, OrderBookSnapshot
+from backend.schemas import RehearsalExecuteRequest, RehearsalPreviewRequest
 from backend.trading import (
     MarketTradeRequest,
     OfficialClobTrader,
-    TradeRequest,
-    simulate_limit_order,
+    TradingUnavailable,
     simulate_market_order,
 )
 
-MY_ADDRESS = "0x1111111111111111111111111111111111111111"
 TRACKED_ADDRESS = "0x2222222222222222222222222222222222222222"
+CONDITION_ID = "0x" + "8" * 64
 
 
-def move_fast_baseline_to_past(client, subscription_id: int) -> None:
-    async def move() -> None:
-        async with client.app.state.database.sessions() as session:
-            subscription = await session.get(CopySubscription, subscription_id)
-            assert subscription is not None
-            baseline = utcnow() - timedelta(seconds=1)
-            subscription.fast_poll_started_at = baseline
-            subscription.last_trade_poll_at = baseline
-            await session.commit()
-
-    assert client.portal is not None
-    client.portal.call(move)
-
-
-def fast_temperature_trade(
-    amount: str,
-    transaction_hash: str,
-    *,
-    asset_id: str = "asset-large-rule",
-) -> TradeSnapshot:
-    price = Decimal("0.50")
-    return TradeSnapshot(
-        asset_id=asset_id,
-        condition_id="0x" + "8" * 64,
-        side="BUY",
-        size=Decimal(amount) / price,
-        price=price,
-        timestamp=utcnow(),
-        transaction_hash=transaction_hash,
-        title="Will the highest temperature in London be 30°C on August 3?",
-        outcome="Yes",
-        outcome_index=0,
-        event_slug="highest-temperature-in-london-on-august-3-2026",
-        market_slug="highest-temperature-in-london-on-august-3-2026-30c",
-    )
-
-
-def install_fast_book(
-    fake,
-    *,
-    asset_id: str = "asset-large-rule",
-    ask: str = "0.50",
-    min_order_size: str = "5",
-    ask_depth: str = "1000",
-) -> None:
-    async def fetch_order_book(_: str) -> OrderBookSnapshot:
-        ask_price = Decimal(ask)
+def install_book(fake, *, ask: str = "0.50", bid: str = "0.49", depth: str = "1000") -> None:
+    async def fetch_order_book(asset_id: str) -> OrderBookSnapshot:
         return OrderBookSnapshot(
             asset_id=asset_id,
-            bids=(OrderBookLevel(ask_price - Decimal("0.01"), Decimal("1000")),),
-            asks=(OrderBookLevel(ask_price, Decimal(ask_depth)),),
+            bids=(OrderBookLevel(Decimal(bid), Decimal(depth)),),
+            asks=(OrderBookLevel(Decimal(ask), Decimal(depth)),),
             tick_size=Decimal("0.01"),
-            min_order_size=Decimal(min_order_size),
+            min_order_size=Decimal("5"),
             neg_risk=False,
         )
 
     fake.fetch_order_book = fetch_order_book  # type: ignore[attr-defined]
 
 
-def pending_target_usdc(client, subscription_id: int) -> Decimal:
-    async def read() -> Decimal:
+def configured_subscription(client, fake) -> dict:
+    install_book(fake)
+    wallet = client.post("/api/wallets", json={"address": TRACKED_ADDRESS, "label": "低频观察钱包"})
+    assert wallet.status_code == 201, wallet.text
+    created = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": wallet.json()["id"]},
+    )
+    assert created.status_code == 201, created.text
+    subscription = created.json()
+    activated = client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    assert activated.status_code == 200, activated.text
+    return activated.json()
+
+
+def add_event(
+    client,
+    subscription: dict,
+    event_type: str,
+    *,
+    asset_id: str = "asset-simple",
+    before: str = "0",
+    after: str = "100",
+    price: str = "0.50",
+    payout: str | None = None,
+) -> int:
+    async def insert() -> int:
         async with client.app.state.database.sessions() as session:
-            position_row = await session.scalar(
-                select(CopyPosition).where(CopyPosition.subscription_id == subscription_id)
+            now = utcnow()
+            before_size = Decimal(before)
+            after_size = Decimal(after)
+            row = PositionEvent(
+                wallet_id=subscription["tracked_wallet_id"],
+                asset_id=asset_id,
+                condition_id=CONDITION_ID,
+                type=event_type,
+                title="开赛前市场",
+                outcome="Yes",
+                event_slug=f"event-{asset_id}",
+                delta_size=after_size - before_size,
+                before_size=before_size,
+                after_size=after_size,
+                before_avg_price=Decimal(price),
+                after_avg_price=Decimal(price),
+                average_fill_price=Decimal(price),
+                current_value=after_size * Decimal(price),
+                reconciliation_status="matched",
+                first_detected_at=now,
+                settled_at=now,
+                source_fingerprint=f"test-{asset_id}-{event_type}-{now.timestamp()}",
+                payout_amount=Decimal(payout) if payout is not None else None,
+                redemption_cost_basis=None,
+                transaction_hash="0xtest" if event_type == "redeemed" else None,
             )
-            assert position_row is not None
-            return position_row.pending_target_usdc
+            session.add(row)
+            await session.commit()
+            return row.id
 
-    assert client.portal is not None
-    return client.portal.call(read)
+    return client.portal.call(insert)
 
 
-def test_temperature_scope_accepts_all_highest_and_lowest_temperature_buckets():
-    title = "Highest temperature in New York City on August 8?"
-    assert is_temperature_bucket(title, "73°F or below")
-    assert is_temperature_bucket(title, "86°F or higher")
-    assert is_temperature_bucket(title, "80–81°F")
-    assert is_temperature_bucket(
-        "Will the highest temperature in Milan be 33°C on August 2?",
-        "Yes",
+def tick(client) -> None:
+    client.portal.call(client.app.state.copy_engine.tick)
+
+
+def dashboard(client, subscription: dict) -> dict:
+    response = client.get(
+        "/api/copy-trading/dashboard",
+        params={"tracked_wallet_id": subscription["tracked_wallet_id"]},
     )
-    assert is_temperature_bucket(
-        "Will the lowest temperature in London be between 12-13°C on August 3?",
-        "Yes",
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_subscription_defaults_are_only_four_simple_settings(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    assert subscription["copy_ratio_percent"] == 10
+    assert subscription["position_cap_usdc"] == 20
+    assert subscription["total_exposure_cap_usdc"] == 160
+    assert subscription["market_slippage_cents"] == 5
+    removed = {
+        "large_trade_threshold_usdc",
+        "base_bucket_cap_usdc",
+        "price_tolerance_ticks",
+        "order_ttl_minutes",
+        "daily_buy_limit_usdc",
+    }
+    assert not removed.intersection(subscription)
+
+
+def test_one_cycle_opens_exactly_once_and_duplicate_ticks_do_nothing(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    event_id = add_event(client, subscription, "opened")
+    tick(client)
+    tick(client)
+    data = dashboard(client, subscription)
+    buys = [order for order in data["orders"] if order["side"] == "BUY"]
+    assert len(buys) == 1
+    assert buys[0]["leader_event_id"] == event_id
+    assert buys[0]["source"] == "copy"
+    assert data["positions"][0]["cycle_no"] == 1
+    assert data["positions"][0]["attributed_size"] > 0
+
+
+def test_increased_and_decreased_are_monitor_only_events(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    add_event(client, subscription, "increased", before="100", after="140")
+    add_event(client, subscription, "decreased", before="140", after="40")
+    tick(client)
+    data = dashboard(client, subscription)
+    assert len(data["orders"]) == 1
+    assert data["orders"][0]["side"] == "BUY"
+    assert data["subscription"]["last_processed_event_id"] > 0
+
+
+def test_closed_is_the_only_sell_signal_and_sells_all_attributed_size(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    add_event(client, subscription, "decreased", before="100", after="20")
+    tick(client)
+    opened = dashboard(client, subscription)
+    bought_size = Decimal(str(opened["positions"][0]["attributed_size"]))
+    assert bought_size > 0
+    add_event(client, subscription, "closed", before="20", after="0")
+    tick(client)
+    closed = dashboard(client, subscription)
+    sells = [row for row in closed["orders"] if row["side"] == "SELL"]
+    assert len(sells) == 1
+    assert Decimal(str(sells[0]["filled_size"])) == bought_size
+    assert Decimal(str(closed["positions"][0]["attributed_size"])) == 0
+
+
+def test_redeemed_runs_once_without_a_sell_order(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    add_event(client, subscription, "redeemed", before="100", after="0", payout="100")
+    tick(client)
+    tick(client)
+
+    async def counts() -> tuple[int, int]:
+        async with client.app.state.database.sessions() as session:
+            redemptions = await session.scalar(select(func.count(CopyRedemption.id)))
+            sells = await session.scalar(
+                select(func.count(CopyOrder.id)).where(CopyOrder.side == "SELL")
+            )
+            return int(redemptions or 0), int(sells or 0)
+
+    assert client.portal.call(counts) == (1, 0)
+    assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
+
+
+@pytest.mark.parametrize("terminal_event", ["closed", "redeemed"])
+def test_terminal_event_allows_same_asset_to_open_a_new_cycle(
+    app_client_factory, terminal_event: str
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    add_event(
+        client,
+        subscription,
+        terminal_event,
+        before="100",
+        after="0",
+        payout="100" if terminal_event == "redeemed" else None,
     )
-    assert not is_temperature_bucket("Will BTC exceed $100k?", "$100k or higher")
+    tick(client)
+    add_event(client, subscription, "opened")
+    tick(client)
+    rows = dashboard(client, subscription)["positions"]
+    assert {row["cycle_no"] for row in rows} == {1, 2}
+    assert sum(1 for row in rows if Decimal(str(row["attributed_size"])) > 0) == 1
 
 
-def test_price_tolerance_uses_smaller_of_ticks_and_percent():
-    assert tolerated_price(
-        Decimal("0.50"),
-        Decimal("0.01"),
-        2,
-        Decimal("3"),
-        side="BUY",
-    ) == Decimal("0.52")
-    assert tolerated_price(
-        Decimal("0.90"),
-        Decimal("0.01"),
-        2,
-        Decimal("3"),
-        side="SELL",
-    ) == Decimal("0.88")
+def test_restart_style_reprocessing_cannot_duplicate_an_event_order(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    event_id = add_event(client, subscription, "opened")
+    tick(client)
+
+    async def rewind() -> None:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            row.last_processed_event_id = event_id - 1
+            await session.commit()
+
+    client.portal.call(rewind)
+    tick(client)
+    assert len(dashboard(client, subscription)["orders"]) == 1
 
 
-def test_market_worst_price_uses_current_quote_and_configured_cents():
-    assert market_worst_price(
-        Decimal("0.47"), Decimal("0.01"), Decimal("0"), side="BUY"
-    ) == Decimal("0.47")
-    assert market_worst_price(
-        Decimal("0.47"), Decimal("0.01"), Decimal("5"), side="BUY"
-    ) == Decimal("0.52")
-    assert market_worst_price(
-        Decimal("0.48"), Decimal("0.01"), Decimal("5"), side="SELL"
-    ) == Decimal("0.43")
-    assert market_worst_price(
-        Decimal("0.98"), Decimal("0.01"), Decimal("50"), side="BUY"
-    ) == Decimal("0.99")
-    assert market_worst_price(
-        Decimal("0.02"), Decimal("0.01"), Decimal("50"), side="SELL"
-    ) == Decimal("0.01")
-    assert market_worst_price(
-        Decimal("0.998"), Decimal("0.001"), Decimal("50"), side="BUY"
-    ) == Decimal("0.99")
-    assert market_worst_price(
-        Decimal("0.002"), Decimal("0.001"), Decimal("50"), side="SELL"
-    ) == Decimal("0.01")
+def test_timeout_after_signing_is_held_for_reconciliation_without_retry(
+    app_client_factory, monkeypatch
+):
+    client, fake = app_client_factory([[]], live_copy_enabled=True)
+    subscription = configured_subscription(client, fake)
+
+    async def make_live() -> None:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            row.mode = "live"
+            await session.commit()
+
+    client.portal.call(make_live)
+    calls = {"submit": 0}
+
+    class TimeoutTrader:
+        async def prepare_market(self, request):
+            return SimpleNamespace(signed_order_hash="0xsigned-timeout")
+
+        async def submit_prepared_market(self, prepared):
+            calls["submit"] += 1
+            raise TradingUnavailable("请求超时，结果未知")
+
+    async def trader():
+        return TimeoutTrader()
+
+    monkeypatch.setattr(client.app.state.copy_engine, "_trader", trader)
+    add_event(client, subscription, "opened")
+    tick(client)
+    tick(client)
+    data = dashboard(client, subscription)
+    assert calls["submit"] == 1
+    assert data["orders"][0]["status"] == "reconciliation_pending"
+    assert data["orders"][0]["signed_order_hash"] == "0xsigned-timeout"
 
 
-def test_risk_caps_and_loss_circuit_breaker():
+def test_live_mode_is_server_locked(app_client_factory):
+    client, fake = app_client_factory([[]])
+    wallet = client.post("/api/wallets", json={"address": TRACKED_ADDRESS}).json()
+    response = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": wallet["id"], "mode": "live", "confirm_live": True},
+    )
+    assert response.status_code == 409
+    assert "锁定" in response.json()["detail"]
+
+
+def test_risk_limits_are_subscription_simple_and_account_centralized():
     subscription = SimpleNamespace(
-        daily_loss_limit_usdc=Decimal("40"),
-        event_cap_usdc=Decimal("60"),
-        settlement_day_cap_usdc=Decimal("100"),
-        total_exposure_cap_usdc=Decimal("160"),
-        daily_buy_limit_usdc=Decimal("80"),
+        position_cap_usdc=Decimal("20"), total_exposure_cap_usdc=Decimal("160")
     )
     allowed, reason = allowed_buy_usdc(
         Decimal("30"),
-        bucket_cap=Decimal("40"),
         subscription=subscription,
         usage=RiskUsage(
-            bucket=Decimal("15"),
-            event=Decimal("20"),
-            settlement_day=Decimal("20"),
-            total=Decimal("30"),
+            position=Decimal("0"),
+            total=Decimal("150"),
             bought_today=Decimal("70"),
             wallet_capital=Decimal("160"),
+            account_daily_buy_limit=Decimal("80"),
+            account_daily_loss_limit=Decimal("40"),
         ),
     )
     assert allowed == Decimal("10")
     assert reason is None
 
-    stopped, reason = allowed_buy_usdc(
-        Decimal("1"),
-        bucket_cap=Decimal("40"),
-        subscription=subscription,
-        usage=RiskUsage(
-            realized_loss_today=Decimal("40"),
-            wallet_capital=Decimal("160"),
-        ),
-    )
-    assert stopped == 0
-    assert reason == "已触发当日已实现亏损熔断"
 
-
-def test_paper_limit_order_consumes_only_marketable_depth():
+def test_market_fak_cancels_unfilled_remainder():
     book = OrderBookSnapshot(
-        asset_id="asset-1",
-        bids=(OrderBookLevel(Decimal("0.48"), Decimal("10")),),
-        asks=(
-            OrderBookLevel(Decimal("0.50"), Decimal("3")),
-            OrderBookLevel(Decimal("0.51"), Decimal("4")),
-            OrderBookLevel(Decimal("0.53"), Decimal("20")),
-        ),
-        tick_size=Decimal("0.01"),
-        min_order_size=Decimal("5"),
-        neg_risk=False,
-    )
-    result = simulate_limit_order(
-        TradeRequest(
-            asset_id="asset-1",
-            side="BUY",
-            size=Decimal("10"),
-            limit_price=Decimal("0.52"),
-            expiration=0,
-        ),
-        book,
-    )
-    assert result.status == "partially_filled"
-    assert result.filled_size == Decimal("7")
-    assert result.filled_usdc == Decimal("3.54")
-
-
-def test_paper_fak_market_order_is_terminal_after_partial_fill():
-    book = OrderBookSnapshot(
-        asset_id="asset-1",
+        asset_id="asset",
         bids=(),
-        asks=(
-            OrderBookLevel(Decimal("0.47"), Decimal("5")),
-            OrderBookLevel(Decimal("0.60"), Decimal("50")),
-        ),
+        asks=(OrderBookLevel(Decimal("0.50"), Decimal("6")),),
         tick_size=Decimal("0.01"),
         min_order_size=Decimal("5"),
         neg_risk=False,
     )
     result = simulate_market_order(
         MarketTradeRequest(
-            asset_id="asset-1",
+            asset_id="asset",
             side="BUY",
-            amount=Decimal("6"),
-            worst_price=Decimal("0.52"),
+            amount=Decimal("5"),
+            worst_price=Decimal("0.55"),
         ),
         book,
     )
     assert result.status == "partially_filled"
-    assert result.filled_size == Decimal("5")
-    assert result.filled_usdc == Decimal("2.35")
+    assert result.filled_size == Decimal("6")
+    assert "取消" in (result.reason or "")
 
 
-def test_redemption_calldata_supports_standard_and_neg_risk():
-    condition = "0x" + "1" * 64
-    standard_to, standard_data = OfficialClobTrader._redemption_call(
-        condition,
-        Decimal("12.5"),
-        0,
-        False,
+def test_market_slippage_is_one_cents_setting_for_both_sides():
+    assert market_worst_price(
+        Decimal("0.50"), Decimal("0.01"), Decimal("5"), side="BUY"
+    ) == Decimal("0.55")
+    assert market_worst_price(
+        Decimal("0.50"), Decimal("0.01"), Decimal("5"), side="SELL"
+    ) == Decimal("0.45")
+
+
+def test_rehearsal_requires_five_dollar_cap_and_exact_second_confirmation():
+    with pytest.raises(ValidationError):
+        RehearsalPreviewRequest(
+            market_url="https://polymarket.com/event/x",
+            outcome="Yes",
+            max_total_usdc=Decimal("5.01"),
+        )
+    with pytest.raises(ValidationError):
+        RehearsalExecuteRequest(confirmation_id="x" * 30, confirmation_text="确认")
+    accepted = RehearsalExecuteRequest(
+        confirmation_id="x" * 30, confirmation_text="确认执行5美元演练"
     )
-    neg_risk_to, neg_risk_data = OfficialClobTrader._redemption_call(
-        condition,
-        Decimal("12.5"),
-        1,
-        True,
-    )
-    assert standard_to.lower().startswith("0x4d97")
-    assert neg_risk_to.lower().startswith("0xd91e")
-    assert standard_data.startswith("0x01b7037c")
-    assert neg_risk_data.startswith("0x01b7037c") is False
+    assert accepted.confirmation_text == "确认执行5美元演练"
 
 
-def test_official_trader_posts_fak_market_order():
+@dataclass
+class FakeSignedOrder:
+    salt: str = "1"
+    maker: str = "0x" + "1" * 40
+    signer: str = "0x" + "2" * 40
+    tokenId: str = "123"
+    makerAmount: str = "5000000"
+    takerAmount: str = "10000000"
+    side: int = 0
+    signatureType: int = 1
+    timestamp: str = "1"
+    metadata: str = "0x" + "0" * 64
+    builder: str = "0x" + "0" * 64
+    expiration: str = "0"
+    signature: str = "0xsigned"
+
+
+def test_v2_prepared_order_captures_hash_trade_id_and_actual_fee(monkeypatch):
     calls: dict[str, object] = {}
 
     class FakeClient:
         def create_market_order(self, args, options):
             calls["args"] = args
             calls["options"] = options
-            return "signed-order"
+            return FakeSignedOrder()
 
         def post_order(self, signed, order_type):
-            calls["signed"] = signed
             calls["order_type"] = order_type
             return {
                 "success": True,
-                "orderID": "order-1",
-                "makingAmount": "6",
-                "takingAmount": "12.5",
-                "status": "matched",
+                "orderID": "order-v2",
+                "tradeIDs": ["trade-v2"],
+                "makingAmount": "5",
+                "takingAmount": "10",
             }
 
-        def get_order(self, order_id):
-            raise AssertionError(f"成交回包已经明确，不应再次查询订单：{order_id}")
+        def get_trades(self, params):
+            return {"trades": [{"fee_usdc": "0.025"}]}
 
     trader = OfficialClobTrader(
-        host="https://clob.example.test",
+        host="https://example.test",
         keychain=SimpleNamespace(),
         key_reference=SimpleNamespace(),
-        signature_type=0,
-        funder_address=None,
+        signature_type=1,
+        funder_address="0x" + "3" * 40,
     )
-    trader._client = FakeClient()  # type: ignore[assignment]
-    result = trader._submit_market_sync(
-        MarketTradeRequest(
-            asset_id="asset-1",
-            side="BUY",
-            amount=Decimal("6"),
-            worst_price=Decimal("0.52"),
-            neg_risk=True,
-        )
-    )
-    args = calls["args"]
-    assert args.amount == 6.0
-    assert args.price == 0.52
-    assert str(calls["order_type"]) == "FAK"
-    assert result.status == "filled"
-    assert result.filled_size == Decimal("12.5")
-    assert result.filled_usdc == Decimal("6")
-    assert result.average_price == Decimal("0.48")
-
-
-def test_official_trader_treats_definite_fak_rejection_as_terminal():
-    class FakeClient:
-        def create_market_order(self, args, options):
-            return "signed-order"
-
-        def post_order(self, signed, order_type):
-            return {"success": False, "errorMsg": "no match within protection price"}
-
-    trader = OfficialClobTrader(
-        host="https://clob.example.test",
-        keychain=SimpleNamespace(),
-        key_reference=SimpleNamespace(),
-        signature_type=0,
-        funder_address=None,
-    )
-    trader._client = FakeClient()  # type: ignore[assignment]
-    result = trader._submit_market_sync(
-        MarketTradeRequest(
-            asset_id="asset-1",
-            side="BUY",
-            amount=Decimal("6"),
-            worst_price=Decimal("0.52"),
-        )
-    )
-    assert result.status == "unfilled"
-    assert result.filled_size == 0
-    assert result.reason == "no match within protection price"
-
-
-def test_copy_subscription_api_defaults_and_state_transitions(app_client_factory):
-    client, _ = app_client_factory([[], []])
-    my_wallet = client.put(
-        "/api/my-wallet",
-        json={"address": MY_ADDRESS, "label": "执行钱包"},
-    ).json()
-    tracked = client.post(
-        "/api/wallets",
-        json={"address": TRACKED_ADDRESS, "label": "jjavi"},
-    ).json()
-
-    account = client.put(
-        "/api/copy-trading/account",
-        json={"wallet_id": my_wallet["id"]},
-    )
-    assert account.status_code == 200
-    assert account.json()["status"] == "missing_key"
-    assert account.json()["budget_usdc"] == 400.0
-
-    created = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
-    )
-    assert created.status_code == 201, created.text
-    subscription = created.json()
-    assert subscription["mode"] == "paper"
-    assert subscription["state"] == "disabled"
-    assert subscription["copy_ratio_percent"] == 2.0
-    assert subscription["large_trade_threshold_usdc"] == 100.0
-    assert subscription["large_trade_fixed_shares"] == 5.0
-    assert subscription["base_bucket_cap_usdc"] == 20.0
-    assert subscription["strong_bucket_cap_usdc"] == 40.0
-    assert subscription["market_slippage_cents"] == 5.0
-
-    activated = client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    assert activated.status_code == 200
-    assert activated.json()["state"] == "active"
-
-    paused = client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "pause"},
-    )
-    assert paused.status_code == 200
-    assert paused.json()["state"] == "paused"
-
-    resumed = client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "resume"},
-    )
-    assert resumed.status_code == 200
-    assert resumed.json()["state"] == "active"
-
-    dashboard = client.get(
-        "/api/copy-trading/dashboard",
-        params={"tracked_wallet_id": tracked["id"]},
-    )
-    assert dashboard.status_code == 200
-    assert dashboard.json()["subscription"]["tracked_wallet_label"] == "jjavi"
-    assert dashboard.json()["positions"] == []
-    assert dashboard.json()["orders"] == []
-
-
-def test_activate_and_resume_establish_new_trade_baselines(app_client_factory):
-    client, fake = app_client_factory([[], []])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions", json={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    common = {
-        "asset_id": "asset-baseline",
-        "condition_id": "0x" + "2" * 64,
-        "side": "BUY",
-        "size": Decimal("100"),
-        "price": Decimal("0.40"),
-        "title": "Will the highest temperature in Rome be 35°C on August 3?",
-        "outcome": "Yes",
-        "outcome_index": 0,
-        "event_slug": "highest-temperature-in-rome-on-august-3-2026",
-    }
-    fake.trades = [
-        TradeSnapshot(
-            **common,
-            timestamp=utcnow() - timedelta(seconds=10),
-            transaction_hash="0xbefore-activate",
-        )
-    ]
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    before_pause = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    assert before_pause["signals"] == []
-    assert before_pause["orders"] == []
-
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "pause"},
-    )
-    fake.trades.append(
-        TradeSnapshot(
-            **common,
-            timestamp=utcnow(),
-            transaction_hash="0xwhile-paused",
-        )
-    )
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "resume"},
-    )
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    after_resume = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    assert after_resume["signals"] == []
-    assert after_resume["orders"] == []
-
-
-def test_invalid_cap_order_is_rejected(app_client_factory):
-    client, _ = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets",
-        json={"address": TRACKED_ADDRESS, "label": "jjavi"},
-    ).json()
-    response = client.post(
-        "/api/copy-trading/subscriptions",
-        json={
-            "tracked_wallet_id": tracked["id"],
-            "base_bucket_cap_usdc": 50,
-            "strong_bucket_cap_usdc": 40,
-        },
-    )
-    assert response.status_code == 422
-    assert "普通温度桶" in response.json()["detail"]
-
-
-def test_large_trade_settings_are_positive_and_persisted(app_client_factory):
-    client, _ = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    for field in ("large_trade_threshold_usdc", "large_trade_fixed_shares"):
-        response = client.post(
-            "/api/copy-trading/subscriptions",
-            json={"tracked_wallet_id": tracked["id"], field: 0},
-        )
-        assert response.status_code == 422
-
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    updated = client.put(
-        f"/api/copy-trading/subscriptions/{subscription['id']}",
-        json={
-            "large_trade_threshold_usdc": 125.5,
-            "large_trade_fixed_shares": 7.25,
-        },
-    )
-    assert updated.status_code == 200
-    assert updated.json()["large_trade_threshold_usdc"] == 125.5
-    assert updated.json()["large_trade_fixed_shares"] == 7.25
-
-
-def test_large_trade_at_threshold_requests_fixed_shares(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    fake.trades = [fast_temperature_trade("100", "0xlarge-threshold")]
-    install_fast_book(fake)
-
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-
-    assert len(dashboard["orders"]) == 1
-    assert Decimal(str(dashboard["orders"][0]["requested_size"])) == Decimal("5")
-    assert Decimal(str(dashboard["orders"][0]["requested_usdc"])) == Decimal("2.5")
-    assert dashboard["orders"][0]["reason"] == "大额目标成交固定份数跟单"
-    assert dashboard["signals"][0]["status"] == "followed"
-
-
-def test_trade_below_large_threshold_uses_ratio_and_defers(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    fake.trades = [fast_temperature_trade("99.99", "0xbelow-threshold")]
-    install_fast_book(fake)
-
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-
-    assert dashboard["orders"] == []
-    assert dashboard["signals"][0]["status"] == "deferred"
-    assert abs(pending_target_usdc(client, subscription["id"]) - Decimal("1.9998")) < Decimal(
-        "0.0000001"
-    )
-
-
-def test_multiple_large_trades_combine_and_ignore_small_trade(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    fake.trades = [
-        fast_temperature_trade("100", "0xlarge-one"),
-        fast_temperature_trade("10", "0xsmall-ignored"),
-        fast_temperature_trade("125", "0xlarge-two"),
-    ]
-    install_fast_book(fake)
-
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-
-    assert len(dashboard["orders"]) == 1
-    assert Decimal(str(dashboard["orders"][0]["requested_size"])) == Decimal("10")
-    statuses = {
-        Decimal(str(signal["leader_amount"])): (signal["status"], signal["reason"])
-        for signal in dashboard["signals"]
-    }
-    assert statuses[Decimal("100")][0] == "followed"
-    assert statuses[Decimal("125")][0] == "followed"
-    assert statuses[Decimal("10")] == (
-        "skipped",
-        "同轮命中大额固定份数规则，未计入比例跟单",
-    )
-    assert Decimal(str(dashboard["positions"][0]["pending_target_usdc"])) == 0
-
-
-def test_large_trade_preserves_previous_pending_ratio_amount(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    fake.trades = [fast_temperature_trade("50", "0xpending-small")]
-    install_fast_book(fake)
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-
-    fake.trades.append(fast_temperature_trade("100", "0xpending-large"))
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-
-    assert len(dashboard["orders"]) == 1
-    assert Decimal(str(dashboard["orders"][0]["requested_size"])) == Decimal("5")
-    assert Decimal(str(dashboard["positions"][0]["pending_target_usdc"])) == Decimal("1")
-
-
-def test_fixed_shares_below_market_minimum_are_skipped(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"], "large_trade_fixed_shares": 4},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    fake.trades = [fast_temperature_trade("100", "0xfixed-below-minimum")]
-    install_fast_book(fake, min_order_size="5")
-
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-
-    assert dashboard["orders"] == []
-    assert dashboard["signals"][0]["status"] == "skipped"
-    assert "低于市场最小买入量 5 份" in dashboard["signals"][0]["reason"]
-
-
-def test_fixed_shares_are_not_reduced_by_remaining_risk_cap(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"], "base_bucket_cap_usdc": 2},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    fake.trades = [fast_temperature_trade("100", "0xfixed-risk-cap")]
-    install_fast_book(fake)
-
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-
-    assert dashboard["orders"] == []
-    assert dashboard["signals"][0]["status"] == "skipped"
-    assert dashboard["signals"][0]["reason"] == "风控剩余额度不足以完成固定 5 份下单"
-
-
-def test_fast_paper_engine_buys_at_current_ask_not_leader_average(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets",
-        json={"address": TRACKED_ADDRESS, "label": "jjavi"},
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"], "large_trade_threshold_usdc": 1000},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    traded_at = utcnow()
-    fake.trades = [
-        TradeSnapshot(
-            asset_id="asset-fast",
-            condition_id="0x" + "3" * 64,
-            side="BUY",
-            size=Decimal("857.142857142857142857"),
-            price=Decimal("0.35"),
-            timestamp=traded_at,
-            transaction_hash="0xbuy",
-            title="Will the highest temperature in Milan be 36°C on August 3?",
-            outcome="Yes",
-            outcome_index=0,
-            event_slug="highest-temperature-in-milan-on-august-3-2026",
-        )
-    ]
-
-    async def fetch_order_book(_: str) -> OrderBookSnapshot:
-        return OrderBookSnapshot(
-            asset_id="asset-fast",
-            bids=(OrderBookLevel(Decimal("0.46"), Decimal("1000")),),
-            asks=(OrderBookLevel(Decimal("0.47"), Decimal("1000")),),
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("5"),
-            neg_risk=False,
-        )
-
-    fake.fetch_order_book = fetch_order_book  # type: ignore[attr-defined]
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-
-    dashboard = client.get(
-        "/api/copy-trading/dashboard",
-        params={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    assert len(dashboard["orders"]) == 1
-    assert dashboard["orders"][0]["status"] == "filled"
-    assert abs(Decimal(str(dashboard["orders"][0]["requested_usdc"])) - Decimal("6")) < Decimal(
-        "0.000001"
-    )
-    assert Decimal(str(dashboard["orders"][0]["reference_price"])) == Decimal("0.47")
-    assert Decimal(str(dashboard["orders"][0]["limit_price"])) == Decimal("0.52")
-    assert dashboard["orders"][0]["order_type"] == "FAK"
-    assert dashboard["orders"][0]["expires_at"] is None
-    assert dashboard["signals"][0]["status"] == "followed"
-    position = dashboard["positions"][0]
-    assert abs(Decimal(str(position["average_entry_price"])) - Decimal("0.47")) < Decimal(
-        "0.000001"
-    )
-    assert Decimal(str(position["current_bid"])) == Decimal("0.46")
-    assert abs(Decimal(str(position["current_value"])) - Decimal("5.87234")) < Decimal("0.00001")
-    assert Decimal(str(position["unrealized_pnl"])) < 0
-    assert Decimal(str(position["lifetime_bought_usdc"])) == Decimal("6")
-    assert position["valuation_status"] == "ok"
-    assert dashboard["portfolio"]["valuation_complete"] is True
-    assert dashboard["portfolio"]["unpriced_positions"] == 0
-
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    repeated = client.get(
-        "/api/copy-trading/dashboard",
-        params={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    assert len(repeated["orders"]) == 1
-    assert len(repeated["signals"]) == 1
-
-    async def unavailable_order_book(_: str) -> OrderBookSnapshot:
-        raise RuntimeError("temporary quote failure")
-
-    fake.fetch_order_book = unavailable_order_book  # type: ignore[attr-defined]
-    unavailable = client.get(
-        "/api/copy-trading/dashboard",
-        params={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    assert unavailable["positions"][0]["valuation_status"] == "unavailable"
-    assert unavailable["positions"][0]["current_bid"] is None
-    assert unavailable["portfolio"]["valuation_complete"] is False
-    assert unavailable["portfolio"]["market_value_usdc"] is None
-    assert unavailable["portfolio"]["total_pnl"] is None
-
-
-def test_fast_buy_uses_precise_gamma_end_time_instead_of_date_only_midnight(
-    app_client_factory,
-):
-    asset_id = "asset-precise-end"
-    market_slug = f"market-{asset_id}"
-    snapshot = replace(
-        position(
-            asset_id=asset_id,
-            title="Will the highest temperature in New York City be between 82-83°F on August 2?",
-        ),
-        end_date=utcnow().replace(hour=0, minute=0, second=0, microsecond=0),
-    )
-    client, fake = app_client_factory([[snapshot], []])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    assert client.portal is not None
-    client.portal.call(client.app.state.monitor.sync_wallet, tracked["id"])
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    fake.market_end_dates[market_slug] = utcnow() + timedelta(hours=2)
-    fake.trades = [
-        TradeSnapshot(
-            asset_id=asset_id,
-            condition_id=snapshot.condition_id,
-            side="BUY",
-            size=Decimal("857.142857142857142857"),
-            price=Decimal("0.35"),
-            timestamp=utcnow(),
-            transaction_hash="0xprecise-end",
-            title=snapshot.title,
-            outcome="Yes",
-            outcome_index=0,
-            event_slug=snapshot.event_slug,
-            market_slug=market_slug,
-        )
-    ]
-
-    async def fetch_order_book(_: str) -> OrderBookSnapshot:
-        return OrderBookSnapshot(
-            asset_id=asset_id,
-            bids=(OrderBookLevel(Decimal("0.46"), Decimal("1000")),),
-            asks=(OrderBookLevel(Decimal("0.47"), Decimal("1000")),),
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("5"),
-            neg_risk=True,
-        )
-
-    fake.fetch_order_book = fetch_order_book  # type: ignore[attr-defined]
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    assert len(dashboard["orders"]) == 1
-    assert dashboard["orders"][0]["status"] == "filled"
-    assert dashboard["signals"][0]["status"] == "followed"
-
-
-def test_same_poll_round_trip_is_netted_without_orders(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions", json={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    now = utcnow()
-    common = {
-        "asset_id": "asset-round-trip",
-        "condition_id": "0x" + "4" * 64,
-        "title": "Will the highest temperature in Paris be 36°C on August 3?",
-        "outcome": "Yes",
-        "outcome_index": 0,
-        "event_slug": "highest-temperature-in-paris-on-august-3-2026",
-    }
-    fake.trades = [
-        TradeSnapshot(
-            **common,
-            side="BUY",
-            size=Decimal("100"),
-            price=Decimal("0.35"),
-            timestamp=now,
-            transaction_hash="0xround-buy",
-        ),
-        TradeSnapshot(
-            **common,
-            side="SELL",
-            size=Decimal("100"),
-            price=Decimal("0.70"),
-            timestamp=now,
-            transaction_hash="0xround-sell",
-        ),
-    ]
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    assert dashboard["orders"] == []
-    assert {signal["status"] for signal in dashboard["signals"]} == {"netted"}
-
-
-def test_fast_engine_sells_same_fraction_as_leader(app_client_factory):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets", json={"address": TRACKED_ADDRESS, "label": "jjavi"}
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={"tracked_wallet_id": tracked["id"], "large_trade_threshold_usdc": 1000},
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    now = utcnow()
-    common = {
-        "asset_id": "asset-sell",
-        "condition_id": "0x" + "5" * 64,
-        "title": "Will the lowest temperature in London be 17°C on August 3?",
-        "outcome": "Yes",
-        "outcome_index": 0,
-        "event_slug": "lowest-temperature-in-london-on-august-3-2026",
-    }
-    buy = TradeSnapshot(
-        **common,
+    monkeypatch.setattr(trader, "_client_sync", lambda: FakeClient())
+    request = MarketTradeRequest(
+        asset_id="123",
         side="BUY",
-        size=Decimal("600"),
-        price=Decimal("0.50"),
-        timestamp=now,
-        transaction_hash="0xbuy-sell-test",
+        amount=Decimal("5"),
+        worst_price=Decimal("0.50"),
     )
-    fake.trades = [buy]
-    current_book = {
-        "value": OrderBookSnapshot(
-            asset_id="asset-sell",
-            bids=(OrderBookLevel(Decimal("0.49"), Decimal("1000")),),
-            asks=(OrderBookLevel(Decimal("0.50"), Decimal("1000")),),
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("5"),
-            neg_risk=False,
+    prepared = trader._prepare_market_sync(request)
+    result = trader._submit_prepared_market_sync(prepared)
+    assert prepared.signed_order_hash.startswith("0x")
+    assert result.external_order_id == "order-v2"
+    assert result.external_trade_id == "trade-v2"
+    assert result.fee_usdc == Decimal("0.025")
+    assert result.signed_order_hash == prepared.signed_order_hash
+    assert str(calls["order_type"]) == "FAK"
+
+
+def test_reset_migration_removes_copy_rows_and_preserves_monitor_rows(tmp_path: Path):
+    database_path = tmp_path / "migration.db"
+    config = AlembicConfig(str(Path("backend/alembic.ini").resolve()))
+    config.attributes["database_url"] = f"sqlite+aiosqlite:///{database_path}"
+    command.upgrade(config, "0012_large_trade_fixed_shares")
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """INSERT INTO watched_wallets
+            (id,address,proxy_wallet,label,wallet_role,enabled,baseline_established,status,
+             consecutive_failures,created_at,updated_at)
+            VALUES (1,?,?,?,?,1,0,'idle',0,?,?)""",
+            (TRACKED_ADDRESS, TRACKED_ADDRESS, "保留钱包", "tracked", now, now),
         )
-    }
-
-    async def fetch_order_book(_: str) -> OrderBookSnapshot:
-        return current_book["value"]
-
-    fake.fetch_order_book = fetch_order_book  # type: ignore[attr-defined]
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-
-    fake.trades.append(
-        TradeSnapshot(
-            **common,
-            side="SELL",
-            size=Decimal("300"),
-            price=Decimal("0.70"),
-            timestamp=utcnow(),
-            transaction_hash="0xsell-half",
+        connection.execute(
+            """INSERT INTO wallet_trades
+            (wallet_id,fingerprint,asset_id,condition_id,side,size,price,amount,timestamp,imported_at)
+            VALUES (1,'keep','asset',?,'BUY',10,.5,5,?,?)""",
+            (CONDITION_ID, now, now),
         )
-    )
-    current_book["value"] = OrderBookSnapshot(
-        asset_id="asset-sell",
-        bids=(OrderBookLevel(Decimal("0.69"), Decimal("1000")),),
-        asks=(OrderBookLevel(Decimal("0.70"), Decimal("1000")),),
-        tick_size=Decimal("0.01"),
-        min_order_size=Decimal("5"),
-        neg_risk=False,
-    )
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    dashboard = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    assert [order["side"] for order in dashboard["orders"]] == ["SELL", "BUY"]
-    assert Decimal(str(dashboard["positions"][0]["attributed_size"])) == Decimal("6")
-    assert Decimal(str(dashboard["positions"][0]["attributed_cost"])) == Decimal("3")
-    assert Decimal(str(dashboard["positions"][0]["current_value"])) == Decimal("4.14")
-    assert Decimal(str(dashboard["positions"][0]["realized_pnl"])) == Decimal("1.14")
-    assert Decimal(str(dashboard["positions"][0]["unrealized_pnl"])) == Decimal("1.14")
-    assert Decimal(str(dashboard["positions"][0]["total_pnl"])) == Decimal("2.28")
-    assert Decimal(str(dashboard["positions"][0]["lifetime_bought_usdc"])) == Decimal("6")
-    assert Decimal(str(dashboard["positions"][0]["lifetime_sold_usdc"])) == Decimal("4.14")
-    assert dashboard["signals"][0]["status"] == "followed"
-
-    fake.trades.append(
-        TradeSnapshot(
-            **common,
-            side="SELL",
-            size=Decimal("300"),
-            price=Decimal("0.80"),
-            timestamp=utcnow(),
-            transaction_hash="0xsell-rest",
+        connection.execute(
+            """INSERT INTO copy_subscriptions
+            (tracked_wallet_id,mode,state,market_scope,copy_ratio_percent,
+             large_trade_threshold_usdc,large_trade_fixed_shares,base_bucket_cap_usdc,
+             strong_threshold_usdc,strong_bucket_cap_usdc,event_cap_usdc,
+             settlement_day_cap_usdc,total_exposure_cap_usdc,daily_buy_limit_usdc,
+             daily_loss_limit_usdc,market_slippage_cents,price_tolerance_ticks,
+             price_tolerance_percent,order_ttl_minutes,close_buffer_minutes,
+             baseline_event_id,last_processed_event_id,created_at,updated_at)
+            VALUES (1,'paper','disabled','temperature',2,100,5,20,1000,40,60,100,160,
+                    80,40,5,2,3,360,15,0,0,?,?)""",
+            (now, now),
         )
-    )
-    current_book["value"] = OrderBookSnapshot(
-        asset_id="asset-sell",
-        bids=(OrderBookLevel(Decimal("0.80"), Decimal("1000")),),
-        asks=(OrderBookLevel(Decimal("0.81"), Decimal("1000")),),
-        tick_size=Decimal("0.01"),
-        min_order_size=Decimal("5"),
-        neg_risk=False,
-    )
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-    quote_calls = {"count": 0}
-
-    async def should_not_quote_closed(_: str) -> OrderBookSnapshot:
-        quote_calls["count"] += 1
-        raise AssertionError("closed history must not request an order book")
-
-    fake.fetch_order_book = should_not_quote_closed  # type: ignore[attr-defined]
-    history = client.get(
-        "/api/copy-trading/dashboard", params={"tracked_wallet_id": tracked["id"]}
-    ).json()
-    assert quote_calls["count"] == 0
-    assert Decimal(str(history["positions"][0]["attributed_size"])) == 0
-    assert history["positions"][0]["status"] == "closed"
-    assert Decimal(str(history["positions"][0]["lifetime_bought_usdc"])) == Decimal("6")
-    assert Decimal(str(history["positions"][0]["lifetime_sold_usdc"])) == Decimal("8.94")
-    assert Decimal(str(history["positions"][0]["realized_pnl"])) == Decimal("2.94")
-    assert Decimal(str(history["positions"][0]["total_pnl"])) == Decimal("2.94")
-    assert Decimal(str(history["portfolio"]["open_cost_usdc"])) == 0
-    assert Decimal(str(history["portfolio"]["market_value_usdc"])) == 0
-    assert Decimal(str(history["portfolio"]["total_pnl"])) == Decimal("2.94")
-
-
-@pytest.mark.parametrize(
-    ("payout_per_share", "expected_payout", "expected_realized"),
-    [
-        (Decimal("1"), Decimal("12"), Decimal("6")),
-        (Decimal("0"), Decimal("0"), Decimal("-6")),
-    ],
-)
-def test_paper_positions_auto_settle_from_official_resolution(
-    app_client_factory,
-    payout_per_share: Decimal,
-    expected_payout: Decimal,
-    expected_realized: Decimal,
-):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets",
-        json={"address": TRACKED_ADDRESS, "label": "jjavi"},
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={
-            "tracked_wallet_id": tracked["id"],
-            "large_trade_threshold_usdc": 1000,
-        },
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    trade = fast_temperature_trade(
-        "300",
-        f"0xpaper-settlement-{payout_per_share}",
-        asset_id="asset-paper-settlement",
-    )
-    fake.trades = [trade]
-    install_fast_book(fake, asset_id=trade.asset_id)
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
-
-    resolved_at = utcnow()
-    fake.market_resolutions[trade.condition_id] = MarketResolution(
-        condition_id=trade.condition_id,
-        payout_by_asset_id={trade.asset_id: payout_per_share},
-        resolved_at=resolved_at,
-    )
-
-    async def settle_once():
-        await client.app.state.copy_engine.process_paper_settlements(
-            subscription["id"],
-            force=True,
-        )
-
-    client.portal.call(settle_once)
-    client.portal.call(settle_once)
-
-    async def replay_leader_redemption_and_read_rows():
-        async with client.app.state.database.sessions() as session:
-            subscription_row = await session.get(CopySubscription, subscription["id"])
-            assert subscription_row is not None
-            await client.app.state.copy_engine._leader_redeemed(
-                session,
-                subscription_row,
-                SimpleNamespace(
-                    asset_id=trade.asset_id,
-                    payout_amount=Decimal("12"),
-                    before_size=Decimal("12"),
-                ),
-            )
-            await session.commit()
-            position_rows = list((await session.scalars(select(CopyPosition))).all())
-            redemption_rows = list((await session.scalars(select(CopyRedemption))).all())
-            ledger_rows = list(
-                (
-                    await session.scalars(select(CopyLedger).where(CopyLedger.type == "redemption"))
-                ).all()
-            )
-            return position_rows, redemption_rows, ledger_rows
-
-    position_rows, redemption_rows, ledger_rows = client.portal.call(
-        replay_leader_redemption_and_read_rows
-    )
-    assert len(position_rows) == 1
-    assert position_rows[0].status == "redeemed"
-    assert position_rows[0].attributed_size == 0
-    assert position_rows[0].attributed_cost == 0
-    assert position_rows[0].realized_pnl == expected_realized
-    assert len(redemption_rows) == 1
-    assert redemption_rows[0].status == "redeemed"
-    assert redemption_rows[0].size == Decimal("12")
-    assert redemption_rows[0].payout_usdc == expected_payout
-    assert len(ledger_rows) == 1
-    assert ledger_rows[0].amount_usdc == expected_payout
-    assert ledger_rows[0].realized_pnl == expected_realized
-    assert ledger_rows[0].timestamp == resolved_at
-
-    dashboard = client.get(
-        "/api/copy-trading/dashboard",
-        params={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    assert dashboard["positions"][0]["status"] == "redeemed"
-    assert Decimal(str(dashboard["positions"][0]["total_pnl"])) == expected_realized
-    assert Decimal(str(dashboard["portfolio"]["open_cost_usdc"])) == 0
-    assert Decimal(str(dashboard["portfolio"]["realized_pnl"])) == expected_realized
-    assert Decimal(str(dashboard["subscription"]["daily_realized_pnl"])) == expected_realized
-
-
-def test_paper_settlement_failure_does_not_block_fast_follow_and_is_throttled(
-    app_client_factory,
-):
-    client, fake = app_client_factory([[]])
-    tracked = client.post(
-        "/api/wallets",
-        json={"address": TRACKED_ADDRESS, "label": "jjavi"},
-    ).json()
-    subscription = client.post(
-        "/api/copy-trading/subscriptions",
-        json={
-            "tracked_wallet_id": tracked["id"],
-            "large_trade_threshold_usdc": 1000,
-        },
-    ).json()
-    client.post(
-        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
-        json={"action": "activate"},
-    )
-    move_fast_baseline_to_past(client, subscription["id"])
-    trade = fast_temperature_trade(
-        "300",
-        "0xpaper-settlement-error",
-        asset_id="asset-paper-settlement-error",
-    )
-    fake.trades = [trade]
-    fake.market_resolution_error = RuntimeError("结算状态暂时不可用")
-    install_fast_book(fake, asset_id=trade.asset_id)
-    assert client.portal is not None
-    client.portal.call(client.app.state.copy_engine.tick)
-    client.portal.call(client.app.state.copy_engine.tick)
-
-    dashboard = client.get(
-        "/api/copy-trading/dashboard",
-        params={"tracked_wallet_id": tracked["id"]},
-    ).json()
-    assert Decimal(str(dashboard["positions"][0]["attributed_size"])) == Decimal("12")
-    assert Decimal(str(dashboard["positions"][0]["attributed_cost"])) == Decimal("6")
-    assert dashboard["positions"][0]["status"] == "open"
-    assert "结算状态暂时不可用" in dashboard["subscription"]["last_error"]
-    assert fake.market_resolution_calls == [[trade.condition_id]]
+        connection.commit()
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT count(*) FROM copy_subscriptions").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM wallet_trades").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM watched_wallets").fetchone()[0] == 1

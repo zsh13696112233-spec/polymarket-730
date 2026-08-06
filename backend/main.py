@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
@@ -52,14 +52,22 @@ from backend.purchase_history import (
 from backend.schemas import (
     CopyDashboardRead,
     CopyOrderRead,
+    CopyOrdersResponse,
+    CopyOverviewRead,
+    CopyOverviewTotalsRead,
     CopyPortfolioSummaryRead,
     CopyPositionRead,
+    CopyPositionsResponse,
     CopyRecommendation,
+    CopyStrategyOverviewRead,
     CopySubscriptionAction,
     CopySubscriptionCreate,
     CopySubscriptionEnabledUpdate,
     CopySubscriptionRead,
     CopySubscriptionUpdate,
+    CopyWalletSummaryRead,
+    CopyWorkspaceOrderRead,
+    CopyWorkspacePositionRead,
     EventRead,
     EventsResponse,
     ExecutionAccountRead,
@@ -128,6 +136,22 @@ def decode_event_cursor(raw_cursor: str) -> tuple[datetime, int]:
     return timestamp, event_id
 
 
+def encode_copy_order_cursor(order: CopyOrder) -> str:
+    return f"{order.created_at.isoformat(timespec='microseconds')}|{order.id}"
+
+
+def decode_copy_order_cursor(raw_cursor: str) -> tuple[datetime, int]:
+    try:
+        raw_timestamp, raw_id = raw_cursor.rsplit("|", 1)
+        timestamp = datetime.fromisoformat(raw_timestamp)
+        order_id = int(raw_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("跟单记录游标无效") from error
+    if timestamp.tzinfo is not None or order_id <= 0:
+        raise ValueError("跟单记录游标无效")
+    return timestamp, order_id
+
+
 DEFAULT_COPY_RATIO = Decimal("10")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -182,6 +206,261 @@ async def copy_subscription_read(
             "daily_realized_pnl": realized,
         }
     )
+
+
+async def workspace_position_reads(
+    request: Request,
+    session: Any,
+    positions: list[CopyPosition],
+    wallet_by_subscription: dict[int, WatchedWallet],
+) -> tuple[list[CopyWorkspacePositionRead], CopyPortfolioSummaryRead]:
+    position_ids = [position.id for position in positions]
+    fill_totals: dict[int, dict[str, Decimal]] = {}
+    if position_ids:
+        aggregate_rows = (
+            await session.execute(
+                select(
+                    CopyOrder.copy_position_id,
+                    CopyOrder.side,
+                    func.sum(CopyFill.size),
+                    func.sum(CopyFill.amount),
+                )
+                .join(CopyFill, CopyFill.order_id == CopyOrder.id)
+                .where(CopyOrder.copy_position_id.in_(position_ids))
+                .group_by(CopyOrder.copy_position_id, CopyOrder.side)
+            )
+        ).all()
+        for position_id, side, size, amount in aggregate_rows:
+            totals = fill_totals.setdefault(
+                int(position_id),
+                {
+                    "BUY_size": Decimal("0"),
+                    "BUY_usdc": Decimal("0"),
+                    "SELL_size": Decimal("0"),
+                    "SELL_usdc": Decimal("0"),
+                },
+            )
+            totals[f"{side}_size"] = size or Decimal("0")
+            totals[f"{side}_usdc"] = amount or Decimal("0")
+
+    open_positions = [position for position in positions if position.attributed_size > 0]
+    quote_semaphore = asyncio.Semaphore(5)
+
+    async def fetch_bid(position: CopyPosition) -> tuple[int, Decimal | None]:
+        async with quote_semaphore:
+            try:
+                book = await request.app.state.polymarket_client.fetch_order_book(position.asset_id)
+            except Exception:
+                return position.id, None
+            return position.id, book.best_bid
+
+    bids = dict(await asyncio.gather(*(fetch_bid(position) for position in open_positions)))
+    valued_at = utcnow()
+    result: list[CopyWorkspacePositionRead] = []
+    for position in positions:
+        wallet = wallet_by_subscription.get(position.subscription_id)
+        if wallet is None:
+            continue
+        totals = fill_totals.get(
+            position.id,
+            {
+                "BUY_size": Decimal("0"),
+                "BUY_usdc": Decimal("0"),
+                "SELL_size": Decimal("0"),
+                "SELL_usdc": Decimal("0"),
+            },
+        )
+        lifetime_bought_size = totals["BUY_size"]
+        lifetime_bought_usdc = totals["BUY_usdc"]
+        if position.attributed_size <= 0 and lifetime_bought_size <= 0:
+            continue
+        average_entry_price = (
+            position.attributed_cost / position.attributed_size
+            if position.attributed_size > 0
+            else None
+        )
+        lifetime_average_buy_price = (
+            lifetime_bought_usdc / lifetime_bought_size if lifetime_bought_size > 0 else None
+        )
+        current_bid = bids.get(position.id) if position.attributed_size > 0 else None
+        if position.attributed_size > 0 and current_bid is not None:
+            current_value = position.attributed_size * current_bid
+            unrealized_pnl = current_value - position.attributed_cost
+            unrealized_pnl_percent = (
+                unrealized_pnl / position.attributed_cost * Decimal("100")
+                if position.attributed_cost > 0
+                else None
+            )
+            total_pnl = unrealized_pnl + position.realized_pnl
+            valuation_status = "ok"
+            position_valued_at = valued_at
+        elif position.attributed_size > 0:
+            current_value = None
+            unrealized_pnl = None
+            unrealized_pnl_percent = None
+            total_pnl = None
+            valuation_status = "unavailable"
+            position_valued_at = valued_at
+        else:
+            current_value = None
+            unrealized_pnl = None
+            unrealized_pnl_percent = None
+            total_pnl = position.realized_pnl
+            valuation_status = "not_applicable"
+            position_valued_at = None
+        result.append(
+            CopyWorkspacePositionRead.model_validate(position).model_copy(
+                update={
+                    "tracked_wallet_id": wallet.id,
+                    "tracked_wallet_label": wallet.label,
+                    "tracked_wallet_address": wallet.proxy_wallet or wallet.address,
+                    "average_entry_price": average_entry_price,
+                    "current_bid": current_bid,
+                    "current_value": current_value,
+                    "unrealized_pnl": unrealized_pnl,
+                    "unrealized_pnl_percent": unrealized_pnl_percent,
+                    "total_pnl": total_pnl,
+                    "lifetime_bought_size": lifetime_bought_size,
+                    "lifetime_bought_usdc": lifetime_bought_usdc,
+                    "lifetime_sold_size": totals["SELL_size"],
+                    "lifetime_sold_usdc": totals["SELL_usdc"],
+                    "lifetime_average_buy_price": lifetime_average_buy_price,
+                    "valuation_status": valuation_status,
+                    "valued_at": position_valued_at,
+                }
+            )
+        )
+
+    return result, workspace_portfolio(result, valued_at)
+
+
+def workspace_portfolio(
+    items: list[CopyWorkspacePositionRead],
+    valued_at: datetime,
+) -> CopyPortfolioSummaryRead:
+    open_items = [item for item in items if item.attributed_size > 0]
+    open_cost = sum((item.attributed_cost for item in open_items), start=Decimal("0"))
+    realized_pnl = sum((item.realized_pnl for item in items), start=Decimal("0"))
+    unpriced_positions = sum(1 for item in open_items if item.current_value is None)
+    valuation_complete = unpriced_positions == 0
+    if valuation_complete:
+        market_value = sum(
+            (item.current_value or Decimal("0") for item in open_items),
+            start=Decimal("0"),
+        )
+        unrealized_pnl = market_value - open_cost
+        total_pnl = unrealized_pnl + realized_pnl
+    else:
+        market_value = None
+        unrealized_pnl = None
+        total_pnl = None
+    return CopyPortfolioSummaryRead(
+        open_cost_usdc=open_cost,
+        market_value_usdc=market_value,
+        unrealized_pnl=unrealized_pnl,
+        realized_pnl=realized_pnl,
+        total_pnl=total_pnl,
+        valuation_complete=valuation_complete,
+        unpriced_positions=unpriced_positions,
+        valued_at=valued_at if open_items else None,
+    )
+
+
+async def workspace_order_reads(
+    session: Any,
+    orders: list[CopyOrder],
+) -> list[CopyWorkspaceOrderRead]:
+    subscription_ids = {
+        order.subscription_id for order in orders if order.subscription_id is not None
+    }
+    position_ids = {
+        order.copy_position_id for order in orders if order.copy_position_id is not None
+    }
+    order_ids = [order.id for order in orders]
+    subscriptions = {
+        item.id: item
+        for item in (
+            list(
+                (
+                    await session.scalars(
+                        select(CopySubscription).where(CopySubscription.id.in_(subscription_ids))
+                    )
+                ).all()
+            )
+            if subscription_ids
+            else []
+        )
+    }
+    wallet_ids = {item.tracked_wallet_id for item in subscriptions.values()}
+    wallets = {
+        item.id: item
+        for item in (
+            list(
+                (
+                    await session.scalars(
+                        select(WatchedWallet).where(WatchedWallet.id.in_(wallet_ids))
+                    )
+                ).all()
+            )
+            if wallet_ids
+            else []
+        )
+    }
+    positions = {
+        item.id: item
+        for item in (
+            list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(CopyPosition.id.in_(position_ids))
+                    )
+                ).all()
+            )
+            if position_ids
+            else []
+        )
+    }
+    fill_totals: dict[int, tuple[Decimal, Decimal]] = {}
+    if order_ids:
+        rows = (
+            await session.execute(
+                select(
+                    CopyFill.order_id,
+                    func.sum(CopyFill.size),
+                    func.sum(CopyFill.amount),
+                )
+                .where(CopyFill.order_id.in_(order_ids))
+                .group_by(CopyFill.order_id)
+            )
+        ).all()
+        fill_totals = {
+            int(order_id): (size or Decimal("0"), amount or Decimal("0"))
+            for order_id, size, amount in rows
+        }
+
+    result: list[CopyWorkspaceOrderRead] = []
+    for order in orders:
+        subscription = subscriptions.get(order.subscription_id)
+        wallet = wallets.get(subscription.tracked_wallet_id) if subscription is not None else None
+        position = positions.get(order.copy_position_id)
+        fill_size, fill_amount = fill_totals.get(order.id, (order.filled_size, order.filled_usdc))
+        average_fill_price = fill_amount / fill_size if fill_size > 0 else None
+        result.append(
+            CopyWorkspaceOrderRead.model_validate(order).model_copy(
+                update={
+                    "tracked_wallet_id": wallet.id if wallet else None,
+                    "tracked_wallet_label": wallet.label if wallet else None,
+                    "tracked_wallet_address": (
+                        wallet.proxy_wallet or wallet.address if wallet else None
+                    ),
+                    "title": position.title if position else None,
+                    "outcome": position.outcome if position else None,
+                    "event_slug": position.event_slug if position else None,
+                    "average_fill_price": average_fill_price,
+                }
+            )
+        )
+    return result
 
 
 def execution_account_read(account: ExecutionAccount | None) -> ExecutionAccountRead | None:
@@ -1014,6 +1293,272 @@ def create_app(
             subscription = await session.get(CopySubscription, subscription_id)
             assert subscription is not None
             return await copy_subscription_read(session, subscription)
+
+    @application.get(
+        "/api/copy-trading/positions",
+        response_model=CopyPositionsResponse,
+    )
+    async def get_copy_workspace_positions(
+        request: Request,
+        tracked_wallet_id: Annotated[int | None, Query(gt=0)] = None,
+        scope: str = "open",
+    ) -> CopyPositionsResponse:
+        if scope not in {"open", "history"}:
+            raise HTTPException(status_code=422, detail="持仓范围必须是 open 或 history")
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            subscription_query = select(CopySubscription)
+            if tracked_wallet_id is not None:
+                subscription_query = subscription_query.where(
+                    CopySubscription.tracked_wallet_id == tracked_wallet_id
+                )
+            subscriptions = list((await session.scalars(subscription_query)).all())
+            subscription_ids = [item.id for item in subscriptions]
+            wallets = (
+                {
+                    wallet.id: wallet
+                    for wallet in list(
+                        (
+                            await session.scalars(
+                                select(WatchedWallet).where(
+                                    WatchedWallet.id.in_(
+                                        [item.tracked_wallet_id for item in subscriptions]
+                                    )
+                                )
+                            )
+                        ).all()
+                    )
+                }
+                if subscriptions
+                else {}
+            )
+            wallet_by_subscription = {
+                item.id: wallets[item.tracked_wallet_id]
+                for item in subscriptions
+                if item.tracked_wallet_id in wallets
+            }
+            if not subscription_ids:
+                return CopyPositionsResponse(
+                    items=[],
+                    portfolio=CopyPortfolioSummaryRead(),
+                    as_of=utcnow(),
+                )
+            position_query = select(CopyPosition).where(
+                CopyPosition.subscription_id.in_(subscription_ids)
+            )
+            if scope == "open":
+                position_query = position_query.where(CopyPosition.attributed_size > 0)
+            else:
+                position_query = position_query.where(CopyPosition.attributed_size <= 0)
+            positions = list(
+                (
+                    await session.scalars(position_query.order_by(CopyPosition.updated_at.desc()))
+                ).all()
+            )
+            items, portfolio = await workspace_position_reads(
+                request, session, positions, wallet_by_subscription
+            )
+            return CopyPositionsResponse(
+                items=items,
+                portfolio=portfolio,
+                as_of=utcnow(),
+            )
+
+    @application.get(
+        "/api/copy-trading/orders",
+        response_model=CopyOrdersResponse,
+    )
+    async def get_copy_workspace_orders(
+        request: Request,
+        tracked_wallet_id: Annotated[int | None, Query(gt=0)] = None,
+        side: str | None = None,
+        status_group: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        cursor: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> CopyOrdersResponse:
+        if side is not None and side not in {"BUY", "SELL"}:
+            raise HTTPException(status_code=422, detail="买卖方向必须是 BUY 或 SELL")
+        status_groups = {
+            "filled": ["filled"],
+            "partial": ["partially_filled"],
+            "unfilled": ["unfilled"],
+            "skipped": ["skipped", "blocked"],
+            "processing": ["planned", "signed", "submitted"],
+            "attention": ["reconciliation_pending", "interrupted_before_submit"],
+        }
+        if status_group is not None and status_group not in status_groups:
+            raise HTTPException(status_code=422, detail="跟单记录状态筛选无效")
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            query = select(CopyOrder).where(CopyOrder.source == "copy")
+            if tracked_wallet_id is not None:
+                subscription_ids = select(CopySubscription.id).where(
+                    CopySubscription.tracked_wallet_id == tracked_wallet_id
+                )
+                query = query.where(CopyOrder.subscription_id.in_(subscription_ids))
+            if side is not None:
+                query = query.where(CopyOrder.side == side)
+            if status_group is not None:
+                query = query.where(CopyOrder.status.in_(status_groups[status_group]))
+
+            def naive_utc(value: datetime) -> datetime:
+                if value.tzinfo is None:
+                    return value
+                return value.astimezone(UTC).replace(tzinfo=None)
+
+            if from_time is not None:
+                query = query.where(CopyOrder.created_at >= naive_utc(from_time))
+            if to_time is not None:
+                query = query.where(CopyOrder.created_at <= naive_utc(to_time))
+            if cursor:
+                try:
+                    cursor_time, cursor_id = decode_copy_order_cursor(cursor)
+                except ValueError as error:
+                    raise HTTPException(status_code=422, detail=str(error)) from error
+                query = query.where(
+                    or_(
+                        CopyOrder.created_at < cursor_time,
+                        and_(
+                            CopyOrder.created_at == cursor_time,
+                            CopyOrder.id < cursor_id,
+                        ),
+                    )
+                )
+            orders = list(
+                (
+                    await session.scalars(
+                        query.order_by(CopyOrder.created_at.desc(), CopyOrder.id.desc()).limit(
+                            limit + 1
+                        )
+                    )
+                ).all()
+            )
+            has_more = len(orders) > limit
+            page = orders[:limit]
+            items = await workspace_order_reads(session, page)
+            return CopyOrdersResponse(
+                items=items,
+                next_cursor=(encode_copy_order_cursor(page[-1]) if has_more and page else None),
+            )
+
+    @application.get(
+        "/api/copy-trading/overview",
+        response_model=CopyOverviewRead,
+    )
+    async def get_copy_workspace_overview(request: Request) -> CopyOverviewRead:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            subscriptions = list(
+                (
+                    await session.scalars(
+                        select(CopySubscription).order_by(CopySubscription.id.asc())
+                    )
+                ).all()
+            )
+            wallets = (
+                {
+                    wallet.id: wallet
+                    for wallet in list(
+                        (
+                            await session.scalars(
+                                select(WatchedWallet).where(
+                                    WatchedWallet.id.in_(
+                                        [item.tracked_wallet_id for item in subscriptions]
+                                    )
+                                )
+                            )
+                        ).all()
+                    )
+                }
+                if subscriptions
+                else {}
+            )
+            wallet_by_subscription = {
+                item.id: wallets[item.tracked_wallet_id]
+                for item in subscriptions
+                if item.tracked_wallet_id in wallets
+            }
+            subscription_ids = [item.id for item in subscriptions]
+            positions = (
+                list(
+                    (
+                        await session.scalars(
+                            select(CopyPosition)
+                            .where(CopyPosition.subscription_id.in_(subscription_ids))
+                            .order_by(CopyPosition.updated_at.desc())
+                        )
+                    ).all()
+                )
+                if subscription_ids
+                else []
+            )
+            valued_at = utcnow()
+            position_items, global_portfolio = await workspace_position_reads(
+                request, session, positions, wallet_by_subscription
+            )
+            items_by_subscription: dict[int, list[CopyWorkspacePositionRead]] = {}
+            for item in position_items:
+                items_by_subscription.setdefault(item.subscription_id, []).append(item)
+            strategies: list[CopyStrategyOverviewRead] = []
+            for subscription in subscriptions:
+                wallet = wallet_by_subscription.get(subscription.id)
+                if wallet is None:
+                    continue
+                strategy_positions = items_by_subscription.get(subscription.id, [])
+                strategies.append(
+                    CopyStrategyOverviewRead(
+                        subscription=await copy_subscription_read(session, subscription),
+                        wallet=CopyWalletSummaryRead.model_validate(wallet),
+                        portfolio=workspace_portfolio(strategy_positions, valued_at),
+                        open_positions=sum(
+                            1 for item in strategy_positions if item.attributed_size > 0
+                        ),
+                        stale=wallet_is_stale(wallet, request.app.state.settings),
+                    )
+                )
+            recent_orders = list(
+                (
+                    await session.scalars(
+                        select(CopyOrder)
+                        .where(CopyOrder.source == "copy")
+                        .order_by(CopyOrder.created_at.desc(), CopyOrder.id.desc())
+                        .limit(8)
+                    )
+                ).all()
+            )
+            account = await session.get(ExecutionAccount, 1)
+            collateral_balance = account.collateral_balance if account else None
+            available_capacity = execution_account_capacity(account) if account else Decimal("0")
+            open_exposure = sum(
+                (item.subscription.open_exposure_usdc for item in strategies),
+                start=Decimal("0"),
+            )
+            daily_bought = sum(
+                (item.subscription.daily_bought_usdc for item in strategies),
+                start=Decimal("0"),
+            )
+            return CopyOverviewRead(
+                live_copy_enabled=request.app.state.settings.live_copy_enabled,
+                account=execution_account_read(account),
+                totals=CopyOverviewTotalsRead(
+                    collateral_balance=collateral_balance,
+                    available_capacity_usdc=available_capacity,
+                    open_exposure_usdc=open_exposure,
+                    daily_bought_usdc=daily_bought,
+                    open_cost_usdc=global_portfolio.open_cost_usdc,
+                    market_value_usdc=global_portfolio.market_value_usdc,
+                    unrealized_pnl=global_portfolio.unrealized_pnl,
+                    realized_pnl=global_portfolio.realized_pnl,
+                    total_pnl=global_portfolio.total_pnl,
+                    valuation_complete=global_portfolio.valuation_complete,
+                    unpriced_positions=global_portfolio.unpriced_positions,
+                ),
+                strategies=strategies,
+                recent_orders=await workspace_order_reads(session, recent_orders),
+                as_of=valued_at,
+            )
 
     @application.get(
         "/api/copy-trading/dashboard",

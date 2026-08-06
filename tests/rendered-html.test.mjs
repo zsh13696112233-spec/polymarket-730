@@ -25,7 +25,7 @@ async function render() {
   );
 }
 
-test("server-renders the wallet monitor shell and product metadata", async () => {
+test("server-renders the PolyCopy workspace and product metadata", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -33,21 +33,22 @@ test("server-renders the wallet monitor shell and product metadata", async () =>
   const html = await response.text();
   assert.match(
     html,
-    /<title>仓位观察｜Polymarket 钱包持仓监控<\/title>/i,
+    /<title>PolyCopy｜专业 Polymarket 跟单工具<\/title>/i,
   );
-  assert.match(html, /仓位观察/);
-  assert.match(html, /看清持仓，安静跟随。/);
-  assert.match(html, /添加钱包/);
-  assert.match(html, /公开监控/);
-  assert.match(html, /自动跟单独立风控/);
+  assert.match(html, /PolyCopy/);
+  assert.match(html, /跟单总览/);
+  assert.match(html, /添加跟单目标/);
+  assert.match(html, /跟单记录/);
   assert.match(html, /property="og:image"/i);
   assert.match(html, /http:\/\/localhost(?::3000)?\/og\.png/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
-test("removes the disposable starter and keeps monitor behavior in the client", async () => {
-  const [page, layout, css] = await Promise.all([
+test("keeps PolyCopy workspace behavior in the client", async () => {
+  const [page, workspace, legacy, layout, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/PolyCopyWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/analysis/legacy.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
@@ -59,13 +60,14 @@ test("removes the disposable starter and keeps monitor behavior in the client", 
     access(new URL("app/_sites-preview/preview.css", templateRoot)),
   );
 
-  assert.match(page, /NEXT_PUBLIC_API_BASE/);
-  assert.match(page, /http:\/\/127\.0\.0\.1:8730/);
-  assert.match(page, /new EventSource/);
-  assert.match(page, /current_value\) - toNumber\(left\.current_value/);
-  assert.match(page, /event\/\$\{eventPath\}\/\$\{encodeURIComponent\(marketSlug\)\}/);
-  assert.match(page, /average_fill_price/);
-  assert.match(page, /transaction_hash/);
+  assert.match(page, /PolyCopyWorkspace/);
+  assert.match(workspace, /NEXT_PUBLIC_API_BASE/);
+  assert.match(workspace, /copy-trading\/overview/);
+  assert.match(workspace, /copy-trading\/orders/);
+  assert.match(legacy, /new EventSource/);
+  assert.match(legacy, /event\/\$\{eventPath\}\/\$\{encodeURIComponent\(marketSlug\)\}/);
+  assert.match(legacy, /average_fill_price/);
+  assert.match(legacy, /transaction_hash/);
   assert.match(layout, /lang="zh-CN"/);
   assert.doesNotMatch(layout, /next\/font|Starter Project|codex-preview/);
   assert.match(css, /@media \(max-width: 760px\)/);

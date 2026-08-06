@@ -1371,3 +1371,61 @@ def test_profile_url_is_accepted(app_client_factory):
     )
     assert response.status_code == 201
     assert response.json()["label"] == "跟单"
+
+
+def test_copy_workspace_aggregates_multiple_strategies(app_client_factory):
+    client, _ = app_client_factory([[], []])
+    first = add_wallet(client)
+    second_response = client.post(
+        "/api/wallets",
+        json={"address": OTHER_ADDRESS, "label": "第二策略"},
+    )
+    assert second_response.status_code == 201
+    second = second_response.json()
+    for wallet, ratio in [(first, 10), (second, 25)]:
+        response = client.post(
+            "/api/copy-trading/subscriptions",
+            json={
+                "tracked_wallet_id": wallet["id"],
+                "copy_ratio_percent": ratio,
+                "position_cap_usdc": 20,
+                "total_exposure_cap_usdc": 80,
+                "market_slippage_cents": 5,
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    overview = client.get("/api/copy-trading/overview")
+    assert overview.status_code == 200, overview.text
+    payload = overview.json()
+    assert [item["wallet"]["id"] for item in payload["strategies"]] == [
+        first["id"],
+        second["id"],
+    ]
+    assert [item["subscription"]["copy_ratio_percent"] for item in payload["strategies"]] == [
+        10.0,
+        25.0,
+    ]
+    assert payload["totals"]["open_exposure_usdc"] == 0.0
+    assert payload["recent_orders"] == []
+
+    positions = client.get("/api/copy-trading/positions")
+    assert positions.status_code == 200
+    assert positions.json()["items"] == []
+
+    orders = client.get(
+        "/api/copy-trading/orders",
+        params={"tracked_wallet_id": second["id"], "status_group": "skipped"},
+    )
+    assert orders.status_code == 200
+    assert orders.json() == {"items": [], "next_cursor": None}
+
+
+def test_copy_workspace_rejects_invalid_filters(app_client_factory):
+    client, _ = app_client_factory([[]])
+    assert client.get("/api/copy-trading/positions", params={"scope": "unknown"}).status_code == 422
+    assert client.get("/api/copy-trading/orders", params={"side": "HOLD"}).status_code == 422
+    assert (
+        client.get("/api/copy-trading/orders", params={"status_group": "unknown"}).status_code
+        == 422
+    )

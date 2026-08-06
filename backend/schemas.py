@@ -218,6 +218,86 @@ class CopyDashboardRead(APIModel):
     portfolio: CopyPortfolioSummaryRead
 
 
+class CopyWorkspacePositionRead(CopyPositionRead):
+    tracked_wallet_id: int
+    tracked_wallet_label: str
+    tracked_wallet_address: str
+
+
+class CopyWorkspaceOrderRead(CopyOrderRead):
+    tracked_wallet_id: int | None = None
+    tracked_wallet_label: str | None = None
+    tracked_wallet_address: str | None = None
+    title: str | None = None
+    outcome: str | None = None
+    event_slug: str | None = None
+    average_fill_price: DecimalNumber | None = None
+
+
+class CopyPositionsResponse(APIModel):
+    items: list[CopyWorkspacePositionRead]
+    portfolio: CopyPortfolioSummaryRead
+    as_of: datetime
+
+    @field_serializer("as_of", when_used="json")
+    def serialize_as_of(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class CopyOrdersResponse(APIModel):
+    items: list[CopyWorkspaceOrderRead]
+    next_cursor: str | None = None
+
+
+class CopyOverviewTotalsRead(APIModel):
+    collateral_balance: DecimalNumber | None = None
+    available_capacity_usdc: DecimalNumber = Decimal("0")
+    open_exposure_usdc: DecimalNumber = Decimal("0")
+    daily_bought_usdc: DecimalNumber = Decimal("0")
+    open_cost_usdc: DecimalNumber = Decimal("0")
+    market_value_usdc: DecimalNumber | None = None
+    unrealized_pnl: DecimalNumber | None = None
+    realized_pnl: DecimalNumber = Decimal("0")
+    total_pnl: DecimalNumber | None = None
+    valuation_complete: bool = True
+    unpriced_positions: int = 0
+
+
+class CopyWalletSummaryRead(APIModel):
+    id: int
+    address: str
+    proxy_wallet: str
+    label: str
+    status: str
+    last_success_at: datetime | None
+    last_error: str | None
+
+    @field_serializer("last_success_at", when_used="json")
+    def serialize_wallet_date(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class CopyStrategyOverviewRead(APIModel):
+    subscription: CopySubscriptionRead
+    wallet: CopyWalletSummaryRead
+    portfolio: CopyPortfolioSummaryRead
+    open_positions: int
+    stale: bool
+
+
+class CopyOverviewRead(APIModel):
+    live_copy_enabled: bool
+    account: ExecutionAccountRead | None
+    totals: CopyOverviewTotalsRead
+    strategies: list[CopyStrategyOverviewRead]
+    recent_orders: list[CopyWorkspaceOrderRead]
+    as_of: datetime
+
+    @field_serializer("as_of", when_used="json")
+    def serialize_as_of(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
 class RehearsalPreviewRequest(APIModel):
     market_url: str = Field(min_length=1, max_length=1000)
     outcome: str = Field(min_length=1, max_length=200)

@@ -37,7 +37,7 @@ from backend.models import (
     WalletTrade,
     WatchedWallet,
 )
-from backend.monitor import WalletMonitor, utcnow
+from backend.monitor import WalletMonitor, fills_reconcile, utcnow
 from backend.polymarket import (
     InvalidWalletInput,
     PolymarketAPIError,
@@ -76,6 +76,9 @@ from backend.schemas import (
     GlobalSettingsUpdate,
     HealthRead,
     PositionCycleTradeRead,
+    PositionEventCycleRead,
+    PositionEventGroupRead,
+    PositionEventGroupsResponse,
     PositionOverlapAlertRead,
     PositionOverlapAlertsResponse,
     PositionOverlapDetail,
@@ -90,6 +93,7 @@ from backend.schemas import (
     RehearsalPreviewRequest,
     WalletCreate,
     WalletRead,
+    WalletRecordedPnlRead,
     WalletUpdate,
 )
 from backend.trading import (
@@ -134,6 +138,23 @@ def decode_event_cursor(raw_cursor: str) -> tuple[datetime, int]:
     if timestamp.tzinfo is not None or event_id <= 0:
         raise ValueError("事件游标无效")
     return timestamp, event_id
+
+
+def encode_position_group_cursor(group: PositionEventGroupRead) -> str:
+    timestamp = group.latest_recorded_at.isoformat(timespec="microseconds")
+    return f"{timestamp}|{group.latest_event_id}|{group.asset_id}"
+
+
+def decode_position_group_cursor(raw_cursor: str) -> tuple[datetime, int, str]:
+    try:
+        raw_timestamp, raw_id, asset_id = raw_cursor.split("|", 2)
+        timestamp = datetime.fromisoformat(raw_timestamp)
+        event_id = int(raw_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("仓位组游标无效") from error
+    if timestamp.tzinfo is not None or event_id <= 0 or not asset_id:
+        raise ValueError("仓位组游标无效")
+    return timestamp, event_id, asset_id
 
 
 def encode_copy_order_cursor(order: CopyOrder) -> str:
@@ -539,6 +560,42 @@ def event_read(event: PositionEvent, ratio_percent: Decimal) -> EventRead:
     item = EventRead.model_validate(event).model_copy(
         update={"copy_recommendation": copy_recommendation(event, ratio_percent)}
     )
+    reconciliation_status = event.reconciliation_status
+    if reconciliation_status == "partial" and event.fills:
+        net_fill_size = sum(
+            (fill.size if fill.side == "BUY" else -fill.size for fill in event.fills),
+            start=Decimal("0"),
+        )
+        if fills_reconcile(net_fill_size, event.delta_size):
+            reconciliation_status = "matched"
+            item = item.model_copy(update={"reconciliation_status": "matched"})
+    if (
+        event.type == "closed"
+        and reconciliation_status == "matched"
+        and event.before_size > 0
+        and event.after_size == 0
+        and event.fills
+    ):
+        bought_during_close = sum(
+            (fill.amount for fill in event.fills if fill.side == "BUY"),
+            start=Decimal("0"),
+        )
+        proceeds = sum(
+            (fill.amount for fill in event.fills if fill.side == "SELL"),
+            start=Decimal("0"),
+        )
+        cost_basis = event.before_size * event.before_avg_price + bought_during_close
+        profit = proceeds - cost_basis
+        profit_percent = profit / cost_basis * Decimal("100") if cost_basis > 0 else None
+        return item.model_copy(
+            update={
+                "close_cost_basis": cost_basis,
+                "close_proceeds": proceeds,
+                "close_profit": profit,
+                "close_profit_percent": profit_percent,
+                "close_profit_complete": True,
+            }
+        )
     if event.type != "redeemed":
         return item
 
@@ -561,6 +618,129 @@ def event_read(event: PositionEvent, ratio_percent: Decimal) -> EventRead:
             "redemption_profit_percent": profit_percent,
             "redemption_cost_complete": cost_basis is not None,
         }
+    )
+
+
+def recorded_event_profit(event: PositionEvent, item: EventRead) -> tuple[Decimal, int]:
+    if event.type == "redeemed":
+        if item.redemption_cost_complete and item.redemption_profit is not None:
+            return item.redemption_profit, 0
+        return Decimal("0"), 1
+    if event.type not in {"decreased", "closed"}:
+        return Decimal("0"), 0
+    if item.reconciliation_status != "matched" or not event.fills:
+        return Decimal("0"), 1
+    bought = sum(
+        (fill.amount for fill in event.fills if fill.side == "BUY"),
+        start=Decimal("0"),
+    )
+    sold = sum(
+        (fill.amount for fill in event.fills if fill.side == "SELL"),
+        start=Decimal("0"),
+    )
+    before_cost = event.before_size * event.before_avg_price
+    after_cost = event.after_size * event.after_avg_price
+    return sold - bought + after_cost - before_cost, 0
+
+
+def position_event_cycle_read(
+    entries: list[tuple[PositionEvent, EventRead]],
+    *,
+    cycle_number: int,
+    is_current: bool,
+    forced_history_gap: bool = False,
+) -> PositionEventCycleRead:
+    first_event = entries[0][0]
+    last_event = entries[-1][0]
+    if forced_history_gap:
+        cycle_status = "history_gap"
+    elif last_event.type == "closed":
+        cycle_status = "closed"
+    elif last_event.type == "redeemed":
+        cycle_status = "redeemed"
+    elif is_current:
+        cycle_status = "open"
+    else:
+        cycle_status = "history_gap"
+    confirmed_realized_pnl = Decimal("0")
+    incomplete_profit_events = 0
+    for event, item in entries:
+        profit, incomplete = recorded_event_profit(event, item)
+        confirmed_realized_pnl += profit
+        incomplete_profit_events += incomplete
+    return PositionEventCycleRead(
+        cycle_number=cycle_number,
+        status=cycle_status,
+        start_source="opened" if first_event.type == "opened" else "first_recorded",
+        history_complete=(
+            first_event.type == "opened"
+            and cycle_status in {"open", "closed", "redeemed"}
+            and not forced_history_gap
+        ),
+        started_at=first_event.settled_at,
+        ended_at=None if cycle_status == "open" else last_event.settled_at,
+        confirmed_realized_pnl=confirmed_realized_pnl,
+        incomplete_profit_events=incomplete_profit_events,
+        events=[item for _, item in entries],
+    )
+
+
+def position_event_group_read(
+    events: list[PositionEvent],
+    *,
+    ratio_percent: Decimal,
+    is_current: bool,
+) -> PositionEventGroupRead:
+    ordered = sorted(events, key=lambda event: (event.settled_at, event.id))
+    entries = [(event, event_read(event, ratio_percent)) for event in ordered]
+    cycle_entries: list[list[tuple[PositionEvent, EventRead]]] = []
+    forced_gaps: list[bool] = []
+    current: list[tuple[PositionEvent, EventRead]] = []
+    for entry in entries:
+        event = entry[0]
+        if current and (event.type == "opened" or current[-1][0].type in {"closed", "redeemed"}):
+            forced_gaps.append(current[-1][0].type not in {"closed", "redeemed"})
+            cycle_entries.append(current)
+            current = []
+        current.append(entry)
+    if current:
+        forced_gaps.append(False)
+        cycle_entries.append(current)
+
+    cycles = [
+        position_event_cycle_read(
+            cycle,
+            cycle_number=index + 1,
+            is_current=is_current and index == len(cycle_entries) - 1,
+            forced_history_gap=forced_gaps[index],
+        )
+        for index, cycle in enumerate(cycle_entries)
+    ]
+    latest = ordered[-1]
+    event_counts = {
+        event_type: sum(event.type == event_type for event in ordered)
+        for event_type in ("opened", "increased", "decreased", "closed", "redeemed")
+    }
+    return PositionEventGroupRead(
+        wallet_id=latest.wallet_id,
+        asset_id=latest.asset_id,
+        condition_id=latest.condition_id,
+        title=latest.title,
+        outcome=latest.outcome,
+        event_slug=latest.event_slug,
+        status=cycles[-1].status,
+        event_count=len(ordered),
+        event_counts=event_counts,
+        cycle_count=len(cycles),
+        first_recorded_at=ordered[0].settled_at,
+        latest_recorded_at=latest.settled_at,
+        latest_event_id=latest.id,
+        confirmed_realized_pnl=sum(
+            (cycle.confirmed_realized_pnl for cycle in cycles),
+            start=Decimal("0"),
+        ),
+        incomplete_profit_events=sum(cycle.incomplete_profit_events for cycle in cycles),
+        cycles=cycles,
     )
 
 
@@ -921,8 +1101,6 @@ def create_app(
             raise HTTPException(status_code=409, detail="市场当前没有可成交卖盘")
         fee_multiplier = Decimal("1") + Decimal(market.fee_rate_bps) / Decimal("10000")
         buy_amount = payload.max_total_usdc / fee_multiplier
-        if buy_amount / book.best_ask < book.min_order_size:
-            raise HTTPException(status_code=422, detail="1 美元硬上限低于该市场最小下单份数")
         confirmation_id = secrets.token_urlsafe(32)
         expires_at = utcnow() + timedelta(minutes=5)
         preview = RehearsalPreviewRead(
@@ -1065,7 +1243,10 @@ def create_app(
         await request.app.state.copy_engine._apply_result(order_id, result)
         total_spent = result.filled_usdc + result.fee_usdc
         if total_spent > preview.max_total_usdc:
-            raise HTTPException(status_code=500, detail="演练订单超过 1 美元硬上限，已标记审计")
+            raise HTTPException(
+                status_code=500,
+                detail=(f"演练订单超过 {preview.max_total_usdc} USDC 硬上限，已标记审计"),
+            )
         money_ok = False
         token_ok = False
         for attempt in range(10):
@@ -2397,6 +2578,33 @@ def create_app(
             ratio = await copy_ratio_percent(session)
             return overlap_alert_read(alert, ratio)
 
+    @application.delete(
+        "/api/overlap-alerts/{alert_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_read_overlap_alert(
+        alert_id: int,
+        request: Request,
+    ) -> Response:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            my_wallet = await session.scalar(
+                select(WatchedWallet).where(
+                    WatchedWallet.wallet_role == "self",
+                    WatchedWallet.enabled.is_(True),
+                )
+            )
+            alert = await session.scalar(
+                select(PositionOverlapAlert).where(PositionOverlapAlert.id == alert_id)
+            )
+            if my_wallet is None or alert is None or alert.my_wallet_id != my_wallet.id:
+                raise HTTPException(status_code=404, detail="提醒不存在")
+            if alert.read_at is None:
+                raise HTTPException(status_code=409, detail="请先将提醒标为已读")
+            await session.delete(alert)
+            await session.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @application.post(
         "/api/overlap-alerts/read-all",
         status_code=status.HTTP_204_NO_CONTENT,
@@ -2436,6 +2644,100 @@ def create_app(
                 alert.read_at = read_at
             await session.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @application.get(
+        "/api/position-event-groups",
+        response_model=PositionEventGroupsResponse,
+    )
+    async def get_position_event_groups(
+        request: Request,
+        wallet_id: int = Query(gt=0),
+        cursor: str | None = Query(default=None, min_length=1, max_length=240),
+        limit: int = Query(default=20, ge=1, le=50),
+    ) -> PositionEventGroupsResponse:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            wallet = await session.get(WatchedWallet, wallet_id)
+            if wallet is None:
+                raise HTTPException(status_code=404, detail="钱包不存在")
+            events = list(
+                (
+                    await session.scalars(
+                        select(PositionEvent)
+                        .options(selectinload(PositionEvent.fills))
+                        .where(PositionEvent.wallet_id == wallet_id)
+                        .order_by(PositionEvent.settled_at.asc(), PositionEvent.id.asc())
+                    )
+                ).all()
+            )
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CurrentPosition).where(CurrentPosition.wallet_id == wallet_id)
+                    )
+                ).all()
+            )
+            ratio = await copy_ratio_percent(session)
+
+        events_by_asset: dict[str, list[PositionEvent]] = {}
+        for event in events:
+            events_by_asset.setdefault(event.asset_id, []).append(event)
+        open_assets = {position.asset_id for position in positions}
+        groups = [
+            position_event_group_read(
+                asset_events,
+                ratio_percent=ratio,
+                is_current=asset_id in open_assets,
+            )
+            for asset_id, asset_events in events_by_asset.items()
+        ]
+        groups.sort(
+            key=lambda group: (
+                group.latest_recorded_at,
+                group.latest_event_id,
+                group.asset_id,
+            ),
+            reverse=True,
+        )
+        confirmed_realized_pnl = sum(
+            (group.confirmed_realized_pnl for group in groups),
+            start=Decimal("0"),
+        )
+        incomplete_realized_events = sum(group.incomplete_profit_events for group in groups)
+        if cursor is not None:
+            try:
+                cursor_key = decode_position_group_cursor(cursor)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            groups = [
+                group
+                for group in groups
+                if (
+                    group.latest_recorded_at,
+                    group.latest_event_id,
+                    group.asset_id,
+                )
+                < cursor_key
+            ]
+
+        has_more = len(groups) > limit
+        page = groups[:limit]
+        current_unrealized_pnl = sum(
+            (position.cash_pnl for position in positions),
+            start=Decimal("0"),
+        )
+        return PositionEventGroupsResponse(
+            items=page,
+            pnl=WalletRecordedPnlRead(
+                recorded_since=wallet.created_at,
+                confirmed_realized_pnl=confirmed_realized_pnl,
+                current_unrealized_pnl=current_unrealized_pnl,
+                confirmed_total_pnl=confirmed_realized_pnl + current_unrealized_pnl,
+                incomplete_realized_events=incomplete_realized_events,
+                complete=incomplete_realized_events == 0,
+            ),
+            next_cursor=(encode_position_group_cursor(page[-1]) if has_more and page else None),
+        )
 
     @application.get("/api/position-events", response_model=EventsResponse)
     async def get_position_events(

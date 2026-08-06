@@ -551,8 +551,8 @@ function OverviewPage({
                   <dl className="pcStrategyMetrics"><div><dt>当前敞口</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日买入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div></dl>
                   <div className="pcStrategyActions">
                     <button className="pcButton ghost" type="button" onClick={() => onConfigure(wallet)}>{subscription ? "参数" : "配置"}</button>
-                    {strategy && <button className={`pcSwitch ${subscription?.enabled ? "on" : ""}`} type="button" role="switch" aria-checked={subscription?.enabled} aria-label={`${wallet.label}${subscription?.enabled ? "关闭跟单" : "开启跟单"}`} disabled={busyId === subscription?.id || subscription?.state === "closing"} onClick={() => onToggle(strategy)}><span /></button>}
-                    {strategy && <details className="pcActionMenu"><summary aria-label={`${wallet.label}更多操作`}>•••</summary><div><button type="button" onClick={() => onCloseStrategy(strategy)}>关闭并清仓</button></div></details>}
+                    {strategy && <button className={`pcSwitch ${subscription?.enabled ? "on" : ""}`} type="button" role="switch" aria-checked={subscription?.enabled} aria-label={`${wallet.label}${subscription?.enabled ? "暂停跟单" : "恢复跟单"}`} disabled={busyId === subscription?.id || subscription?.state === "closing"} onClick={() => onToggle(strategy)}><span /></button>}
+                    {strategy && <details className="pcActionMenu"><summary aria-label={`${wallet.label}更多操作`}>⋮</summary><div><button type="button" onClick={() => onCloseStrategy(strategy)}>停止策略并立即清仓</button></div></details>}
                   </div>
                 </article>
               );
@@ -721,23 +721,24 @@ function AdvancedStrategyForm({ strategy, onSaved }: { strategy: Strategy; onSav
 function RehearsalForm({ enabled }: { enabled: boolean }) {
   const [marketUrl, setMarketUrl] = useState("");
   const [outcome, setOutcome] = useState("");
+  const [maxTotalUsdc, setMaxTotalUsdc] = useState("1");
   const [preview, setPreview] = useState<{ confirmation_id: string; title: string; outcome: string; best_ask: Numeric; fee_rate_bps: number; max_total_usdc: Numeric } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   async function loadPreview(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage(null); setPreview(null);
-    try { setPreview(await api("/api/copy-trading/rehearsal/preview", { method: "POST", body: JSON.stringify({ market_url: marketUrl, outcome, max_total_usdc: 1 }) })); }
+    try { setPreview(await api("/api/copy-trading/rehearsal/preview", { method: "POST", body: JSON.stringify({ market_url: marketUrl, outcome, max_total_usdc: Number(maxTotalUsdc) }) })); }
     catch (loadError) { setMessage(loadError instanceof Error ? loadError.message : "演练预览失败"); }
     finally { setBusy(false); }
   }
   async function execute() {
-    if (!preview || !window.confirm("确认真实花费最多 1 USDC 执行单边买入演练？")) return;
+    if (!preview || !window.confirm(`确认真实花费最多 ${money(preview.max_total_usdc)} 执行单边买入演练？`)) return;
     setBusy(true); setMessage(null);
-    try { const result = await api<{ filled_usdc: Numeric }>("/api/copy-trading/rehearsal/execute", { method: "POST", body: JSON.stringify({ confirmation_id: preview.confirmation_id, confirmation_text: "确认执行1美元演练" }) }); setMessage(`演练已完成，实际成交 ${money(result.filled_usdc)}。`); setPreview(null); }
+    try { const result = await api<{ filled_usdc: Numeric }>("/api/copy-trading/rehearsal/execute", { method: "POST", body: JSON.stringify({ confirmation_id: preview.confirmation_id, confirmation_text: "确认执行真实买入" }) }); setMessage(`演练已完成，实际成交 ${money(result.filled_usdc)}。`); setPreview(null); }
     catch (executeError) { setMessage(executeError instanceof Error ? executeError.message : "演练执行失败"); }
     finally { setBusy(false); }
   }
-  return <form className="pcSettingsForm" onSubmit={loadPreview}><div className="pcFormGrid two"><label className="pcField"><span>市场链接</span><input type="url" value={marketUrl} onChange={(event) => setMarketUrl(event.target.value)} placeholder="https://polymarket.com/event/…" disabled={!enabled || busy} required /></label><label className="pcField"><span>Outcome</span><input value={outcome} onChange={(event) => setOutcome(event.target.value)} placeholder="例如 Yes 或球队名称" disabled={!enabled || busy} required /></label></div>{!enabled && <p className="pcFormHint">完成执行钱包验证后才能进行真实下单演练。</p>}{preview && <div className="pcRehearsalPreview"><span><strong>{preview.title} · {preview.outcome}</strong><small>卖一 {price(preview.best_ask)} · 动态费用 {preview.fee_rate_bps} bps · 硬上限 {money(preview.max_total_usdc)}</small></span><button className="pcButton danger" type="button" onClick={execute} disabled={busy}>确认执行 $1 买入</button></div>}{message && <p className={message.includes("已完成") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}<div className="pcSettingsActions"><button className="pcButton ghost" type="submit" disabled={!enabled || busy}>{busy ? "正在检查…" : "预览 $1 买入"}</button></div></form>;
+  return <form className="pcSettingsForm" onSubmit={loadPreview}><div className="pcFormGrid three"><label className="pcField"><span>市场链接</span><input type="url" value={marketUrl} onChange={(event) => setMarketUrl(event.target.value)} placeholder="https://polymarket.com/event/…" disabled={!enabled || busy} required /></label><label className="pcField"><span>Outcome</span><input value={outcome} onChange={(event) => setOutcome(event.target.value)} placeholder="例如 Yes 或球队名称" disabled={!enabled || busy} required /></label><label className="pcField"><span>最高花费</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={maxTotalUsdc} onChange={(event) => setMaxTotalUsdc(event.target.value)} disabled={!enabled || busy} required /><b>USDC</b></div><small>默认 1，含费用硬上限</small></label></div>{!enabled && <p className="pcFormHint">完成执行钱包验证后才能进行真实下单演练。</p>}{preview && <div className="pcRehearsalPreview"><span><strong>{preview.title} · {preview.outcome}</strong><small>卖一 {price(preview.best_ask)} · 动态费用 {preview.fee_rate_bps} bps · 硬上限 {money(preview.max_total_usdc)}</small></span><button className="pcButton danger" type="button" onClick={execute} disabled={busy}>确认执行 {money(preview.max_total_usdc)} 买入</button></div>}{message && <p className={message.includes("已完成") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}<div className="pcSettingsActions"><button className="pcButton ghost" type="submit" disabled={!enabled || busy}>{busy ? "正在检查…" : `预览 ${maxTotalUsdc || "0"} USDC 买入`}</button></div></form>;
 }
 
 function SettingsPage({
@@ -832,7 +833,7 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
   async function toggleStrategy(strategy: Strategy) {
     const subscription = strategy.subscription;
     const enabled = !subscription.enabled;
-    if (enabled && !window.confirm(`确认开启 ${strategy.wallet.label} 的真实资金自动跟单？`)) return;
+    if (enabled && !window.confirm(`确认恢复 ${strategy.wallet.label} 的真实资金自动跟单？`)) return;
     setBusyId(subscription.id); setError(null);
     try {
       await api(`/api/copy-trading/subscriptions/${subscription.id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled, confirm_live: enabled }) });

@@ -301,7 +301,12 @@ class CopyOverviewRead(APIModel):
 class RehearsalPreviewRequest(APIModel):
     market_url: str = Field(min_length=1, max_length=1000)
     outcome: str = Field(min_length=1, max_length=200)
-    max_total_usdc: Decimal = Field(default=Decimal("1"), gt=0, le=1)
+    max_total_usdc: Decimal = Field(
+        default=Decimal("1"),
+        gt=0,
+        le=Decimal("100"),
+        decimal_places=2,
+    )
 
 
 class RehearsalPreviewRead(APIModel):
@@ -319,7 +324,7 @@ class RehearsalPreviewRead(APIModel):
 
 class RehearsalExecuteRequest(APIModel):
     confirmation_id: str = Field(min_length=20, max_length=200)
-    confirmation_text: Literal["确认执行1美元演练"]
+    confirmation_text: Literal["确认执行真实买入"]
 
 
 class CopyRecommendation(APIModel):
@@ -540,6 +545,11 @@ class EventRead(APIModel):
     redemption_profit: DecimalNumber | None = None
     redemption_profit_percent: DecimalNumber | None = None
     redemption_cost_complete: bool | None = None
+    close_cost_basis: DecimalNumber | None = None
+    close_proceeds: DecimalNumber | None = None
+    close_profit: DecimalNumber | None = None
+    close_profit_percent: DecimalNumber | None = None
+    close_profit_complete: bool = False
     transaction_hash: str | None
     fills: list[FillRead]
     copy_recommendation: CopyRecommendation | None = None
@@ -553,6 +563,68 @@ class EventRead(APIModel):
 
 class EventsResponse(APIModel):
     items: list[EventRead]
+    next_cursor: str | None
+
+
+class PositionEventCycleRead(APIModel):
+    cycle_number: int
+    status: Literal["open", "closed", "redeemed", "history_gap"]
+    start_source: Literal["opened", "first_recorded"]
+    history_complete: bool
+    started_at: datetime
+    ended_at: datetime | None
+    confirmed_realized_pnl: DecimalNumber
+    incomplete_profit_events: int
+    events: list[EventRead]
+
+    @field_serializer("started_at", "ended_at", when_used="json")
+    def serialize_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class PositionEventGroupRead(APIModel):
+    wallet_id: int
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    event_slug: str | None
+    status: Literal["open", "closed", "redeemed", "history_gap"]
+    event_count: int
+    event_counts: dict[str, int]
+    cycle_count: int
+    first_recorded_at: datetime
+    latest_recorded_at: datetime
+    latest_event_id: int
+    confirmed_realized_pnl: DecimalNumber
+    incomplete_profit_events: int
+    cycles: list[PositionEventCycleRead]
+
+    @field_serializer("first_recorded_at", "latest_recorded_at", when_used="json")
+    def serialize_dates(self, value: datetime) -> str:
+        serialized = _as_utc_iso(value)
+        assert serialized is not None
+        return serialized
+
+
+class WalletRecordedPnlRead(APIModel):
+    recorded_since: datetime
+    confirmed_realized_pnl: DecimalNumber
+    current_unrealized_pnl: DecimalNumber
+    confirmed_total_pnl: DecimalNumber
+    incomplete_realized_events: int
+    complete: bool
+
+    @field_serializer("recorded_since", when_used="json")
+    def serialize_recorded_since(self, value: datetime) -> str:
+        serialized = _as_utc_iso(value)
+        assert serialized is not None
+        return serialized
+
+
+class PositionEventGroupsResponse(APIModel):
+    items: list[PositionEventGroupRead]
+    pnl: WalletRecordedPnlRead
     next_cursor: str | None
 
 

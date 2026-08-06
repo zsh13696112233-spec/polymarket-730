@@ -161,11 +161,25 @@ describe("PolyCopy workspace", () => {
     expect(screen.getAllByText("$7.50").length).toBeGreaterThan(0);
   });
 
-  it("按钱包独立关闭跟单", async () => {
+  it("按钱包独立暂停跟单", async () => {
     const user = userEvent.setup();
     render(<PolyCopyWorkspace view="overview" />);
-    await user.click(await screen.findByRole("switch", { name: "策略一关闭跟单" }));
+    await user.click(await screen.findByRole("switch", { name: "策略一暂停跟单" }));
     await waitFor(() => expect(requests.some((url) => url.includes("/subscriptions/10/enabled"))).toBe(true));
+  });
+
+  it("明确区分暂停跟单与停止清仓", async () => {
+    const user = userEvent.setup();
+    render(<PolyCopyWorkspace view="overview" />);
+    await user.click(await screen.findByLabelText("策略一更多操作"));
+    expect(screen.getByRole("button", { name: "停止策略并立即清仓" })).toBeInTheDocument();
+  });
+
+  it("可打开策略配置窗口", async () => {
+    const user = userEvent.setup();
+    render(<PolyCopyWorkspace view="overview" />);
+    await user.click(await screen.findByRole("button", { name: "参数" }));
+    expect(await screen.findByRole("dialog", { name: /快速设置/ })).toBeInTheDocument();
   });
 
   it("明确标记报价缺失的持仓", async () => {

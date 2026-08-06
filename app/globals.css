@@ -1056,6 +1056,18 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
+.activityReadActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.activityReadActions span {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .tableWrap {
   width: 100%;
   overflow-x: auto;
@@ -1502,6 +1514,232 @@ summary:focus-visible {
   display: none;
 }
 
+.walletRecordedPnl {
+  margin: 13px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--surface), var(--surface-muted));
+}
+
+.walletRecordedPnlHeader,
+.walletRecordedPnlHeader > div,
+.positionEventCycle header > div {
+  display: flex;
+  align-items: center;
+}
+
+.walletRecordedPnlHeader {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.walletRecordedPnlHeader > div {
+  gap: 9px;
+}
+
+.walletRecordedPnlHeader h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.walletRecordedPnlHeader small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.walletRecordedPnlGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 13px;
+}
+
+.walletRecordedPnlGrid article {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.walletRecordedPnlGrid article > span,
+.positionEventGroupPnl > span {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.walletRecordedPnlGrid strong,
+.positionEventGroupPnl strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.walletRecordedPnlGrid small,
+.positionEventGroupPnl small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.walletRecordedPnlNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 11px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 9px;
+}
+
+.walletRecordedPnlNotice p {
+  margin: 0;
+}
+
+.positionEventGroupList {
+  padding: 5px 13px 13px;
+}
+
+.positionEventGroup {
+  border-bottom: 1px solid var(--line);
+}
+
+.positionEventGroup:last-child {
+  border-bottom: 0;
+}
+
+.positionEventGroup > summary {
+  display: grid;
+  min-height: 94px;
+  align-items: center;
+  grid-template-columns: minmax(260px, 1.4fr) minmax(180px, 0.9fr) minmax(135px, 0.62fr) minmax(145px, 0.68fr);
+  gap: 18px;
+  padding: 14px 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.positionEventGroup > summary::-webkit-details-marker {
+  display: none;
+}
+
+.positionEventGroup > summary:hover {
+  background: var(--surface-muted);
+}
+
+.positionEventGroupIdentity,
+.positionEventGroupCounts {
+  min-width: 0;
+}
+
+.positionEventGroupCounts > span,
+.positionEventGroupCounts > small {
+  display: block;
+}
+
+.positionEventGroupCounts > span {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.positionEventGroupCounts > small {
+  overflow: hidden;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.positionEventGroup[open] > summary {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+
+.positionEventGroup[open] > summary .expandClosed {
+  display: none;
+}
+
+.positionEventGroup[open] > summary .expandOpen {
+  display: inline;
+}
+
+.positionEventGroup[open] > summary .expandHint b {
+  transform: rotate(180deg);
+}
+
+.positionEventGroupDetail {
+  padding: 13px;
+  background: #f6f8f7;
+}
+
+.positionEventCycle {
+  overflow: hidden;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.positionEventCycle:last-child {
+  margin-bottom: 0;
+}
+
+.positionEventCycle > header {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 14px;
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+  font-size: 9px;
+}
+
+.positionEventCycle header > div {
+  gap: 7px;
+}
+
+.cycleStatus,
+.cycleHistoryWarning {
+  padding: 3px 6px;
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.cycleStatus.open {
+  background: var(--profit-soft);
+  color: var(--profit);
+}
+
+.cycleStatus.closed,
+.cycleStatus.redeemed {
+  background: var(--surface);
+  color: var(--muted-strong);
+}
+
+.cycleStatus.history_gap,
+.cycleHistoryWarning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.positionEventCycle > header > span,
+.positionEventCycle > header > small {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.positionEventCycle .eventList {
+  padding: 0 12px;
+}
+
 .eventList {
   padding: 8px 13px 13px;
 }
@@ -1519,8 +1757,8 @@ summary:focus-visible {
   min-height: 88px;
   align-items: center;
   grid-template-columns:
-    minmax(245px, 1.45fr) minmax(92px, 0.45fr)
-    minmax(110px, 0.52fr) minmax(155px, 0.72fr) minmax(140px, 0.65fr);
+    minmax(220px, 1.25fr) minmax(82px, 0.4fr) minmax(105px, 0.5fr)
+    minmax(140px, 0.68fr) minmax(120px, 0.58fr) minmax(135px, 0.62fr);
   gap: 16px;
   padding: 12px 8px;
   cursor: pointer;
@@ -1531,6 +1769,10 @@ summary:focus-visible {
   grid-template-columns:
     minmax(250px, 1.45fr) minmax(95px, 0.45fr)
     minmax(180px, 0.85fr) minmax(125px, 0.6fr) minmax(155px, 0.7fr);
+}
+
+.eventCard:not(.redemptionEventCard):not(.closeEventCard) summary > .eventTime {
+  grid-column: 6;
 }
 
 .eventCard summary::-webkit-details-marker {
@@ -1712,6 +1954,22 @@ summary:focus-visible {
 }
 
 .redemptionFacts strong small {
+  display: block;
+}
+
+.closeFacts {
+  display: grid;
+  grid-template-columns:
+    repeat(5, minmax(82px, 1fr)) minmax(170px, 1.25fr) auto;
+  gap: 14px;
+}
+
+.closeFacts > .copyRecommendation {
+  min-width: 0;
+  margin-left: 0;
+}
+
+.closeFacts strong small {
   display: block;
 }
 
@@ -2733,6 +2991,59 @@ summary:focus-visible {
     text-decoration: none;
   }
 
+  .walletRecordedPnl {
+    margin: 10px;
+    padding: 13px;
+  }
+
+  .walletRecordedPnlHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .walletRecordedPnlGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .positionEventGroupList {
+    padding: 5px 10px 11px;
+  }
+
+  .positionEventGroup > summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 14px 5px;
+  }
+
+  .positionEventGroupIdentity,
+  .positionEventGroupCounts {
+    grid-column: 1 / -1;
+  }
+
+  .positionEventGroupTime {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .positionEventGroupDetail {
+    padding: 8px;
+  }
+
+  .positionEventCycle > header {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .positionEventCycle header > div {
+    flex-wrap: wrap;
+  }
+
+  .positionEventCycle .eventList {
+    padding: 0 8px;
+  }
+
   .eventList {
     padding: 5px 10px 11px;
   }
@@ -2776,8 +3087,21 @@ summary:focus-visible {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .closeEventCard summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .redemptionEventCard .eventPrice {
     grid-column: 1 / -1;
+  }
+
+  .closeEventCard .closeEventProfit {
+    display: flex;
+    grid-column: 1 / -1;
+    align-items: flex-end;
+    flex-direction: row;
+    justify-content: space-between;
+    text-align: left;
   }
 
   .eventTime {
@@ -2812,6 +3136,14 @@ summary:focus-visible {
   }
 
   .redemptionFacts > div:nth-of-type(3) {
+    grid-column: auto;
+  }
+
+  .closeFacts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .closeFacts > div:nth-of-type(3) {
     grid-column: auto;
   }
 
@@ -4140,6 +4472,40 @@ summary:focus-visible {
   gap: 8px;
 }
 
+.pcStrategyActions .pcButton,
+.pcStrategyActions .pcSwitch,
+.pcStrategyActions .pcActionMenu summary {
+  box-sizing: border-box;
+  width: 52px;
+  min-height: 40px;
+  height: 40px;
+}
+
+.pcStrategyActions .pcButton {
+  padding-inline: 0 !important;
+}
+
+.pcStrategyActions .pcSwitch {
+  border-radius: 2px;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.pcStrategyActions .pcSwitch span {
+  top: 10px;
+  left: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 1px;
+}
+
+.pcStrategyActions .pcSwitch.on span {
+  left: 28px;
+}
+
+.pcStrategyActions .pcActionMenu summary {
+  border-radius: 0;
+}
+
 .pcSwitch {
   position: relative;
   width: 36px;
@@ -4184,6 +4550,10 @@ summary:focus-visible {
   border-radius: 8px;
   background: var(--pc-surface-2);
   color: var(--pc-text-2);
+  font-family: Arial, sans-serif;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
   list-style: none;
 }
 
@@ -5167,3 +5537,1321 @@ a.pcMarketIdentity:hover strong {
     flex-direction: column;
   }
 }
+
+/* Command-deck skin: high-density, on-chain trading terminal. */
+.pcRoot {
+  --pc-bg: #050604;
+  --pc-sidebar: #080907;
+  --pc-surface: #0b0d09;
+  --pc-surface-2: #11140d;
+  --pc-surface-3: #171a10;
+  --pc-line: #5c511e;
+  --pc-line-soft: #36331c;
+  --pc-text: #f1f0d8;
+  --pc-text-2: #c9c6a5;
+  --pc-text-3: #8d8b70;
+  --pc-blue: #f2c319;
+  --pc-blue-strong: #ffe553;
+  --pc-blue-soft: rgba(242, 195, 25, 0.13);
+  --pc-green: #28e69e;
+  --pc-green-soft: rgba(40, 230, 158, 0.12);
+  --pc-red: #ff4c6c;
+  --pc-red-soft: rgba(255, 76, 108, 0.12);
+  --pc-amber: #f2c319;
+  --pc-amber-soft: rgba(242, 195, 25, 0.13);
+  background-color: var(--pc-bg);
+  background-image:
+    linear-gradient(rgba(242, 195, 25, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(242, 195, 25, 0.025) 1px, transparent 1px),
+    radial-gradient(rgba(255, 255, 220, 0.09) 0.5px, transparent 0.8px);
+  background-size: 24px 24px, 24px 24px, 5px 5px;
+  color: var(--pc-text);
+}
+
+.pcSidebar {
+  border-right-color: #625820;
+  background: linear-gradient(180deg, #0b0c09 0%, #050604 100%);
+}
+
+.pcBrand,
+.pcTopbar {
+  border-color: #625820;
+  background: #070806;
+}
+
+.pcBrandMark {
+  border: 1px solid #ffe55c;
+  background: #131407;
+  box-shadow: 0 0 13px rgba(242, 195, 25, 0.24);
+  color: #ffe55c;
+}
+
+.pcBrand strong,
+.pcTitleGroup h1 {
+  color: #fffde4;
+  text-shadow: 0 0 7px rgba(242, 195, 25, 0.24);
+}
+
+.pcBrand small,
+.pcTitleGroup p,
+.pcAsOf,
+.pcNavLabel,
+.pcSidebarStatus small { color: #908c68; }
+
+.pcNavigation a {
+  color: #c3c0a3;
+}
+
+.pcNavigation a:hover {
+  border-color: #807433;
+  background: #17170b;
+  color: #fff8c6;
+}
+
+.pcNavigation a.active {
+  border-color: #f2c319;
+  background: linear-gradient(90deg, rgba(242, 195, 25, 0.25), rgba(242, 195, 25, 0.04));
+  box-shadow: inset 3px 0 #ffe55c, 0 0 12px rgba(242, 195, 25, 0.12);
+  color: #fff8c6;
+}
+
+.pcSidebarStatus {
+  border-color: #625820;
+  background: #101108;
+}
+
+.pcSidebarStatus strong { color: #e9e5bd; }
+.pcLiveDot,
+.pcStatusDot { box-shadow: 0 0 8px currentColor; }
+
+.pcContent { gap: 12px; }
+
+.pcButton {
+  border-color: #75682a;
+  background: #111208;
+  box-shadow: inset 1px 1px 0 rgba(255, 248, 183, 0.16), inset -1px -1px 0 #050604;
+  color: #dedab3;
+}
+
+.pcButton.primary {
+  background: #f2c319;
+  color: #121204;
+  box-shadow: inset 1px 1px 0 #fff09a, inset -1px -1px 0 #a77b00, 0 0 13px rgba(242, 195, 25, 0.22);
+}
+
+.pcButton.primary:hover { background: #ffe04b; }
+.pcButton.ghost { border-color: #625820; background: #101108; color: #d7d3ad; }
+.pcButton.ghost:hover { border-color: #f2c319; background: #191808; color: #fff9c8; }
+
+.pcMetricCard {
+  position: relative;
+  overflow: hidden;
+  border-color: #7a6d29;
+  background: linear-gradient(145deg, #111208 0%, #080906 75%);
+  box-shadow: inset 0 0 0 1px rgba(255, 234, 105, 0.05), 0 0 18px rgba(242, 195, 25, 0.04);
+}
+
+.pcMetricCard::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  content: "";
+  background: linear-gradient(90deg, transparent, #f2c319 20%, #f2c319 80%, transparent);
+  opacity: 0.7;
+}
+
+.pcMetricCard > span { color: #aaa37b; }
+.pcMetricCard > small { color: #8c8869; }
+
+.pcMetricCard > strong {
+  border-color: #615721;
+  background-color: #030402;
+  color: #ffe448;
+  text-shadow: 1px 0 #bd9700, -1px 0 rgba(255, 249, 154, 0.42), 0 0 10px rgba(255, 223, 55, 0.36);
+}
+
+.pcMetricCard > strong.profit {
+  border-color: #176d50;
+  background-color: #030704;
+  color: #38eaa4;
+  text-shadow: 1px 0 #16845b, -1px 0 rgba(165, 255, 208, 0.34), 0 0 10px rgba(56, 234, 164, 0.3);
+}
+
+.pcMetricCard > strong.loss {
+  border-color: #7a2534;
+  background-color: #0c0305;
+  color: #ff657b;
+  text-shadow: 1px 0 #bb2b44, -1px 0 rgba(255, 190, 200, 0.3), 0 0 10px rgba(255, 101, 123, 0.25);
+}
+
+.pcPanel {
+  border-color: #625820;
+  background: #090a07;
+  box-shadow: inset 0 0 0 1px rgba(255, 235, 112, 0.025);
+}
+
+.pcPanelHeader {
+  border-bottom-color: #625820;
+  background: linear-gradient(90deg, #151609, #0a0b07);
+}
+
+.pcPanelHeader h2,
+.pcStrategyIdentity strong,
+.pcWalletCell strong,
+.pcMarketIdentity strong,
+.pcTable td > strong { color: #f2efd1; }
+.pcPanelHeader p,
+.pcStrategyIdentity small,
+.pcWalletCell small,
+.pcStrategyStatus small,
+.pcMarketIdentity span,
+.pcTable td > small { color: #8c8869; }
+.pcEyebrow,
+.pcTextLink { color: #f2c319; }
+.pcPanelCount,
+.pcRecordCount { border-color: #75682a; color: #c6be88; }
+
+.pcStrategyRow { border-bottom-color: #34321d; }
+.pcStrategyRow:hover { background: rgba(242, 195, 25, 0.055); }
+.pcWalletAvatar {
+  border-color: #75682a;
+  background: #1d1c0e;
+  color: #ffe55c;
+}
+.pcStrategyMetrics dt { color: #8c8869; }
+.pcStrategyMetrics dd,
+.pcTable .numeric,
+.pcInlineSummary strong,
+.pcInlineSummary .pcPnl,
+.pcAccountSummary strong,
+.pcPnl { color: #f0edcf; }
+.pcPnl.profit { color: #31e49d; text-shadow: 0 0 7px rgba(49, 228, 157, 0.22); }
+.pcPnl.loss { color: #ff5e75; text-shadow: 0 0 7px rgba(255, 94, 117, 0.22); }
+
+.pcBadge {
+  border-color: #645a27;
+  background: #17170b;
+  color: #d9d5b1;
+}
+.pcBadge.success { border-color: #16845f; background: rgba(40, 230, 158, 0.12); color: #3be6a1; }
+.pcBadge.warning { border-color: #a7830e; background: rgba(242, 195, 25, 0.12); color: #ffe052; }
+.pcBadge.danger { border-color: #a92e46; background: rgba(255, 76, 108, 0.12); color: #ff6880; }
+.pcBadge.processing,
+.pcBadge.buy { border-color: #197da9; background: rgba(38, 174, 235, 0.12); color: #53cfff; }
+.pcBadge.sell { border-color: #b93b4d; background: rgba(255, 76, 108, 0.12); color: #ff7186; }
+.pcBadge.neutral { border-color: #5e5b44; background: #14150e; color: #bbb797; }
+
+.pcSwitch { border-color: #75682a; background: #14150d; }
+.pcSwitch span { background: #7e784e; }
+.pcSwitch.on { border-color: #21976b; background: #0e261b; }
+.pcSwitch.on span { background: #31e49d; box-shadow: 0 0 7px rgba(49, 228, 157, 0.45); }
+.pcActionMenu summary { border-color: #75682a; background: #111208; color: #e5dfac; }
+.pcActionMenu > div { border-color: #75682a; background: #0e0f09; box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.6); }
+
+.pcTable th {
+  border-bottom-color: #75682a;
+  background: #151609;
+  color: #bdb689;
+}
+.pcTable td { border-bottom-color: #2d2b19; background: #090a07; color: #c6c1a2; }
+.pcTable tbody tr:hover td { background: rgba(242, 195, 25, 0.055); }
+a.pcMarketIdentity:hover strong { color: #ffe35d; }
+
+.pcSegmented { border-color: #75682a; background: #090a07; }
+.pcSegmented button { color: #a9a47f; }
+.pcSegmented button.active { background: #f2c319; color: #111204; }
+.pcSelect { color: #a9a47f; }
+.pcSelect select { border-color: #75682a; background: #0d0e09; color: #e7e2be; }
+
+.pcInlineSummary { border-bottom-color: #625820; background: #111208; }
+.pcInlineSummary > div { border-right-color: #3d391e; }
+.pcInlineSummary > div > span { color: #9e9873; }
+.pcInlineSummary > p { background: rgba(242, 195, 25, 0.12); color: #ffe052; }
+
+.pcAlert { border-color: #8b751b; background: rgba(242, 195, 25, 0.1); color: #e9e1b1; }
+.pcAlert.danger { border-color: #a92e46; background: rgba(255, 76, 108, 0.1); color: #ff8091; }
+.pcLoading,
+.pcEmptyState { color: #989371; }
+.pcEmptyIcon { border-color: #75682a; background: #121309; color: #ffe052; }
+.pcEmptyState h2 { color: #ede9ca; }
+
+.pcModalBackdrop { background: rgba(0, 0, 0, 0.78); }
+.pcModal { border-color: #75682a; background: #090a07; box-shadow: 4px 4px 0 #000, 0 0 22px rgba(242, 195, 25, 0.12); }
+.pcModal > header { border-bottom-color: #625820; background: #151609; }
+.pcModal h2 { color: #f2efd1; }
+.pcIconButton { border-color: #75682a; background: #111208; color: #e8e3b8; }
+.pcField { color: #c8c2a1; }
+.pcField > span small,
+.pcField > small { color: #918b69; }
+.pcField input { border-color: #75682a; background: #050604; color: #f0edcf; }
+.pcField input:focus { border-color: #f2c319; box-shadow: 0 0 0 2px rgba(242, 195, 25, 0.17); }
+.pcFormHint { background: #14150d; color: #bdb689; }
+.pcFormError { background: rgba(255, 76, 108, 0.12); color: #ff7186; }
+.pcFormSuccess { background: rgba(40, 230, 158, 0.12); color: #3be6a1; }
+.pcAccountSummary span,
+.pcCommandHint { color: #a09a75; }
+.pcAccountSummary strong { color: #fff0a3; }
+.pcCommandHint code { border-color: #75682a; background: #101108; color: #ffe052; }
+
+/* Large-screen trading desk: make live strategy data readable from a distance. */
+@media (min-width: 961px) {
+  .pcContent { gap: 16px; padding: 22px 28px 40px; }
+  .pcTopbar { min-height: 82px; padding: 16px 28px; }
+  .pcTitleGroup h1 { font-size: 25px; }
+  .pcTitleGroup p, .pcAsOf { font-size: 12px; }
+
+  .pcMetricCard { padding: 17px 18px 15px; }
+  .pcMetricCard > span { font-size: 12px; }
+  .pcMetricCard > strong { margin: 12px 0 10px; font-size: clamp(36px, 3.8vw, 54px); }
+  .pcMetricCard > small { font-size: 10px; }
+
+  .pcPanelHeader { min-height: 68px; padding: 13px 17px; }
+  .pcPanelHeader h2 { font-size: 18px; }
+  .pcPanelHeader p { font-size: 12px; }
+  .pcEyebrow { font-size: 10px; }
+  .pcPanelCount, .pcRecordCount { padding: 5px 7px; font-size: 10px; }
+  .pcTextLink { font-size: 11px; }
+
+  .pcStrategyRow { min-height: 104px; gap: 18px; padding: 16px 18px; }
+  .pcWalletAvatar { width: 40px; height: 40px; font-size: 12px; }
+  .pcStrategyIdentity strong, .pcWalletCell strong { font-size: 16px; }
+  .pcStrategyIdentity small, .pcWalletCell small, .pcStrategyStatus small { margin-top: 5px; font-size: 11px; }
+  .pcStrategyMetrics { gap: 14px; }
+  .pcStrategyMetrics dt { margin-bottom: 5px; font-size: 11px; }
+  .pcStrategyMetrics dd { font-size: 17px; }
+  .pcBadge { min-height: 25px; padding: 0 7px; font-size: 11px; }
+  .pcButton { min-height: 39px; padding: 0 14px; font-size: 12px; }
+  .pcPnl { font-size: 17px; }
+  .pcPnl small { font-size: 10px; }
+
+  .pcTable th { height: 42px; font-size: 11px; }
+  .pcTable td { height: 70px; font-size: 13px; }
+  .pcTable td > strong, .pcMarketIdentity strong { font-size: 13px; }
+  .pcTable td > small, .pcMarketIdentity span, .pcTimeCell small, .pcStatusCell small { font-size: 11px; }
+  .pcInlineSummary > div { padding: 14px 17px; }
+  .pcInlineSummary > div > span { font-size: 11px; }
+  .pcInlineSummary strong, .pcInlineSummary .pcPnl { font-size: 20px; }
+  .pcEmptyState h2 { font-size: 18px; }
+  .pcEmptyState p { font-size: 12px; }
+}
+
+/* Readability pass: preserve the dense terminal layout without tiny type. */
+.pcBrand strong { font-size: 16px; }
+.pcBrand small { font-size: 8px; }
+.pcNavLabel { font-size: 9px; }
+.pcNavigation a { min-height: 42px; font-size: 14px; }
+.pcNavIcon { width: 20px; height: 20px; font-size: 13px; }
+.pcSidebarStatus strong { font-size: 11px; }
+.pcSidebarStatus small { font-size: 8px; }
+
+.pcTopbar { min-height: 74px; }
+.pcTitleGroup h1 { font-size: 23px; }
+.pcTitleGroup p, .pcAsOf { font-size: 11px; }
+.pcButton { min-height: 35px; padding: 0 12px; font-size: 11px; }
+
+.pcMetricCard { padding: 14px 15px 12px; }
+.pcMetricCard > span { font-size: 11px; }
+.pcMetricCard > strong { margin: 10px 0 8px; padding: 6px 8px 5px; font-size: clamp(32px, 3.5vw, 48px); }
+.pcMetricCard > small { font-size: 9px; }
+
+.pcPanelHeader { min-height: 58px; padding: 11px 14px; }
+.pcPanelHeader h2 { font-size: 15px; }
+.pcPanelHeader p { font-size: 10px; }
+.pcEyebrow { font-size: 8px; }
+.pcPanelCount, .pcRecordCount { font-size: 8px; }
+.pcTextLink { font-size: 9px; }
+
+.pcStrategyRow { min-height: 86px; padding: 13px 14px; }
+.pcWalletAvatar { width: 33px; height: 33px; font-size: 10px; }
+.pcStrategyIdentity strong, .pcWalletCell strong { font-size: 13px; }
+.pcStrategyIdentity small, .pcWalletCell small, .pcStrategyStatus small { font-size: 9px; }
+.pcStrategyMetrics dt { font-size: 9px; }
+.pcStrategyMetrics dd { font-size: 14px; }
+.pcBadge { min-height: 22px; font-size: 9px; }
+.pcPnl { font-size: 14px; }
+.pcPnl small { font-size: 8px; }
+
+.pcTable th { height: 38px; font-size: 9px; }
+.pcTable td { height: 62px; font-size: 11px; }
+.pcTable td > strong, .pcMarketIdentity strong { font-size: 11px; }
+.pcTable td > small, .pcMarketIdentity span, .pcTimeCell small, .pcStatusCell small { font-size: 9px; }
+.pcSegmented button, .pcSelect { font-size: 10px; }
+.pcSelect select { height: 33px; font-size: 10px; }
+.pcInlineSummary > div > span { font-size: 8px; }
+.pcInlineSummary strong, .pcInlineSummary .pcPnl { font-size: 16px; }
+
+.pcLoading { font-size: 10px; }
+.pcEmptyState h2 { font-size: 14px; }
+.pcEmptyState p { font-size: 9px; }
+.pcField { font-size: 9px; }
+.pcField > span small, .pcField > small { font-size: 8px; }
+.pcField input { height: 35px; font-size: 10px; }
+
+/* PolyCopy terminal: retro quantitative desk with print-dot numerals. */
+.pcRoot {
+  --pc-bg: #ebeae1;
+  --pc-sidebar: #f7f6ef;
+  --pc-surface: #fcfbf5;
+  --pc-surface-2: #f1f0e7;
+  --pc-surface-3: #e3e2d7;
+  --pc-line: #807f75;
+  --pc-line-soft: #c7c6bb;
+  --pc-text: #292a24;
+  --pc-text-2: #515149;
+  --pc-text-3: #76766d;
+  --pc-blue: #2b2e27;
+  --pc-blue-strong: #0f100e;
+  --pc-blue-soft: #deddd1;
+  --pc-green: #4e8068;
+  --pc-green-soft: #e7efe9;
+  --pc-red: #b44748;
+  --pc-red-soft: #f5e5e2;
+  --pc-amber: #a28110;
+  --pc-amber-soft: #f7f0d9;
+  position: relative;
+  overflow: hidden;
+  background-color: var(--pc-bg);
+  background-image: radial-gradient(rgba(41, 42, 36, 0.07) 0.55px, transparent 0.7px);
+  background-size: 5px 5px;
+  color: var(--pc-text);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", "Microsoft YaHei", monospace;
+  letter-spacing: 0.015em;
+}
+
+.pcSidebar {
+  width: 212px;
+  border-right: 1px solid #272822;
+  background: var(--pc-sidebar);
+}
+
+.pcBrand {
+  height: 68px;
+  gap: 9px;
+  padding: 0 13px;
+  border-bottom: 1px solid #272822;
+}
+
+.pcBrandMark {
+  width: 29px;
+  height: 29px;
+  border-radius: 0;
+  background: #a28110;
+  box-shadow: none;
+  color: #fffdf3;
+  font-family: Georgia, serif;
+  font-size: 18px;
+}
+
+.pcBrand strong {
+  color: #272822;
+  font-size: 14px;
+  letter-spacing: 0.09em;
+}
+
+.pcBrand small {
+  margin-top: 2px;
+  color: #77766e;
+  font-size: 7px;
+  letter-spacing: 0.08em;
+}
+
+.pcNavigation {
+  gap: 0;
+  padding: 14px 8px;
+}
+
+.pcNavLabel {
+  padding: 0 7px 6px;
+  color: #77766e;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+}
+
+.pcNavLabelSecondary {
+  margin-top: 14px;
+  padding-top: 0;
+}
+
+.pcNavigation a {
+  min-height: 35px;
+  gap: 8px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  color: #52534c;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pcNavigation a:hover {
+  border-color: #d0cfc3;
+  background: #eeede4;
+  color: #252620;
+}
+
+.pcNavigation a.active {
+  border-color: #272822;
+  background: #272822;
+  box-shadow: none;
+  color: #fffdf3;
+}
+
+.pcNavIcon {
+  width: 18px;
+  height: 18px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+}
+
+.pcSidebarStatus {
+  gap: 8px;
+  margin: auto 8px 9px;
+  padding: 8px;
+  border: 1px solid #807f75;
+  border-radius: 0;
+  background: #fdfcf5;
+}
+
+.pcSidebarStatus strong {
+  color: #45463f;
+  font-size: 9px;
+}
+
+.pcSidebarStatus small {
+  margin-top: 2px;
+  color: #77766e;
+  font-size: 7px;
+}
+
+.pcLiveDot,
+.pcStatusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.pcMain {
+  margin-left: 212px;
+}
+
+.pcTopbar {
+  min-height: 68px;
+  padding: 12px 21px;
+  border-bottom: 1px solid #272822;
+  background: rgba(252, 251, 245, 0.96);
+}
+
+.pcTitleGroup h1 {
+  color: #24251f;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.pcTitleGroup p {
+  margin-top: 3px;
+  color: #76766d;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pcTopActions {
+  gap: 11px;
+}
+
+.pcAsOf {
+  gap: 7px;
+  color: #67675f;
+  font-size: 8px;
+}
+
+.pcMenuButton {
+  border: 1px solid #272822;
+  border-radius: 0;
+  background: #fcfbf5;
+  color: #272822;
+}
+
+.pcContent {
+  gap: 10px;
+  width: min(100%, 1540px);
+  padding: 15px 20px 32px;
+}
+
+.pcButton,
+.pcIconButton,
+.pcSegmented button,
+.pcSwitch,
+.pcActionMenu summary,
+.pcActionMenu button {
+  border-radius: 0;
+  font-family: inherit;
+}
+
+.pcButton {
+  min-height: 29px;
+  padding: 0 9px;
+  border: 1px solid #393a33;
+  box-shadow: inset 1px 1px 0 #fffef7, inset -1px -1px 0 #b8b7ad;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.045em;
+}
+
+.pcButton.primary {
+  background: #a28110;
+  color: #fffdf3;
+  box-shadow: inset 1px 1px 0 #d1b543, inset -1px -1px 0 #6d5707;
+}
+
+.pcButton.primary:hover { background: #b18d12; }
+
+.pcButton.ghost {
+  border-color: #5b5b53;
+  background: #f4f3eb;
+  color: #373831;
+}
+
+.pcButton.ghost:hover {
+  border-color: #292a24;
+  background: #deddd2;
+  color: #292a24;
+}
+
+.pcButton.danger {
+  border-color: #a74c4a;
+  background: #f6e2df;
+  color: #9d383d;
+}
+
+.pcMetricGrid { gap: 6px; }
+
+.pcMetricCard {
+  padding: 11px 12px 9px;
+  border: 1px solid #292a24;
+  border-radius: 0;
+  background: #fcfbf5;
+  box-shadow: none;
+}
+
+.pcMetricCard > span {
+  color: #62625b;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.pcMetricCard > strong {
+  margin: 8px 0 6px;
+  color: #3d433c;
+  font-family: "Courier New", Consolas, monospace;
+  font-size: clamp(26px, 3.1vw, 42px);
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  line-height: 0.95;
+}
+
+.pcMetricCard > small { color: #78776e; font-size: 7px; }
+
+.pcPanel {
+  border: 1px solid #292a24;
+  border-radius: 0;
+  background: #fcfbf5;
+  box-shadow: none;
+}
+
+.pcPanelHeader {
+  min-height: 50px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #292a24;
+  background: #f0efe7;
+}
+
+.pcPanelHeader.compact { min-height: 43px; }
+
+.pcPanelHeader h2 {
+  margin-top: 1px;
+  color: #2c2d27;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.075em;
+}
+
+.pcPanelHeader p { margin-top: 3px; color: #727168; font-size: 8px; }
+
+.pcEyebrow {
+  color: #a28110;
+  font-size: 7px;
+  letter-spacing: 0.15em;
+}
+
+.pcPanelCount,
+.pcRecordCount {
+  padding: 3px 5px;
+  border: 1px solid #807f75;
+  border-radius: 0;
+  color: #68675f;
+  font-size: 7px;
+}
+
+.pcTextLink { color: #7b6411; font-size: 8px; text-decoration: underline; text-underline-offset: 2px; }
+
+.pcStrategyRow {
+  min-height: 70px;
+  grid-template-columns: minmax(190px, 0.85fr) minmax(115px, 0.55fr) minmax(390px, 1.65fr) 172px;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom-color: #d0cfc5;
+}
+
+.pcStrategyRow:hover { background: #f4f3eb; }
+.pcStrategyIdentity { gap: 8px; }
+
+.pcWalletAvatar {
+  width: 29px;
+  height: 29px;
+  border: 1px solid #827f6e;
+  border-radius: 0;
+  background: #e1dfd1;
+  color: #514d2a;
+  font-size: 9px;
+}
+
+.pcStrategyIdentity strong,
+.pcWalletCell strong { color: #30312a; font-size: 10px; }
+.pcStrategyIdentity small,
+.pcWalletCell small { margin-top: 3px; color: #77766d; font-size: 7px; }
+.pcStrategyStatus { min-height: 33px; gap: 4px; }
+.pcStrategyStatus small { color: #77766d; font-size: 7px; }
+
+.pcBadge {
+  min-height: 18px;
+  padding: 0 5px;
+  border-radius: 0;
+  font-size: 7px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+}
+
+.pcBadge.success { border-color: #8eb69f; background: #e9f1e8; color: #397054; }
+.pcBadge.warning { border-color: #ccb670; background: #f8f0d9; color: #886a0b; }
+.pcBadge.danger { border-color: #d3a09a; background: #f8e9e6; color: #a24345; }
+.pcBadge.processing,
+.pcBadge.buy { border-color: #acaaa0; background: #e7e6dc; color: #4a4a43; }
+.pcBadge.sell { border-color: #ccb670; background: #f8f0d9; color: #886a0b; }
+.pcBadge.neutral { border-color: #b9b8ae; background: #f0efe8; color: #66655d; }
+
+.pcStrategyMetrics { gap: 8px; }
+.pcStrategyMetrics dt { margin-bottom: 3px; color: #77766d; font-size: 7px; }
+.pcStrategyMetrics dd { color: #36372f; font-size: 11px; }
+
+.pcPnl { gap: 2px; font-family: "Courier New", Consolas, monospace; font-size: 11px; font-weight: 800; }
+.pcPnl small { color: inherit; font-family: inherit; font-size: 7px; }
+.pcMetricCard > strong.profit,
+.pcPnl.profit { color: #4e8068; }
+.pcMetricCard > strong.loss,
+.pcPnl.loss { color: #b44748; }
+.pcMissing { color: #96760f; font-size: 8px; }
+.pcStrategyActions { gap: 8px; }
+
+/* Keep the three strategy controls at their intended size inside the action column. */
+.pcStrategyActions .pcButton,
+.pcStrategyActions .pcSwitch,
+.pcStrategyActions .pcActionMenu {
+  flex: 0 0 auto;
+}
+
+.pcStrategyActions .pcActionMenu button {
+  font-size: 10px;
+}
+
+.pcSwitch {
+  width: 31px;
+  height: 18px;
+  border: 1px solid #807f75;
+  border-radius: 0;
+  background: #dddcd2;
+}
+
+.pcSwitch span {
+  top: 3px;
+  left: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 0;
+  background: #817f75;
+}
+
+.pcSwitch.on { border-color: #6d957d; background: #dce9df; }
+.pcSwitch.on span { left: 16px; background: #4e8068; }
+
+.pcActionMenu summary {
+  width: 26px;
+  height: 26px;
+  border: 1px solid #807f75;
+  border-radius: 0;
+  background: #f3f2ea;
+  color: #56564e;
+}
+
+.pcActionMenu > div {
+  width: 128px;
+  padding: 3px;
+  border: 1px solid #292a24;
+  border-radius: 0;
+  background: #fcfbf5;
+  box-shadow: 2px 2px 0 rgba(41, 42, 36, 0.18);
+}
+
+.pcActionMenu button { min-height: 27px; border-radius: 0; color: #a24345; font-size: 8px; }
+.pcActionMenu button:hover { background: #f6e4e1; }
+
+.pcTable { min-width: 900px; }
+.pcTable th {
+  height: 31px;
+  padding: 0 10px;
+  border-bottom-color: #292a24;
+  background: #e6e5da;
+  color: #55554d;
+  font-size: 7px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+}
+
+.pcTable td {
+  height: 52px;
+  padding: 7px 10px;
+  border-bottom-color: #d3d2c8;
+  color: #57574f;
+  font-size: 9px;
+}
+
+.pcTable tbody tr:hover td { background: #f2f1e9; }
+.pcTable td > strong { color: #36372f; font-size: 8px; }
+.pcTable td > small { margin-top: 3px; color: #7a7970; font-size: 7px; }
+.pcMarketIdentity { gap: 3px; }
+.pcMarketIdentity strong { color: #36372f; font-size: 8px; }
+.pcMarketIdentity span { color: #7a7970; font-size: 7px; }
+a.pcMarketIdentity:hover strong { color: #8a6d0d; }
+.pcTimeCell small,
+.pcStatusCell small { margin-top: 3px; color: #7a7970; font-size: 7px; }
+
+.pcPagePanel { min-height: 510px; }
+.pcSegmented {
+  gap: 0;
+  padding: 0;
+  border: 1px solid #807f75;
+  border-radius: 0;
+  background: #f7f6ef;
+}
+
+.pcSegmented button {
+  min-height: 25px;
+  padding: 0 8px;
+  border-radius: 0;
+  color: #696860;
+  font-size: 8px;
+}
+
+.pcSegmented button.active { border-radius: 0; background: #292a24; color: #fffdf3; box-shadow: none; }
+.pcSelect { gap: 3px; color: #6e6d65; font-size: 7px; }
+.pcSelect select {
+  height: 27px;
+  min-width: 125px;
+  padding: 0 23px 0 7px;
+  border-color: #807f75;
+  border-radius: 0;
+  background: #fcfbf5;
+  color: #45463f;
+  font-size: 8px;
+}
+
+.pcInlineSummary { border-bottom-color: #292a24; background: #f4f3eb; }
+.pcInlineSummary > div { padding: 9px 12px; border-right-color: #c6c5bb; }
+.pcInlineSummary > div > span { margin-bottom: 4px; color: #737269; font-size: 7px; }
+.pcInlineSummary strong,
+.pcInlineSummary .pcPnl { color: #34352e; font-size: 14px; }
+.pcInlineSummary > p { padding: 7px 12px; background: #f7efd7; color: #8a6d0d; font-size: 7px; }
+
+.pcRecordsHeader { padding: 9px 12px; border-bottom-color: #292a24; }
+.pcFilters { gap: 7px; }
+.pcLoadMore { padding: 11px; border-top-color: #c8c7bc; }
+.pcInlineError { padding: 8px 12px; color: #a24345; font-size: 8px; }
+
+.pcAlert {
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #a59c7f;
+  border-radius: 0;
+  background: #fbf5de;
+}
+
+.pcAlert > span { width: 19px; height: 19px; border-radius: 0; font-size: 10px; }
+.pcAlert p { font-size: 8px; }
+.pcAlert strong { font-size: 9px; }
+.pcAlert.danger { border-color: #d2a29c; background: #f7e8e5; color: #9d4245; }
+.pcAlert.danger > span { border-radius: 0; background: #edceca; color: #9d4245; }
+
+.pcLoading,
+.pcEmptyState { color: #76766d; }
+.pcLoading { font-size: 8px; }
+.pcLoading > span { border-radius: 0; background: #a28110; box-shadow: 0 0 0 3px #eee4c1; }
+.pcEmptyIcon { width: 34px; height: 34px; border-color: #807f75; border-radius: 0; background: #f3f2e9; color: #8a6d0d; font-size: 16px; }
+.pcEmptyState h2 { margin: 10px 0 5px; color: #36372f; font-size: 12px; }
+.pcEmptyState p { color: #77766d; font-size: 8px; }
+
+.pcModalBackdrop { background: rgba(44, 44, 38, 0.38); backdrop-filter: none; }
+.pcModal { border: 1px solid #292a24; border-radius: 0; background: #fcfbf5; box-shadow: 4px 4px 0 rgba(41, 42, 36, 0.28); }
+.pcModal > header { min-height: 51px; padding: 10px 12px; border-bottom-color: #292a24; background: #eeede4; }
+.pcModal h2 { margin-top: 2px; color: #2d2e28; font-size: 13px; }
+.pcIconButton { width: 26px; height: 26px; border-color: #807f75; border-radius: 0; background: #f9f8f1; color: #4e4e46; font-size: 15px; }
+.pcForm,
+.pcSettingsForm { padding: 14px; }
+.pcFormGrid { gap: 10px; }
+.pcField { gap: 5px; color: #56564f; font-size: 8px; }
+.pcField > span small,
+.pcField > small { color: #7b7a71; font-size: 7px; }
+.pcField input { height: 31px; padding: 0 8px; border-color: #807f75; border-radius: 0; background: #fffffa; color: #34352e; font-size: 9px; }
+.pcField input::placeholder { color: #98978d; }
+.pcField input:focus { border-color: #a28110; box-shadow: 0 0 0 2px rgba(162, 129, 16, 0.14); }
+.pcUnitInput { gap: 5px; }
+.pcUnitInput b { color: #74736a; font-size: 7px; }
+.pcFormHint,
+.pcFormError,
+.pcFormSuccess { margin-top: 10px; padding: 7px 9px; border-radius: 0; font-size: 7px; }
+.pcFormHint { background: #f0efe7; color: #737269; }
+.pcFormError { background: #f7e7e4; color: #a24345; }
+.pcFormSuccess { background: #e7efe9; color: #43775d; }
+.pcModalActions,
+.pcSettingsActions { gap: 6px; margin-top: 13px; }
+.pcSettingsStack { gap: 12px; }
+.pcAccountSummary { gap: 12px; padding: 13px; }
+.pcAccountSummary span { margin-bottom: 4px; color: #77766d; font-size: 7px; }
+.pcAccountSummary strong { color: #3c3d36; font-size: 12px; }
+.pcCommandHint { gap: 5px; padding: 13px 14px 0; color: #66665f; font-size: 8px; }
+.pcCommandHint code { padding: 8px 9px; border-color: #807f75; border-radius: 0; background: #efeee5; color: #665211; font-size: 8px; }
+.pcRehearsalPreview { gap: 10px; margin-top: 10px; padding: 9px; border-color: #c4ae65; border-radius: 0; background: #f8f0d9; }
+.pcRehearsalPreview > span { color: #3d3e37; font-size: 8px; }
+.pcRehearsalPreview small { color: #8a6d0d; font-size: 7px; }
+
+.pcAnalysisLegacy {
+  --background: #ebeae1;
+  --surface: #fcfbf5;
+  --surface-muted: #f1f0e7;
+  --foreground: #292a24;
+  --muted: #76766d;
+  --muted-strong: #515149;
+  --line: #c7c6bb;
+  --line-strong: #807f75;
+  --brand: #a28110;
+  --brand-dark: #79600a;
+  --brand-soft: #f7f0d9;
+  --profit: #4e8068;
+  --profit-soft: #e7efe9;
+  --loss: #b44748;
+  --loss-soft: #f5e5e2;
+  --warning: #a28110;
+  --warning-soft: #f7f0d9;
+}
+
+.pcAnalysisLegacy .walletSection,
+.pcAnalysisLegacy .contentPanel { border-color: #292a24; background: #fcfbf5; }
+.pcAnalysisLegacy .walletTab,
+.pcAnalysisLegacy .refreshButton,
+.pcAnalysisLegacy .marketButton,
+.pcAnalysisLegacy .secondaryButton { border-radius: 0; border-color: #807f75; background: #f1f0e7; color: #4f5048; }
+.pcAnalysisLegacy .walletTab.active { border-color: #292a24; background: #292a24; color: #fffdf3; }
+.pcAnalysisLegacy .positionsTable th,
+.pcAnalysisLegacy .viewHeader,
+.pcAnalysisLegacy .eventDetail { background: #e6e5da; }
+.pcAnalysisLegacy .positionsTable tbody tr:hover,
+.pcAnalysisLegacy .eventCard summary:hover { background: #f2f1e9; }
+.pcAnalysisLegacy .overlapActivity,
+.pcAnalysisLegacy .overlapActivityHeader,
+.pcAnalysisLegacy .overlapActivityCollapsed,
+.pcAnalysisLegacy .overlapActivityItem.read { border-color: #c7c6bb; background: #f1f0e7; }
+.pcAnalysisLegacy .overlapActivityItem,
+.pcAnalysisLegacy .eventCard,
+.pcAnalysisLegacy .positionsTable td { border-color: #c7c6bb; }
+.pcAnalysisLegacy .overlapActivityItem.unread { background: #f5e5e2; }
+
+/*
+ * Values need the presence of a terminal display, but they must remain readable
+ * at a glance.  The old treatment clipped a sparse dot pattern into transparent
+ * text, which made amounts disappear against the paper-coloured interface.
+ */
+.pcMetricCard > strong,
+.pcStrategyMetrics dd,
+.pcTable .numeric,
+.pcInlineSummary strong,
+.pcInlineSummary .pcPnl,
+.pcAccountSummary strong,
+.pcPnl {
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  background-image: none;
+  color: #30312a;
+  font-family: "Courier New", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  text-shadow: none;
+}
+
+.pcMetricCard > strong {
+  padding: 5px 7px 4px;
+  border: 1px solid #36382c;
+  background-color: #11130f;
+  color: #f3e64d;
+  font-weight: 900;
+  letter-spacing: -0.065em;
+  text-shadow: 1px 0 #d5be26, -1px 0 rgba(255, 251, 145, 0.38), 0 0 7px rgba(243, 230, 77, 0.2);
+}
+
+.pcMetricCard > strong.profit,
+.pcPnl.profit { background-image: none; color: #25835f; }
+.pcMetricCard > strong.loss,
+.pcPnl.loss { background-image: none; color: #ad3e42; }
+
+.pcMetricCard > strong.profit {
+  border-color: #315e49;
+  background-color: #101711;
+  color: #5ae09f;
+  text-shadow: 1px 0 #2b9b69, -1px 0 rgba(161, 255, 202, 0.32), 0 0 7px rgba(90, 224, 159, 0.2);
+}
+
+.pcMetricCard > strong.loss {
+  border-color: #713e3d;
+  background-color: #1c1110;
+  color: #f07170;
+  text-shadow: 1px 0 #bd4847, -1px 0 rgba(255, 182, 177, 0.28), 0 0 7px rgba(240, 113, 112, 0.16);
+}
+
+.pcStrategyMetrics dd,
+.pcTable .numeric,
+.pcInlineSummary strong,
+.pcInlineSummary .pcPnl,
+.pcAccountSummary strong,
+.pcPnl {
+  color: #30312a;
+  font-weight: 800;
+}
+
+.pcPnl.profit { color: #25835f; }
+.pcPnl.loss { color: #ad3e42; }
+.pcPnl small { -webkit-text-fill-color: currentColor; background: none; color: inherit; text-shadow: none; }
+
+@media (max-width: 960px) {
+  .pcSidebar { width: 212px; }
+  .pcMain { margin-left: 0; }
+}
+
+@media (max-width: 640px) {
+  .pcTopbar { min-height: 59px; padding: 10px 11px; }
+  .pcContent { gap: 8px; padding: 10px 9px 24px; }
+  .pcMetricGrid { gap: 5px; }
+  .pcMetricCard { padding: 9px; }
+  .pcPanelHeader,
+  .pcRecordsHeader { padding: 8px 9px; }
+  .pcStrategyRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 9px;
+    padding: 9px;
+  }
+  .pcStrategyMetrics { gap: 6px; }
+
+  /* Keep each strategy's controls together instead of splitting them across rows. */
+  .pcStrategyActions {
+    display: flex;
+    grid-row: 3;
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: none;
+    min-height: 32px;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--pc-line-soft);
+  }
+
+  .pcStrategyActions .pcButton {
+    display: inline-flex;
+    min-height: 40px;
+    padding: 0;
+  }
+
+  .pcStrategyActions .pcActionMenu summary {
+    width: 52px;
+    height: 40px;
+  }
+
+  .pcStrategyMetrics {
+    grid-row: 4;
+    padding-top: 0;
+    border-top: 0;
+  }
+}
+
+/* Final command-deck layer: kept last so it deliberately replaces the paper UI. */
+/* This uses important deliberately: the source contains older terminal overrides below it. */
+/* The legacy analysis surface shares the same terminal palette. */
+.pcSidebar .pcBrand strong { font-size: 18px !important; }
+.pcSidebar .pcBrand small { font-size: 10px !important; }
+.pcSidebar .pcNavLabel { font-size: 11px !important; }
+.pcSidebar .pcNavigation a { min-height: 46px !important; font-size: 16px !important; }
+.pcSidebar .pcNavIcon { width: 22px !important; height: 22px !important; font-size: 14px !important; }
+.pcSidebar .pcSidebarStatus strong { font-size: 13px !important; }
+.pcSidebar .pcSidebarStatus small { font-size: 10px !important; }
+
+.pcAnalysisLegacy {
+  --background: #050604 !important;
+  --surface: #0a0b07 !important;
+  --surface-muted: #12140d !important;
+  --foreground: #efedcf !important;
+  --muted: #948f6d !important;
+  --muted-strong: #c6c09a !important;
+  --line: #39351d !important;
+  --line-strong: #75682a !important;
+  --brand: #f2c319 !important;
+  --brand-dark: #ffe553 !important;
+  --brand-soft: rgba(242, 195, 25, 0.12) !important;
+  --profit: #31e49d !important;
+  --profit-soft: rgba(49, 228, 157, 0.12) !important;
+  --loss: #ff5e75 !important;
+  --loss-soft: rgba(255, 94, 117, 0.12) !important;
+  --warning: #f2c319 !important;
+  --warning-soft: rgba(242, 195, 25, 0.12) !important;
+  color: #efedcf !important;
+}
+
+.pcAnalysisLegacy .appShell,
+.pcAnalysisLegacy .walletSection,
+.pcAnalysisLegacy .contentPanel,
+.pcAnalysisLegacy .eventCard,
+.pcAnalysisLegacy .overlapActivity,
+.pcAnalysisLegacy .overlapActivityHeader,
+.pcAnalysisLegacy .overlapActivityCollapsed,
+.pcAnalysisLegacy .overlapActivityItem.read,
+.pcAnalysisLegacy .positionCard,
+.pcAnalysisLegacy .copyPositionSection {
+  border-color: #625820 !important;
+  background: #0a0b07 !important;
+  color: #efedcf !important;
+  box-shadow: none !important;
+}
+
+.pcAnalysisLegacy .walletTab,
+.pcAnalysisLegacy .refreshButton,
+.pcAnalysisLegacy .marketButton,
+.pcAnalysisLegacy .mobileMarketButton,
+.pcAnalysisLegacy .secondaryButton,
+.pcAnalysisLegacy .positionDetailToggle,
+.pcAnalysisLegacy .closeButton {
+  border-color: #75682a !important;
+  background: #12140d !important;
+  color: #ded8af !important;
+}
+
+.pcAnalysisLegacy .walletTab.active,
+.pcAnalysisLegacy .viewTabs button.active,
+.pcAnalysisLegacy .primaryButton {
+  border-color: #f2c319 !important;
+  background: #f2c319 !important;
+  color: #111204 !important;
+}
+
+.pcAnalysisLegacy .viewHeader,
+.pcAnalysisLegacy .eventDetail,
+.pcAnalysisLegacy .positionsTable th,
+.pcAnalysisLegacy .copyPositionTable th,
+.pcAnalysisLegacy .positionDetailRow > td,
+.pcAnalysisLegacy .overlapActivityItem.unread {
+  border-color: #625820 !important;
+  background: #15170e !important;
+  color: #e9e4bd !important;
+}
+
+.pcAnalysisLegacy .positionsTable td,
+.pcAnalysisLegacy .copyPositionTable td,
+.pcAnalysisLegacy .eventCard,
+.pcAnalysisLegacy .fillRow,
+.pcAnalysisLegacy .cycleTradeRow {
+  border-color: #39351d !important;
+  background: #0a0b07 !important;
+  color: #d8d3b1 !important;
+}
+
+.pcAnalysisLegacy .positionsTable tbody tr:hover,
+.pcAnalysisLegacy .positionsTable tbody tr:hover td,
+.pcAnalysisLegacy .eventCard summary:hover {
+  background: rgba(242, 195, 25, 0.08) !important;
+}
+
+.pcAnalysisLegacy .emptyState,
+.pcAnalysisLegacy .loadingState,
+.pcAnalysisLegacy .emptyState h2,
+.pcAnalysisLegacy .emptyState p,
+.pcAnalysisLegacy .marketTitle,
+.pcAnalysisLegacy .eventMarketTitle,
+.pcAnalysisLegacy .marketPositionIdentity strong {
+  color: #e9e4bd !important;
+}
+
+.pcAnalysisLegacy .emptyMark,
+.pcAnalysisLegacy .emptyIcon {
+  border-color: #75682a !important;
+  background: #12140d !important;
+  color: #f2c319 !important;
+}
+
+@media (min-width: 961px) {
+  .pcContent { gap: 16px !important; padding: 22px 28px 40px !important; }
+  .pcTopbar { min-height: 82px !important; padding: 16px 28px !important; }
+  .pcTitleGroup h1 { font-size: 25px !important; }
+  .pcTitleGroup p, .pcAsOf { font-size: 12px !important; }
+  .pcMetricCard { padding: 17px 18px 15px !important; }
+  .pcMetricCard > span { font-size: 12px !important; }
+  .pcMetricCard > strong { margin: 12px 0 10px !important; font-size: clamp(36px, 3.8vw, 54px) !important; }
+  .pcMetricCard > small { font-size: 10px !important; }
+  .pcPanelHeader { min-height: 68px !important; padding: 13px 17px !important; }
+  .pcPanelHeader h2 { font-size: 18px !important; }
+  .pcPanelHeader p { font-size: 12px !important; }
+  .pcEyebrow { font-size: 10px !important; }
+  .pcPanelCount, .pcRecordCount { padding: 5px 7px !important; font-size: 10px !important; }
+  .pcTextLink { font-size: 11px !important; }
+  .pcStrategyRow { min-height: 104px !important; gap: 18px !important; padding: 16px 18px !important; }
+  .pcWalletAvatar { width: 40px !important; height: 40px !important; font-size: 12px !important; }
+  .pcStrategyIdentity strong, .pcWalletCell strong { font-size: 16px !important; }
+  .pcStrategyIdentity small, .pcWalletCell small, .pcStrategyStatus small { margin-top: 5px !important; font-size: 11px !important; }
+  .pcStrategyMetrics { gap: 14px !important; }
+  .pcStrategyMetrics dt { margin-bottom: 5px !important; font-size: 11px !important; }
+  .pcStrategyMetrics dd { font-size: 17px !important; }
+  .pcBadge { min-height: 25px !important; padding: 0 7px !important; font-size: 11px !important; }
+  .pcButton { min-height: 39px !important; padding: 0 14px !important; font-size: 12px !important; }
+  .pcPnl { font-size: 17px !important; }
+  .pcPnl small { font-size: 10px !important; }
+  .pcTable th { height: 42px !important; font-size: 11px !important; }
+  .pcTable td { height: 70px !important; font-size: 13px !important; }
+  .pcTable td > strong, .pcMarketIdentity strong { font-size: 13px !important; }
+  .pcTable td > small, .pcMarketIdentity span, .pcTimeCell small, .pcStatusCell small { font-size: 11px !important; }
+  .pcInlineSummary > div { padding: 14px 17px !important; }
+  .pcInlineSummary > div > span { font-size: 11px !important; }
+  .pcInlineSummary strong, .pcInlineSummary .pcPnl { font-size: 20px !important; }
+  .pcEmptyState h2 { font-size: 18px !important; }
+  .pcEmptyState p { font-size: 12px !important; }
+}
+.pcRoot {
+  --pc-bg: #050604;
+  --pc-sidebar: #080907;
+  --pc-surface: #0b0d09;
+  --pc-surface-2: #11140d;
+  --pc-surface-3: #171a10;
+  --pc-line: #5c511e;
+  --pc-line-soft: #36331c;
+  --pc-text: #f1f0d8;
+  --pc-text-2: #c9c6a5;
+  --pc-text-3: #8d8b70;
+  --pc-blue: #f2c319;
+  --pc-blue-strong: #ffe553;
+  --pc-blue-soft: rgba(242, 195, 25, 0.13);
+  --pc-green: #28e69e;
+  --pc-green-soft: rgba(40, 230, 158, 0.12);
+  --pc-red: #ff4c6c;
+  --pc-red-soft: rgba(255, 76, 108, 0.12);
+  --pc-amber: #f2c319;
+  --pc-amber-soft: rgba(242, 195, 25, 0.13);
+  background-color: var(--pc-bg);
+  background-image: linear-gradient(rgba(242, 195, 25, 0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(242, 195, 25, 0.025) 1px, transparent 1px), radial-gradient(rgba(255, 255, 220, 0.09) 0.5px, transparent 0.8px);
+  background-size: 24px 24px, 24px 24px, 5px 5px;
+  color: var(--pc-text);
+}
+
+.pcSidebar { border-right-color: #625820; background: linear-gradient(180deg, #0b0c09, #050604); }
+.pcBrand, .pcTopbar { border-color: #625820; background: #070806; }
+.pcBrandMark { border: 1px solid #ffe55c; background: #131407; box-shadow: 0 0 13px rgba(242,195,25,.24); color: #ffe55c; }
+.pcBrand strong, .pcTitleGroup h1 { color: #fffde4; text-shadow: 0 0 7px rgba(242,195,25,.24); }
+.pcBrand small, .pcTitleGroup p, .pcAsOf, .pcNavLabel, .pcSidebarStatus small { color: #908c68; }
+.pcNavigation a { color: #c3c0a3; }
+.pcNavigation a:hover { border-color: #807433; background: #17170b; color: #fff8c6; }
+.pcNavigation a.active { border-color: #f2c319; background: linear-gradient(90deg, rgba(242,195,25,.25), rgba(242,195,25,.04)); box-shadow: inset 3px 0 #ffe55c, 0 0 12px rgba(242,195,25,.12); color: #fff8c6; }
+.pcSidebarStatus { border-color: #625820; background: #101108; }
+.pcSidebarStatus strong { color: #e9e5bd; }
+
+.pcButton { border-color: #75682a; background: #111208; box-shadow: inset 1px 1px 0 rgba(255,248,183,.16), inset -1px -1px 0 #050604; color: #dedab3; }
+.pcButton.primary { background: #f2c319; color: #121204; box-shadow: inset 1px 1px 0 #fff09a, inset -1px -1px 0 #a77b00, 0 0 13px rgba(242,195,25,.22); }
+.pcButton.primary:hover { background: #ffe04b; }
+.pcButton.ghost { border-color: #625820; background: #101108; color: #d7d3ad; }
+.pcButton.ghost:hover { border-color: #f2c319; background: #191808; color: #fff9c8; }
+
+.pcMetricCard { position: relative; overflow: hidden; border-color: #7a6d29; background: linear-gradient(145deg, #111208, #080906 75%); box-shadow: inset 0 0 0 1px rgba(255,234,105,.05), 0 0 18px rgba(242,195,25,.04); }
+.pcMetricCard::before { position: absolute; top: 0; left: 0; width: 100%; height: 2px; content: ""; background: linear-gradient(90deg, transparent, #f2c319 20%, #f2c319 80%, transparent); opacity: .7; }
+.pcMetricCard > span { color: #aaa37b; }
+.pcMetricCard > small { color: #8c8869; }
+.pcMetricCard > strong { border-color: #615721; background-color: #030402; color: #ffe448; text-shadow: 1px 0 #bd9700, -1px 0 rgba(255,249,154,.42), 0 0 10px rgba(255,223,55,.36); }
+.pcMetricCard > strong.profit { border-color: #176d50; background-color: #030704; color: #38eaa4; text-shadow: 1px 0 #16845b, -1px 0 rgba(165,255,208,.34), 0 0 10px rgba(56,234,164,.3); }
+.pcMetricCard > strong.loss { border-color: #7a2534; background-color: #0c0305; color: #ff657b; text-shadow: 1px 0 #bb2b44, -1px 0 rgba(255,190,200,.3), 0 0 10px rgba(255,101,123,.25); }
+
+.pcPanel { border-color: #625820; background: #090a07; box-shadow: inset 0 0 0 1px rgba(255,235,112,.025); }
+.pcPanelHeader { border-bottom-color: #625820; background: linear-gradient(90deg, #151609, #0a0b07); }
+.pcPanelHeader h2, .pcStrategyIdentity strong, .pcWalletCell strong, .pcMarketIdentity strong, .pcTable td > strong { color: #f2efd1; }
+.pcPanelHeader p, .pcStrategyIdentity small, .pcWalletCell small, .pcStrategyStatus small, .pcMarketIdentity span, .pcTable td > small { color: #8c8869; }
+.pcEyebrow, .pcTextLink { color: #f2c319; }
+.pcPanelCount, .pcRecordCount { border-color: #75682a; color: #c6be88; }
+.pcStrategyRow { border-bottom-color: #34321d; }
+.pcStrategyRow:hover { background: rgba(242,195,25,.055); }
+.pcWalletAvatar { border-color: #75682a; background: #1d1c0e; color: #ffe55c; }
+.pcStrategyMetrics dt { color: #8c8869; }
+.pcStrategyMetrics dd, .pcTable .numeric, .pcInlineSummary strong, .pcInlineSummary .pcPnl, .pcAccountSummary strong, .pcPnl { color: #f0edcf; }
+.pcPnl.profit { color: #31e49d; text-shadow: 0 0 7px rgba(49,228,157,.22); }
+.pcPnl.loss { color: #ff5e75; text-shadow: 0 0 7px rgba(255,94,117,.22); }
+
+.pcBadge { border-color: #645a27; background: #17170b; color: #d9d5b1; }
+.pcBadge.success { border-color: #16845f; background: rgba(40,230,158,.12); color: #3be6a1; }
+.pcBadge.warning { border-color: #a7830e; background: rgba(242,195,25,.12); color: #ffe052; }
+.pcBadge.danger { border-color: #a92e46; background: rgba(255,76,108,.12); color: #ff6880; }
+.pcBadge.processing, .pcBadge.buy { border-color: #197da9; background: rgba(38,174,235,.12); color: #53cfff; }
+.pcBadge.sell { border-color: #b93b4d; background: rgba(255,76,108,.12); color: #ff7186; }
+.pcBadge.neutral { border-color: #5e5b44; background: #14150e; color: #bbb797; }
+.pcSwitch { border-color: #75682a; background: #14150d; }
+.pcSwitch span { background: #7e784e; }
+.pcSwitch.on { border-color: #21976b; background: #0e261b; }
+.pcSwitch.on span { background: #31e49d; box-shadow: 0 0 7px rgba(49,228,157,.45); }
+.pcActionMenu summary { border-color: #75682a; background: #111208; color: #e5dfac; }
+.pcActionMenu > div { border-color: #75682a; background: #0e0f09; box-shadow: 3px 3px 0 rgba(0,0,0,.6); }
+
+.pcTable th { border-bottom-color: #75682a; background: #151609; color: #bdb689; }
+.pcTable td { border-bottom-color: #2d2b19; background: #090a07; color: #c6c1a2; }
+.pcTable tbody tr:hover td { background: rgba(242,195,25,.055); }
+a.pcMarketIdentity:hover strong { color: #ffe35d; }
+.pcSegmented { border-color: #75682a; background: #090a07; }
+.pcSegmented button { color: #a9a47f; }
+.pcSegmented button.active { background: #f2c319; color: #111204; }
+.pcSelect { color: #a9a47f; }
+.pcSelect select { border-color: #75682a; background: #0d0e09; color: #e7e2be; }
+.pcInlineSummary { border-bottom-color: #625820; background: #111208; }
+.pcInlineSummary > div { border-right-color: #3d391e; }
+.pcInlineSummary > div > span { color: #9e9873; }
+.pcInlineSummary > p { background: rgba(242,195,25,.12); color: #ffe052; }
+
+.pcAlert { border-color: #8b751b; background: rgba(242,195,25,.1); color: #e9e1b1; }
+.pcAlert.danger { border-color: #a92e46; background: rgba(255,76,108,.1); color: #ff8091; }
+.pcLoading, .pcEmptyState { color: #989371; }
+.pcEmptyIcon { border-color: #75682a; background: #121309; color: #ffe052; }
+.pcEmptyState h2 { color: #ede9ca; }
+.pcModalBackdrop { background: rgba(0,0,0,.78); }
+.pcModal { border-color: #75682a; background: #090a07; box-shadow: 4px 4px 0 #000, 0 0 22px rgba(242,195,25,.12); }
+.pcModal > header { border-bottom-color: #625820; background: #151609; }
+.pcModal h2 { color: #f2efd1; }
+.pcIconButton { border-color: #75682a; background: #111208; color: #e8e3b8; }
+.pcField { color: #c8c2a1; }
+.pcField > span small, .pcField > small { color: #918b69; }
+.pcField input { border-color: #75682a; background: #050604; color: #f0edcf; }
+.pcField input:focus { border-color: #f2c319; box-shadow: 0 0 0 2px rgba(242,195,25,.17); }
+.pcFormHint { background: #14150d; color: #bdb689; }
+.pcFormError { background: rgba(255,76,108,.12); color: #ff7186; }
+.pcFormSuccess { background: rgba(40,230,158,.12); color: #3be6a1; }
+.pcAccountSummary span, .pcCommandHint { color: #a09a75; }
+.pcAccountSummary strong { color: #fff0a3; }
+.pcCommandHint code { border-color: #75682a; background: #101108; color: #ffe052; }

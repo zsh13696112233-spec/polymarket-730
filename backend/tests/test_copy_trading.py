@@ -641,19 +641,19 @@ def test_market_slippage_is_one_cents_setting_for_both_sides():
     ) == Decimal("0.45")
 
 
-def test_rehearsal_requires_one_dollar_cap_and_exact_second_confirmation():
+def test_rehearsal_requires_valid_cap_and_exact_second_confirmation():
     with pytest.raises(ValidationError):
         RehearsalPreviewRequest(
             market_url="https://polymarket.com/event/x",
             outcome="Yes",
-            max_total_usdc=Decimal("1.01"),
+            max_total_usdc=Decimal("100.01"),
         )
     with pytest.raises(ValidationError):
         RehearsalExecuteRequest(confirmation_id="x" * 30, confirmation_text="确认")
     accepted = RehearsalExecuteRequest(
-        confirmation_id="x" * 30, confirmation_text="确认执行1美元演练"
+        confirmation_id="x" * 30, confirmation_text="确认执行真实买入"
     )
-    assert accepted.confirmation_text == "确认执行1美元演练"
+    assert accepted.confirmation_text == "确认执行真实买入"
 
 
 @dataclass

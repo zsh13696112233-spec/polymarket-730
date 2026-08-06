@@ -40,6 +40,15 @@ LOGGER = logging.getLogger(__name__)
 ZERO = Decimal("0")
 SIZE_TOLERANCE = Decimal("0.000000001")
 RECONCILIATION_TOLERANCE = Decimal("0.000001")
+RECONCILIATION_RELATIVE_TOLERANCE = Decimal("0.000001")
+
+
+def fills_reconcile(net_fill_size: Decimal, delta: Decimal) -> bool:
+    tolerance = max(
+        RECONCILIATION_TOLERANCE,
+        abs(delta) * RECONCILIATION_RELATIVE_TOLERANCE,
+    )
+    return abs(net_fill_size - delta) <= tolerance
 
 
 def utcnow() -> datetime:
@@ -1137,7 +1146,7 @@ class WalletMonitor:
         if not trades:
             reconciliation_status = "unavailable"
             average_fill_price = None
-        elif abs(net_fill_size - delta) <= RECONCILIATION_TOLERANCE:
+        elif fills_reconcile(net_fill_size, delta):
             reconciliation_status = "matched"
             average_fill_price = WalletMonitor._weighted_average_price(trades)
         else:

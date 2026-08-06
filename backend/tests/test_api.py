@@ -9,7 +9,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend.main import create_app
-from backend.models import PositionChangeCandidate, PositionOverlapPeriod
+from backend.models import (
+    PositionChangeCandidate,
+    PositionEvent,
+    PositionEventFill,
+    PositionOverlapPeriod,
+)
 from backend.monitor import utcnow
 from backend.polymarket import (
     PolymarketAPIError,
@@ -113,6 +118,160 @@ async def candidate_count(database, wallet_id: int) -> int:
                 )
             ).all()
         )
+
+
+async def set_event_reconciliation_status(database, event_id: int, status: str) -> None:
+    async with database.sessions() as session:
+        event = await session.get(PositionEvent, event_id)
+        assert event is not None
+        event.reconciliation_status = status
+        await session.commit()
+
+
+async def insert_grouped_event_fixture(database, wallet_id: int, asset_id: str) -> None:
+    started_at = datetime(2026, 8, 1, 0, 0)
+    async with database.sessions() as session:
+
+        async def add_event(
+            *,
+            event_type: str,
+            asset: str,
+            offset: int,
+            before_size: str,
+            after_size: str,
+            before_price: str,
+            after_price: str,
+            status: str = "matched",
+            fill: tuple[str, str, str] | None = None,
+            payout: str | None = None,
+            redemption_cost: str | None = None,
+        ) -> None:
+            before = Decimal(before_size)
+            after = Decimal(after_size)
+            event = PositionEvent(
+                wallet_id=wallet_id,
+                asset_id=asset,
+                condition_id=f"condition-{asset}",
+                type=event_type,
+                title=f"分组市场 {asset}",
+                outcome="Yes",
+                event_slug=f"event-{asset}",
+                delta_size=after - before,
+                before_size=before,
+                after_size=after,
+                before_avg_price=Decimal(before_price),
+                after_avg_price=Decimal(after_price),
+                average_fill_price=Decimal(fill[2]) if fill else None,
+                current_value=after * Decimal(after_price),
+                reconciliation_status=status,
+                first_detected_at=started_at + timedelta(minutes=offset),
+                settled_at=started_at + timedelta(minutes=offset),
+                payout_amount=Decimal(payout) if payout is not None else None,
+                redemption_cost_basis=(
+                    Decimal(redemption_cost) if redemption_cost is not None else None
+                ),
+                transaction_hash=f"0x{asset}{offset}" if event_type == "redeemed" else None,
+            )
+            session.add(event)
+            await session.flush()
+            if fill is not None:
+                side, size, price = fill
+                session.add(
+                    PositionEventFill(
+                        event_id=event.id,
+                        fingerprint=f"fixture-{asset}-{offset}",
+                        side=side,
+                        size=Decimal(size),
+                        price=Decimal(price),
+                        amount=Decimal(size) * Decimal(price),
+                        timestamp=started_at + timedelta(minutes=offset),
+                        transaction_hash=f"0xfill{asset}{offset}",
+                    )
+                )
+
+        await add_event(
+            event_type="opened",
+            asset=asset_id,
+            offset=1,
+            before_size="0",
+            after_size="10",
+            before_price="0",
+            after_price="0.4",
+            fill=("BUY", "10", "0.4"),
+        )
+        await add_event(
+            event_type="decreased",
+            asset=asset_id,
+            offset=2,
+            before_size="10",
+            after_size="5",
+            before_price="0.4",
+            after_price="0.4",
+            fill=("SELL", "5", "0.6"),
+        )
+        await add_event(
+            event_type="closed",
+            asset=asset_id,
+            offset=3,
+            before_size="5",
+            after_size="0",
+            before_price="0.4",
+            after_price="0",
+            fill=("SELL", "5", "0.3"),
+        )
+        await add_event(
+            event_type="opened",
+            asset=asset_id,
+            offset=4,
+            before_size="0",
+            after_size="2",
+            before_price="0",
+            after_price="0.2",
+            fill=("BUY", "2", "0.2"),
+        )
+        await add_event(
+            event_type="redeemed",
+            asset="redeemed-asset",
+            offset=5,
+            before_size="6",
+            after_size="0",
+            before_price="0",
+            after_price="0",
+            status="onchain",
+            payout="10",
+            redemption_cost="6",
+        )
+        await add_event(
+            event_type="closed",
+            asset="incomplete-asset",
+            offset=6,
+            before_size="1",
+            after_size="0",
+            before_price="1",
+            after_price="0",
+            status="unavailable",
+        )
+        await add_event(
+            event_type="opened",
+            asset="gap-asset",
+            offset=7,
+            before_size="0",
+            after_size="3",
+            before_price="0",
+            after_price="0.2",
+            fill=("BUY", "3", "0.2"),
+        )
+        await add_event(
+            event_type="opened",
+            asset="gap-asset",
+            offset=8,
+            before_size="0",
+            after_size="4",
+            before_price="0",
+            after_price="0.25",
+            fill=("BUY", "4", "0.25"),
+        )
+        await session.commit()
 
 
 async def overlap_period_windows(
@@ -383,12 +542,38 @@ def test_common_position_reduction_creates_readable_alert(
     assert refreshed["unread_count"] == 0
     assert refreshed["items"][0]["read_at"] is not None
 
+    deleted = client.delete(f"/api/overlap-alerts/{alert['id']}")
+    assert deleted.status_code == 204
+    assert client.get(
+        "/api/overlap-alerts",
+        params={"tracked_wallet_id": tracked_wallet["id"]},
+    ).json() == {"items": [], "unread_count": 0}
+
     assert client.put("/api/my-wallet", json={"address": OTHER_ADDRESS}).status_code == 200
     replacement_view = client.get(
         "/api/overlap-alerts",
         params={"tracked_wallet_id": tracked_wallet["id"]},
     ).json()
     assert replacement_view == {"items": [], "unread_count": 0}
+
+
+def test_unread_common_position_alert_cannot_be_deleted(app_client_factory):
+    initial = position(size="100")
+    reduced = position(size="60")
+    mine = position(size="10")
+    client, _ = app_client_factory([[initial], [mine], [reduced]])
+    tracked_wallet = add_wallet(client)
+    assert client.put("/api/my-wallet", json={"address": MY_ADDRESS}).status_code == 200
+
+    assert client.post(f"/api/wallets/{tracked_wallet['id']}/sync").status_code == 200
+    alert = client.get(
+        "/api/overlap-alerts",
+        params={"tracked_wallet_id": tracked_wallet["id"]},
+    ).json()["items"][0]
+
+    response = client.delete(f"/api/overlap-alerts/{alert['id']}")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "请先将提醒标为已读"
 
 
 def test_common_position_increase_creates_alert(
@@ -933,6 +1118,94 @@ def test_redemption_failure_does_not_interrupt_wallet_sync(app_client_factory):
     assert events["items"] == []
 
 
+def test_position_event_groups_preserve_cycles_and_summarize_wallet_pnl(
+    app_client_factory,
+):
+    active = position(
+        asset_id="grouped-asset",
+        size="2",
+        avg_price="0.2",
+        current_price="0.7",
+    )
+    client, _ = app_client_factory([[active]])
+    wallet = add_wallet(client)
+    portal = client.portal
+    assert portal is not None
+    portal.call(
+        insert_grouped_event_fixture,
+        client.app.state.database,
+        wallet["id"],
+        active.asset_id,
+    )
+
+    response = client.get(
+        "/api/position-event-groups",
+        params={"wallet_id": wallet["id"], "limit": 10},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 4
+    grouped = next(item for item in body["items"] if item["asset_id"] == active.asset_id)
+    assert grouped["event_count"] == 4
+    assert grouped["event_counts"] == {
+        "opened": 2,
+        "increased": 0,
+        "decreased": 1,
+        "closed": 1,
+        "redeemed": 0,
+    }
+    assert grouped["cycle_count"] == 2
+    assert [cycle["status"] for cycle in grouped["cycles"]] == ["closed", "open"]
+    assert [cycle["start_source"] for cycle in grouped["cycles"]] == [
+        "opened",
+        "opened",
+    ]
+    assert all(cycle["history_complete"] for cycle in grouped["cycles"])
+    assert [event["type"] for event in grouped["cycles"][0]["events"]] == [
+        "opened",
+        "decreased",
+        "closed",
+    ]
+    assert grouped["confirmed_realized_pnl"] == pytest.approx(0.5)
+    assert grouped["incomplete_profit_events"] == 0
+
+    gap_group = next(item for item in body["items"] if item["asset_id"] == "gap-asset")
+    assert gap_group["cycle_count"] == 2
+    assert [cycle["status"] for cycle in gap_group["cycles"]] == [
+        "history_gap",
+        "history_gap",
+    ]
+    assert not any(cycle["history_complete"] for cycle in gap_group["cycles"])
+
+    redeemed = next(item for item in body["items"] if item["asset_id"] == "redeemed-asset")
+    assert redeemed["cycles"][0]["start_source"] == "first_recorded"
+    assert redeemed["cycles"][0]["history_complete"] is False
+
+    assert body["pnl"]["confirmed_realized_pnl"] == pytest.approx(4.5)
+    assert body["pnl"]["current_unrealized_pnl"] == pytest.approx(1)
+    assert body["pnl"]["confirmed_total_pnl"] == pytest.approx(5.5)
+    assert body["pnl"]["incomplete_realized_events"] == 1
+    assert body["pnl"]["complete"] is False
+
+    first_page = client.get(
+        "/api/position-event-groups",
+        params={"wallet_id": wallet["id"], "limit": 1},
+    ).json()
+    assert len(first_page["items"]) == 1
+    assert first_page["next_cursor"] is not None
+    second_page = client.get(
+        "/api/position-event-groups",
+        params={
+            "wallet_id": wallet["id"],
+            "limit": 1,
+            "cursor": first_page["next_cursor"],
+        },
+    ).json()
+    assert len(second_page["items"]) == 1
+    assert second_page["items"][0]["asset_id"] != first_page["items"][0]["asset_id"]
+    assert second_page["pnl"] == first_page["pnl"]
+
+
 def test_new_position_after_baseline_creates_opened_event(app_client_factory):
     opened = position(asset_id="new", size="4", avg_price="0.25", current_price="0.30")
     client, fake = app_client_factory([[], [opened]])
@@ -1315,6 +1588,127 @@ def test_position_must_be_missing_twice_before_close(app_client_factory):
     ]
     assert event["type"] == "closed"
     assert event["reconciliation_status"] == "matched"
+    assert event["close_profit_complete"] is True
+    assert event["close_cost_basis"] == 4
+    assert event["close_proceeds"] == 5
+    assert event["close_profit"] == pytest.approx(1)
+    assert event["close_profit_percent"] == pytest.approx(25)
+
+
+def test_close_profit_includes_buys_during_the_close_window(app_client_factory):
+    initial = position(size="10", avg_price="0.40")
+    client, fake = app_client_factory([[initial], [], []])
+    wallet = add_wallet(client)
+    traded_at = utcnow()
+    fake.trades = [
+        TradeSnapshot(
+            asset_id=initial.asset_id,
+            condition_id=initial.condition_id,
+            side="BUY",
+            size=Decimal("2"),
+            price=Decimal("0.30"),
+            timestamp=traded_at,
+            transaction_hash="0xbuy-during-close",
+        ),
+        TradeSnapshot(
+            asset_id=initial.asset_id,
+            condition_id=initial.condition_id,
+            side="SELL",
+            size=Decimal("12"),
+            price=Decimal("0.60"),
+            timestamp=traded_at + timedelta(milliseconds=1),
+            transaction_hash="0xclose-after-buy",
+        ),
+    ]
+
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    event = client.get("/api/position-events", params={"wallet_id": wallet["id"]}).json()["items"][
+        0
+    ]
+
+    assert event["reconciliation_status"] == "matched"
+    assert event["close_profit_complete"] is True
+    assert event["close_cost_basis"] == pytest.approx(4.6)
+    assert event["close_proceeds"] == pytest.approx(7.2)
+    assert event["close_profit"] == pytest.approx(2.6)
+    assert event["close_profit_percent"] == pytest.approx(2.6 / 4.6 * 100)
+
+
+def test_close_profit_is_unavailable_when_fills_are_partial(app_client_factory):
+    initial = position(size="10", avg_price="0.40")
+    client, fake = app_client_factory([[initial], [], []])
+    wallet = add_wallet(client)
+    fake.trades = [
+        TradeSnapshot(
+            asset_id=initial.asset_id,
+            condition_id=initial.condition_id,
+            side="SELL",
+            size=Decimal("9"),
+            price=Decimal("0.50"),
+            timestamp=utcnow(),
+            transaction_hash="0xpartial-close",
+        )
+    ]
+
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    event = client.get("/api/position-events", params={"wallet_id": wallet["id"]}).json()["items"][
+        0
+    ]
+
+    assert event["reconciliation_status"] == "partial"
+    assert event["close_profit_complete"] is False
+    assert event["close_cost_basis"] is None
+    assert event["close_proceeds"] is None
+    assert event["close_profit"] is None
+    assert event["close_profit_percent"] is None
+
+
+def test_close_profit_accepts_rounding_equivalent_fill_sizes(app_client_factory):
+    initial = position(size="21595.6727", avg_price="0.5499")
+    client, fake = app_client_factory([[initial], [], []])
+    wallet = add_wallet(client)
+    fake.trades = [
+        TradeSnapshot(
+            asset_id=initial.asset_id,
+            condition_id=initial.condition_id,
+            side="SELL",
+            size=Decimal("21595.67"),
+            price=Decimal("0.999"),
+            timestamp=utcnow(),
+            transaction_hash="0xrounded-close",
+        )
+    ]
+
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    response = client.get("/api/position-events", params={"wallet_id": wallet["id"]}).json()[
+        "items"
+    ][0]
+
+    assert response["reconciliation_status"] == "matched"
+    assert response["close_profit_complete"] is True
+    assert response["close_proceeds"] == pytest.approx(
+        float(Decimal("21595.67") * Decimal("0.999"))
+    )
+    assert response["close_profit"] == pytest.approx(
+        float(Decimal("21595.67") * Decimal("0.999") - Decimal("21595.6727") * Decimal("0.5499"))
+    )
+
+    portal = client.portal
+    assert portal is not None
+    portal.call(
+        set_event_reconciliation_status,
+        client.app.state.database,
+        response["id"],
+        "partial",
+    )
+    recovered = client.get("/api/position-events", params={"wallet_id": wallet["id"]}).json()[
+        "items"
+    ][0]
+    assert recovered["reconciliation_status"] == "matched"
+    assert recovered["close_profit_complete"] is True
 
 
 def test_resolved_market_disappearance_does_not_create_close_event(

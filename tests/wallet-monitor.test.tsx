@@ -189,6 +189,11 @@ function makeEvent(id: number, title: string) {
     redemption_profit: null,
     redemption_profit_percent: null,
     redemption_cost_complete: null,
+    close_cost_basis: null,
+    close_proceeds: null,
+    close_profit: null,
+    close_profit_percent: null,
+    close_profit_complete: false,
     transaction_hash: null,
     fills: [],
     copy_recommendation: {
@@ -213,10 +218,98 @@ function inputUrl(input: FetchInput) {
   return new URL(input.url);
 }
 
+function groupEventPayload(payload: {
+  items: ReturnType<typeof makeEvent>[];
+  next_cursor: string | number | null;
+}) {
+  const byAsset = new Map<string, ReturnType<typeof makeEvent>[]>();
+  for (const event of payload.items) {
+    byAsset.set(event.asset_id, [...(byAsset.get(event.asset_id) ?? []), event]);
+  }
+  const items = [...byAsset.values()].map((events) => {
+    const ordered = [...events].sort((left, right) =>
+      left.settled_at.localeCompare(right.settled_at),
+    );
+    const latest = ordered.at(-1)!;
+    const counts = {
+      opened: 0,
+      increased: 0,
+      decreased: 0,
+      closed: 0,
+      redeemed: 0,
+    };
+    for (const event of ordered) {
+      counts[event.type as keyof typeof counts] += 1;
+    }
+    const status =
+      latest.type === "closed"
+        ? "closed"
+        : latest.type === "redeemed"
+          ? "redeemed"
+          : "open";
+    return {
+      wallet_id: latest.wallet_id,
+      asset_id: latest.asset_id,
+      condition_id: `condition-${latest.asset_id}`,
+      title: latest.title,
+      outcome: latest.outcome,
+      event_slug: latest.event_slug,
+      status,
+      event_count: ordered.length,
+      event_counts: counts,
+      cycle_count: 1,
+      first_recorded_at: ordered[0].settled_at,
+      latest_recorded_at: latest.settled_at,
+      latest_event_id: latest.id,
+      confirmed_realized_pnl: latest.close_profit ?? latest.redemption_profit ?? 0,
+      incomplete_profit_events: 0,
+      cycles: [
+        {
+          cycle_number: 1,
+          status,
+          start_source: ordered[0].type === "opened" ? "opened" : "first_recorded",
+          history_complete: ordered[0].type === "opened",
+          started_at: ordered[0].settled_at,
+          ended_at: status === "open" ? null : latest.settled_at,
+          confirmed_realized_pnl: latest.close_profit ?? latest.redemption_profit ?? 0,
+          incomplete_profit_events: 0,
+          events: ordered,
+        },
+      ],
+    };
+  });
+  return {
+    items,
+    pnl: {
+      recorded_since: "2026-07-30T08:00:00Z",
+      confirmed_realized_pnl: 0,
+      current_unrealized_pnl: 0,
+      confirmed_total_pnl: 0,
+      incomplete_realized_events: 0,
+      complete: true,
+    },
+    next_cursor:
+      payload.next_cursor === null ? null : String(payload.next_cursor),
+  };
+}
+
 function mockFetch(handler: FetchHandler) {
   const fetchMock = vi.fn(
-    async (input: FetchInput, init?: FetchInit): Promise<Response> =>
-      handler(inputUrl(input), init),
+    async (input: FetchInput, init?: FetchInit): Promise<Response> => {
+      const url = inputUrl(input);
+      if (url.pathname !== "/api/position-event-groups") {
+        return handler(url, init);
+      }
+      const legacyUrl = new URL(url);
+      legacyUrl.pathname = "/api/position-events";
+      const response = await handler(legacyUrl, init);
+      if (!response.ok) return response;
+      const payload = await response.json();
+      if (payload && typeof payload === "object" && "pnl" in payload) {
+        return jsonResponse(payload, response.status);
+      }
+      return jsonResponse(groupEventPayload(payload), response.status);
+    },
   );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -803,6 +896,7 @@ describe("Polymarket 钱包监控页", () => {
       cash_pnl: 1,
     };
     let alertRead = false;
+    let alertDeleted = false;
     const reductionAlert = {
       id: 77,
       my_wallet_id: myWallet.id,
@@ -875,14 +969,20 @@ describe("Polymarket 钱包监控页", () => {
           read_at: "2026-07-30T10:05:00Z",
         });
       }
+      if (url.pathname === "/api/overlap-alerts/77" && method === "DELETE") {
+        alertDeleted = true;
+        return new Response(null, { status: 204 });
+      }
       if (url.pathname === "/api/overlap-alerts" && method === "GET") {
         return jsonResponse({
-          items: [
-            {
-              ...reductionAlert,
-              read_at: alertRead ? "2026-07-30T10:05:00Z" : null,
-            },
-          ],
+          items: alertDeleted
+            ? []
+            : [
+                {
+                  ...reductionAlert,
+                  read_at: alertRead ? "2026-07-30T10:05:00Z" : null,
+                },
+              ],
           unread_count: alertRead ? 0 : 1,
         });
       }
@@ -923,6 +1023,11 @@ describe("Polymarket 钱包监控页", () => {
     expect(
       screen.getByRole("button", { name: "收起已读" }),
     ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "删除已读提醒：共同市场" }),
+    );
+    await waitFor(() => expect(alertDeleted).toBe(true));
+    expect(screen.queryByText("共同持仓动态")).not.toBeInTheDocument();
 
     await user.click(badge);
     const dialog = await screen.findByRole("dialog", {
@@ -1568,7 +1673,239 @@ describe("Polymarket 钱包监控页", () => {
     );
   });
 
-  it("点击加载更早记录后按游标合并事件", async () => {
+  it("清仓事件展示盈利、亏损、持平和成交数据不完整", async () => {
+    function makeClosedEvent(
+      id: number,
+      title: string,
+      proceeds: number | null,
+    ) {
+      const complete = proceeds !== null;
+      const profit = complete ? proceeds - 4 : null;
+      return {
+        ...makeEvent(id, title),
+        type: "closed",
+        delta_size: -10,
+        before_size: 10,
+        after_size: 0,
+        before_avg_price: 0.4,
+        after_avg_price: 0,
+        average_fill_price: complete ? proceeds / 10 : 0.5,
+        current_value: 0,
+        reconciliation_status: complete ? "matched" : "partial",
+        close_cost_basis: complete ? 4 : null,
+        close_proceeds: proceeds,
+        close_profit: profit,
+        close_profit_percent: profit === null ? null : (profit / 4) * 100,
+        close_profit_complete: complete,
+        fills: complete
+          ? [
+              {
+                id: id * 10,
+                side: "SELL",
+                size: 10,
+                price: proceeds / 10,
+                amount: proceeds,
+                timestamp: "2026-07-31T06:30:53Z",
+                transaction_hash: null,
+              },
+            ]
+          : [],
+        copy_recommendation: {
+          action: "sell",
+          ratio_percent: 10,
+          shares: 1,
+          estimated_usdc: proceeds === null ? null : proceeds / 10,
+        },
+      };
+    }
+
+    const events = [
+      makeClosedEvent(61, "清仓盈利市场", 5),
+      makeClosedEvent(62, "清仓亏损市场", 3),
+      makeClosedEvent(63, "清仓持平市场", 4),
+      makeClosedEvent(64, "清仓数据不完整市场", null),
+    ];
+    mockFetch((url) => {
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse({ items: events, next_cursor: null });
+      }
+      throw new Error(`未处理的请求：${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+    await user.click(
+      await screen.findByRole("tab", { name: /仓位变动明细/ }),
+    );
+
+    const profitCard = (
+      await screen.findByRole("link", { name: /清仓盈利市场/ })
+    ).closest("details");
+    const lossCard = screen
+      .getByRole("link", { name: /清仓亏损市场/ })
+      .closest("details");
+    const flatCard = screen
+      .getByRole("link", { name: /清仓持平市场/ })
+      .closest("details");
+    const incompleteCard = screen
+      .getByRole("link", { name: /清仓数据不完整市场/ })
+      .closest("details");
+
+    expect(within(profitCard!).getByText("本次清仓盈利")).toBeInTheDocument();
+    expect(within(profitCard!).getAllByText("$1.00").length).toBeGreaterThan(0);
+    expect(within(profitCard!).getAllByText("+25.00%").length).toBeGreaterThan(0);
+    expect(within(lossCard!).getByText("本次清仓亏损")).toBeInTheDocument();
+    expect(within(flatCard!).getByText("本次清仓持平")).toBeInTheDocument();
+    expect(
+      within(incompleteCard!).getAllByText("成交数据不完整").length,
+    ).toBeGreaterThan(0);
+
+    await user.click(profitCard!.querySelector("summary")!);
+    expect(within(profitCard!).getByText("清仓成本")).toBeInTheDocument();
+    expect(within(profitCard!).getByText("卖出金额")).toBeInTheDocument();
+    expect(within(profitCard!).getByText("$4.00")).toBeInTheDocument();
+    expect(within(profitCard!).getAllByText("$5.00").length).toBeGreaterThan(0);
+    expect(within(profitCard!).getByText("盈利 · $1.00")).toBeInTheDocument();
+  });
+
+  it("将同一仓位的多轮事件归组并展示钱包记录以来盈亏", async () => {
+    const firstOpen = {
+      ...makeEvent(71, "多轮仓位市场"),
+      asset_id: "asset-multi-cycle",
+      type: "opened" as const,
+      before_size: 0,
+      after_size: 10,
+      delta_size: 10,
+      settled_at: "2026-07-30T08:00:00Z",
+    };
+    const firstClose = {
+      ...makeEvent(72, "多轮仓位市场"),
+      asset_id: "asset-multi-cycle",
+      type: "closed" as const,
+      before_size: 10,
+      after_size: 0,
+      delta_size: -10,
+      close_profit: 2.5,
+      close_profit_complete: true,
+      settled_at: "2026-07-30T09:00:00Z",
+    };
+    const secondOpen = {
+      ...makeEvent(73, "多轮仓位市场"),
+      asset_id: "asset-multi-cycle",
+      type: "opened" as const,
+      before_size: 0,
+      after_size: 8,
+      delta_size: 8,
+      settled_at: "2026-07-31T08:00:00Z",
+    };
+    const groupedPayload = {
+      items: [
+        {
+          wallet_id: walletOne.id,
+          asset_id: "asset-multi-cycle",
+          condition_id: "condition-multi-cycle",
+          title: "多轮仓位市场",
+          outcome: "Yes",
+          event_slug: "multi-cycle-market",
+          status: "open",
+          event_count: 3,
+          event_counts: {
+            opened: 2,
+            increased: 0,
+            decreased: 0,
+            closed: 1,
+            redeemed: 0,
+          },
+          cycle_count: 2,
+          first_recorded_at: firstOpen.settled_at,
+          latest_recorded_at: secondOpen.settled_at,
+          latest_event_id: secondOpen.id,
+          confirmed_realized_pnl: 2.5,
+          incomplete_profit_events: 1,
+          cycles: [
+            {
+              cycle_number: 1,
+              status: "closed",
+              start_source: "opened",
+              history_complete: true,
+              started_at: firstOpen.settled_at,
+              ended_at: firstClose.settled_at,
+              confirmed_realized_pnl: 2.5,
+              incomplete_profit_events: 0,
+              events: [firstOpen, firstClose],
+            },
+            {
+              cycle_number: 2,
+              status: "open",
+              start_source: "opened",
+              history_complete: false,
+              started_at: secondOpen.settled_at,
+              ended_at: null,
+              confirmed_realized_pnl: 0,
+              incomplete_profit_events: 1,
+              events: [secondOpen],
+            },
+          ],
+        },
+      ],
+      pnl: {
+        recorded_since: firstOpen.settled_at,
+        confirmed_realized_pnl: 2.5,
+        current_unrealized_pnl: -1,
+        confirmed_total_pnl: 1.5,
+        incomplete_realized_events: 1,
+        complete: false,
+      },
+      next_cursor: null,
+    };
+
+    mockFetch((url) => {
+      if (url.pathname === "/api/wallets") {
+        return jsonResponse([walletOne]);
+      }
+      if (url.pathname === "/api/positions") {
+        return jsonResponse(positionPayload([]));
+      }
+      if (url.pathname === "/api/position-events") {
+        return jsonResponse(groupedPayload);
+      }
+      throw new Error(`未处理的请求：${url}`);
+    });
+
+    const user = userEvent.setup();
+    render(<Home />);
+    await user.click(
+      await screen.findByRole("tab", { name: /仓位变动明细/ }),
+    );
+
+    const pnlPanel = await screen.findByRole("region", {
+      name: "记录以来盈亏",
+    });
+    expect(within(pnlPanel).getByText("$2.50")).toBeInTheDocument();
+    expect(within(pnlPanel).getByText("-$1.00")).toBeInTheDocument();
+    expect(within(pnlPanel).getByText("$1.50")).toBeInTheDocument();
+    expect(within(pnlPanel).getByText(/有 1 笔.*未计入/)).toBeInTheDocument();
+
+    const group = (
+      await screen.findByRole("link", { name: /多轮仓位市场/ })
+    ).closest("details");
+    expect(within(group!).getByText("2 轮 · 3 条动态")).toBeInTheDocument();
+    expect(within(group!).getByText("新建仓 2 · 清仓 1")).toBeInTheDocument();
+    await user.click(group!.querySelector("summary")!);
+    expect(within(group!).getByText("第 1 轮")).toBeInTheDocument();
+    const secondCycle = within(group!).getByText("第 2 轮").closest("section");
+    expect(secondCycle).not.toBeNull();
+    expect(within(secondCycle!).getByText(/已确认盈亏 持平/)).toBeInTheDocument();
+    expect(within(group!).getByText("历史存在断点")).toBeInTheDocument();
+  });
+
+  it("点击加载更早仓位后按游标合并仓位组", async () => {
     const newerEvent = makeEvent(50, "较新的加仓市场");
     const olderEvent = makeEvent(40, "更早的加仓市场");
 
@@ -1599,7 +1936,7 @@ describe("Polymarket 钱包监控页", () => {
     ).toBeInTheDocument();
 
     await user.click(
-      screen.getByRole("button", { name: "加载更早记录" }),
+      screen.getByRole("button", { name: "加载更早仓位" }),
     );
     expect(
       await screen.findByRole("link", { name: /更早的加仓市场/ }),
@@ -1608,7 +1945,7 @@ describe("Polymarket 钱包监控页", () => {
       screen.getByRole("link", { name: /较新的加仓市场/ }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "加载更早记录" }),
+      screen.queryByRole("button", { name: "加载更早仓位" }),
     ).not.toBeInTheDocument();
   });
 });

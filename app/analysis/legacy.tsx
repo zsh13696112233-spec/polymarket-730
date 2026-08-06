@@ -309,14 +309,60 @@ type PositionEvent = {
   redemption_profit: Numeric | null;
   redemption_profit_percent: Numeric | null;
   redemption_cost_complete: boolean | null;
+  close_cost_basis: Numeric | null;
+  close_proceeds: Numeric | null;
+  close_profit: Numeric | null;
+  close_profit_percent: Numeric | null;
+  close_profit_complete: boolean;
   transaction_hash: string | null;
   fills: Fill[];
   copy_recommendation?: CopyRecommendation | null;
 };
 
-type EventsResponse = {
-  items: PositionEvent[];
-  next_cursor: number | string | null;
+type PositionEventCycle = {
+  cycle_number: number;
+  status: "open" | "closed" | "redeemed" | "history_gap";
+  start_source: "opened" | "first_recorded";
+  history_complete: boolean;
+  started_at: string;
+  ended_at: string | null;
+  confirmed_realized_pnl: Numeric;
+  incomplete_profit_events: number;
+  events: PositionEvent[];
+};
+
+type PositionEventGroup = {
+  wallet_id: number | string;
+  asset_id: string;
+  condition_id: string;
+  title: string;
+  outcome: string;
+  event_slug: string | null;
+  status: "open" | "closed" | "redeemed" | "history_gap";
+  event_count: number;
+  event_counts: Record<PositionEvent["type"], number>;
+  cycle_count: number;
+  first_recorded_at: string;
+  latest_recorded_at: string;
+  latest_event_id: number | string;
+  confirmed_realized_pnl: Numeric;
+  incomplete_profit_events: number;
+  cycles: PositionEventCycle[];
+};
+
+type WalletRecordedPnl = {
+  recorded_since: string;
+  confirmed_realized_pnl: Numeric;
+  current_unrealized_pnl: Numeric;
+  confirmed_total_pnl: Numeric;
+  incomplete_realized_events: number;
+  complete: boolean;
+};
+
+type PositionEventGroupsResponse = {
+  items: PositionEventGroup[];
+  pnl: WalletRecordedPnl;
+  next_cursor: string | null;
 };
 
 type View = "positions" | "events";
@@ -1050,17 +1096,191 @@ function ReconciliationStatus({ status }: { status: string }) {
   );
 }
 
-function EventList({ events }: { events: PositionEvent[] }) {
+
+function recordedPnlTone(value: Numeric) {
+  const amount = toNumber(value);
+  return amount > 0 ? "profit" : amount < 0 ? "loss" : "";
+}
+
+function formatRecordedPnl(value: Numeric) {
+  return toNumber(value) === 0 ? "持平" : formatRedemptionMoney(value);
+}
+
+function positionGroupStatusLabel(status: PositionEventGroup["status"]) {
+  return {
+    open: "持仓中",
+    closed: "已清仓",
+    redeemed: "已赎回",
+    history_gap: "记录有断点",
+  }[status];
+}
+
+function WalletRecordedPnlPanel({ pnl }: { pnl: WalletRecordedPnl }) {
+  return (
+    <section className="walletRecordedPnl" aria-label="记录以来盈亏">
+      <div className="walletRecordedPnlHeader">
+        <div>
+          <span className="eyebrow">钱包表现</span>
+          <h2>记录以来盈亏</h2>
+        </div>
+        <small>自 {formatPositionDateTime(pnl.recorded_since)} 开始记录</small>
+      </div>
+      <div className="walletRecordedPnlGrid">
+        <article>
+          <span>已确认实现盈亏</span>
+          <strong className={recordedPnlTone(pnl.confirmed_realized_pnl)}>
+            {formatRecordedPnl(pnl.confirmed_realized_pnl)}
+          </strong>
+          <small>减仓、清仓与赎回</small>
+        </article>
+        <article>
+          <span>当前浮动盈亏</span>
+          <strong className={recordedPnlTone(pnl.current_unrealized_pnl)}>
+            {formatRecordedPnl(pnl.current_unrealized_pnl)}
+          </strong>
+          <small>当前仍持有仓位</small>
+        </article>
+        <article>
+          <span>已确认总盈亏</span>
+          <strong className={recordedPnlTone(pnl.confirmed_total_pnl)}>
+            {formatRecordedPnl(pnl.confirmed_total_pnl)}
+          </strong>
+          <small>已实现 + 当前浮动</small>
+        </article>
+      </div>
+      {!pnl.complete && (
+        <div className="walletRecordedPnlNotice" role="status">
+          <span aria-hidden="true">!</span>
+          <p>
+            有 {pnl.incomplete_realized_events} 笔减仓、清仓或赎回数据不完整，
+            未计入以上已确认盈亏。
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PositionEventGroupList({ groups }: { groups: PositionEventGroup[] }) {
+  return (
+    <div className="positionEventGroupList">
+      {groups.map((group) => {
+        const eventCountLabels = (
+          ["opened", "increased", "decreased", "closed", "redeemed"] as const
+        )
+          .filter((type) => group.event_counts[type] > 0)
+          .map((type) => `${eventLabel(type)} ${group.event_counts[type]}`);
+        return (
+          <details className="positionEventGroup" key={group.asset_id}>
+            <summary>
+              <div className="positionEventGroupIdentity">
+                <div className="eventBadges">
+                  <span className={`eventType ${group.status === "open" ? "positive" : "negative"}`}>
+                    {positionGroupStatusLabel(group.status)}
+                  </span>
+                  <span className={`outcomeBadge ${outcomeTone(group.outcome)}`}>
+                    {group.outcome}
+                  </span>
+                </div>
+                <a
+                  href={marketUrl(group.event_slug)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="eventMarketTitle"
+                  onClick={(eventClick) => eventClick.stopPropagation()}
+                >
+                  {group.title}
+                  <span aria-hidden="true">↗</span>
+                </a>
+              </div>
+              <div className="positionEventGroupCounts">
+                <span>{group.cycle_count} 轮 · {group.event_count} 条动态</span>
+                <small>{eventCountLabels.join(" · ")}</small>
+              </div>
+              <div className="positionEventGroupPnl">
+                <span>已确认实现盈亏</span>
+                <strong className={recordedPnlTone(group.confirmed_realized_pnl)}>
+                  {formatRecordedPnl(group.confirmed_realized_pnl)}
+                </strong>
+                {group.incomplete_profit_events > 0 && (
+                  <small>{group.incomplete_profit_events} 笔未计入</small>
+                )}
+              </div>
+              <div className="eventTime positionEventGroupTime">
+                <time dateTime={group.latest_recorded_at}>
+                  最近 {formatDateTime(group.latest_recorded_at)}
+                </time>
+                <span className="expandHint">
+                  <span className="expandClosed">查看全部动态</span>
+                  <span className="expandOpen">收起动态</span>
+                  <b aria-hidden="true">⌄</b>
+                </span>
+              </div>
+            </summary>
+            <div className="positionEventGroupDetail">
+              {group.cycles.map((cycle) => (
+                <section className="positionEventCycle" key={cycle.cycle_number}>
+                  <header>
+                    <div>
+                      <strong>第 {cycle.cycle_number} 轮</strong>
+                      <span className={`cycleStatus ${cycle.status}`}>
+                        {positionGroupStatusLabel(cycle.status)}
+                      </span>
+                      {!cycle.history_complete && (
+                        <span className="cycleHistoryWarning">
+                          {cycle.start_source === "first_recorded"
+                            ? "从监测中途开始"
+                            : "历史存在断点"}
+                        </span>
+                      )}
+                    </div>
+                    <span>
+                      {formatDateTime(cycle.started_at)}
+                      {cycle.ended_at ? ` → ${formatDateTime(cycle.ended_at)}` : " → 至今"}
+                    </span>
+                    <small>
+                      已确认盈亏 {formatRecordedPnl(cycle.confirmed_realized_pnl)}
+                      {cycle.incomplete_profit_events > 0
+                        ? ` · ${cycle.incomplete_profit_events} 笔未计入`
+                        : ""}
+                    </small>
+                  </header>
+                  <EventList events={cycle.events} showMarketIdentity={false} />
+                </section>
+              ))}
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+function EventList({
+  events,
+  showMarketIdentity = true,
+}: {
+  events: PositionEvent[];
+  showMarketIdentity?: boolean;
+}) {
   return (
     <div className="eventList">
       {events.map((event) => {
         const delta = toNumber(event.delta_size);
         const redeemed = event.type === "redeemed";
+        const closed = event.type === "closed";
         const redemptionCostComplete =
           redeemed && event.redemption_cost_complete === true;
+        const closeProfitComplete =
+          closed &&
+          event.close_profit_complete === true &&
+          event.close_profit != null;
+        const closeProfit = toNumber(event.close_profit);
+        const closeProfitLabel =
+          closeProfit > 0 ? "盈利" : closeProfit < 0 ? "亏损" : "持平";
         return (
           <details
-            className={`eventCard ${redeemed ? "redemptionEventCard" : ""}`}
+            className={`eventCard ${redeemed ? "redemptionEventCard" : ""} ${closed ? "closeEventCard" : ""}`}
             key={event.id}
           >
             <summary>
@@ -1075,16 +1295,18 @@ function EventList({ events }: { events: PositionEvent[] }) {
                     {event.outcome}
                   </span>
                 </div>
-                <a
-                  href={marketUrl(event.event_slug, event.market_slug)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="eventMarketTitle"
-                  onClick={(eventClick) => eventClick.stopPropagation()}
-                >
-                  {event.title}
-                  <span aria-hidden="true">↗</span>
-                </a>
+                {showMarketIdentity && (
+                  <a
+                    href={marketUrl(event.event_slug, event.market_slug)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="eventMarketTitle"
+                    onClick={(eventClick) => eventClick.stopPropagation()}
+                  >
+                    {event.title}
+                    <span aria-hidden="true">↗</span>
+                  </a>
+                )}
               </div>
 
               <div className="eventDelta">
@@ -1150,6 +1372,34 @@ function EventList({ events }: { events: PositionEvent[] }) {
                     </strong>
                   ) : (
                     <strong className="costUnavailable">—</strong>
+                  )}
+                </div>
+              )}
+
+              {closed && (
+                <div className="eventProfit closeEventProfit">
+                  <span>
+                    {closeProfitComplete
+                      ? `本次清仓${closeProfitLabel}`
+                      : "本次清仓盈亏"}
+                  </span>
+                  {closeProfitComplete ? (
+                    <strong
+                      className={
+                        closeProfit > 0
+                          ? "profit"
+                          : closeProfit < 0
+                            ? "loss"
+                            : undefined
+                      }
+                    >
+                      {formatRedemptionMoney(event.close_profit)}
+                      {event.close_profit_percent != null && (
+                        <small>{formatPercent(event.close_profit_percent)}</small>
+                      )}
+                    </strong>
+                  ) : (
+                    <strong className="costUnavailable">成交数据不完整</strong>
                   )}
                 </div>
               )}
@@ -1279,31 +1529,91 @@ function EventList({ events }: { events: PositionEvent[] }) {
                 </>
               ) : (
                 <>
-                  <div className="eventFacts">
-                    <div>
-                      <span>变化前份额</span>
-                      <strong>{formatShares(event.before_size)}</strong>
-                    </div>
-                    <span className="factArrow" aria-hidden="true">
-                      →
-                    </span>
-                    <div>
-                      <span>变化后份额</span>
-                      <strong>{formatShares(event.after_size)}</strong>
-                    </div>
-                    <div>
-                      <span>变化后市值</span>
-                      <strong>{formatMoney(event.current_value)}</strong>
-                    </div>
-                    {event.copy_recommendation && (
-                      <CopyRecommendationView
-                        recommendation={event.copy_recommendation}
+                  {closed ? (
+                    <div className="eventFacts closeFacts">
+                      <div>
+                        <span>清仓份额</span>
+                        <strong>{formatShares(event.before_size)}</strong>
+                      </div>
+                      <div>
+                        <span>清仓前均价</span>
+                        <strong>{formatPrice(event.before_avg_price)}</strong>
+                      </div>
+                      <div>
+                        <span>清仓成本</span>
+                        <strong>
+                          {closeProfitComplete
+                            ? formatRedemptionMoney(event.close_cost_basis)
+                            : "—"}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>卖出金额</span>
+                        <strong>
+                          {closeProfitComplete
+                            ? formatRedemptionMoney(event.close_proceeds)
+                            : "—"}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>本次清仓盈亏</span>
+                        {closeProfitComplete ? (
+                          <strong
+                            className={
+                              closeProfit > 0
+                                ? "profit"
+                                : closeProfit < 0
+                                  ? "loss"
+                                  : undefined
+                            }
+                          >
+                            {closeProfitLabel} · {formatRedemptionMoney(event.close_profit)}
+                            {event.close_profit_percent != null && (
+                              <small>{formatPercent(event.close_profit_percent)}</small>
+                            )}
+                          </strong>
+                        ) : (
+                          <strong className="costUnavailable">
+                            成交数据不完整
+                          </strong>
+                        )}
+                      </div>
+                      {event.copy_recommendation && (
+                        <CopyRecommendationView
+                          recommendation={event.copy_recommendation}
+                        />
+                      )}
+                      <ReconciliationStatus
+                        status={event.reconciliation_status}
                       />
-                    )}
-                    <ReconciliationStatus
-                      status={event.reconciliation_status}
-                    />
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="eventFacts">
+                      <div>
+                        <span>变化前份额</span>
+                        <strong>{formatShares(event.before_size)}</strong>
+                      </div>
+                      <span className="factArrow" aria-hidden="true">
+                        →
+                      </span>
+                      <div>
+                        <span>变化后份额</span>
+                        <strong>{formatShares(event.after_size)}</strong>
+                      </div>
+                      <div>
+                        <span>变化后市值</span>
+                        <strong>{formatMoney(event.current_value)}</strong>
+                      </div>
+                      {event.copy_recommendation && (
+                        <CopyRecommendationView
+                          recommendation={event.copy_recommendation}
+                        />
+                      )}
+                      <ReconciliationStatus
+                        status={event.reconciliation_status}
+                      />
+                    </div>
+                  )}
 
                   <div className="fillsBlock">
                     <div className="fillsHeading">
@@ -2026,6 +2336,7 @@ function OverlapActivity({
   busyAlertIds,
   markingAll,
   onRead,
+  onDelete,
   onReadAll,
 }: {
   alerts: PositionOverlapAlert[];
@@ -2033,6 +2344,7 @@ function OverlapActivity({
   busyAlertIds: Set<string>;
   markingAll: boolean;
   onRead: (alertId: number | string) => void;
+  onDelete: (alertId: number | string) => void;
   onReadAll: () => void;
 }) {
   const [showRead, setShowRead] = useState(false);
@@ -2155,7 +2467,17 @@ function OverlapActivity({
                     {busy ? "处理中…" : "标为已读"}
                   </button>
                 ) : (
-                  <span>已读</span>
+                  <div className="activityReadActions">
+                    <span>已读</span>
+                    <button
+                      type="button"
+                      onClick={() => onDelete(alert.id)}
+                      disabled={busy}
+                      aria-label={`删除已读提醒：${alert.title}`}
+                    >
+                      {busy ? "处理中…" : "删除"}
+                    </button>
+                  </div>
                 )}
               </div>
             </article>
@@ -2424,6 +2746,7 @@ function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
 function RehearsalPanel({ enabled }: { enabled: boolean }) {
   const [marketUrl, setMarketUrl] = useState("");
   const [outcome, setOutcome] = useState("");
+  const [maxTotalUsdc, setMaxTotalUsdc] = useState("1");
   const [preview, setPreview] = useState<RehearsalPreview | null>(null);
   const [result, setResult] = useState<CopyOrder | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2438,7 +2761,11 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
       setPreview(
         await request<RehearsalPreview>("/api/copy-trading/rehearsal/preview", {
           method: "POST",
-          body: JSON.stringify({ market_url: marketUrl, outcome, max_total_usdc: 1 }),
+          body: JSON.stringify({
+            market_url: marketUrl,
+            outcome,
+            max_total_usdc: Number(maxTotalUsdc),
+          }),
         }),
       );
     } catch (previewError) {
@@ -2457,7 +2784,7 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
         method: "POST",
         body: JSON.stringify({
           confirmation_id: preview.confirmation_id,
-          confirmation_text: "确认执行1美元演练",
+          confirmation_text: "确认执行真实买入",
         }),
       });
       setResult(order);
@@ -2470,8 +2797,8 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <section className="copyTradingFieldGroup" aria-label="1 美元手工市场演练">
-      <h3>$1 真实下单演练</h3>
+    <section className="copyTradingFieldGroup" aria-label="手工市场演练">
+      <h3>真实下单演练</h3>
       <p>会真实花费资金并买入一次，不自动卖回，也不会计入自动跟单持仓。</p>
       <form className="copyTradingFormGrid" onSubmit={loadPreview}>
         <label className="field copyTradingField">
@@ -2495,8 +2822,21 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
             disabled={!enabled || busy}
           />
         </label>
+        <label className="field copyTradingField">
+          <span>最高花费（含费用）</span>
+          <input
+            type="number"
+            min="0.01"
+            max="100"
+            step="0.01"
+            value={maxTotalUsdc}
+            onChange={(event) => setMaxTotalUsdc(event.target.value)}
+            required
+            disabled={!enabled || busy}
+          />
+        </label>
         <button type="submit" disabled={!enabled || busy}>
-          {busy ? "检查中…" : "预览 $1 买入"}
+          {busy ? "检查中…" : `预览 ${maxTotalUsdc || "0"} USDC 买入`}
         </button>
       </form>
       {!enabled && <small>先验证 V2 执行钱包后才能演练。</small>}
@@ -3080,8 +3420,9 @@ export default function LegacyAnalysis() {
   const [purchaseHistoryError, setPurchaseHistoryError] = useState<
     string | null
   >(null);
-  const [events, setEvents] = useState<PositionEvent[]>([]);
-  const [nextCursor, setNextCursor] = useState<number | string | null>(null);
+  const [eventGroups, setEventGroups] = useState<PositionEventGroup[]>([]);
+  const [recordedPnl, setRecordedPnl] = useState<WalletRecordedPnl | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [asOf, setAsOf] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [view, setView] = useState<View>("positions");
@@ -3263,8 +3604,8 @@ export default function LegacyAnalysis() {
           request<PositionResponse>(
             `/api/positions?wallet_id=${encodeURIComponent(walletId)}`,
           ),
-          request<EventsResponse>(
-            `/api/position-events?wallet_id=${encodeURIComponent(walletId)}`,
+          request<PositionEventGroupsResponse>(
+            `/api/position-event-groups?wallet_id=${encodeURIComponent(walletId)}`,
           ),
           comparisonRequest,
           alertRequest,
@@ -3295,7 +3636,8 @@ export default function LegacyAnalysis() {
         setPurchaseHistoryError(positionData.purchase_history_error ?? null);
         setAsOf(positionData.as_of);
         setStale(Boolean(positionData.stale));
-        setEvents(eventData.items);
+        setEventGroups(eventData.items);
+        setRecordedPnl(eventData.pnl);
         setNextCursor(eventData.next_cursor);
         setError(null);
       } catch (contentError) {
@@ -3495,18 +3837,19 @@ export default function LegacyAnalysis() {
     if (!activeWalletId || !nextCursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await request<EventsResponse>(
-        `/api/position-events?wallet_id=${encodeURIComponent(
+      const page = await request<PositionEventGroupsResponse>(
+        `/api/position-event-groups?wallet_id=${encodeURIComponent(
           activeWalletId,
         )}&cursor=${encodeURIComponent(nextCursor)}`,
       );
-      setEvents((current) => {
-        const knownIds = new Set(current.map((event) => event.id));
+      setEventGroups((current) => {
+        const knownAssets = new Set(current.map((group) => group.asset_id));
         return [
           ...current,
-          ...page.items.filter((event) => !knownIds.has(event.id)),
+          ...page.items.filter((group) => !knownAssets.has(group.asset_id)),
         ];
       });
+      setRecordedPnl(page.pnl);
       setNextCursor(page.next_cursor);
     } catch (loadMoreError) {
       setError(
@@ -3532,7 +3875,9 @@ export default function LegacyAnalysis() {
     setCopyTradingError(null);
     setBusyAlertIds(new Set());
     setMarkingAllAlerts(false);
-    setEvents([]);
+    setEventGroups([]);
+    setRecordedPnl(null);
+    setNextCursor(null);
     setSummary(emptySummary);
     setOpenedDates([]);
     setOpenedDate("all");
@@ -3567,7 +3912,9 @@ export default function LegacyAnalysis() {
         setOverlapAlerts([]);
         setUnreadAlertCount(0);
         setAlertError(null);
-        setEvents([]);
+        setEventGroups([]);
+        setRecordedPnl(null);
+        setNextCursor(null);
         setSummary(emptySummary);
         setOpenedDates([]);
         setOpenedDate("all");
@@ -3674,6 +4021,32 @@ export default function LegacyAnalysis() {
       );
     } finally {
       setMarkingAllAlerts(false);
+    }
+  }
+
+  async function deleteOverlapAlert(alertId: number | string) {
+    const alertKey = String(alertId);
+    if (busyAlertIds.has(alertKey)) return;
+    setBusyAlertIds((current) => new Set(current).add(alertKey));
+    setAlertError(null);
+    try {
+      await request<void>(
+        `/api/overlap-alerts/${encodeURIComponent(alertKey)}`,
+        { method: "DELETE" },
+      );
+      setOverlapAlerts((current) =>
+        current.filter((alert) => String(alert.id) !== alertKey),
+      );
+    } catch (deleteError) {
+      setAlertError(
+        deleteError instanceof Error ? deleteError.message : "无法删除提醒",
+      );
+    } finally {
+      setBusyAlertIds((current) => {
+        const next = new Set(current);
+        next.delete(alertKey);
+        return next;
+      });
     }
   }
 
@@ -4180,11 +4553,12 @@ export default function LegacyAnalysis() {
                 busyAlertIds={busyAlertIds}
                 markingAll={markingAllAlerts}
                 onRead={(alertId) => void markOverlapAlertRead(alertId)}
+                onDelete={(alertId) => void deleteOverlapAlert(alertId)}
                 onReadAll={() => void markAllOverlapAlertsRead()}
               />
             )}
 
-            {loadingContent && positions.length === 0 && events.length === 0 ? (
+            {loadingContent && positions.length === 0 && eventGroups.length === 0 ? (
               <LoadingState label="正在同步公开持仓…" />
             ) : view === "positions" ? (
               displayedPositions.length > 0 ? (
@@ -4216,24 +4590,29 @@ export default function LegacyAnalysis() {
               ) : (
                 <EmptyState type="positions" onRefresh={refresh} />
               )
-            ) : events.length > 0 ? (
+            ) : (
               <>
-                <EventList events={events} />
-                {nextCursor && (
-                  <div className="loadMoreWrap">
-                    <button
-                      className="secondaryButton"
-                      type="button"
-                      onClick={loadMoreEvents}
-                      disabled={loadingMore}
-                    >
-                      {loadingMore ? "正在读取…" : "加载更早记录"}
-                    </button>
-                  </div>
+                {recordedPnl && <WalletRecordedPnlPanel pnl={recordedPnl} />}
+                {eventGroups.length > 0 ? (
+                  <>
+                    <PositionEventGroupList groups={eventGroups} />
+                    {nextCursor && (
+                      <div className="loadMoreWrap">
+                        <button
+                          className="secondaryButton"
+                          type="button"
+                          onClick={loadMoreEvents}
+                          disabled={loadingMore}
+                        >
+                          {loadingMore ? "正在读取…" : "加载更早仓位"}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <EmptyState type="events" />
                 )}
               </>
-            ) : (
-              <EmptyState type="events" />
             )}
           </section>
         </>

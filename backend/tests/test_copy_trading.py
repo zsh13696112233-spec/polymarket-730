@@ -5,6 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from backend.copy_trading import (
@@ -14,9 +15,9 @@ from backend.copy_trading import (
     market_worst_price,
     tolerated_price,
 )
-from backend.models import CopyPosition, CopySubscription
+from backend.models import CopyLedger, CopyPosition, CopyRedemption, CopySubscription
 from backend.monitor import utcnow
-from backend.polymarket import OrderBookLevel, OrderBookSnapshot, TradeSnapshot
+from backend.polymarket import MarketResolution, OrderBookLevel, OrderBookSnapshot, TradeSnapshot
 from backend.tests.conftest import position
 from backend.trading import (
     MarketTradeRequest,
@@ -1040,3 +1041,153 @@ def test_fast_engine_sells_same_fraction_as_leader(app_client_factory):
     assert Decimal(str(history["portfolio"]["open_cost_usdc"])) == 0
     assert Decimal(str(history["portfolio"]["market_value_usdc"])) == 0
     assert Decimal(str(history["portfolio"]["total_pnl"])) == Decimal("2.94")
+
+
+@pytest.mark.parametrize(
+    ("payout_per_share", "expected_payout", "expected_realized"),
+    [
+        (Decimal("1"), Decimal("12"), Decimal("6")),
+        (Decimal("0"), Decimal("0"), Decimal("-6")),
+    ],
+)
+def test_paper_positions_auto_settle_from_official_resolution(
+    app_client_factory,
+    payout_per_share: Decimal,
+    expected_payout: Decimal,
+    expected_realized: Decimal,
+):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets",
+        json={"address": TRACKED_ADDRESS, "label": "jjavi"},
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={
+            "tracked_wallet_id": tracked["id"],
+            "large_trade_threshold_usdc": 1000,
+        },
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    trade = fast_temperature_trade(
+        "300",
+        f"0xpaper-settlement-{payout_per_share}",
+        asset_id="asset-paper-settlement",
+    )
+    fake.trades = [trade]
+    install_fast_book(fake, asset_id=trade.asset_id)
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.process_fast_trades, subscription["id"])
+
+    resolved_at = utcnow()
+    fake.market_resolutions[trade.condition_id] = MarketResolution(
+        condition_id=trade.condition_id,
+        payout_by_asset_id={trade.asset_id: payout_per_share},
+        resolved_at=resolved_at,
+    )
+
+    async def settle_once():
+        await client.app.state.copy_engine.process_paper_settlements(
+            subscription["id"],
+            force=True,
+        )
+
+    client.portal.call(settle_once)
+    client.portal.call(settle_once)
+
+    async def replay_leader_redemption_and_read_rows():
+        async with client.app.state.database.sessions() as session:
+            subscription_row = await session.get(CopySubscription, subscription["id"])
+            assert subscription_row is not None
+            await client.app.state.copy_engine._leader_redeemed(
+                session,
+                subscription_row,
+                SimpleNamespace(
+                    asset_id=trade.asset_id,
+                    payout_amount=Decimal("12"),
+                    before_size=Decimal("12"),
+                ),
+            )
+            await session.commit()
+            position_rows = list((await session.scalars(select(CopyPosition))).all())
+            redemption_rows = list((await session.scalars(select(CopyRedemption))).all())
+            ledger_rows = list(
+                (
+                    await session.scalars(select(CopyLedger).where(CopyLedger.type == "redemption"))
+                ).all()
+            )
+            return position_rows, redemption_rows, ledger_rows
+
+    position_rows, redemption_rows, ledger_rows = client.portal.call(
+        replay_leader_redemption_and_read_rows
+    )
+    assert len(position_rows) == 1
+    assert position_rows[0].status == "redeemed"
+    assert position_rows[0].attributed_size == 0
+    assert position_rows[0].attributed_cost == 0
+    assert position_rows[0].realized_pnl == expected_realized
+    assert len(redemption_rows) == 1
+    assert redemption_rows[0].status == "redeemed"
+    assert redemption_rows[0].size == Decimal("12")
+    assert redemption_rows[0].payout_usdc == expected_payout
+    assert len(ledger_rows) == 1
+    assert ledger_rows[0].amount_usdc == expected_payout
+    assert ledger_rows[0].realized_pnl == expected_realized
+    assert ledger_rows[0].timestamp == resolved_at
+
+    dashboard = client.get(
+        "/api/copy-trading/dashboard",
+        params={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    assert dashboard["positions"][0]["status"] == "redeemed"
+    assert Decimal(str(dashboard["positions"][0]["total_pnl"])) == expected_realized
+    assert Decimal(str(dashboard["portfolio"]["open_cost_usdc"])) == 0
+    assert Decimal(str(dashboard["portfolio"]["realized_pnl"])) == expected_realized
+    assert Decimal(str(dashboard["subscription"]["daily_realized_pnl"])) == expected_realized
+
+
+def test_paper_settlement_failure_does_not_block_fast_follow_and_is_throttled(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    tracked = client.post(
+        "/api/wallets",
+        json={"address": TRACKED_ADDRESS, "label": "jjavi"},
+    ).json()
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={
+            "tracked_wallet_id": tracked["id"],
+            "large_trade_threshold_usdc": 1000,
+        },
+    ).json()
+    client.post(
+        f"/api/copy-trading/subscriptions/{subscription['id']}/action",
+        json={"action": "activate"},
+    )
+    move_fast_baseline_to_past(client, subscription["id"])
+    trade = fast_temperature_trade(
+        "300",
+        "0xpaper-settlement-error",
+        asset_id="asset-paper-settlement-error",
+    )
+    fake.trades = [trade]
+    fake.market_resolution_error = RuntimeError("结算状态暂时不可用")
+    install_fast_book(fake, asset_id=trade.asset_id)
+    assert client.portal is not None
+    client.portal.call(client.app.state.copy_engine.tick)
+    client.portal.call(client.app.state.copy_engine.tick)
+
+    dashboard = client.get(
+        "/api/copy-trading/dashboard",
+        params={"tracked_wallet_id": tracked["id"]},
+    ).json()
+    assert Decimal(str(dashboard["positions"][0]["attributed_size"])) == Decimal("12")
+    assert Decimal(str(dashboard["positions"][0]["attributed_cost"])) == Decimal("6")
+    assert dashboard["positions"][0]["status"] == "open"
+    assert "结算状态暂时不可用" in dashboard["subscription"]["last_error"]
+    assert fake.market_resolution_calls == [[trade.condition_id]]

@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, select
@@ -49,6 +50,7 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OPEN_ORDER_STATES = {"open", "submitted"}
+PAPER_SETTLEMENT_POLL_SECONDS = 30.0
 TEMPERATURE_BUCKET_MARKET = re.compile(
     r"\b(?:highest|lowest)\s+(?:daily\s+)?temperature\b|(?:最高|最低)(?:气温|温度)",
     re.I,
@@ -170,6 +172,7 @@ class CopyTradingEngine:
         self._lock = asyncio.Lock()
         self._trader_cache_key: tuple[object, ...] | None = None
         self._trader_cache: OfficialClobTrader | None = None
+        self._paper_settlement_checked_at: dict[int, float] = {}
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -236,6 +239,7 @@ class CopyTradingEngine:
                     await self.process_open_orders(subscription_id)
                     await self.process_fast_trades(subscription_id)
                     await self.process_subscription(subscription_id)
+                    await self.process_paper_settlements(subscription_id)
                     await self.process_redemptions(subscription_id)
                 except Exception as error:
                     await self._record_error(subscription_id, error)
@@ -1505,6 +1509,33 @@ class CopyTradingEngine:
             await self._cancel_order(session, subscription, order, position, "目标钱包已减仓")
         position.pending_target_usdc = ZERO
 
+    async def _cancel_position_orders(
+        self,
+        session: object,
+        subscription: CopySubscription,
+        position: CopyPosition,
+        reason: str,
+    ) -> None:
+        orders = list(
+            (
+                await session.scalars(
+                    select(CopyOrder).where(
+                        CopyOrder.subscription_id == subscription.id,
+                        CopyOrder.copy_position_id == position.id,
+                        or_(
+                            CopyOrder.status.in_(OPEN_ORDER_STATES),
+                            and_(
+                                CopyOrder.order_type != "FAK",
+                                CopyOrder.status == "partially_filled",
+                            ),
+                        ),
+                    )
+                )
+            ).all()
+        )
+        for order in orders:
+            await self._cancel_order(session, subscription, order, position, reason)
+
     async def _cancel_order(
         self,
         session: object,
@@ -1613,6 +1644,132 @@ class CopyTradingEngine:
                     timestamp=now,
                 )
             )
+
+    async def process_paper_settlements(
+        self,
+        subscription_id: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        checked_at = monotonic()
+        previous_check = self._paper_settlement_checked_at.get(subscription_id)
+        if (
+            not force
+            and previous_check is not None
+            and checked_at - previous_check < PAPER_SETTLEMENT_POLL_SECONDS
+        ):
+            return
+        self._paper_settlement_checked_at[subscription_id] = checked_at
+
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if (
+                subscription is None
+                or subscription.mode != "paper"
+                or subscription.state == "disabled"
+            ):
+                return
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(
+                            CopyPosition.subscription_id == subscription_id,
+                            CopyPosition.attributed_size > ZERO,
+                        )
+                    )
+                ).all()
+            )
+            condition_ids = list(dict.fromkeys(position.condition_id for position in positions))
+        if not condition_ids:
+            return
+
+        resolutions = await self.client.fetch_market_resolutions(condition_ids)
+        if not resolutions:
+            return
+
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if (
+                subscription is None
+                or subscription.mode != "paper"
+                or subscription.state == "disabled"
+            ):
+                return
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(
+                            CopyPosition.subscription_id == subscription_id,
+                            CopyPosition.attributed_size > ZERO,
+                            CopyPosition.condition_id.in_(resolutions),
+                        )
+                    )
+                ).all()
+            )
+            position_ids = [position.id for position in positions]
+            redeemed_position_ids = set(
+                (
+                    await session.scalars(
+                        select(CopyRedemption.copy_position_id).where(
+                            CopyRedemption.copy_position_id.in_(position_ids)
+                        )
+                    )
+                ).all()
+            )
+            now = utcnow()
+            for position in positions:
+                if position.id in redeemed_position_ids:
+                    continue
+                resolution = resolutions[position.condition_id]
+                payout_per_share = resolution.payout_by_asset_id.get(position.asset_id)
+                if payout_per_share is None:
+                    continue
+                await self._cancel_position_orders(
+                    session,
+                    subscription,
+                    position,
+                    "市场已正式结算",
+                )
+                await self._clear_deferred_signals(
+                    session,
+                    subscription.id,
+                    position.asset_id,
+                    "市场已正式结算",
+                )
+                size = position.attributed_size
+                payout = size * payout_per_share
+                realized = payout - position.attributed_cost
+                session.add(
+                    CopyRedemption(
+                        copy_position_id=position.id,
+                        status="redeemed",
+                        size=size,
+                        payout_usdc=payout,
+                        attempts=0,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                position.realized_pnl += realized
+                position.attributed_size = ZERO
+                position.attributed_cost = ZERO
+                position.reserved_buy_usdc = ZERO
+                position.pending_target_usdc = ZERO
+                position.dust_size = ZERO
+                position.status = "redeemed"
+                position.updated_at = now
+                session.add(
+                    CopyLedger(
+                        subscription_id=subscription.id,
+                        copy_position_id=position.id,
+                        type="redemption",
+                        amount_usdc=payout,
+                        realized_pnl=realized,
+                        detail="Polymarket 官方市场结算",
+                        timestamp=resolution.resolved_at,
+                    )
+                )
+            await session.commit()
 
     async def process_redemptions(self, subscription_id: int) -> None:
         async with self.database.sessions() as session:

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from backend.config import Settings
 from backend.main import create_app
 from backend.polymarket import (
+    MarketResolution,
     PositionSnapshot,
     PublicProfile,
     RedemptionSnapshot,
@@ -75,6 +76,9 @@ class FakePolymarketClient:
         self.redemption_error: Exception | None = None
         self.evidence = SettlementEvidence(frozenset(), frozenset(), frozenset())
         self.settlement_calls: list[list[str]] = []
+        self.market_resolutions: dict[str, MarketResolution] = {}
+        self.market_resolution_error: Exception | None = None
+        self.market_resolution_calls: list[list[str]] = []
 
     async def resolve_profile(self, raw_input: str, requested_label: str | None) -> PublicProfile:
         address = parse_wallet_input(raw_input)
@@ -129,6 +133,20 @@ class FakePolymarketClient:
         condition_id: str,
     ) -> datetime | None:
         return self.market_end_dates.get(market_slug or condition_id)
+
+    async def fetch_market_resolutions(
+        self,
+        condition_ids: Any,
+    ) -> dict[str, MarketResolution]:
+        conditions = list(condition_ids)
+        self.market_resolution_calls.append(conditions)
+        if self.market_resolution_error is not None:
+            raise self.market_resolution_error
+        return {
+            condition_id: self.market_resolutions[condition_id]
+            for condition_id in conditions
+            if condition_id in self.market_resolutions
+        }
 
     async def fetch_redemptions(
         self,

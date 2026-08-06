@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -64,6 +65,119 @@ async def test_market_end_date_rejects_date_only_midnight_assumption():
         await client.close()
 
     assert end_date is None
+
+
+@pytest.mark.asyncio
+async def test_market_resolutions_batch_repeated_conditions_and_parse_asset_payouts():
+    conditions = [f"0x{index:064x}" for index in range(101)]
+    requested_batches: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        batch = request.url.params.get_list("condition_ids")
+        requested_batches.append(batch)
+        assert request.url.params["closed"] == "true"
+        assert int(request.url.params["limit"]) == len(batch)
+        if len(requested_batches) == 1:
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "conditionId": conditions[0],
+                        "closed": True,
+                        "umaResolutionStatus": "resolved",
+                        "clobTokenIds": '["asset-win", "asset-lose"]',
+                        "outcomePrices": '["1", "0"]',
+                        "closedTime": "2026-08-03 22:44:42+00",
+                    },
+                    {
+                        "conditionId": conditions[1],
+                        "closed": True,
+                        "umaResolutionStatus": "proposed",
+                        "clobTokenIds": '["asset-a", "asset-b"]',
+                        "outcomePrices": '["1", "0"]',
+                    },
+                    {
+                        "conditionId": conditions[2],
+                        "closed": True,
+                        "umaResolutionStatus": "resolved",
+                        "clobTokenIds": '["asset-a", "asset-b"]',
+                        "outcomePrices": '["1"]',
+                    },
+                ],
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "conditionId": conditions[100],
+                    "closed": True,
+                    "umaResolutionStatus": "finalized",
+                    "clobTokenIds": ["asset-half-a", "asset-half-b"],
+                    "outcomePrices": ["0.5", "0.5"],
+                    "umaEndDate": "2026-08-04T01:02:03Z",
+                }
+            ],
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        resolutions = await client.fetch_market_resolutions(conditions)
+    finally:
+        await client.close()
+
+    assert [len(batch) for batch in requested_batches] == [100, 1]
+    assert [condition for batch in requested_batches for condition in batch] == conditions
+    assert set(resolutions) == {conditions[0], conditions[100]}
+    assert resolutions[conditions[0]].payout_by_asset_id == {
+        "asset-win": Decimal("1"),
+        "asset-lose": Decimal("0"),
+    }
+    assert resolutions[conditions[0]].resolved_at == datetime(2026, 8, 3, 22, 44, 42)
+    assert resolutions[conditions[100]].payout_by_asset_id["asset-half-a"] == Decimal("0.5")
+    assert resolutions[conditions[100]].resolved_at == datetime(2026, 8, 4, 1, 2, 3)
+
+
+@pytest.mark.asyncio
+async def test_settlement_evidence_uses_repeated_gamma_condition_parameters():
+    conditions = ["0x" + "1" * 64, "0x" + "2" * 64]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "gamma.test":
+            assert request.url.params.get_list("condition_ids") == conditions
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "conditionId": condition_id,
+                        "closed": True,
+                        "umaResolutionStatus": "resolved",
+                    }
+                    for condition_id in conditions
+                ],
+            )
+        return httpx.Response(200, json=[])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        evidence = await client.fetch_settlement_evidence(
+            TEST_ADDRESS,
+            condition_ids=conditions,
+            last_seen_by_condition={},
+        )
+    finally:
+        await client.close()
+
+    assert evidence.resolved_condition_ids == frozenset(conditions)
 
 
 def raw_position(asset: str) -> dict[str, object]:

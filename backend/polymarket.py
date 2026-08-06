@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 from collections import defaultdict
 from collections.abc import Iterable
@@ -101,6 +102,13 @@ class SettlementEvidence:
             or asset_id in self.redeemable_asset_ids
             or condition_id in self.non_trade_condition_ids
         )
+
+
+@dataclass(frozen=True, slots=True)
+class MarketResolution:
+    condition_id: str
+    payout_by_asset_id: dict[str, Decimal]
+    resolved_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +219,7 @@ def parse_datetime(value: Any) -> datetime | None:
 class PolymarketClient:
     POSITION_PAGE_SIZE = 500
     TRADE_MARKET_BATCH_SIZE = 100
+    MARKET_RESOLUTION_BATCH_SIZE = 100
 
     def __init__(
         self,
@@ -322,6 +331,73 @@ class PolymarketClient:
         )
         self._market_end_cache[cache_key] = (now + (300 if end_date is not None else 30), end_date)
         return end_date
+
+    async def fetch_market_resolutions(
+        self,
+        condition_ids: Iterable[str],
+    ) -> dict[str, MarketResolution]:
+        conditions = list(
+            dict.fromkeys(condition_id for condition_id in condition_ids if condition_id)
+        )
+        detected_at = datetime.now(UTC).replace(tzinfo=None)
+        resolutions: dict[str, MarketResolution] = {}
+        for offset in range(0, len(conditions), self.MARKET_RESOLUTION_BATCH_SIZE):
+            batch = conditions[offset : offset + self.MARKET_RESOLUTION_BATCH_SIZE]
+            payload = await self._get_json(
+                f"{self.gamma_api_url}/markets",
+                params={
+                    "condition_ids": batch,
+                    "closed": "true",
+                    "limit": len(batch),
+                },
+            )
+            if not isinstance(payload, list):
+                raise PolymarketAPIError("市场结算接口返回格式无效")
+            for item in payload:
+                if not isinstance(item, dict) or item.get("closed") is not True:
+                    continue
+                condition_id = str(item.get("conditionId") or "")
+                resolution_status = str(item.get("umaResolutionStatus") or "").lower()
+                if condition_id not in batch or resolution_status not in {"resolved", "finalized"}:
+                    continue
+                asset_ids = self._json_list(item.get("clobTokenIds"))
+                raw_payouts = self._json_list(item.get("outcomePrices"))
+                if not asset_ids or len(asset_ids) != len(raw_payouts):
+                    continue
+                payout_by_asset_id: dict[str, Decimal] = {}
+                valid = True
+                for raw_asset_id, raw_payout in zip(asset_ids, raw_payouts, strict=True):
+                    asset_id = str(raw_asset_id or "")
+                    payout = to_decimal(raw_payout, default=Decimal("-1"))
+                    if not asset_id or payout < ZERO or payout > Decimal("1"):
+                        valid = False
+                        break
+                    payout_by_asset_id[asset_id] = payout
+                if not valid or len(payout_by_asset_id) != len(asset_ids):
+                    continue
+                resolved_at = (
+                    parse_datetime(item.get("closedTime"))
+                    or parse_datetime(item.get("umaEndDate"))
+                    or detected_at
+                )
+                resolutions[condition_id] = MarketResolution(
+                    condition_id=condition_id,
+                    payout_by_asset_id=payout_by_asset_id,
+                    resolved_at=resolved_at,
+                )
+        return resolutions
+
+    @staticmethod
+    def _json_list(value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        if not isinstance(value, str):
+            return []
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+        return parsed if isinstance(parsed, list) else []
 
     @staticmethod
     def _parse_retry_after(raw: str | None) -> float | None:
@@ -476,7 +552,7 @@ class PolymarketClient:
             self._get_json(
                 f"{self.gamma_api_url}/markets",
                 params={
-                    "condition_ids": ",".join(conditions),
+                    "condition_ids": conditions,
                     "closed": "true",
                     "limit": len(conditions),
                 },

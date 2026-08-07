@@ -77,7 +77,7 @@ def allowed_buy_usdc(
         return ZERO, "已触发执行钱包当日亏损熔断"
     limits = {
         "单仓最大投入已满": subscription.position_cap_usdc - usage.position,
-        "跟单总敞口已满": subscription.total_exposure_cap_usdc - usage.total,
+        "策略总敞口已满": subscription.total_exposure_cap_usdc - usage.total,
         "执行钱包当日买入额度已满": usage.account_daily_buy_limit - usage.bought_today,
         "执行钱包可用预算不足": usage.wallet_capital - usage.global_total,
     }
@@ -406,11 +406,7 @@ class CopyTradingEngine:
             existing = await session.scalar(
                 select(CopyRedemption).where(CopyRedemption.copy_position_id == position_id)
             )
-            if (
-                position is None
-                or position.attributed_size <= ZERO
-                or existing is not None
-            ):
+            if position is None or position.attributed_size <= ZERO or existing is not None:
                 return
             payout = position.attributed_size
             cost = position.attributed_cost
@@ -536,7 +532,7 @@ class CopyTradingEngine:
             book.best_ask, book.tick_size, subscription.market_slippage_cents, side="BUY"
         )
         if allowed / worst_price < book.min_order_size:
-            await self._record_skip(subscription_id, event, "按跟单比例计算后低于市场最小下单份数")
+            await self._record_skip(subscription_id, event, "按执行比例计算后低于市场最小下单份数")
             return
 
         now = utcnow()
@@ -751,7 +747,7 @@ class CopyTradingEngine:
             if order.side == "BUY" and subscription is not None and subscription.state != "active":
                 buy_blocked = True
         if buy_blocked:
-            await self._mark_order_failed(order_id, "实盘跟单已关闭，新买入已取消")
+            await self._mark_order_failed(order_id, "实盘策略已关闭，新买入已取消")
             return
         if request.side == "BUY" and not self.settings.live_copy_enabled:
             await self._mark_order_failed(order_id, "自动实盘已被系统紧急停用")
@@ -842,7 +838,7 @@ class CopyTradingEngine:
                                 type="buy",
                                 amount_usdc=result.filled_usdc + result.fee_usdc,
                                 realized_pnl=ZERO,
-                                detail="三事件跟单建仓",
+                                detail="三事件策略建仓",
                                 timestamp=utcnow(),
                             )
                         )

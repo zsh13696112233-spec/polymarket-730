@@ -544,7 +544,7 @@ class OfficialClobTrader:
             )
             response = client.execute(
                 [Transaction(to=destination, data=data, value="0")],
-                "自动赎回跟单持仓",
+                "自动赎回策略持仓",
             )
             result = response.wait()
         except Exception as error:

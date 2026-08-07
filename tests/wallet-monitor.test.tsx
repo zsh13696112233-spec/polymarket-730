@@ -350,7 +350,7 @@ afterEach(() => {
 });
 
 describe("Polymarket 钱包监控页", () => {
-  it("展示实盘跟单当前持仓估值并可切换历史盈亏", async () => {
+  it("展示实盘策略当前持仓估值并可切换历史盈亏", async () => {
     const subscription = {
       id: 1,
       tracked_wallet_id: walletOne.id,
@@ -455,7 +455,7 @@ describe("Polymarket 钱包监控页", () => {
 
     expect(await screen.findByText("实盘归因持仓")).toBeInTheDocument();
     expect(screen.getAllByText("Paris 37°C 实盘持仓").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "关闭实盘跟单" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭实盘策略" })).toBeInTheDocument();
     expect(screen.getAllByText("47¢").length).toBeGreaterThan(0);
     expect(screen.getAllByText("46¢").length).toBeGreaterThan(0);
     expect(screen.getAllByText("-$0.13").length).toBeGreaterThan(0);
@@ -544,7 +544,7 @@ describe("Polymarket 钱包监控页", () => {
 
     expect(await screen.findByText("已关闭")).toBeInTheDocument();
     await user.click(
-      await screen.findByRole("button", { name: "开启实盘跟单" }),
+      await screen.findByRole("button", { name: "开启实盘策略" }),
     );
     await waitFor(() => {
       expect(submittedBody).toEqual({ enabled: true, confirm_live: true });
@@ -638,7 +638,7 @@ describe("Polymarket 钱包监控页", () => {
     });
   });
 
-  it("只展示并保存四项低频跟单配置", async () => {
+  it("只展示并保存四项低频策略配置", async () => {
     let submittedBody: Record<string, number> | null = null;
     let savedSubscription: Record<string, unknown> | null = null;
     const descriptions = [
@@ -697,16 +697,16 @@ describe("Polymarket 钱包监控页", () => {
     const user = userEvent.setup();
     render(<Home />);
     await user.click(
-      await screen.findByRole("button", { name: "配置实盘跟单" }),
+      await screen.findByRole("button", { name: "配置实盘策略" }),
     );
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText("低频跟单设置")).toBeInTheDocument();
+    expect(within(dialog).getByText("低频策略设置")).toBeInTheDocument();
     for (const description of descriptions) {
       expect(within(dialog).getByText(description)).toBeInTheDocument();
     }
 
     const ratio = within(dialog).getByRole("spinbutton", {
-      name: /跟单比例/,
+      name: /执行比例/,
     });
     const positionCap = within(dialog).getByRole("spinbutton", {
       name: /单仓最大投入/,
@@ -730,7 +730,7 @@ describe("Polymarket 钱包监控页", () => {
     });
   });
 
-  it("保存全局跟单比例并按新比例展示历史建议", async () => {
+  it("保存全局执行比例并按新比例展示历史建议", async () => {
     let ratio = 10;
     let submittedBody: unknown;
     const currentPosition = makePosition(
@@ -775,18 +775,18 @@ describe("Polymarket 钱包监控页", () => {
     render(<Home />);
 
     const settingsButton = await screen.findByRole("button", {
-      name: "跟单比例 10%，修改",
+      name: "执行比例 10%，修改",
     });
     expect(
-      (await screen.findAllByText("10% 跟单目标")).length,
+      (await screen.findAllByText("10% 目标")).length,
     ).toBeGreaterThan(0);
     expect(screen.getAllByText("10 shares").length).toBeGreaterThan(0);
     expect(
       screen.getAllByText("按现价约 $4.00 USDC").length,
     ).toBeGreaterThan(0);
     await user.click(settingsButton);
-    const dialog = screen.getByRole("dialog", { name: "设置跟单比例" });
-    const input = within(dialog).getByLabelText("全局跟单比例");
+    const dialog = screen.getByRole("dialog", { name: "设置执行比例" });
+    const input = within(dialog).getByLabelText("全局执行比例");
     await user.clear(input);
     await user.type(input, "25");
     await user.click(within(dialog).getByRole("button", { name: "保存比例" }));
@@ -795,10 +795,10 @@ describe("Polymarket 钱包监控页", () => {
       expect(submittedBody).toEqual({ copy_ratio_percent: 25 });
     });
     expect(
-      await screen.findByRole("button", { name: "跟单比例 25%，修改" }),
+      await screen.findByRole("button", { name: "执行比例 25%，修改" }),
     ).toBeInTheDocument();
     expect(
-      (await screen.findAllByText("25% 跟单目标")).length,
+      (await screen.findAllByText("25% 目标")).length,
     ).toBeGreaterThan(0);
     expect(screen.getAllByText("25 shares").length).toBeGreaterThan(0);
     expect(
@@ -808,7 +808,7 @@ describe("Polymarket 钱包监控页", () => {
     await user.click(
       await screen.findByRole("tab", { name: /仓位变动明细/ }),
     );
-    expect(screen.getAllByText("25% 跟单建议").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("25% 建议").length).toBeGreaterThan(0);
     expect(screen.getAllByText("买入 2.5 shares").length).toBeGreaterThan(0);
     expect(
       screen.getAllByText("估算 $0.90 USDC").length,
@@ -1116,7 +1116,7 @@ describe("Polymarket 钱包监控页", () => {
       name: "共同持仓动态",
     });
     expect(within(activity).getByText("加仓")).toBeInTheDocument();
-    expect(within(activity).getByText("10% 跟单建议")).toBeInTheDocument();
+    expect(within(activity).getByText("10% 建议")).toBeInTheDocument();
     expect(within(activity).getByText("买入 4 shares")).toBeInTheDocument();
     expect(within(activity).getByText("估算 $1.80 USDC")).toBeInTheDocument();
     expect(
@@ -1234,12 +1234,12 @@ describe("Polymarket 钱包监控页", () => {
     render(<Home />);
 
     const table = await screen.findByRole("table");
-    expect(within(table).getByText("跟单目标")).toBeInTheDocument();
+    expect(within(table).getByText("目标")).toBeInTheDocument();
     await waitFor(() => {
       const rows = within(table).getAllByRole("row").slice(1);
       expect(rows).toHaveLength(2);
       expect(rows[0]).toHaveTextContent("较高市值市场");
-      expect(rows[0]).toHaveTextContent("10% 跟单目标");
+      expect(rows[0]).toHaveTextContent("10% 目标");
       expect(rows[0]).toHaveTextContent("10 shares");
       expect(rows[1]).toHaveTextContent("较低市值市场");
     });
@@ -1901,7 +1901,7 @@ describe("Polymarket 钱包监控页", () => {
     expect(within(group!).getByText("第 1 轮")).toBeInTheDocument();
     const secondCycle = within(group!).getByText("第 2 轮").closest("section");
     expect(secondCycle).not.toBeNull();
-    expect(within(secondCycle!).getByText(/已确认盈亏 持平/)).toBeInTheDocument();
+    expect(within(secondCycle!).getByText(/已确认盈亏 暂无可靠数据/)).toBeInTheDocument();
     expect(within(group!).getByText("历史存在断点")).toBeInTheDocument();
   });
 

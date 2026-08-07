@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import partial
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +11,7 @@ from sqlalchemy import select
 
 from backend.main import create_app
 from backend.models import (
+    CopyLedger,
     CopyPosition,
     PositionChangeCandidate,
     PositionEvent,
@@ -18,6 +20,7 @@ from backend.models import (
 )
 from backend.monitor import utcnow
 from backend.polymarket import (
+    ClosedPositionSnapshot,
     PolymarketAPIError,
     RedemptionSnapshot,
     SettlementEvidence,
@@ -40,6 +43,52 @@ def add_wallet(client):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+async def insert_daily_pnl_fixture(database, subscription_ids: list[int], local_day) -> None:
+    shanghai = ZoneInfo("Asia/Shanghai")
+
+    def utc_timestamp(day, hour: int) -> datetime:
+        local_timestamp = datetime.combine(day, datetime.min.time(), tzinfo=shanghai).replace(
+            hour=hour, minute=30
+        )
+        return local_timestamp.astimezone(UTC).replace(tzinfo=None)
+
+    async with database.sessions() as session:
+        rows = [
+            (subscription_ids[0], "sell", Decimal("2"), local_day, 0),
+            (subscription_ids[0], "redeem", Decimal("3"), local_day, 23),
+            (subscription_ids[1], "reconcile_redeem", Decimal("-1"), local_day, 12),
+            (subscription_ids[1], "buy", Decimal("0"), local_day, 13),
+            (
+                subscription_ids[1],
+                "sell",
+                Decimal("-2"),
+                local_day - timedelta(days=2),
+                12,
+            ),
+            (
+                subscription_ids[0],
+                "redeem",
+                Decimal("1"),
+                local_day - timedelta(days=40),
+                12,
+            ),
+        ]
+        for subscription_id, entry_type, pnl, day, hour in rows:
+            session.add(
+                CopyLedger(
+                    subscription_id=subscription_id,
+                    copy_position_id=None,
+                    order_id=None,
+                    type=entry_type,
+                    amount_usdc=Decimal("0"),
+                    realized_pnl=pnl,
+                    detail="每日盈亏测试",
+                    timestamp=utc_timestamp(day, hour),
+                )
+            )
+        await session.commit()
 
 
 def test_global_copy_ratio_defaults_validates_and_persists(settings_factory):
@@ -1234,6 +1283,68 @@ def test_position_event_groups_preserve_cycles_and_summarize_wallet_pnl(
     assert second_page["pnl"] == first_page["pnl"]
 
 
+def test_position_event_groups_use_official_realized_pnl_for_history_gaps(
+    app_client_factory,
+):
+    active = position(
+        asset_id="grouped-asset",
+        size="2",
+        avg_price="0.2",
+        current_price="0.7",
+    )
+    client, fake = app_client_factory([[active]])
+    wallet = add_wallet(client)
+    portal = client.portal
+    assert portal is not None
+    portal.call(
+        insert_grouped_event_fixture,
+        client.app.state.database,
+        wallet["id"],
+        active.asset_id,
+    )
+    fake.closed_positions = [
+        ClosedPositionSnapshot(
+            asset_id="gap-asset",
+            condition_id="condition-gap",
+            title="断点市场",
+            outcome="Yes",
+            event_slug="gap-market",
+            market_slug="gap-market",
+            avg_price=Decimal("0.7"),
+            total_bought=Decimal("140"),
+            realized_pnl=Decimal("-98"),
+            closed_at=None,
+        ),
+        ClosedPositionSnapshot(
+            asset_id="older-official-asset",
+            condition_id="condition-older",
+            title="监控前已结仓市场",
+            outcome="Yes",
+            event_slug="older-market",
+            market_slug="older-market",
+            avg_price=Decimal("0.5"),
+            total_bought=Decimal("20"),
+            realized_pnl=Decimal("20"),
+            closed_at=None,
+        ),
+    ]
+
+    body = client.get(
+        "/api/position-event-groups",
+        params={"wallet_id": wallet["id"], "limit": 10},
+    ).json()
+
+    gap_group = next(item for item in body["items"] if item["asset_id"] == "gap-asset")
+    assert gap_group["confirmed_realized_pnl"] == pytest.approx(-98)
+    assert gap_group["realized_pnl_source"] == "polymarket"
+    assert gap_group["realized_pnl_status"] == "confirmed"
+    assert body["pnl"]["confirmed_realized_pnl"] == pytest.approx(-78)
+    assert body["pnl"]["current_unrealized_pnl"] == pytest.approx(1)
+    assert body["pnl"]["confirmed_total_pnl"] == pytest.approx(-77)
+    assert body["pnl"]["source"] == "polymarket"
+    assert body["pnl"]["complete"] is True
+
+
 def test_new_position_after_baseline_creates_opened_event(app_client_factory):
     opened = position(asset_id="new", size="4", avg_price="0.25", current_price="0.30")
     client, fake = app_client_factory([[], [opened]])
@@ -1841,6 +1952,54 @@ def test_copy_workspace_aggregates_multiple_strategies(app_client_factory):
     )
     assert orders.status_code == 200
     assert orders.json() == {"items": [], "next_cursor": None}
+
+
+def test_copy_workspace_returns_complete_shanghai_daily_realized_pnl_points(
+    app_client_factory,
+):
+    client, _ = app_client_factory([[], []])
+    first = add_wallet(client)
+    second = client.post(
+        "/api/wallets",
+        json={"address": OTHER_ADDRESS, "label": "第二策略"},
+    ).json()
+    subscriptions = []
+    for wallet in (first, second):
+        response = client.post(
+            "/api/copy-trading/subscriptions",
+            json={
+                "tracked_wallet_id": wallet["id"],
+                "copy_ratio_percent": 10,
+                "position_cap_usdc": 20,
+                "total_exposure_cap_usdc": 80,
+                "market_slippage_cents": 5,
+            },
+        )
+        assert response.status_code == 201, response.text
+        subscriptions.append(response.json())
+
+    shanghai = ZoneInfo("Asia/Shanghai")
+    today = datetime.now(shanghai).date()
+    local_day = today - timedelta(days=1)
+    assert client.portal is not None
+    client.portal.call(
+        insert_daily_pnl_fixture,
+        client.app.state.database,
+        [subscription["id"] for subscription in subscriptions],
+        local_day,
+    )
+
+    response = client.get("/api/copy-trading/overview")
+    assert response.status_code == 200, response.text
+    points = response.json()["daily_realized_pnl"]
+    assert len(points) == 42
+    assert points[0]["date"] == (local_day - timedelta(days=40)).isoformat()
+    assert points[-1]["date"] == today.isoformat()
+    point_by_date = {point["date"]: point["realized_pnl"] for point in points}
+    assert point_by_date[local_day.isoformat()] == pytest.approx(4)
+    assert point_by_date[(local_day - timedelta(days=1)).isoformat()] == 0
+    assert point_by_date[(local_day - timedelta(days=2)).isoformat()] == pytest.approx(-2)
+    assert point_by_date[(local_day - timedelta(days=40)).isoformat()] == pytest.approx(1)
 
 
 def test_copy_workspace_serializes_positions_with_wallet_metadata(app_client_factory):

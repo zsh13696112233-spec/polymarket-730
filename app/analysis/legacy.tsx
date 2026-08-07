@@ -347,6 +347,8 @@ type PositionEventGroup = {
   latest_event_id: number | string;
   confirmed_realized_pnl: Numeric;
   incomplete_profit_events: number;
+  realized_pnl_source?: "polymarket" | "recorded";
+  realized_pnl_status?: "confirmed" | "unrealized" | "unavailable";
   cycles: PositionEventCycle[];
 };
 
@@ -357,6 +359,7 @@ type WalletRecordedPnl = {
   confirmed_total_pnl: Numeric;
   incomplete_realized_events: number;
   complete: boolean;
+  source?: "polymarket" | "recorded";
 };
 
 type PositionEventGroupsResponse = {
@@ -704,7 +707,7 @@ function CopyRecommendationView({
   return (
     <div className={`copyRecommendation ${compact ? "compact" : ""}`}>
       <span>
-        {formatRatioSetting(recommendation.ratio_percent)}% 跟单建议
+        {formatRatioSetting(recommendation.ratio_percent)}% 建议
       </span>
       <strong className={recommendation.action}>
         {action} {formatSuggestedShares(recommendation.shares)} shares
@@ -732,7 +735,7 @@ function CurrentPositionCopyTarget({
   const estimatedUsdc = shares * toNumber(position.current_price);
   return (
     <div className="currentCopyTarget">
-      <span>{formatRatioSetting(ratioPercent)}% 跟单目标</span>
+      <span>{formatRatioSetting(ratioPercent)}% 目标</span>
       <strong>{formatSuggestedShares(shares)} shares</strong>
       <small>
         {toNumber(position.current_price) > 0
@@ -843,7 +846,7 @@ function PositionTable({
               <th>建仓日期</th>
               <th>初次建仓</th>
               <th className="numberCell">持仓份额</th>
-              <th>跟单目标</th>
+              <th>目标</th>
               <th className="numberCell">持仓成本</th>
               <th className="numberCell sortedColumn">
                 当前市值 <span aria-hidden="true">↓</span>
@@ -1102,8 +1105,23 @@ function recordedPnlTone(value: Numeric) {
   return amount > 0 ? "profit" : amount < 0 ? "loss" : "";
 }
 
-function formatRecordedPnl(value: Numeric) {
+function formatRecordedPnl(
+  value: Numeric,
+  status: "confirmed" | "unrealized" | "unavailable" = "confirmed",
+) {
+  if (status === "unrealized") return "尚未实现";
+  if (status === "unavailable") return "暂无可靠数据";
   return toNumber(value) === 0 ? "持平" : formatRedemptionMoney(value);
+}
+
+function cycleRealizedPnlStatus(
+  cycle: PositionEventCycle,
+): "confirmed" | "unrealized" | "unavailable" {
+  if (cycle.incomplete_profit_events > 0) return "unavailable";
+  if (cycle.events.some((event) => ["decreased", "closed", "redeemed"].includes(event.type))) {
+    return "confirmed";
+  }
+  return cycle.status === "open" ? "unrealized" : "unavailable";
 }
 
 function positionGroupStatusLabel(status: PositionEventGroup["status"]) {
@@ -1116,14 +1134,19 @@ function positionGroupStatusLabel(status: PositionEventGroup["status"]) {
 }
 
 function WalletRecordedPnlPanel({ pnl }: { pnl: WalletRecordedPnl }) {
+  const official = pnl.source === "polymarket";
   return (
-    <section className="walletRecordedPnl" aria-label="记录以来盈亏">
+    <section className="walletRecordedPnl" aria-label={official ? "官方账户累计盈亏" : "记录以来盈亏"}>
       <div className="walletRecordedPnlHeader">
         <div>
-          <span className="eyebrow">钱包表现</span>
-          <h2>记录以来盈亏</h2>
+          <span className="eyebrow">{official ? "Polymarket 官方数据" : "钱包表现"}</span>
+          <h2>{official ? "官方账户累计盈亏" : "记录以来盈亏"}</h2>
         </div>
-        <small>自 {formatPositionDateTime(pnl.recorded_since)} 开始记录</small>
+        <small>
+          {official
+            ? "已结仓官方 realizedPnl + 当前仓位官方盈亏"
+            : `自 ${formatPositionDateTime(pnl.recorded_since)} 开始记录`}
+        </small>
       </div>
       <div className="walletRecordedPnlGrid">
         <article>
@@ -1200,9 +1223,15 @@ function PositionEventGroupList({ groups }: { groups: PositionEventGroup[] }) {
               <div className="positionEventGroupPnl">
                 <span>已确认实现盈亏</span>
                 <strong className={recordedPnlTone(group.confirmed_realized_pnl)}>
-                  {formatRecordedPnl(group.confirmed_realized_pnl)}
+                  {formatRecordedPnl(
+                    group.confirmed_realized_pnl,
+                    group.realized_pnl_status ?? "confirmed",
+                  )}
                 </strong>
-                {group.incomplete_profit_events > 0 && (
+                {group.realized_pnl_source === "polymarket" && (
+                  <small>Polymarket 官方口径</small>
+                )}
+                {group.realized_pnl_source !== "polymarket" && group.incomplete_profit_events > 0 && (
                   <small>{group.incomplete_profit_events} 笔未计入</small>
                 )}
               </div>
@@ -1239,7 +1268,10 @@ function PositionEventGroupList({ groups }: { groups: PositionEventGroup[] }) {
                       {cycle.ended_at ? ` → ${formatDateTime(cycle.ended_at)}` : " → 至今"}
                     </span>
                     <small>
-                      已确认盈亏 {formatRecordedPnl(cycle.confirmed_realized_pnl)}
+                      已确认盈亏 {formatRecordedPnl(
+                        cycle.confirmed_realized_pnl,
+                        cycleRealizedPnlStatus(cycle),
+                      )}
                       {cycle.incomplete_profit_events > 0
                         ? ` · ${cycle.incomplete_profit_events} 笔未计入`
                         : ""}
@@ -1927,7 +1959,7 @@ function CopySettingsModal({
       setError(
         submitError instanceof Error
           ? submitError.message
-          : "保存跟单比例失败",
+          : "保存执行比例失败",
       );
     } finally {
       setSubmitting(false);
@@ -1953,7 +1985,7 @@ function CopySettingsModal({
         <div className="modalHeader">
           <div>
             <span className="eyebrow">全局计算口径</span>
-            <h2 id="copy-settings-title">设置跟单比例</h2>
+            <h2 id="copy-settings-title">设置执行比例</h2>
           </div>
           <button
             className="closeButton"
@@ -1967,11 +1999,11 @@ function CopySettingsModal({
         </div>
         <form onSubmit={submit}>
           <label className="field ratioField" htmlFor="copy-ratio-percent">
-            <span>全局跟单比例</span>
+            <span>全局执行比例</span>
             <div>
               <input
                 id="copy-ratio-percent"
-                aria-label="全局跟单比例"
+                aria-label="全局执行比例"
                 ref={ratioInput}
                 type="number"
                 min="1"
@@ -2557,7 +2589,7 @@ function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
   };
 
   return (
-    <section className="copyPositionSection" aria-label="实盘跟单持仓明细">
+    <section className="copyPositionSection" aria-label="实盘策略持仓明细">
       <div className="copyPositionHeader">
         <div>
           <strong>
@@ -2565,7 +2597,7 @@ function CopyTradingPositions({ dashboard }: { dashboard: CopyDashboard }) {
           </strong>
           <span>按当前买一价估算可卖出价值 · 实盘成本计入已回报的实际费用</span>
         </div>
-        <div className="copyPositionTabs" role="tablist" aria-label="跟单持仓范围">
+        <div className="copyPositionTabs" role="tablist" aria-label="策略持仓范围">
           <button
             className={view === "open" ? "active" : ""}
             type="button"
@@ -2799,7 +2831,7 @@ function RehearsalPanel({ enabled }: { enabled: boolean }) {
   return (
     <section className="copyTradingFieldGroup" aria-label="手工市场演练">
       <h3>真实下单演练</h3>
-      <p>会真实花费资金并买入一次，不自动卖回，也不会计入自动跟单持仓。</p>
+      <p>会真实花费资金并买入一次，不自动卖回，也不会计入自动策略持仓。</p>
       <form className="copyTradingFormGrid" onSubmit={loadPreview}>
         <label className="field copyTradingField">
           <span>市场链接</span>
@@ -2892,20 +2924,20 @@ function CopyTradingPanel({
     ).length ?? 0;
 
   return (
-    <section className="copyTradingPanel" aria-label="自动跟单">
+    <section className="copyTradingPanel" aria-label="自动策略">
       <div className="copyTradingLead">
         <span className="eyebrow">单执行钱包 · V2</span>
-        <h2>实盘自动跟单</h2>
+        <h2>实盘自动策略</h2>
         <p>
           每 15 秒确认一次持仓变化：只跟随建仓、清仓和赎回；加仓与减仓仅记录，不自动下单。
         </p>
       </div>
       {!subscription ? (
         <div className="copyTradingEmpty">
-          <strong>当前钱包尚未配置实盘跟单</strong>
-          <span>默认按建仓成本的 10% 跟单，单仓最多 $20，总敞口最多 $160。</span>
+          <strong>当前钱包尚未配置实盘策略</strong>
+          <span>默认按建仓成本的 10% 执行，单仓最多 $20，总敞口最多 $160。</span>
           <button className="primaryButton" type="button" onClick={onConfigure}>
-            配置实盘跟单
+            配置实盘策略
           </button>
         </div>
       ) : (
@@ -2920,7 +2952,7 @@ function CopyTradingPanel({
               <strong>{formatMoney(subscription.open_exposure_usdc)}</strong>
             </div>
             <div>
-              <span>今日跟单买入</span>
+              <span>今日策略买入</span>
               <strong>{formatMoney(subscription.daily_bought_usdc)}</strong>
             </div>
             <div>
@@ -2928,7 +2960,7 @@ function CopyTradingPanel({
               <strong>{openPositions} 个</strong>
             </div>
             <div>
-              <span>跟单规则</span>
+              <span>执行规则</span>
               <strong>建仓一次 · 归零清仓 · 赎回一次</strong>
             </div>
           </div>
@@ -2950,8 +2982,8 @@ function CopyTradingPanel({
               {busy
                 ? "处理中…"
                 : subscription.enabled
-                  ? "关闭实盘跟单"
-                  : "开启实盘跟单"}
+                  ? "关闭实盘策略"
+                  : "开启实盘策略"}
             </button>
             <button
               className="dangerButton"
@@ -3122,17 +3154,17 @@ function ExecutionRiskModal({
     {
       key: "budget_usdc",
       label: "钱包预算",
-      description: "自动跟单可以纳入计算的资金总额。",
+      description: "自动策略可以纳入计算的资金总额。",
     },
     {
       key: "cash_reserve_usdc",
       label: "现金保留额",
-      description: "这部分余额不会用于自动跟单；当前限制 $240 在这里调整。",
+      description: "这部分余额不会用于自动策略；当前限制 $240 在这里调整。",
     },
     {
       key: "max_total_exposure_usdc",
       label: "账户总敞口上限",
-      description: "所有观察钱包的自动跟单仓位合计上限。",
+      description: "所有观察钱包的自动策略仓位合计上限。",
     },
     {
       key: "daily_buy_limit_usdc",
@@ -3273,7 +3305,7 @@ function CopyTradingModal({
       );
       onSaved(updated);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "无法保存跟单设置");
+      setError(submitError instanceof Error ? submitError.message : "无法保存策略设置");
     } finally {
       setSubmitting(false);
     }
@@ -3290,11 +3322,11 @@ function CopyTradingModal({
   };
   const fieldGroups: Array<{ title: string; fields: FieldConfig[] }> = [
     {
-      title: "低频跟单设置",
+      title: "低频策略设置",
       fields: [
         {
           key: "copy_ratio_percent",
-          label: "跟单比例",
+          label: "执行比例",
           unit: "%",
           description: "观察钱包首次建仓时，按其建仓成本的一定比例执行一次买入。",
           min: "0.01",
@@ -3332,7 +3364,7 @@ function CopyTradingModal({
         <div className="modalHeader">
           <div>
             <span className="eyebrow">按观察钱包独立配置</span>
-            <h2>{subscription ? "修改实盘跟单风控" : "配置实盘跟单"}</h2>
+            <h2>{subscription ? "修改实盘策略风控" : "配置实盘策略"}</h2>
           </div>
           <button className="closeButton" type="button" onClick={onClose}>×</button>
         </div>
@@ -3466,7 +3498,7 @@ export default function LegacyAnalysis() {
       setSettingsLoadError(
         settingsError instanceof Error
           ? settingsError.message
-          : "无法读取跟单比例",
+          : "无法读取执行比例",
       );
     }
   }, []);
@@ -3529,7 +3561,7 @@ export default function LegacyAnalysis() {
       setCopyTradingError(
         dashboardError instanceof Error
           ? dashboardError.message
-          : "无法读取自动跟单状态",
+          : "无法读取自动策略状态",
       );
     }
   }, []);
@@ -4158,7 +4190,7 @@ export default function LegacyAnalysis() {
     const subscription = copyDashboard?.subscription;
     if (!subscription) return;
     if (enabled && !window.confirm(
-      "确认开启真实资金自动跟单？系统将按当前钱包配置和共享资金上限自动下单。",
+      "确认开启真实资金自动策略？系统将按当前钱包配置和共享资金上限自动下单。",
     )) {
       return;
     }
@@ -4191,7 +4223,7 @@ export default function LegacyAnalysis() {
   async function closeCopyTradingPositions() {
     const subscription = copyDashboard?.subscription;
     if (!subscription) return;
-    if (!window.confirm("确认停止跟单并卖出全部自动跟单归因持仓？")) {
+    if (!window.confirm("确认停止策略并卖出全部自动策略归因持仓？")) {
       return;
     }
     setCopyTradingBusy(true);
@@ -4233,16 +4265,16 @@ export default function LegacyAnalysis() {
           </div>
         </div>
         <div className="headerActions">
-          <span className="readOnlyNote">公开监控 · 自动跟单独立风控</span>
+          <span className="readOnlyNote">公开监控 · 自动策略独立风控</span>
           <button
             className="copyRatioButton"
             type="button"
             onClick={() => setSettingsModalOpen(true)}
-            aria-label={`跟单比例 ${formatRatioSetting(
+            aria-label={`执行比例 ${formatRatioSetting(
               globalSettings.copy_ratio_percent,
             )}%，修改`}
           >
-            <span>跟单比例</span>
+            <span>执行比例</span>
             <strong>
               {formatRatioSetting(globalSettings.copy_ratio_percent)}%
             </strong>

@@ -71,6 +71,12 @@ const filledOrder = {
   event_slug: "team-a-win",
 };
 
+const dailyRealizedPnl = Array.from({ length: 31 }, (_, index) => {
+  const date = new Date(Date.UTC(2026, 6, 7 + index)).toISOString().slice(0, 10);
+  const realizedPnl = index === 0 ? 5 : index === 29 ? 3 : index === 30 ? -1 : 0;
+  return { date, realized_pnl: realizedPnl };
+});
+
 const overview = {
   live_copy_enabled: true,
   account,
@@ -83,6 +89,7 @@ const overview = {
     valuation_complete: true,
     unpriced_positions: 0,
   },
+  daily_realized_pnl: dailyRealizedPnl,
   strategies: [{
     subscription,
     wallet,
@@ -153,22 +160,56 @@ describe("PolyCopy workspace", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("展示全局资金、策略状态和最近跟单记录", async () => {
+  it("展示全局资金、策略状态和最近记录", async () => {
     render(<PolyCopyWorkspace view="overview" />);
     expect(await screen.findByText("执行钱包余额")).toBeInTheDocument();
     expect(screen.getByText("策略一")).toBeInTheDocument();
     expect(screen.getAllByText("Will Team A win?").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("$7.50").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("+$7.50").length).toBeGreaterThan(0);
   });
 
-  it("按钱包独立暂停跟单", async () => {
+  it("展示最近 30 日的已实现盈亏柱状图", async () => {
     const user = userEvent.setup();
     render(<PolyCopyWorkspace view="overview" />);
-    await user.click(await screen.findByRole("switch", { name: "策略一暂停跟单" }));
+    const chart = await screen.findByRole("region", { name: "每日盈亏" });
+    expect(within(chart).getByText("+$2.00")).toBeInTheDocument();
+    expect(within(chart).getByText("1 天")).toBeInTheDocument();
+    expect(within(chart).getByRole("img", { name: /2026年8月5日.*\+\$3\.00/ })).toBeInTheDocument();
+    expect(within(chart).getByRole("img", { name: /2026年8月6日.*-\$1\.00/ })).toBeInTheDocument();
+    expect(within(chart).queryByRole("img", { name: /2026年7月7日/ })).not.toBeInTheDocument();
+
+    await user.click(within(chart).getByRole("button", { name: "全部" }));
+    expect(within(chart).getByText("+$7.00")).toBeInTheDocument();
+    expect(within(chart).getByRole("img", { name: /2026年7月7日.*\+\$5\.00/ })).toBeInTheDocument();
+  });
+
+  it("每日盈亏全部为零时展示空状态", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) {
+        return json({
+          ...overview,
+          daily_realized_pnl: [
+            { date: "2026-08-05", realized_pnl: 0 },
+            { date: "2026-08-06", realized_pnl: 0 },
+          ],
+        });
+      }
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+    render(<PolyCopyWorkspace view="overview" />);
+    expect(await screen.findByText("近 30 日暂无已实现盈亏")).toBeInTheDocument();
+  });
+
+  it("按钱包独立暂停策略", async () => {
+    const user = userEvent.setup();
+    render(<PolyCopyWorkspace view="overview" />);
+    await user.click(await screen.findByRole("switch", { name: "策略一暂停策略" }));
     await waitFor(() => expect(requests.some((url) => url.includes("/subscriptions/10/enabled"))).toBe(true));
   });
 
-  it("明确区分暂停跟单与停止清仓", async () => {
+  it("明确区分暂停策略与停止清仓", async () => {
     const user = userEvent.setup();
     render(<PolyCopyWorkspace view="overview" />);
     await user.click(await screen.findByLabelText("策略一更多操作"));

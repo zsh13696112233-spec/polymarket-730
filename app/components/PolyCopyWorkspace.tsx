@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { PolyCopyShell, WorkspaceView } from "./PolyCopyShell";
 
@@ -134,6 +134,10 @@ type Overview = {
     valuation_complete: boolean;
     unpriced_positions: number;
   };
+  daily_realized_pnl: Array<{
+    date: string;
+    realized_pnl: Numeric;
+  }>;
   strategies: Strategy[];
   recent_orders: CopyOrder[];
   as_of: string;
@@ -172,6 +176,14 @@ function money(value: Numeric | null | undefined, fallback = "—") {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(number(value));
+}
+
+function signedMoney(value: Numeric | null | undefined, fallback = "—") {
+  if (value === null || value === undefined) return fallback;
+  const amount = number(value);
+  if (amount > 0) return `+${money(amount)}`;
+  if (amount < 0) return `-${money(Math.abs(amount))}`;
+  return money(amount);
 }
 
 function price(value: Numeric | null | undefined) {
@@ -285,7 +297,7 @@ function Pnl({ value, secondary }: { value: Numeric | null; secondary?: string }
   const tone = number(value) > 0 ? "profit" : number(value) < 0 ? "loss" : "flat";
   return (
     <span className={`pcPnl ${tone}`}>
-      {money(value)}
+      {signedMoney(value)}
       {secondary && <small>{secondary}</small>}
     </span>
   );
@@ -333,7 +345,7 @@ function LoadingState() {
   return (
     <div className="pcLoading" role="status">
       <span />
-      正在读取最新跟单数据…
+      正在读取最新数据…
     </div>
   );
 }
@@ -399,7 +411,7 @@ function WalletModal({
 
   return (
     <Modal
-      title={mode === "self" ? "设置执行钱包地址" : "添加跟单目标"}
+      title={mode === "self" ? "设置执行钱包地址" : "添加目标"}
       eyebrow={mode === "self" ? "执行账户" : "公开钱包"}
       onClose={onClose}
     >
@@ -480,7 +492,7 @@ function QuickSettingsModal({
       }
       onSaved();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "无法保存跟单参数");
+      setError(submitError instanceof Error ? submitError.message : "无法保存策略参数");
     } finally {
       setBusy(false);
     }
@@ -491,7 +503,7 @@ function QuickSettingsModal({
       <form className="pcForm" onSubmit={submit}>
         <div className="pcFormGrid three">
           <label className="pcField">
-            <span>跟单比例</span>
+            <span>执行比例</span>
             <div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={ratio} onChange={(event) => setRatio(event.target.value)} /><b>%</b></div>
             <small>按目标钱包首次建仓成本计算</small>
           </label>
@@ -510,7 +522,7 @@ function QuickSettingsModal({
         {error && <p className="pcFormError" role="alert">{error}</p>}
         <div className="pcModalActions">
           <button className="pcButton ghost" type="button" onClick={onClose}>取消</button>
-          <button className="pcButton primary" type="submit" disabled={busy}>{busy ? "正在保存…" : subscription ? "保存参数" : "创建跟单策略"}</button>
+          <button className="pcButton primary" type="submit" disabled={busy}>{busy ? "正在保存…" : subscription ? "保存参数" : "创建策略"}</button>
         </div>
       </form>
     </Modal>
@@ -519,7 +531,7 @@ function QuickSettingsModal({
 
 function OrderTable({ orders }: { orders: CopyOrder[] }) {
   if (orders.length === 0) {
-    return <EmptyState title="暂无跟单记录" message="策略产生信号后，成功、跳过和异常记录都会显示在这里。" />;
+    return <EmptyState title="暂无记录" message="策略产生信号后，成功、跳过和异常记录都会显示在这里。" />;
   }
   return (
     <>
@@ -569,6 +581,90 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
   );
 }
 
+function DailyRealizedPnlChart({ items }: { items: Overview["daily_realized_pnl"] }) {
+  const [range, setRange] = useState<"7" | "15" | "30" | "all">("30");
+  const visibleItems = range === "all" ? items : items.slice(-Number(range));
+  const values = visibleItems.map((item) => number(item.realized_pnl));
+  const maximum = Math.max(0, ...values.map((value) => Math.abs(value)));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const profitableDays = values.filter((value) => value > 0).length;
+  const totalTone = total > 0 ? "profit" : total < 0 ? "loss" : "flat";
+  const rangeLabel = range === "all" ? "全部" : `${range} 日`;
+  const labelStep = visibleItems.length <= 7 ? 1 : visibleItems.length <= 15 ? 2 : 5;
+  const chartStyle = {
+    "--pc-daily-pnl-columns": visibleItems.length,
+    "--pc-daily-pnl-min-width": `${range === "all" ? Math.max(340, visibleItems.length * 18) : 340}px`,
+  } as CSSProperties;
+
+  return (
+    <section className="pcPanel pcDailyPnlPanel" aria-labelledby="daily-pnl-title">
+      <header className="pcPanelHeader">
+        <div>
+          <span className="pcEyebrow">REALIZED PNL · 30 DAYS</span>
+          <h2 id="daily-pnl-title">每日盈亏</h2>
+          <p>全部策略按北京时间汇总的已实现盈亏。</p>
+        </div>
+        <div className="pcDailyPnlHeaderTools">
+          <div className="pcDailyPnlRanges" aria-label="每日盈亏日期范围">
+            {(["7", "15", "30", "all"] as const).map((value) => (
+              <button type="button" key={value} className={range === value ? "active" : ""} aria-pressed={range === value} onClick={() => setRange(value)}>
+                {value === "all" ? "全部" : `${value}天`}
+              </button>
+            ))}
+          </div>
+          <dl className="pcDailyPnlSummary">
+            <div><dt>{rangeLabel}累计</dt><dd className={totalTone}>{signedMoney(total)}</dd></div>
+            <div><dt>盈利天数</dt><dd>{profitableDays} 天</dd></div>
+          </dl>
+        </div>
+      </header>
+      {maximum === 0 ? (
+        <div className="pcDailyPnlEmpty" role="status">近 30 日暂无已实现盈亏</div>
+      ) : (
+        <div className="pcDailyPnlScroll">
+          <div className="pcDailyPnlChart" style={chartStyle}>
+            <div className="pcDailyPnlPlot">
+              <span className="pcDailyPnlGridLine top" aria-hidden="true" />
+              <span className="pcDailyPnlGridLine zero" aria-hidden="true" />
+              <span className="pcDailyPnlGridLine bottom" aria-hidden="true" />
+              <div className="pcDailyPnlBars">
+                {visibleItems.map((item) => {
+                  const value = number(item.realized_pnl);
+                  const height = value === 0 ? 0 : Math.max(2.5, Math.abs(value) / maximum * 44);
+                  const [year, month, day] = item.date.split("-");
+                  const readableDate = `${year}年${Number(month)}月${Number(day)}日`;
+                  const tone = value > 0 ? "profit" : value < 0 ? "loss" : "flat";
+                  return (
+                    <span
+                      className={`pcDailyPnlColumn ${tone}`}
+                      key={item.date}
+                      role="img"
+                      tabIndex={0}
+                      aria-label={`${readableDate}，已实现盈亏 ${signedMoney(value)}`}
+                      title={`${readableDate} · ${signedMoney(value)}`}
+                      style={{ "--pc-daily-pnl-height": `${height}%` } as CSSProperties}
+                    >
+                      <span className="pcDailyPnlBar" aria-hidden="true" />
+                      <span className="pcDailyPnlTooltip" role="tooltip">{signedMoney(value)}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="pcDailyPnlDates" aria-hidden="true">
+              {visibleItems.map((item, index) => {
+                const [, month, day] = item.date.split("-");
+                const visible = index % labelStep === 0 || index === visibleItems.length - 1;
+                return <span className={visible ? "visible" : ""} key={item.date}>{Number(month)}/{Number(day)}</span>;
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function OverviewPage({
   overview,
   wallets,
@@ -589,24 +685,26 @@ function OverviewPage({
   const total = overview.totals.total_pnl;
   const metrics = [
     { label: "执行钱包余额", value: money(overview.totals.collateral_balance), meta: overview.account?.last_balance_at ? `更新于 ${dateTime(overview.account.last_balance_at)}` : "等待账户验证", tone: "" },
-    { label: "可用跟单额度", value: money(overview.totals.available_capacity_usdc), meta: `今日已买入 ${money(overview.totals.daily_bought_usdc)}`, tone: "" },
-    { label: "当前跟单敞口", value: money(overview.totals.open_exposure_usdc), meta: `${overview.strategies.filter((item) => item.subscription.enabled).length} 个策略运行中`, tone: "" },
-    { label: "跟单总盈亏", value: total === null ? "未完整定价" : money(total), meta: overview.totals.valuation_complete ? "包含已实现与浮动盈亏" : `${overview.totals.unpriced_positions} 个仓位缺少报价`, tone: total === null ? "" : number(total) > 0 ? "profit" : number(total) < 0 ? "loss" : "" },
+    { label: "可用额度", value: money(overview.totals.available_capacity_usdc), meta: `今日已买入 ${money(overview.totals.daily_bought_usdc)}`, tone: "" },
+    { label: "当前敞口", value: money(overview.totals.open_exposure_usdc), meta: `${overview.strategies.filter((item) => item.subscription.enabled).length} 个策略运行中`, tone: "" },
+    { label: "总盈亏", value: total === null ? "未完整定价" : signedMoney(total), meta: overview.totals.valuation_complete ? "包含已实现与浮动盈亏" : `${overview.totals.unpriced_positions} 个仓位缺少报价`, tone: total === null ? "" : number(total) > 0 ? "profit" : number(total) < 0 ? "loss" : "" },
   ];
   return (
     <>
-      {!overview.live_copy_enabled && <div className="pcAlert danger"><span>!</span><p><strong>实盘跟单已被系统停用</strong>当前不能开启新的买入，已有仓位仍会继续处理退出。</p></div>}
+      {!overview.live_copy_enabled && <div className="pcAlert danger"><span>!</span><p><strong>实盘策略已被系统停用</strong>当前不能开启新的买入，已有仓位仍会继续处理退出。</p></div>}
       <section className="pcMetricGrid" aria-label="全局资金概览">
         {metrics.map((metric) => <article className="pcMetricCard" key={metric.label}><span>{metric.label}</span><strong className={metric.tone}><PixelAmount value={metric.value} /></strong><small>{metric.meta}</small></article>)}
       </section>
 
+      <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} />
+
       <section className="pcPanel">
         <header className="pcPanelHeader">
-          <div><span className="pcEyebrow">STRATEGIES</span><h2>跟单策略</h2><p>每个目标钱包独立启停，资金边界由执行钱包统一控制。</p></div>
+          <div><span className="pcEyebrow">STRATEGIES</span><h2>策略</h2><p>每个目标钱包独立启停，资金边界由执行钱包统一控制。</p></div>
           <span className="pcPanelCount">{trackedWallets.length} 个目标</span>
         </header>
         {trackedWallets.length === 0 ? (
-          <EmptyState title="还没有跟单目标" message="添加一个公开 Polymarket 钱包，设置参数后即可开始。" />
+          <EmptyState title="还没有目标" message="添加一个公开 Polymarket 钱包，设置参数后即可开始。" />
         ) : (
           <div className="pcStrategyList">
             {trackedWallets.map((wallet) => {
@@ -620,7 +718,7 @@ function OverviewPage({
                   <dl className="pcStrategyMetrics"><div><dt>当前敞口</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日买入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div></dl>
                   <div className="pcStrategyActions">
                     <button className="pcButton ghost" type="button" onClick={() => onConfigure(wallet)}>{subscription ? "参数" : "配置"}</button>
-                    {strategy && <button className={`pcSwitch ${subscription?.enabled ? "on" : ""}`} type="button" role="switch" aria-checked={subscription?.enabled} aria-label={`${wallet.label}${subscription?.enabled ? "暂停跟单" : "恢复跟单"}`} disabled={busyId === subscription?.id || subscription?.state === "closing"} onClick={() => onToggle(strategy)}><span /></button>}
+                    {strategy && <button className={`pcSwitch ${subscription?.enabled ? "on" : ""}`} type="button" role="switch" aria-checked={subscription?.enabled} aria-label={`${wallet.label}${subscription?.enabled ? "暂停策略" : "恢复策略"}`} disabled={busyId === subscription?.id || subscription?.state === "closing"} onClick={() => onToggle(strategy)}><span /></button>}
                     {strategy && <details className="pcActionMenu"><summary aria-label={`${wallet.label}更多操作`}>⋮</summary><div><button type="button" onClick={() => onCloseStrategy(strategy)}>停止策略并立即清仓</button></div></details>}
                   </div>
                 </article>
@@ -631,7 +729,7 @@ function OverviewPage({
       </section>
 
       <section className="pcPanel">
-        <header className="pcPanelHeader compact"><div><span className="pcEyebrow">ACTIVITY</span><h2>最近跟单记录</h2></div><Link className="pcTextLink" href="/records">查看全部 →</Link></header>
+        <header className="pcPanelHeader compact"><div><span className="pcEyebrow">ACTIVITY</span><h2>最近记录</h2></div><Link className="pcTextLink" href="/records">查看全部 →</Link></header>
         <OrderTable orders={overview.recent_orders} />
       </section>
     </>
@@ -666,7 +764,7 @@ function PositionsPage({ overview }: { overview: Overview }) {
         <label className="pcSelect"><span>目标钱包</span><select value={walletId} onChange={(event) => setWalletId(event.target.value)}><option value="all">全部钱包</option>{overview.strategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
       </header>
       {data && scope === "open" && <div className="pcInlineSummary"><div><span>持仓成本</span><strong>{money(data.portfolio.open_cost_usdc)}</strong></div><div><span>当前市值</span><strong>{money(data.portfolio.market_value_usdc)}</strong></div><div><span>浮动盈亏</span><Pnl value={data.portfolio.unrealized_pnl} /></div><div><span>已实现盈亏</span><Pnl value={data.portfolio.realized_pnl} /></div>{!data.portfolio.valuation_complete && <p>{data.portfolio.unpriced_positions} 个仓位未定价，汇总盈亏暂不显示。</p>}</div>}
-      {loading ? <LoadingState /> : error ? <div className="pcAlert danger"><span>!</span><p><strong>持仓读取失败</strong>{error}</p></div> : !data?.items.length ? <EmptyState title={scope === "open" ? "暂无自动跟单持仓" : "暂无历史仓位"} message={scope === "open" ? "策略完成首次买入后，仓位会出现在这里。" : "已完成清仓或赎回的仓位会保留在这里。"} /> : (
+      {loading ? <LoadingState /> : error ? <div className="pcAlert danger"><span>!</span><p><strong>持仓读取失败</strong>{error}</p></div> : !data?.items.length ? <EmptyState title={scope === "open" ? "暂无自动策略持仓" : "暂无历史仓位"} message={scope === "open" ? "策略完成首次买入后，仓位会出现在这里。" : "已完成清仓或赎回的仓位会保留在这里。"} /> : (
         <>
           <div className="pcTableWrap pcDesktopOnly"><table className="pcTable"><thead><tr><th>市场 / Outcome</th><th>来源钱包</th><th className="numeric">成本 / 均价</th><th className="numeric">当前价 / 市值</th><th className="numeric">浮动盈亏</th><th className="numeric">已实现 / 总盈亏</th><th>状态</th></tr></thead><tbody>{data.items.map((position) => <tr key={position.id}><td><a className="pcMarketIdentity" href={position.event_slug ? `https://polymarket.com/event/${position.event_slug}` : undefined} target="_blank" rel="noreferrer"><strong>{position.title}</strong><span>{position.outcome}</span></a></td><td><span className="pcWalletCell"><strong>{position.tracked_wallet_label}</strong><small>{shortAddress(position.tracked_wallet_address)}</small></span></td><td className="numeric"><strong>{money(scope === "open" ? position.attributed_cost : position.lifetime_bought_usdc)}</strong><small>{price(position.average_entry_price)}</small></td><td className="numeric">{position.valuation_status === "unavailable" ? <span className="pcMissing">未定价</span> : <><strong>{price(position.current_bid)}</strong><small>{money(position.current_value)}</small></>}</td><td className="numeric"><Pnl value={position.unrealized_pnl} secondary={position.unrealized_pnl_percent === null ? undefined : `${number(position.unrealized_pnl_percent).toFixed(2)}%`} /></td><td className="numeric"><Pnl value={position.total_pnl} secondary={`已实现 ${money(position.realized_pnl)}`} /></td><td><Badge label={position.status === "open" ? "持仓中" : position.status} tone={position.status === "open" ? "success" : "neutral"} /></td></tr>)}</tbody></table></div>
           <div className="pcMobileCards">{data.items.map((position) => <article className="pcMobileCard" key={position.id}><div className="pcMobileCardHeader"><span className="pcMarketIdentity"><strong>{position.title}</strong><span>{position.outcome} · {position.tracked_wallet_label}</span></span><Badge label={position.status === "open" ? "持仓中" : position.status} tone={position.status === "open" ? "success" : "neutral"} /></div><dl><div><dt>成本</dt><dd>{money(position.attributed_cost)}</dd></div><div><dt>当前市值</dt><dd>{money(position.current_value)}</dd></div><div><dt>浮动盈亏</dt><dd><Pnl value={position.unrealized_pnl} /></dd></div><div><dt>总盈亏</dt><dd><Pnl value={position.total_pnl} /></dd></div></dl></article>)}</div>
@@ -709,7 +807,7 @@ function RecordsPage({ overview }: { overview: Overview }) {
       setLoading(true);
       void api<OrderResponse>(buildPath())
         .then((result) => { if (!cancelled) { setItems(result.items); setCursor(result.next_cursor); setError(null); } })
-        .catch((loadError) => { if (!cancelled) setError(loadError instanceof Error ? loadError.message : "无法读取跟单记录"); })
+        .catch((loadError) => { if (!cancelled) setError(loadError instanceof Error ? loadError.message : "无法读取记录"); })
         .finally(() => { if (!cancelled) setLoading(false); });
     }, 0);
     return () => { cancelled = true; window.clearTimeout(timer); };
@@ -851,17 +949,17 @@ function SettingsPage({
   }
 
   return <div className="pcSettingsStack">
-    <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION ACCOUNT</span><h2>执行钱包</h2><p>唯一资金账户，为全部跟单策略提供共享余额与风险边界。</p></div>{account && <Badge label={account.status === "ready" ? "已验证" : account.status === "insufficient_balance" ? "余额不足" : "待验证"} tone={account.status === "ready" ? "success" : "warning"} />}</header>{account ? <div className="pcAccountSummary"><div><span>签名地址</span><strong>{shortAddress(account.signer_address)}</strong></div><div><span>资金地址</span><strong>{shortAddress(account.funder_address)}</strong></div><div><span>当前余额</span><strong>{money(account.collateral_balance)}</strong><small>{account.last_balance_at ? `更新于 ${dateTime(account.last_balance_at)}` : "尚未刷新"}</small></div><div><span>密钥状态</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><button className="pcButton ghost" type="button" disabled={busy} onClick={refreshBalance}>{busy ? "正在刷新…" : "刷新余额"}</button><button className="pcButton ghost" type="button" disabled={busy} onClick={verify}>验证密钥与余额</button></div> : <EmptyState title="尚未绑定执行钱包" message="先设置“我的钱包”，再将其绑定为唯一执行账户。" action={<button className="pcButton primary" type="button" disabled={busy} onClick={bindAccount}>{selfWallet ? "绑定执行钱包" : "设置我的钱包"}</button>} />}{message && <p className={message.includes("完成") || message.includes("已绑定") || message.includes("已刷新") ? "pcFormSuccess pcPanelMessage" : "pcFormError pcPanelMessage"}>{message}</p>}</section>
+    <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION ACCOUNT</span><h2>执行钱包</h2><p>唯一资金账户，为全部策略提供共享余额与风险边界。</p></div>{account && <Badge label={account.status === "ready" ? "已验证" : account.status === "insufficient_balance" ? "余额不足" : "待验证"} tone={account.status === "ready" ? "success" : "warning"} />}</header>{account ? <div className="pcAccountSummary"><div><span>签名地址</span><strong>{shortAddress(account.signer_address)}</strong></div><div><span>资金地址</span><strong>{shortAddress(account.funder_address)}</strong></div><div><span>当前余额</span><strong>{money(account.collateral_balance)}</strong><small>{account.last_balance_at ? `更新于 ${dateTime(account.last_balance_at)}` : "尚未刷新"}</small></div><div><span>密钥状态</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><button className="pcButton ghost" type="button" disabled={busy} onClick={refreshBalance}>{busy ? "正在刷新…" : "刷新余额"}</button><button className="pcButton ghost" type="button" disabled={busy} onClick={verify}>验证密钥与余额</button></div> : <EmptyState title="尚未绑定执行钱包" message="先设置“我的钱包”，再将其绑定为唯一执行账户。" action={<button className="pcButton primary" type="button" disabled={busy} onClick={bindAccount}>{selfWallet ? "绑定执行钱包" : "设置我的钱包"}</button>} />}{message && <p className={message.includes("完成") || message.includes("已绑定") || message.includes("已刷新") ? "pcFormSuccess pcPanelMessage" : "pcFormError pcPanelMessage"}>{message}</p>}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">CAPITAL RISK</span><h2>资金风控</h2><p>这些限制由所有目标钱包共享，修改后需要重新验证执行账户。</p></div></header>{account ? <AccountRiskForm account={account} onSaved={onReload} /> : <EmptyState title="等待执行钱包" message="绑定执行钱包后可配置预算、现金保留和每日风控。" />}</section>
-    <section className="pcPanel"><header className="pcPanelHeader pcFilterHeader"><div><span className="pcEyebrow">ADVANCED STRATEGY</span><h2>策略高级参数</h2><p>常用的跟单比例和单市场上限请在总览页快速调整。</p></div>{overview.strategies.length > 0 && <label className="pcSelect"><span>目标钱包</span><select value={strategyId} onChange={(event) => setStrategyId(event.target.value)}>{overview.strategies.map((item) => <option value={item.subscription.id} key={item.subscription.id}>{item.wallet.label}</option>)}</select></label>}</header>{strategy ? <AdvancedStrategyForm key={strategy.subscription.id} strategy={strategy} onSaved={onReload} /> : <EmptyState title="暂无已配置策略" message="从总览页为目标钱包创建跟单策略后，可在这里调整高级参数。" />}</section>
-    <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">DIAGNOSTICS</span><h2>账户诊断与下单演练</h2><p>低频维护工具集中在这里，不影响日常跟单工作台。</p></div></header>{account?.signer_address && !account.credentials_configured && <div className="pcCommandHint"><span>导入执行密钥</span><code>uv run python -m backend.copy_cli set-key --account {account.signer_address}</code></div>}<RehearsalForm enabled={Boolean(overview.live_copy_enabled && account?.status === "ready")} /></section>
+    <section className="pcPanel"><header className="pcPanelHeader pcFilterHeader"><div><span className="pcEyebrow">ADVANCED STRATEGY</span><h2>策略高级参数</h2><p>常用的执行比例和单市场上限请在总览页快速调整。</p></div>{overview.strategies.length > 0 && <label className="pcSelect"><span>目标钱包</span><select value={strategyId} onChange={(event) => setStrategyId(event.target.value)}>{overview.strategies.map((item) => <option value={item.subscription.id} key={item.subscription.id}>{item.wallet.label}</option>)}</select></label>}</header>{strategy ? <AdvancedStrategyForm key={strategy.subscription.id} strategy={strategy} onSaved={onReload} /> : <EmptyState title="暂无已配置策略" message="从总览页为目标钱包创建策略后，可在这里调整高级参数。" />}</section>
+    <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">DIAGNOSTICS</span><h2>账户诊断与下单演练</h2><p>低频维护工具集中在这里，不影响日常策略工作台。</p></div></header>{account?.signer_address && !account.credentials_configured && <div className="pcCommandHint"><span>导入执行密钥</span><code>uv run python -m backend.copy_cli set-key --account {account.signer_address}</code></div>}<RehearsalForm enabled={Boolean(overview.live_copy_enabled && account?.status === "ready")} /></section>
   </div>;
 }
 
 const viewCopy: Record<Exclude<WorkspaceView, "analysis">, { title: string; subtitle: string }> = {
-  overview: { title: "跟单总览", subtitle: "全局资金、策略状态与最新执行一目了然" },
-  positions: { title: "跟单持仓", subtitle: "查看全部目标钱包产生的实盘归因仓位" },
-  records: { title: "跟单记录", subtitle: "从信号到成交，保留每一次执行结果与原因" },
+  overview: { title: "总览", subtitle: "资金策略面板" },
+  positions: { title: "持仓", subtitle: "查看全部目标钱包产生的实盘归因仓位" },
+  records: { title: "记录", subtitle: "从信号到成交，保留每一次执行结果与原因" },
   settings: { title: "设置", subtitle: "管理执行钱包、风险边界与低频高级工具" },
 };
 
@@ -908,17 +1006,17 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
   async function toggleStrategy(strategy: Strategy) {
     const subscription = strategy.subscription;
     const enabled = !subscription.enabled;
-    if (enabled && !window.confirm(`确认恢复 ${strategy.wallet.label} 的真实资金自动跟单？`)) return;
+    if (enabled && !window.confirm(`确认恢复 ${strategy.wallet.label} 的真实资金自动策略？`)) return;
     setBusyId(subscription.id); setError(null);
     try {
       await api(`/api/copy-trading/subscriptions/${subscription.id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled, confirm_live: enabled }) });
       await load(true);
-    } catch (toggleError) { setError(toggleError instanceof Error ? toggleError.message : "跟单开关操作失败"); }
+    } catch (toggleError) { setError(toggleError instanceof Error ? toggleError.message : "策略开关操作失败"); }
     finally { setBusyId(null); }
   }
 
   async function closeStrategy(strategy: Strategy) {
-    if (!window.confirm(`确认停止 ${strategy.wallet.label} 的跟单并卖出全部归因持仓？此操作不可撤销。`)) return;
+    if (!window.confirm(`确认停止 ${strategy.wallet.label} 的策略并卖出全部归因持仓？此操作不可撤销。`)) return;
     setBusyId(strategy.subscription.id); setError(null);
     try {
       await api(`/api/copy-trading/subscriptions/${strategy.subscription.id}/action`, { method: "POST", body: JSON.stringify({ action: "close" }) });
@@ -928,11 +1026,11 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
   }
 
   const copy = viewCopy[view];
-  const actions = <><span className="pcAsOf"><span className={error ? "pcStatusDot error" : "pcStatusDot"} />{error ? "数据连接异常" : overview ? `更新于 ${dateTime(overview.as_of)}` : "正在连接"}</span>{view !== "settings" && <button className="pcButton primary" type="button" onClick={() => setWalletModal("tracked")}>＋ 添加跟单目标</button>}</>;
+  const actions = <><span className="pcAsOf"><span className={error ? "pcStatusDot error" : "pcStatusDot"} />{error ? "数据连接异常" : overview ? `更新于 ${dateTime(overview.as_of)}` : "正在连接"}</span>{view !== "settings" && <button className="pcButton primary" type="button" onClick={() => setWalletModal("tracked")}>＋ 添加目标</button>}</>;
 
   return (
     <PolyCopyShell active={view} title={copy.title} subtitle={copy.subtitle} actions={actions}>
-      {loading && !overview ? <LoadingState /> : !overview ? <EmptyState title="无法读取跟单工作台" message={error || "请确认本机 API 服务正在运行。"} action={<button className="pcButton primary" type="button" onClick={() => void load()}>重新连接</button>} /> : (
+      {loading && !overview ? <LoadingState /> : !overview ? <EmptyState title="无法读取策略工作台" message={error || "请确认本机 API 服务正在运行。"} action={<button className="pcButton primary" type="button" onClick={() => void load()}>重新连接</button>} /> : (
         <>
           {error && <div className="pcAlert danger pcGlobalError"><span>!</span><p><strong>部分数据可能不是最新</strong>{error}</p><button className="pcButton ghost" type="button" onClick={() => void load()}>重试</button></div>}
           {view === "overview" && <OverviewPage overview={overview} wallets={wallets} busyId={busyId} onToggle={(strategy) => void toggleStrategy(strategy)} onConfigure={setQuickWallet} onCloseStrategy={(strategy) => void closeStrategy(strategy)} />}

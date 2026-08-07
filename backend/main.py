@@ -5,7 +5,7 @@ import json
 import secrets
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
@@ -50,6 +50,7 @@ from backend.purchase_history import (
     opened_date,
 )
 from backend.schemas import (
+    CopyDailyRealizedPnlRead,
     CopyDashboardRead,
     CopyOrderRead,
     CopyOrdersResponse,
@@ -167,9 +168,9 @@ def decode_copy_order_cursor(raw_cursor: str) -> tuple[datetime, int]:
         timestamp = datetime.fromisoformat(raw_timestamp)
         order_id = int(raw_id)
     except (TypeError, ValueError) as error:
-        raise ValueError("跟单记录游标无效") from error
+        raise ValueError("记录游标无效") from error
     if timestamp.tzinfo is not None or order_id <= 0:
-        raise ValueError("跟单记录游标无效")
+        raise ValueError("记录游标无效")
     return timestamp, order_id
 
 
@@ -227,6 +228,45 @@ async def copy_subscription_read(
             "daily_realized_pnl": realized,
         }
     )
+
+
+async def copy_daily_realized_pnl(
+    session: Any,
+    *,
+    reference_time: datetime | None = None,
+) -> list[CopyDailyRealizedPnlRead]:
+    reference = reference_time or datetime.now(SHANGHAI)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    local_reference = reference.astimezone(SHANGHAI)
+    today = local_reference.date()
+    local_end = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=SHANGHAI)
+    utc_end = local_end.astimezone(UTC).replace(tzinfo=None)
+    ledger = list(
+        (
+            await session.scalars(
+                select(CopyLedger)
+                .where(CopyLedger.timestamp < utc_end)
+                .order_by(CopyLedger.timestamp.asc())
+            )
+        ).all()
+    )
+    default_first_day = today - timedelta(days=29)
+    earliest_day = (
+        ledger[0].timestamp.replace(tzinfo=UTC).astimezone(SHANGHAI).date()
+        if ledger
+        else default_first_day
+    )
+    first_day = min(default_first_day, earliest_day)
+    days = (today - first_day).days + 1
+    totals: dict[date, Decimal] = {
+        first_day + timedelta(days=offset): Decimal("0") for offset in range(days)
+    }
+    for entry in ledger:
+        local_day = entry.timestamp.replace(tzinfo=UTC).astimezone(SHANGHAI).date()
+        if local_day in totals:
+            totals[local_day] += entry.realized_pnl
+    return [CopyDailyRealizedPnlRead(date=day, realized_pnl=totals[day]) for day in sorted(totals)]
 
 
 async def workspace_position_reads(
@@ -723,6 +763,10 @@ def position_event_group_read(
         event_type: sum(event.type == event_type for event in ordered)
         for event_type in ("opened", "increased", "decreased", "closed", "redeemed")
     }
+    incomplete_profit_events = sum(cycle.incomplete_profit_events for cycle in cycles)
+    has_realized_event = any(
+        event_counts[event_type] > 0 for event_type in ("decreased", "closed", "redeemed")
+    )
     return PositionEventGroupRead(
         wallet_id=latest.wallet_id,
         asset_id=latest.asset_id,
@@ -741,7 +785,16 @@ def position_event_group_read(
             (cycle.confirmed_realized_pnl for cycle in cycles),
             start=Decimal("0"),
         ),
-        incomplete_profit_events=sum(cycle.incomplete_profit_events for cycle in cycles),
+        incomplete_profit_events=incomplete_profit_events,
+        realized_pnl_status=(
+            "unavailable"
+            if incomplete_profit_events > 0
+            else "confirmed"
+            if has_realized_event
+            else "unrealized"
+            if cycles[-1].status == "open"
+            else "unavailable"
+        ),
         cycles=cycles,
     )
 
@@ -965,7 +1018,7 @@ def create_app(
                 if has_position is not None or has_order is not None:
                     raise HTTPException(
                         status_code=409,
-                        detail="存在自动跟单持仓或挂单，不能更换执行账户",
+                        detail="存在自动策略持仓或挂单，不能更换执行账户",
                     )
             signer = (payload.signer_address or wallet.address).lower()
             funder = (payload.funder_address or wallet.proxy_wallet).lower()
@@ -1339,14 +1392,14 @@ def create_app(
         async with database.sessions() as session:
             wallet = await session.get(WatchedWallet, payload.tracked_wallet_id)
             if wallet is None or wallet.wallet_role != "tracked":
-                raise HTTPException(status_code=422, detail="请选择一个观察钱包作为跟单目标")
+                raise HTTPException(status_code=422, detail="请选择一个观察钱包作为目标")
             existing = await session.scalar(
                 select(CopySubscription).where(
                     CopySubscription.tracked_wallet_id == payload.tracked_wallet_id
                 )
             )
             if existing is not None:
-                raise HTTPException(status_code=409, detail="该观察钱包已经有跟单配置")
+                raise HTTPException(status_code=409, detail="该观察钱包已经有策略配置")
             baseline = await latest_event_id(session, payload.tracked_wallet_id)
             now = utcnow()
             values = payload.model_dump(exclude={"tracked_wallet_id"})
@@ -1379,7 +1432,7 @@ def create_app(
             async with database.sessions() as session:
                 subscription = await session.get(CopySubscription, subscription_id)
                 if subscription is None:
-                    raise HTTPException(status_code=404, detail="跟单策略不存在")
+                    raise HTTPException(status_code=404, detail="策略不存在")
                 if subscription.state == "active":
                     account = await session.get(ExecutionAccount, 1)
                     if account is None or account.status != "ready":
@@ -1418,7 +1471,7 @@ def create_app(
             async with database.sessions() as session:
                 subscription = await session.get(CopySubscription, subscription_id)
                 if subscription is None:
-                    raise HTTPException(status_code=404, detail="跟单策略不存在")
+                    raise HTTPException(status_code=404, detail="策略不存在")
                 if payload.enabled and not payload.confirm_live:
                     raise HTTPException(status_code=422, detail="开启实盘需要明确确认")
                 if payload.enabled and subscription.state == "active":
@@ -1500,7 +1553,7 @@ def create_app(
         async with database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
             if subscription is None:
-                raise HTTPException(status_code=404, detail="跟单策略不存在")
+                raise HTTPException(status_code=404, detail="策略不存在")
             subscription.state = "closing"
             subscription.updated_at = utcnow()
             await session.commit()
@@ -1606,7 +1659,7 @@ def create_app(
             "attention": ["reconciliation_pending", "interrupted_before_submit"],
         }
         if status_group is not None and status_group not in status_groups:
-            raise HTTPException(status_code=422, detail="跟单记录状态筛选无效")
+            raise HTTPException(status_code=422, detail="记录状态筛选无效")
         database: Database = request.app.state.database
         async with database.sessions() as session:
             query = select(CopyOrder).where(CopyOrder.source == "copy")
@@ -1772,6 +1825,7 @@ def create_app(
                     valuation_complete=global_portfolio.valuation_complete,
                     unpriced_positions=global_portfolio.unpriced_positions,
                 ),
+                daily_realized_pnl=await copy_daily_realized_pnl(session, reference_time=valued_at),
                 strategies=strategies,
                 recent_orders=await workspace_order_reads(session, recent_orders),
                 as_of=valued_at,
@@ -2043,7 +2097,7 @@ def create_app(
                 ):
                     raise HTTPException(
                         status_code=409,
-                        detail="存在自动跟单持仓或挂单，请先关闭策略并清仓后再更换执行钱包",
+                        detail="存在自动策略持仓或挂单，请先关闭策略并清仓后再更换执行钱包",
                     )
                 previous_self_id = current_self.id
                 open_periods = list(
@@ -2715,6 +2769,18 @@ def create_app(
             )
             ratio = await copy_ratio_percent(session)
 
+        official_closed_positions = []
+        official_pnl_available = False
+        try:
+            official_closed_positions = (
+                await request.app.state.polymarket_client.fetch_closed_positions(
+                    wallet.proxy_wallet
+                )
+            )
+            official_pnl_available = True
+        except PolymarketAPIError:
+            pass
+
         events_by_asset: dict[str, list[PositionEvent]] = {}
         for event in events:
             events_by_asset.setdefault(event.asset_id, []).append(event)
@@ -2727,6 +2793,43 @@ def create_app(
             )
             for asset_id, asset_events in events_by_asset.items()
         ]
+        positions_by_asset = {position.asset_id: position for position in positions}
+        official_closed_by_asset = {
+            position.asset_id: position for position in official_closed_positions
+        }
+        if official_pnl_available:
+            groups = [
+                group.model_copy(
+                    update={
+                        "confirmed_realized_pnl": official_closed_by_asset[
+                            group.asset_id
+                        ].realized_pnl,
+                        "incomplete_profit_events": 0,
+                        "realized_pnl_source": "polymarket",
+                        "realized_pnl_status": "confirmed",
+                    }
+                )
+                if group.asset_id in official_closed_by_asset
+                else group.model_copy(
+                    update={
+                        "confirmed_realized_pnl": positions_by_asset[group.asset_id].realized_pnl,
+                        "incomplete_profit_events": 0,
+                        "realized_pnl_source": "polymarket",
+                        "realized_pnl_status": (
+                            "confirmed"
+                            if positions_by_asset[group.asset_id].realized_pnl != 0
+                            or any(
+                                group.event_counts[event_type] > 0
+                                for event_type in ("decreased", "closed", "redeemed")
+                            )
+                            else "unrealized"
+                        ),
+                    }
+                )
+                if group.asset_id in positions_by_asset
+                else group
+                for group in groups
+            ]
         groups.sort(
             key=lambda group: (
                 group.latest_recorded_at,
@@ -2735,11 +2838,21 @@ def create_app(
             ),
             reverse=True,
         )
-        confirmed_realized_pnl = sum(
-            (group.confirmed_realized_pnl for group in groups),
-            start=Decimal("0"),
-        )
-        incomplete_realized_events = sum(group.incomplete_profit_events for group in groups)
+        if official_pnl_available:
+            confirmed_realized_pnl = sum(
+                (position.realized_pnl for position in official_closed_by_asset.values()),
+                start=Decimal("0"),
+            ) + sum(
+                (position.realized_pnl for position in positions_by_asset.values()),
+                start=Decimal("0"),
+            )
+            incomplete_realized_events = 0
+        else:
+            confirmed_realized_pnl = sum(
+                (group.confirmed_realized_pnl for group in groups),
+                start=Decimal("0"),
+            )
+            incomplete_realized_events = sum(group.incomplete_profit_events for group in groups)
         if cursor is not None:
             try:
                 cursor_key = decode_position_group_cursor(cursor)
@@ -2771,6 +2884,7 @@ def create_app(
                 confirmed_total_pnl=confirmed_realized_pnl + current_unrealized_pnl,
                 incomplete_realized_events=incomplete_realized_events,
                 complete=incomplete_realized_events == 0,
+                source="polymarket" if official_pnl_available else "recorded",
             ),
             next_cursor=(encode_position_group_cursor(page[-1]) if has_more and page else None),
         )

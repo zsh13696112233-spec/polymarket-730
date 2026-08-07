@@ -11,7 +11,9 @@ from fastapi.testclient import TestClient
 from backend.config import Settings
 from backend.main import create_app
 from backend.polymarket import (
+    ClosedPositionSnapshot,
     MarketResolution,
+    PolymarketAPIError,
     PositionSnapshot,
     PublicProfile,
     RedemptionSnapshot,
@@ -74,6 +76,7 @@ class FakePolymarketClient:
         self.market_end_dates: dict[str, datetime | None] = {}
         self.redemptions: list[RedemptionSnapshot] = []
         self.redemption_error: Exception | None = None
+        self.closed_positions: list[ClosedPositionSnapshot] | None = None
         self.evidence = SettlementEvidence(frozenset(), frozenset(), frozenset())
         self.settlement_calls: list[list[str]] = []
         self.market_resolutions: dict[str, MarketResolution] = {}
@@ -163,6 +166,11 @@ class FakePolymarketClient:
             if (start is None or redemption.timestamp >= start)
             and (end is None or redemption.timestamp <= end)
         ]
+
+    async def fetch_closed_positions(self, user: str) -> list[ClosedPositionSnapshot]:
+        if self.closed_positions is None:
+            raise PolymarketAPIError("官方已结仓数据未配置")
+        return list(self.closed_positions)
 
 
 @pytest.fixture

@@ -201,6 +201,57 @@ def raw_position(asset: str) -> dict[str, object]:
     }
 
 
+def raw_closed_position(index: int) -> dict[str, object]:
+    return {
+        "asset": f"closed-asset-{index}",
+        "conditionId": f"0x{index:064x}",
+        "avgPrice": 0.4,
+        "totalBought": 10 + index,
+        "realizedPnl": index - 25,
+        "timestamp": 1_700_000_000 + index,
+        "title": f"closed market {index}",
+        "slug": f"closed-market-{index}",
+        "eventSlug": f"closed-event-{index}",
+        "outcome": "Yes",
+    }
+
+
+@pytest.mark.asyncio
+async def test_closed_positions_are_parsed_paginated_and_cached():
+    calls: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        calls.append(params)
+        offset = int(params["offset"])
+        if offset == 0:
+            return httpx.Response(
+                200,
+                json=[raw_closed_position(index) for index in range(50)],
+            )
+        return httpx.Response(200, json=[raw_closed_position(50)])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        first = await client.fetch_closed_positions(TEST_ADDRESS)
+        second = await client.fetch_closed_positions(TEST_ADDRESS)
+    finally:
+        await client.close()
+
+    assert len(first) == 51
+    assert second == first
+    assert first[0].asset_id == "closed-asset-0"
+    assert first[0].realized_pnl == Decimal("-25")
+    assert first[-1].market_slug == "closed-market-50"
+    assert [call["offset"] for call in calls] == ["0", "50"]
+    assert all(call["sortBy"] == "TIMESTAMP" for call in calls)
+
+
 def raw_redemption(index: int) -> dict[str, object]:
     return {
         "type": "REDEEM",

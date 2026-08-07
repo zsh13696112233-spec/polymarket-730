@@ -18,7 +18,7 @@ const navigation: Array<{
 }> = [
   { id: "overview", href: "/", label: "总览", icon: "⌂" },
   { id: "positions", href: "/positions", label: "持仓", icon: "◇" },
-  { id: "records", href: "/records", label: "跟单记录", icon: "≡" },
+  { id: "records", href: "/records", label: "记录", icon: "≡" },
   { id: "analysis", href: "/analysis", label: "钱包分析", icon: "⌁" },
   { id: "settings", href: "/settings", label: "设置", icon: "⚙" },
 ];

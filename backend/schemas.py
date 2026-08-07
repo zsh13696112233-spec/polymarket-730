@@ -263,6 +263,11 @@ class CopyOverviewTotalsRead(APIModel):
     unpriced_positions: int = 0
 
 
+class CopyDailyRealizedPnlRead(APIModel):
+    date: date
+    realized_pnl: DecimalNumber = Decimal("0")
+
+
 class CopyWalletSummaryRead(APIModel):
     id: int
     address: str
@@ -289,6 +294,7 @@ class CopyOverviewRead(APIModel):
     live_copy_enabled: bool
     account: ExecutionAccountRead | None
     totals: CopyOverviewTotalsRead
+    daily_realized_pnl: list[CopyDailyRealizedPnlRead]
     strategies: list[CopyStrategyOverviewRead]
     recent_orders: list[CopyWorkspaceOrderRead]
     as_of: datetime
@@ -598,6 +604,8 @@ class PositionEventGroupRead(APIModel):
     latest_event_id: int
     confirmed_realized_pnl: DecimalNumber
     incomplete_profit_events: int
+    realized_pnl_source: Literal["polymarket", "recorded"] = "recorded"
+    realized_pnl_status: Literal["confirmed", "unrealized", "unavailable"] = "confirmed"
     cycles: list[PositionEventCycleRead]
 
     @field_serializer("first_recorded_at", "latest_recorded_at", when_used="json")
@@ -614,6 +622,7 @@ class WalletRecordedPnlRead(APIModel):
     confirmed_total_pnl: DecimalNumber
     incomplete_realized_events: int
     complete: bool
+    source: Literal["polymarket", "recorded"] = "recorded"
 
     @field_serializer("recorded_since", when_used="json")
     def serialize_recorded_since(self, value: datetime) -> str:

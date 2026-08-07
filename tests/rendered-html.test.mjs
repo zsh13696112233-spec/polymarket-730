@@ -33,12 +33,13 @@ test("server-renders the PolyCopy workspace and product metadata", async () => {
   const html = await response.text();
   assert.match(
     html,
-    /<title>PolyCopy｜专业 Polymarket 跟单工具<\/title>/i,
+    /<title>PolyCopy｜专业 Polymarket 交易工具<\/title>/i,
   );
   assert.match(html, /PolyCopy/);
-  assert.match(html, /跟单总览/);
-  assert.match(html, /添加跟单目标/);
-  assert.match(html, /跟单记录/);
+  assert.match(html, /总览/);
+  assert.doesNotMatch(html, /跟单/);
+  assert.match(html, /添加目标/);
+  assert.match(html, /记录/);
   assert.match(html, /property="og:image"/i);
   assert.match(html, /http:\/\/localhost(?::3000)?\/og\.png/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
@@ -64,6 +65,7 @@ test("keeps PolyCopy workspace behavior in the client", async () => {
   assert.match(workspace, /NEXT_PUBLIC_API_BASE/);
   assert.match(workspace, /copy-trading\/overview/);
   assert.match(workspace, /copy-trading\/orders/);
+  assert.doesNotMatch(workspace, /跟单/);
   assert.match(legacy, /new EventSource/);
   assert.match(legacy, /event\/\$\{eventPath\}\/\$\{encodeURIComponent\(marketSlug\)\}/);
   assert.match(legacy, /average_fill_price/);

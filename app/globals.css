@@ -5800,6 +5800,239 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcAccountSummary strong { color: #fff0a3; }
 .pcCommandHint code { border-color: #75682a; background: #101108; color: #ffe052; }
 
+.pcDailyPnlPanel {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.pcDailyPnlHeaderTools {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.pcDailyPnlRanges {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #75682a;
+  border-radius: 6px;
+  background: #090a07;
+}
+
+.pcDailyPnlRanges button {
+  min-width: 38px;
+  height: 27px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--pc-text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+
+.pcDailyPnlRanges button:hover { color: #fff6ba; }
+.pcDailyPnlRanges button.active {
+  background: #f2c319;
+  color: #111204;
+  box-shadow: inset 1px 1px 0 #fff09a, inset -1px -1px 0 #a77b00;
+}
+
+.pcDailyPnlSummary {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 26px;
+  margin: 0;
+}
+
+.pcDailyPnlSummary > div {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.pcDailyPnlSummary dt {
+  color: var(--pc-text-3);
+  font-size: 10px;
+}
+
+.pcDailyPnlSummary dd {
+  margin: 0;
+  color: var(--pc-text);
+  font-size: 17px;
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
+}
+
+.pcDailyPnlSummary dd.profit { color: var(--pc-green); }
+.pcDailyPnlSummary dd.loss { color: var(--pc-red); }
+
+.pcDailyPnlScroll {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  direction: rtl;
+}
+
+.pcDailyPnlChart {
+  direction: ltr;
+  min-width: max(590px, var(--pc-daily-pnl-min-width));
+  padding: 4px 18px 15px;
+}
+
+.pcDailyPnlPlot {
+  position: relative;
+  height: 224px;
+}
+
+.pcDailyPnlGridLine {
+  position: absolute;
+  z-index: 0;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: rgba(242, 195, 25, 0.12);
+  pointer-events: none;
+}
+
+.pcDailyPnlGridLine.top { top: 28px; }
+.pcDailyPnlGridLine.zero {
+  top: 50%;
+  background: rgba(242, 195, 25, 0.42);
+  box-shadow: 0 0 7px rgba(242, 195, 25, 0.08);
+}
+.pcDailyPnlGridLine.bottom { bottom: 28px; }
+
+.pcDailyPnlBars {
+  position: absolute;
+  z-index: 1;
+  inset: 28px 0;
+  display: grid;
+  grid-template-columns: repeat(var(--pc-daily-pnl-columns), minmax(8px, 1fr));
+  gap: clamp(3px, 0.65vw, 9px);
+}
+
+.pcDailyPnlColumn {
+  position: relative;
+  display: block;
+  min-width: 0;
+  border-radius: 4px;
+  outline: none;
+}
+
+.pcDailyPnlColumn:focus-visible {
+  box-shadow: 0 0 0 1px #ffe553;
+}
+
+.pcDailyPnlBar {
+  position: absolute;
+  left: 50%;
+  width: min(70%, 18px);
+  height: var(--pc-daily-pnl-height);
+  min-height: 2px;
+  transform: translateX(-50%);
+}
+
+.pcDailyPnlColumn.profit .pcDailyPnlBar {
+  bottom: 50%;
+  border-radius: 4px 4px 1px 1px;
+  background: linear-gradient(180deg, #42f1ad, #16845f);
+  box-shadow: 0 0 8px rgba(40, 230, 158, 0.2);
+}
+
+.pcDailyPnlColumn.loss .pcDailyPnlBar {
+  top: 50%;
+  border-radius: 1px 1px 4px 4px;
+  background: linear-gradient(180deg, #b52c45, #ff657b);
+  box-shadow: 0 0 8px rgba(255, 76, 108, 0.18);
+}
+
+.pcDailyPnlColumn.flat .pcDailyPnlBar {
+  top: calc(50% - 1px);
+  background: #5e5b44;
+  opacity: 0.5;
+}
+
+.pcDailyPnlTooltip {
+  position: absolute;
+  z-index: 3;
+  top: -25px;
+  left: 50%;
+  padding: 4px 6px;
+  border: 1px solid #75682a;
+  border-radius: 5px;
+  background: #111208;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.55);
+  color: #fff6ba;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  white-space: nowrap;
+}
+
+.pcDailyPnlColumn:hover .pcDailyPnlTooltip,
+.pcDailyPnlColumn:focus-visible .pcDailyPnlTooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.pcDailyPnlDates {
+  display: grid;
+  grid-template-columns: repeat(var(--pc-daily-pnl-columns), minmax(8px, 1fr));
+  gap: clamp(3px, 0.65vw, 9px);
+  min-height: 18px;
+  color: var(--pc-text-3);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.pcDailyPnlDates span { visibility: hidden; }
+.pcDailyPnlDates span.visible { visibility: visible; }
+
+.pcDailyPnlEmpty {
+  display: grid;
+  min-height: 190px;
+  place-items: center;
+  padding: 24px;
+  color: var(--pc-text-3);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .pcDailyPnlPanel .pcPanelHeader {
+    align-items: flex-start;
+  }
+
+  .pcDailyPnlSummary {
+    gap: 14px;
+  }
+
+  .pcDailyPnlHeaderTools {
+    align-items: flex-end;
+    flex-direction: column-reverse;
+    gap: 8px;
+  }
+
+  .pcDailyPnlRanges button {
+    min-width: 34px;
+    height: 25px;
+    padding-inline: 6px;
+    font-size: 9px;
+  }
+
+  .pcDailyPnlSummary dt { font-size: 8px; }
+  .pcDailyPnlSummary dd { font-size: 13px; }
+  .pcDailyPnlChart { min-width: var(--pc-daily-pnl-min-width); padding-inline: 14px; }
+}
+
 /* Block-built 4x7 figures for the four headline amounts. */
 .pcPixelAmount {
   display: flex;

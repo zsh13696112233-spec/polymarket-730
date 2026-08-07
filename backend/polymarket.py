@@ -60,6 +60,20 @@ class PositionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ClosedPositionSnapshot:
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    event_slug: str | None
+    market_slug: str | None
+    avg_price: Decimal
+    total_bought: Decimal
+    realized_pnl: Decimal
+    closed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class TradeSnapshot:
     asset_id: str
     condition_id: str
@@ -251,6 +265,9 @@ class PolymarketClient:
             headers={"User-Agent": "polymarket-wallet-monitor/0.1"},
         )
         self._market_end_cache: dict[str, tuple[float, datetime | None]] = {}
+        self._closed_positions_cache: dict[
+            str, tuple[float, tuple[ClosedPositionSnapshot, ...]]
+        ] = {}
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -540,6 +557,57 @@ class PolymarketClient:
             if position.size > ZERO:
                 by_asset[position.asset_id] = position
         return list(by_asset.values())
+
+    async def fetch_closed_positions(self, user: str) -> list[ClosedPositionSnapshot]:
+        cache_key = user.lower()
+        cached = self._closed_positions_cache.get(cache_key)
+        now = monotonic()
+        if cached is not None and cached[0] > now:
+            return list(cached[1])
+        offset = 0
+        limit = 50
+        results: list[ClosedPositionSnapshot] = []
+        while True:
+            payload = await self._get_json(
+                f"{self.data_api_url}/closed-positions",
+                params={
+                    "user": user,
+                    "limit": limit,
+                    "offset": offset,
+                    "sortBy": "TIMESTAMP",
+                    "sortDirection": "DESC",
+                },
+            )
+            if not isinstance(payload, list):
+                raise PolymarketAPIError("已结仓接口返回格式无效")
+            for item in payload:
+                asset_id = str(item.get("asset") or "")
+                condition_id = str(item.get("conditionId") or "")
+                if not asset_id or not condition_id:
+                    continue
+                results.append(
+                    ClosedPositionSnapshot(
+                        asset_id=asset_id,
+                        condition_id=condition_id,
+                        title=str(item.get("title") or "未命名市场"),
+                        outcome=str(item.get("outcome") or ""),
+                        event_slug=item.get("eventSlug"),
+                        market_slug=item.get("slug"),
+                        avg_price=to_decimal(item.get("avgPrice")),
+                        total_bought=to_decimal(item.get("totalBought")),
+                        realized_pnl=to_decimal(item.get("realizedPnl")),
+                        closed_at=parse_datetime(item.get("timestamp")),
+                    )
+                )
+            if len(payload) < limit:
+                self._closed_positions_cache[cache_key] = (
+                    now + 30,
+                    tuple(results),
+                )
+                return results
+            offset += limit
+            if offset > 100_000:
+                raise PolymarketAPIError("已结仓分页超过官方接口上限")
 
     async def _fetch_positions_variant(
         self,

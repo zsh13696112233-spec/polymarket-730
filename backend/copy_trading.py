@@ -98,9 +98,9 @@ async def latest_event_id(session: object, wallet_id: int) -> int:
 class CopyTradingEngine:
     """Low-frequency copy engine driven only by stable PositionEvent rows.
 
-    `opened` buys once, `closed` sells all attributed tokens and `redeemed`
-    redeems all attributed tokens. `increased` and `decreased` are deliberately
-    acknowledged without creating an order.
+    `opened` buys once, qualifying `increased` events add to an existing
+    attributed position, `closed` sells all attributed tokens and `redeemed`
+    redeems all attributed tokens. `decreased` is monitor-only.
     """
 
     def __init__(
@@ -272,11 +272,13 @@ class CopyTradingEngine:
             try:
                 if event_type == "opened" and state == "active":
                     await self._leader_opened(subscription_id, event_id)
+                elif event_type == "increased" and state == "active":
+                    await self._leader_increased(subscription_id, event_id)
                 elif event_type == "closed":
                     await self._leader_closed(subscription_id, event_id)
                 elif event_type == "redeemed":
                     await self._leader_redeemed(subscription_id, event_id)
-                # increased/decreased and opens while exit-only are intentionally ignored.
+                # decreased and buy signals while exit-only are intentionally ignored.
             except Exception:
                 # Do not advance an actionable event until its durable order/result exists.
                 raise
@@ -586,6 +588,127 @@ class CopyTradingEngine:
         )
         await self._execute_order(order_id, request, book)
 
+    async def _leader_increased(self, subscription_id: int, event_id: int) -> None:
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            event = await session.get(PositionEvent, event_id)
+            if subscription is None or event is None:
+                return
+            prior_order = await session.scalar(
+                select(CopyOrder.id).where(
+                    CopyOrder.leader_event_id == event_id,
+                    CopyOrder.side == "BUY",
+                    CopyOrder.source == "copy",
+                )
+            )
+            if prior_order is not None:
+                return
+            reference = event.average_fill_price or event.after_avg_price
+            leader_cost = abs(event.delta_size) * reference
+            if leader_cost < subscription.large_increase_threshold_usdc:
+                return
+            position = await session.scalar(
+                select(CopyPosition)
+                .where(
+                    CopyPosition.subscription_id == subscription_id,
+                    CopyPosition.asset_id == event.asset_id,
+                    CopyPosition.attributed_size > ZERO,
+                )
+                .order_by(CopyPosition.cycle_no.desc())
+                .limit(1)
+            )
+            account = await session.get(ExecutionAccount, 1)
+
+        if position is None:
+            await self._record_skip(
+                subscription_id,
+                event,
+                "首次建仓未成功，不追随后续加仓",
+            )
+            return
+        if position.reserved_buy_usdc > ZERO:
+            await self._record_skip(subscription_id, event, "该仓位已有未决买单")
+            return
+        if not self.settings.live_copy_enabled:
+            await self._record_skip(subscription_id, event, "自动实盘已被系统紧急停用")
+            return
+        if account is None or account.status != "ready":
+            await self._record_skip(subscription_id, event, "执行账户尚未通过余额验证")
+            return
+        trader = await self._trader()
+        balance = await trader.collateral_balance()
+        account.collateral_balance = balance
+        account.last_balance_at = utcnow()
+        account.status = "ready" if balance > account.cash_reserve_usdc else "insufficient_balance"
+        async with self.database.sessions() as session:
+            stored_account = await session.get(ExecutionAccount, account.id)
+            assert stored_account is not None
+            stored_account.collateral_balance = balance
+            stored_account.last_balance_at = account.last_balance_at
+            stored_account.status = account.status
+            stored_account.updated_at = utcnow()
+            await session.commit()
+        if account.status != "ready":
+            await self._record_skip(subscription_id, event, "执行钱包余额未高于现金保留额")
+            return
+
+        book = await self.client.fetch_order_book(event.asset_id)
+        if book.best_ask is None:
+            await self._record_skip(subscription_id, event, "市场当前没有可成交卖盘")
+            return
+        requested = leader_cost * subscription.copy_ratio_percent / Decimal("100")
+        usage = await self._risk_usage(subscription_id, account, position_id=position.id)
+        allowed, reason = allowed_buy_usdc(requested, subscription=subscription, usage=usage)
+        if allowed <= ZERO:
+            await self._record_skip(subscription_id, event, reason or "风险额度不足")
+            return
+        worst_price = market_worst_price(
+            book.best_ask, book.tick_size, subscription.market_slippage_cents, side="BUY"
+        )
+        if allowed / worst_price < book.min_order_size:
+            await self._record_skip(subscription_id, event, "按执行比例计算后低于市场最小下单份数")
+            return
+
+        async with self.database.sessions() as session:
+            current = await session.get(CopyPosition, position.id)
+            if (
+                current is None
+                or current.attributed_size <= ZERO
+                or current.reserved_buy_usdc > ZERO
+            ):
+                return
+            current.reserved_buy_usdc = allowed
+            current.updated_at = utcnow()
+            order = self._new_order(
+                subscription_id=subscription_id,
+                position_id=current.id,
+                event=event,
+                side="BUY",
+                amount=allowed,
+                price=worst_price,
+                reference=book.best_ask,
+                key=f"copy:increase:{event.id}",
+            )
+            session.add(order)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return
+            order_id = order.id
+            neg_risk = bool(current.neg_risk)
+        await self._execute_order(
+            order_id,
+            MarketTradeRequest(
+                asset_id=event.asset_id,
+                side="BUY",
+                amount=allowed,
+                worst_price=worst_price,
+                neg_risk=neg_risk,
+            ),
+            book,
+        )
+
     async def _leader_closed(self, subscription_id: int, event_id: int) -> None:
         await self._close_asset(subscription_id, event_id, redeem=False)
 
@@ -803,6 +926,11 @@ class CopyTradingEngine:
                 if order.copy_position_id is not None
                 else None
             )
+            leader_event = (
+                await session.get(PositionEvent, order.leader_event_id)
+                if order.leader_event_id is not None
+                else None
+            )
             if result.filled_size > ZERO:
                 fingerprint = hashlib.sha256(
                     f"{order.id}|{result.external_trade_id or result.external_order_id or 'local'}|"
@@ -838,7 +966,11 @@ class CopyTradingEngine:
                                 type="buy",
                                 amount_usdc=result.filled_usdc + result.fee_usdc,
                                 realized_pnl=ZERO,
-                                detail="三事件策略建仓",
+                                detail=(
+                                    "观察钱包大额加仓"
+                                    if leader_event is not None and leader_event.type == "increased"
+                                    else "三事件策略建仓"
+                                ),
                                 timestamp=utcnow(),
                             )
                         )
@@ -873,7 +1005,7 @@ class CopyTradingEngine:
                         position.updated_at = utcnow()
             elif position is not None and order.side == "BUY":
                 position.reserved_buy_usdc = ZERO
-                position.status = "not_opened"
+                position.status = "open" if position.attributed_size > ZERO else "not_opened"
                 position.updated_at = utcnow()
             await session.commit()
 
@@ -886,7 +1018,7 @@ class CopyTradingEngine:
             amount=ZERO,
             price=event.after_avg_price or Decimal("0.01"),
             reference=event.after_avg_price or Decimal("0.01"),
-            key=f"copy:open:{event.id}",
+            key=f"copy:{'increase' if event.type == 'increased' else 'open'}:{event.id}",
         )
         order.status = "skipped"
         order.reason = reason
@@ -898,7 +1030,11 @@ class CopyTradingEngine:
                 await session.rollback()
 
     async def _risk_usage(
-        self, subscription_id: int, account: ExecutionAccount | None
+        self,
+        subscription_id: int,
+        account: ExecutionAccount | None,
+        *,
+        position_id: int | None = None,
     ) -> RiskUsage:
         local_start = datetime.now(SHANGHAI).replace(hour=0, minute=0, second=0, microsecond=0)
         utc_start = local_start.astimezone(UTC).replace(tzinfo=None)
@@ -934,6 +1070,14 @@ class CopyTradingEngine:
                 ).all()
             )
         total = sum((p.attributed_cost + p.reserved_buy_usdc for p in positions), ZERO)
+        position_total = sum(
+            (
+                p.attributed_cost + p.reserved_buy_usdc
+                for p in positions
+                if position_id is not None and p.id == position_id
+            ),
+            ZERO,
+        )
         global_total = sum(
             (p.attributed_cost + p.reserved_buy_usdc for p in global_positions),
             ZERO,
@@ -942,6 +1086,7 @@ class CopyTradingEngine:
         realized = sum((row.realized_pnl for row in ledger), ZERO)
         if account is None:
             return RiskUsage(
+                position=position_total,
                 total=total,
                 global_total=global_total,
                 wallet_capital=Decimal("999999999"),
@@ -950,6 +1095,7 @@ class CopyTradingEngine:
         balance = account.collateral_balance or ZERO
         capital = max(ZERO, min(account.budget_usdc, balance) - account.cash_reserve_usdc)
         return RiskUsage(
+            position=position_total,
             total=total,
             global_total=global_total,
             bought_today=bought,
@@ -1071,7 +1217,9 @@ class CopyTradingEngine:
                     position = await session.get(CopyPosition, order.copy_position_id)
                     if position is not None:
                         position.reserved_buy_usdc = ZERO
-                        position.status = "not_opened"
+                        position.status = (
+                            "open" if position.attributed_size > ZERO else "not_opened"
+                        )
                         position.updated_at = utcnow()
             if interrupted:
                 await session.commit()
@@ -1195,7 +1343,9 @@ class CopyTradingEngine:
                     position = await session.get(CopyPosition, order.copy_position_id)
                     if position is not None and order.side == "BUY":
                         position.reserved_buy_usdc = ZERO
-                        position.status = "not_opened"
+                        position.status = (
+                            "open" if position.attributed_size > ZERO else "not_opened"
+                        )
                         position.updated_at = utcnow()
                 await session.commit()
 

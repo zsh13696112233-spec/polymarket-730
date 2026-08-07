@@ -48,6 +48,7 @@ type Subscription = {
   state: "active" | "paused" | "exit_only" | "closing" | "disabled" | "error";
   copy_ratio_percent: Numeric;
   position_cap_usdc: Numeric;
+  large_increase_threshold_usdc: Numeric;
   total_exposure_cap_usdc: Numeric;
   market_slippage_cents: Numeric;
   open_exposure_usdc: Numeric;
@@ -451,6 +452,7 @@ function QuickSettingsModal({
   const subscription = strategy?.subscription;
   const [ratio, setRatio] = useState(String(subscription?.copy_ratio_percent ?? 10));
   const [positionCap, setPositionCap] = useState(String(subscription?.position_cap_usdc ?? 20));
+  const [largeIncreaseThreshold, setLargeIncreaseThreshold] = useState(String(subscription?.large_increase_threshold_usdc ?? 100));
   const [dailyLimit, setDailyLimit] = useState(String(account?.daily_buy_limit_usdc ?? 80));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -463,6 +465,7 @@ function QuickSettingsModal({
       const subscriptionPayload = {
         copy_ratio_percent: Number(ratio),
         position_cap_usdc: Number(positionCap),
+        large_increase_threshold_usdc: Number(largeIncreaseThreshold),
         total_exposure_cap_usdc: Number(subscription?.total_exposure_cap_usdc ?? 160),
         market_slippage_cents: Number(subscription?.market_slippage_cents ?? 5),
       };
@@ -499,18 +502,23 @@ function QuickSettingsModal({
   }
 
   return (
-    <Modal title={`快速设置 · ${wallet.label || shortAddress(wallet.proxy_wallet)}`} eyebrow="三项核心参数" onClose={onClose}>
+    <Modal title={`快速设置 · ${wallet.label || shortAddress(wallet.proxy_wallet)}`} eyebrow="四项核心参数" onClose={onClose}>
       <form className="pcForm" onSubmit={submit}>
         <div className="pcFormGrid three">
           <label className="pcField">
             <span>执行比例</span>
             <div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={ratio} onChange={(event) => setRatio(event.target.value)} /><b>%</b></div>
-            <small>按目标钱包首次建仓成本计算</small>
+            <small>按目标钱包首次建仓和大额加仓成本计算</small>
           </label>
           <label className="pcField">
             <span>单市场上限</span>
             <div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={positionCap} onChange={(event) => setPositionCap(event.target.value)} /><b>USDC</b></div>
             <small>该目标钱包独立生效</small>
+          </label>
+          <label className="pcField">
+            <span>大额加仓阈值</span>
+            <div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={largeIncreaseThreshold} onChange={(event) => setLargeIncreaseThreshold(event.target.value)} /><b>USDC</b></div>
+            <small>单次净加仓达到后按比例跟随</small>
           </label>
           <label className="pcField">
             <span>每日买入上限</span>
@@ -877,7 +885,7 @@ function AdvancedStrategyForm({ strategy, onSaved }: { strategy: Strategy; onSav
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage(null);
     try {
-      await api(`/api/copy-trading/subscriptions/${subscription.id}`, { method: "PUT", body: JSON.stringify({ copy_ratio_percent: Number(subscription.copy_ratio_percent), position_cap_usdc: Number(subscription.position_cap_usdc), total_exposure_cap_usdc: Number(totalCap), market_slippage_cents: Number(slippage) }) });
+      await api(`/api/copy-trading/subscriptions/${subscription.id}`, { method: "PUT", body: JSON.stringify({ copy_ratio_percent: Number(subscription.copy_ratio_percent), position_cap_usdc: Number(subscription.position_cap_usdc), large_increase_threshold_usdc: Number(subscription.large_increase_threshold_usdc), total_exposure_cap_usdc: Number(totalCap), market_slippage_cents: Number(slippage) }) });
       setMessage("高级参数已保存。"); onSaved();
     } catch (submitError) { setMessage(submitError instanceof Error ? submitError.message : "保存失败"); }
     finally { setBusy(false); }

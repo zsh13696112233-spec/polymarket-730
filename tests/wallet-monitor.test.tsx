@@ -638,12 +638,13 @@ describe("Polymarket 钱包监控页", () => {
     });
   });
 
-  it("只展示并保存四项低频策略配置", async () => {
+  it("展示并保存包含大额加仓阈值的低频策略配置", async () => {
     let submittedBody: Record<string, number> | null = null;
     let savedSubscription: Record<string, unknown> | null = null;
     const descriptions = [
-      "观察钱包首次建仓时，按其建仓成本的一定比例执行一次买入。",
-      "每个市场周期首次建仓允许投入的最高金额。",
+      "观察钱包首次建仓或发生大额加仓时，按相应成本比例执行买入。",
+      "每个市场周期首次建仓和大额加仓允许投入的累计最高金额。",
+      "观察钱包单次净加仓达到此金额时，按执行比例跟随加仓。",
       "该观察钱包运行时预留的最高额度；多个钱包的额度共享执行账户总上限。",
       "FAK 买入/卖出相对当前最优价格允许的最差偏移，超出范围不成交。",
     ];
@@ -706,15 +707,20 @@ describe("Polymarket 钱包监控页", () => {
     }
 
     const ratio = within(dialog).getByRole("spinbutton", {
-      name: /执行比例/,
+      name: /^执行比例/,
     });
     const positionCap = within(dialog).getByRole("spinbutton", {
-      name: /单仓最大投入/,
+      name: /^单仓最大投入/,
+    });
+    const largeIncreaseThreshold = within(dialog).getByRole("spinbutton", {
+      name: /^大额加仓阈值/,
     });
     await user.clear(ratio);
     await user.type(ratio, "12");
     await user.clear(positionCap);
     await user.type(positionCap, "18");
+    await user.clear(largeIncreaseThreshold);
+    await user.type(largeIncreaseThreshold, "250");
     await user.click(within(dialog).getByRole("button", { name: "保存风控" }));
 
     await waitFor(() => {
@@ -723,6 +729,7 @@ describe("Polymarket 钱包监控页", () => {
           tracked_wallet_id: walletOne.id,
           copy_ratio_percent: 12,
           position_cap_usdc: 18,
+          large_increase_threshold_usdc: 250,
           total_exposure_cap_usdc: 160,
           market_slippage_cents: 5,
         }),

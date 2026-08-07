@@ -23,6 +23,7 @@ const subscription = {
   state: "active",
   copy_ratio_percent: 10,
   position_cap_usdc: 20,
+  large_increase_threshold_usdc: 100,
   total_exposure_cap_usdc: 160,
   market_slippage_cents: 5,
   open_exposure_usdc: 25,
@@ -116,12 +117,15 @@ function json(payload: unknown, status = 200) {
 
 describe("PolyCopy workspace", () => {
   const requests: string[] = [];
+  const requestBodies: unknown[] = [];
 
   beforeEach(() => {
     requests.length = 0;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    requestBodies.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       requests.push(url);
+      if (init?.body) requestBodies.push(JSON.parse(String(init.body)));
       if (url.includes("/api/copy-trading/overview")) return json(overview);
       if (url.endsWith("/api/wallets")) return json([wallet]);
       if (url.includes("/api/copy-trading/positions")) return json({
@@ -216,11 +220,19 @@ describe("PolyCopy workspace", () => {
     expect(screen.getByRole("button", { name: "停止策略并立即清仓" })).toBeInTheDocument();
   });
 
-  it("可打开策略配置窗口", async () => {
+  it("可配置并保存大额加仓阈值", async () => {
     const user = userEvent.setup();
     render(<PolyCopyWorkspace view="overview" />);
     await user.click(await screen.findByRole("button", { name: "参数" }));
-    expect(await screen.findByRole("dialog", { name: /快速设置/ })).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: /快速设置/ });
+    const threshold = within(dialog).getByRole("spinbutton", { name: /^大额加仓阈值/ });
+    expect(threshold).toHaveValue(100);
+    await user.clear(threshold);
+    await user.type(threshold, "250");
+    await user.click(within(dialog).getByRole("button", { name: "保存参数" }));
+    await waitFor(() => expect(requestBodies).toContainEqual(expect.objectContaining({
+      large_increase_threshold_usdc: 250,
+    })));
   });
 
   it("明确标记报价缺失的持仓", async () => {

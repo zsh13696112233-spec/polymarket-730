@@ -80,6 +80,7 @@ class ExecutionAccountUpdate(APIModel):
 class CopySubscriptionConfig(APIModel):
     copy_ratio_percent: Decimal = Field(default=Decimal("10"), gt=0, le=100)
     position_cap_usdc: Decimal = Field(default=Decimal("20"), gt=0)
+    large_increase_threshold_usdc: Decimal = Field(default=Decimal("100"), gt=0)
     total_exposure_cap_usdc: Decimal = Field(default=Decimal("160"), ge=0)
     market_slippage_cents: Decimal = Field(default=Decimal("5"), ge=0, le=50)
 
@@ -111,6 +112,7 @@ class CopySubscriptionRead(APIModel):
     state: Literal["active", "paused", "exit_only", "closing", "disabled", "error"]
     copy_ratio_percent: DecimalNumber
     position_cap_usdc: DecimalNumber
+    large_increase_threshold_usdc: DecimalNumber
     total_exposure_cap_usdc: DecimalNumber
     market_slippage_cents: DecimalNumber
     baseline_event_id: int

@@ -51,6 +51,7 @@ type CopySubscription = {
     | "error";
   copy_ratio_percent: Numeric;
   position_cap_usdc: Numeric;
+  large_increase_threshold_usdc: Numeric;
   total_exposure_cap_usdc: Numeric;
   market_slippage_cents: Numeric;
   open_exposure_usdc: Numeric;
@@ -3272,6 +3273,7 @@ function CopyTradingModal({
   const defaults = {
     copy_ratio_percent: String(subscription?.copy_ratio_percent ?? 10),
     position_cap_usdc: String(subscription?.position_cap_usdc ?? 20),
+    large_increase_threshold_usdc: String(subscription?.large_increase_threshold_usdc ?? 100),
     total_exposure_cap_usdc: String(subscription?.total_exposure_cap_usdc ?? 160),
     market_slippage_cents: String(subscription?.market_slippage_cents ?? 5),
   };
@@ -3328,7 +3330,7 @@ function CopyTradingModal({
           key: "copy_ratio_percent",
           label: "执行比例",
           unit: "%",
-          description: "观察钱包首次建仓时，按其建仓成本的一定比例执行一次买入。",
+          description: "观察钱包首次建仓或发生大额加仓时，按相应成本比例执行买入。",
           min: "0.01",
           max: "100",
         },
@@ -3336,7 +3338,14 @@ function CopyTradingModal({
           key: "position_cap_usdc",
           label: "单仓最大投入",
           unit: "USDC",
-          description: "每个市场周期首次建仓允许投入的最高金额。",
+          description: "每个市场周期首次建仓和大额加仓允许投入的累计最高金额。",
+          min: "0.01",
+        },
+        {
+          key: "large_increase_threshold_usdc",
+          label: "大额加仓阈值",
+          unit: "USDC",
+          description: "观察钱包单次净加仓达到此金额时，按执行比例跟随加仓。",
           min: "0.01",
         },
         {
@@ -3402,7 +3411,7 @@ function CopyTradingModal({
             ))}
           </div>
           <p className="privacyNote">
-            保存配置不会自动开启。每次开启实盘都需要再次确认；系统仅处理建仓、清仓、赎回三类稳定持仓事件。
+          保存配置不会自动开启。每次开启实盘都需要再次确认；系统仅处理建仓、大额加仓、清仓和赎回四类稳定持仓事件。
           </p>
           {error && <p className="formError" role="alert">{error}</p>}
           <div className="modalActions">

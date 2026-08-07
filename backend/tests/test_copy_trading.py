@@ -265,11 +265,12 @@ def dashboard(client, subscription: dict) -> dict:
     return response.json()
 
 
-def test_subscription_defaults_are_only_four_simple_settings(app_client_factory):
+def test_subscription_defaults_include_large_increase_threshold(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     assert subscription["copy_ratio_percent"] == 10
     assert subscription["position_cap_usdc"] == 20
+    assert subscription["large_increase_threshold_usdc"] == 100
     assert subscription["total_exposure_cap_usdc"] == 160
     assert subscription["market_slippage_cents"] == 5
     removed = {
@@ -280,6 +281,29 @@ def test_subscription_defaults_are_only_four_simple_settings(app_client_factory)
         "daily_buy_limit_usdc",
     }
     assert not removed.intersection(subscription)
+    updated = client.put(
+        f"/api/copy-trading/subscriptions/{subscription['id']}",
+        json={
+            "copy_ratio_percent": 10,
+            "position_cap_usdc": 20,
+            "large_increase_threshold_usdc": 250,
+            "total_exposure_cap_usdc": 160,
+            "market_slippage_cents": 5,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["large_increase_threshold_usdc"] == 250
+    invalid = client.put(
+        f"/api/copy-trading/subscriptions/{subscription['id']}",
+        json={
+            "copy_ratio_percent": 10,
+            "position_cap_usdc": 20,
+            "large_increase_threshold_usdc": 0,
+            "total_exposure_cap_usdc": 160,
+            "market_slippage_cents": 5,
+        },
+    )
+    assert invalid.status_code == 422
 
 
 def test_one_cycle_opens_exactly_once_and_duplicate_ticks_do_nothing(app_client_factory):
@@ -297,7 +321,7 @@ def test_one_cycle_opens_exactly_once_and_duplicate_ticks_do_nothing(app_client_
     assert data["positions"][0]["attributed_size"] > 0
 
 
-def test_increased_and_decreased_are_monitor_only_events(app_client_factory):
+def test_small_increased_and_decreased_are_monitor_only_events(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     add_event(client, subscription, "opened")
@@ -310,11 +334,102 @@ def test_increased_and_decreased_are_monitor_only_events(app_client_factory):
     assert data["subscription"]["last_processed_event_id"] > 0
 
 
+def test_large_increase_follows_ratio_and_reuses_existing_position(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    initial = dashboard(client, subscription)
+    position_id = initial["positions"][0]["id"]
+    initial_cost = Decimal(str(initial["positions"][0]["attributed_cost"]))
+
+    event_id = add_event(client, subscription, "increased", before="100", after="300")
+    tick(client)
+    tick(client)
+
+    data = dashboard(client, subscription)
+    buys = [order for order in data["orders"] if order["side"] == "BUY"]
+    assert len(buys) == 2
+    increase_order = next(order for order in buys if order["leader_event_id"] == event_id)
+    assert Decimal(str(increase_order["filled_usdc"])) == Decimal("10")
+    assert data["positions"][0]["id"] == position_id
+    assert Decimal(str(data["positions"][0]["attributed_cost"])) == initial_cost + Decimal("10")
+
+
+def test_large_increases_stop_at_remaining_position_cap(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    add_event(client, subscription, "increased", before="100", after="700")
+    add_event(client, subscription, "increased", before="700", after="1300")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    filled_buys = [
+        order
+        for order in data["orders"]
+        if order["side"] == "BUY" and Decimal(str(order["filled_usdc"])) > 0
+    ]
+    assert [Decimal(str(order["filled_usdc"])) for order in reversed(filled_buys)] == [
+        Decimal("5"),
+        Decimal("15"),
+    ]
+    assert Decimal(str(data["positions"][0]["attributed_cost"])) == Decimal("20")
+    assert any(order["reason"] == "单仓最大投入已满" for order in data["orders"])
+
+
+def test_large_increase_does_not_rescue_skipped_initial_open(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened", after="5")
+    add_event(client, subscription, "increased", before="5", after="205")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    assert data["positions"] == []
+    assert all(Decimal(str(order["filled_usdc"])) == 0 for order in data["orders"])
+    assert any(order["reason"] == "首次建仓未成功，不追随后续加仓" for order in data["orders"])
+
+
+def test_unfilled_large_increase_preserves_existing_position(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    before = dashboard(client, subscription)["positions"][0]
+
+    class ZeroFillTrader(FakeLiveTrader):
+        async def submit_prepared_market(self, prepared):
+            self.calls += 1
+            return TradeResult(
+                status="unmatched",
+                external_order_id=f"order-{self.calls}",
+                filled_size=Decimal("0"),
+                filled_usdc=Decimal("0"),
+                signed_order_hash=prepared.signed_order_hash,
+            )
+
+    trader = ZeroFillTrader()
+
+    async def get_trader():
+        return trader
+
+    client.app.state.copy_engine._trader = get_trader
+    add_event(client, subscription, "increased", before="100", after="300")
+    tick(client)
+
+    after = dashboard(client, subscription)["positions"][0]
+    assert after["status"] == "open"
+    assert after["attributed_size"] == before["attributed_size"]
+    assert after["attributed_cost"] == before["attributed_cost"]
+
+
 def test_closed_is_the_only_sell_signal_and_sells_all_attributed_size(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     add_event(client, subscription, "opened")
-    add_event(client, subscription, "decreased", before="100", after="20")
+    add_event(client, subscription, "increased", before="100", after="300")
+    add_event(client, subscription, "decreased", before="300", after="20")
     tick(client)
     opened = dashboard(client, subscription)
     bought_size = Decimal(str(opened["positions"][0]["attributed_size"]))
@@ -911,5 +1026,9 @@ def test_live_only_migration_deletes_paper_graph_and_preserves_live_orders(tmp_p
         order_columns = {row[1] for row in connection.execute("PRAGMA table_info(copy_orders)")}
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(copy_subscriptions)")}
         assert "mode" not in subscription_columns
+        assert "large_increase_threshold_usdc" in subscription_columns
+        assert connection.execute(
+            "SELECT large_increase_threshold_usdc FROM copy_subscriptions WHERE id = 2"
+        ).fetchone() == (100,)
         assert "mode" not in order_columns
         assert "uq_copy_subscriptions_single_live" not in indexes

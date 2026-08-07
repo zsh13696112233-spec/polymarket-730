@@ -149,6 +149,10 @@ class CopySubscription(Base):
             name="ck_copy_subscriptions_position_cap",
         ),
         CheckConstraint(
+            "large_increase_threshold_usdc > 0",
+            name="ck_copy_subscriptions_large_increase_threshold",
+        ),
+        CheckConstraint(
             "market_slippage_cents >= 0 AND market_slippage_cents <= 50",
             name="ck_copy_subscriptions_market_slippage",
         ),
@@ -164,6 +168,9 @@ class CopySubscription(Base):
     )
     position_cap_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("20")
+    )
+    large_increase_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("100")
     )
     total_exposure_cap_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("160")

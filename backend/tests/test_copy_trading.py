@@ -45,6 +45,7 @@ SELF_ADDRESS = "0x3333333333333333333333333333333333333333"
 class FakeLiveTrader:
     def __init__(self, balance: str = "1000") -> None:
         self.balance = Decimal(balance)
+        self.onchain_balance = Decimal("0")
         self.calls = 0
 
     async def collateral_balance(self) -> Decimal:
@@ -77,6 +78,9 @@ class FakeLiveTrader:
 
     async def redeem(self, **kwargs) -> str:
         return "0xredeemed"
+
+    async def onchain_outcome_balance(self, asset_id: str) -> Decimal:
+        return self.onchain_balance
 
 
 def install_book(fake, *, ask: str = "0.50", bid: str = "0.49", depth: str = "1000") -> None:
@@ -343,6 +347,61 @@ def test_redeemed_runs_once_without_a_sell_order(app_client_factory):
 
     assert client.portal.call(counts) == (1, 0)
     assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
+
+
+def test_processed_redemption_with_zero_onchain_balance_reconciles_redemption(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    redemption_event_id = add_event(client, subscription, "redeemed", before="100", after="0")
+
+    async def mark_event_as_already_processed() -> None:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            row.last_processed_event_id = redemption_event_id
+            await session.commit()
+
+    client.portal.call(mark_event_as_already_processed)
+    tick(client)
+
+    async def reconciliation() -> tuple[str, str, Decimal]:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            assert position is not None and redemption is not None
+            return position.status, redemption.status, position.realized_pnl
+
+    position_status, redemption_status, realized_pnl = client.portal.call(reconciliation)
+    assert (position_status, redemption_status) == ("reconciled", "reconciled")
+    assert realized_pnl > Decimal("0")
+
+
+def test_forced_balance_refresh_updates_execution_account(app_client_factory):
+    client, fake = app_client_factory([[]])
+    configured_subscription(client, fake)
+    trader = FakeLiveTrader(balance="321.45")
+
+    async def get_trader() -> FakeLiveTrader:
+        return trader
+
+    client.app.state.copy_engine._trader = get_trader
+
+    async def refresh() -> None:
+        await client.app.state.copy_engine.refresh_execution_balance(force=True)
+
+    client.portal.call(refresh)
+
+    async def balance() -> Decimal:
+        async with client.app.state.database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            assert account is not None
+            return account.collateral_balance
+
+    assert client.portal.call(balance).quantize(Decimal("0.01")) == Decimal("321.45")
 
 
 @pytest.mark.parametrize("terminal_event", ["closed", "redeemed"])

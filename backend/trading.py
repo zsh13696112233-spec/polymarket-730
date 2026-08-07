@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from backend.keychain import KeychainReference, MacOSKeychain
 from backend.polymarket import OrderBookSnapshot
@@ -260,6 +262,10 @@ class OfficialClobTrader:
     async def outcome_balance(self, asset_id: str) -> Decimal:
         return await asyncio.to_thread(self._outcome_balance_sync, asset_id)
 
+    async def onchain_outcome_balance(self, asset_id: str) -> Decimal:
+        """Read the conditional-token balance from Polygon, independent of CLOB cache."""
+        return await asyncio.to_thread(self._onchain_outcome_balance_sync, asset_id)
+
     async def trade_fee(self, external_trade_id: str) -> Decimal:
         return await asyncio.to_thread(self._fee_for_trade_sync, external_trade_id)
 
@@ -363,6 +369,40 @@ class OfficialClobTrader:
             return Decimal(str(raw)) / Decimal("1000000")
         except Exception as error:
             raise TradingUnavailable(f"无法验证 outcome token 余额：{error}") from error
+
+    def _onchain_outcome_balance_sync(self, asset_id: str) -> Decimal:
+        funder = (self.funder_address or "").removeprefix("0x").lower()
+        if len(funder) != 40:
+            raise TradingUnavailable("缺少可用于链上对账的执行资金地址")
+        try:
+            token_id = int(asset_id)
+        except ValueError as error:
+            raise TradingUnavailable("outcome token id 无效，无法链上对账") from error
+        data = "0x00fdd58e" + f"{int(funder, 16):064x}{token_id:064x}"
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "eth_call",
+                "params": [{"to": CTF_ADDRESS, "data": data}, "latest"],
+            }
+        ).encode()
+        request = Request(
+            self.rpc_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:  # noqa: S310 - configured RPC endpoint
+                response_payload = json.loads(response.read().decode())
+            if response_payload.get("error"):
+                raise TradingUnavailable(f"Polygon RPC 链上对账失败：{response_payload['error']}")
+            return Decimal(int(str(response_payload.get("result") or "0x0"), 16)) / Decimal(
+                "1000000"
+            )
+        except (OSError, URLError, ValueError, json.JSONDecodeError) as error:
+            raise TradingUnavailable(f"无法读取链上 outcome token 余额：{error}") from error
 
     def _fee_for_trade_sync(self, trade_id: str | None) -> Decimal:
         if not trade_id:

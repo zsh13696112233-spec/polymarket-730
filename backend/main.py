@@ -329,9 +329,11 @@ async def workspace_position_reads(
             total_pnl = position.realized_pnl
             valuation_status = "not_applicable"
             position_valued_at = None
+        position_payload = CopyPositionRead.model_validate(position).model_dump()
         result.append(
-            CopyWorkspacePositionRead.model_validate(position).model_copy(
-                update={
+            CopyWorkspacePositionRead.model_validate(
+                {
+                    **position_payload,
                     "tracked_wallet_id": wallet.id,
                     "tracked_wallet_label": wallet.label,
                     "tracked_wallet_address": wallet.proxy_wallet or wallet.address,
@@ -1074,6 +1076,40 @@ def create_app(
         result = execution_account_read(account)
         assert result is not None
         return result
+
+    @application.post(
+        "/api/copy-trading/account/balance/refresh",
+        response_model=ExecutionAccountRead,
+    )
+    async def refresh_execution_account_balance(request: Request) -> ExecutionAccountRead:
+        await request.app.state.copy_engine.refresh_execution_balance(force=True)
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is None:
+                raise HTTPException(status_code=409, detail="请先配置执行账户")
+            if account.last_error:
+                raise HTTPException(status_code=502, detail=account.last_error)
+            result = execution_account_read(account)
+            assert result is not None
+            return result
+
+    @application.post("/api/copy-trading/reconcile")
+    async def reconcile_copy_trading(request: Request) -> dict[str, str]:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            subscription_ids = list(
+                (
+                    await session.scalars(
+                        select(CopySubscription.id).where(
+                            CopySubscription.state.in_(["active", "paused", "exit_only", "closing"])
+                        )
+                    )
+                ).all()
+            )
+        for subscription_id in subscription_ids:
+            await request.app.state.copy_engine.reconcile_terminal_positions(subscription_id)
+        return {"status": "ok"}
 
     @application.post(
         "/api/copy-trading/rehearsal/preview",

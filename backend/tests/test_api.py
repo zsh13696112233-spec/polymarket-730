@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from backend.main import create_app
 from backend.models import (
+    CopyPosition,
     PositionChangeCandidate,
     PositionEvent,
     PositionEventFill,
@@ -125,6 +126,33 @@ async def set_event_reconciliation_status(database, event_id: int, status: str) 
         event = await session.get(PositionEvent, event_id)
         assert event is not None
         event.reconciliation_status = status
+        await session.commit()
+
+
+async def add_copy_position(database, subscription_id: int) -> None:
+    now = utcnow()
+    async with database.sessions() as session:
+        session.add(
+            CopyPosition(
+                subscription_id=subscription_id,
+                asset_id="copy-asset-1",
+                condition_id="0x" + "c" * 64,
+                title="跟单测试市场",
+                outcome="Yes",
+                outcome_index=0,
+                neg_risk=False,
+                event_slug="copy-test-market",
+                settlement_date=None,
+                cycle_no=1,
+                attributed_size=Decimal("10"),
+                attributed_cost=Decimal("4"),
+                reserved_buy_usdc=Decimal("0"),
+                realized_pnl=Decimal("0"),
+                status="open",
+                created_at=now,
+                updated_at=now,
+            )
+        )
         await session.commit()
 
 
@@ -1813,6 +1841,39 @@ def test_copy_workspace_aggregates_multiple_strategies(app_client_factory):
     )
     assert orders.status_code == 200
     assert orders.json() == {"items": [], "next_cursor": None}
+
+
+def test_copy_workspace_serializes_positions_with_wallet_metadata(app_client_factory):
+    client, _ = app_client_factory([[]])
+    wallet = add_wallet(client)
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={
+            "tracked_wallet_id": wallet["id"],
+            "copy_ratio_percent": 10,
+            "position_cap_usdc": 20,
+            "total_exposure_cap_usdc": 80,
+            "market_slippage_cents": 5,
+        },
+    ).json()
+    portal = client.portal
+    assert portal is not None
+    portal.call(
+        partial(
+            add_copy_position,
+            client.app.state.database,
+            subscription["id"],
+        )
+    )
+
+    overview = client.get("/api/copy-trading/overview")
+    assert overview.status_code == 200, overview.text
+    positions = client.get("/api/copy-trading/positions")
+    assert positions.status_code == 200, positions.text
+    item = positions.json()["items"][0]
+    assert item["tracked_wallet_id"] == wallet["id"]
+    assert item["tracked_wallet_label"] == wallet["label"]
+    assert item["tracked_wallet_address"] == wallet["proxy_wallet"]
 
 
 def test_copy_workspace_rejects_invalid_filters(app_client_factory):

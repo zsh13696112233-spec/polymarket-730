@@ -4337,8 +4337,6 @@ summary:focus-visible {
 .pcStrategyIdentity > span:last-child,
 .pcWalletCell,
 .pcMarketIdentity,
-.pcTimeCell,
-.pcStatusCell,
 .pcPnl {
   display: grid;
   min-width: 0;
@@ -4652,9 +4650,17 @@ summary:focus-visible {
   font-size: 7px;
 }
 
-.pcOrderTable th:nth-child(2) {
-  width: 34%;
+.pcOrderTable {
+  table-layout: fixed;
 }
+
+.pcOrderTimeColumn { width: 16%; }
+.pcOrderMarketColumn { width: 34%; }
+.pcOrderSideColumn { width: 10%; }
+.pcOrderPlannedColumn { width: 8.5%; }
+.pcOrderFilledColumn { width: 10%; }
+.pcOrderPriceColumn { width: 9%; }
+.pcOrderStatusColumn { width: 12.5%; }
 
 .pcMarketIdentity {
   max-width: 430px;
@@ -4702,7 +4708,6 @@ a.pcMarketIdentity:hover strong {
 
 .pcStatusCell {
   max-width: 180px;
-  justify-items: start;
 }
 
 .pcStatusCell small {

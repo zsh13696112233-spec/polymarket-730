@@ -19,6 +19,7 @@ class Settings:
     polygon_rpc_url: str = "https://polygon.drpc.org"
     poll_interval_seconds: float = 15.0
     copy_poll_interval_seconds: float = 15.0
+    copy_balance_refresh_interval_seconds: float = 10.0
     quiet_window_seconds: float = 15.0
     hard_window_seconds: float = 60.0
     max_wallet_concurrency: int = 3
@@ -52,6 +53,9 @@ class Settings:
             poll_interval_seconds=float(os.getenv("POLYMARKET_POLL_INTERVAL_SECONDS", "15")),
             copy_poll_interval_seconds=float(
                 os.getenv("POLYMARKET_COPY_POLL_INTERVAL_SECONDS", "15")
+            ),
+            copy_balance_refresh_interval_seconds=float(
+                os.getenv("POLYMARKET_COPY_BALANCE_REFRESH_INTERVAL_SECONDS", "10")
             ),
             quiet_window_seconds=float(os.getenv("POLYMARKET_SETTLE_QUIET_SECONDS", "15")),
             hard_window_seconds=float(os.getenv("POLYMARKET_SETTLE_HARD_SECONDS", "60")),

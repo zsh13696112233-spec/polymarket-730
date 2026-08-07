@@ -149,7 +149,14 @@ class CopyTradingEngine:
             self._wake.clear()
             try:
                 await asyncio.wait_for(
-                    self._wake.wait(), timeout=max(1.0, self.settings.copy_poll_interval_seconds)
+                    self._wake.wait(),
+                    timeout=max(
+                        1.0,
+                        min(
+                            self.settings.copy_poll_interval_seconds,
+                            self.settings.copy_balance_refresh_interval_seconds,
+                        ),
+                    ),
                 )
             except TimeoutError:
                 pass
@@ -158,6 +165,7 @@ class CopyTradingEngine:
         if self._lock.locked():
             return
         async with self._lock:
+            await self.refresh_execution_balance()
             async with self.database.sessions() as session:
                 ids = list(
                     (
@@ -174,6 +182,7 @@ class CopyTradingEngine:
                 try:
                     await self.reconcile_pending_orders(subscription_id)
                     await self.process_position_events(subscription_id)
+                    await self.reconcile_terminal_positions(subscription_id)
                     await self.process_redemptions(subscription_id)
                     await self._finish_closing(subscription_id)
                 except Exception as error:
@@ -183,6 +192,50 @@ class CopyTradingEngine:
                             subscription.last_error = str(error)[:1000]
                             subscription.updated_at = utcnow()
                             await session.commit()
+
+    async def refresh_execution_balance(self, *, force: bool = False) -> Decimal | None:
+        """Refresh the CLOB collateral balance at a bounded cadence.
+
+        The dashboard reads this persisted value, so a failed polling request never
+        replaces a known balance with a fabricated zero.
+        """
+        now = utcnow()
+        async with self.database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is None or not account.keychain_service or not account.keychain_account:
+                return None
+            last_balance_at = account.last_balance_at
+        if (
+            not force
+            and last_balance_at is not None
+            and (now - last_balance_at).total_seconds()
+            < self.settings.copy_balance_refresh_interval_seconds
+        ):
+            return None
+        try:
+            balance = await (await self._trader()).collateral_balance()
+        except Exception as error:
+            async with self.database.sessions() as session:
+                account = await session.get(ExecutionAccount, 1)
+                if account is not None:
+                    account.status = "error"
+                    account.last_error = f"余额刷新失败：{error}"[:1000]
+                    account.updated_at = utcnow()
+                    await session.commit()
+            return None
+        async with self.database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is None:
+                return balance
+            account.collateral_balance = balance
+            account.last_balance_at = utcnow()
+            account.status = (
+                "ready" if balance > account.cash_reserve_usdc else "insufficient_balance"
+            )
+            account.last_error = None
+            account.updated_at = utcnow()
+            await session.commit()
+        return balance
 
     async def prime_subscription(self, subscription_id: int) -> None:
         async with self.database.sessions() as session:
@@ -238,6 +291,165 @@ class CopyTradingEngine:
                 subscription.last_error = None
                 subscription.updated_at = utcnow()
                 await session.commit()
+
+    async def reconcile_terminal_positions(self, subscription_id: int) -> None:
+        """Recover terminal source events that were marked processed before a crash.
+
+        The copy-trading wallet is dedicated to the engine.  Once its on-chain
+        balance is zero and the source wallet has a confirmed redemption, record a
+        reconciliation-derived payout without fabricating an execution transaction
+        hash.  External manual transfers remain visible in the ledger detail.
+        """
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                return
+            account = await session.get(ExecutionAccount, 1)
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(
+                            CopyPosition.subscription_id == subscription_id,
+                            CopyPosition.attributed_size > ZERO,
+                            CopyPosition.status == "open",
+                        )
+                    )
+                ).all()
+            )
+            candidates: list[tuple[int, int | None, int | None]] = []
+            for position in positions:
+                buy_event_id = await session.scalar(
+                    select(func.max(CopyOrder.leader_event_id)).where(
+                        CopyOrder.copy_position_id == position.id,
+                        CopyOrder.side == "BUY",
+                        CopyOrder.status == "filled",
+                    )
+                )
+                source_redemption = await session.scalar(
+                    select(PositionEvent)
+                    .where(
+                        PositionEvent.wallet_id == subscription.tracked_wallet_id,
+                        PositionEvent.asset_id == position.asset_id,
+                        PositionEvent.id > int(buy_event_id or 0),
+                        PositionEvent.type == "redeemed",
+                    )
+                    .order_by(PositionEvent.id.desc())
+                    .limit(1)
+                )
+                execution_redemption = (
+                    await session.scalar(
+                        select(PositionEvent)
+                        .where(
+                            PositionEvent.wallet_id == account.wallet_id,
+                            PositionEvent.asset_id == position.asset_id,
+                            PositionEvent.type == "redeemed",
+                            PositionEvent.settled_at >= position.created_at,
+                        )
+                        .order_by(PositionEvent.id.desc())
+                        .limit(1)
+                    )
+                    if account is not None
+                    else None
+                )
+                if source_redemption is not None or execution_redemption is not None:
+                    candidates.append(
+                        (
+                            position.id,
+                            source_redemption.id if source_redemption is not None else None,
+                            execution_redemption.id if execution_redemption is not None else None,
+                        )
+                    )
+        if not candidates:
+            return
+        for position_id, source_event_id, execution_event_id in candidates:
+            async with self.database.sessions() as session:
+                position = await session.get(CopyPosition, position_id)
+                existing = await session.scalar(
+                    select(CopyRedemption).where(CopyRedemption.copy_position_id == position_id)
+                )
+                if position is None or position.attributed_size <= ZERO or existing is not None:
+                    continue
+                asset_id = position.asset_id
+                execution_event = (
+                    await session.get(PositionEvent, execution_event_id)
+                    if execution_event_id is not None
+                    else None
+                )
+            if execution_event is not None:
+                await self._record_reconciled_redemption(
+                    position_id,
+                    transaction_hash=execution_event.transaction_hash,
+                    detail="执行钱包链上赎回事件与归因持仓匹配后的结算对账",
+                )
+                continue
+            assert source_event_id is not None
+            trader = await self._trader()
+            balance = await trader.onchain_outcome_balance(asset_id)
+            if balance > ZERO:
+                await self._leader_redeemed(subscription_id, source_event_id)
+                continue
+            await self._record_reconciled_redemption(
+                position_id,
+                transaction_hash=None,
+                detail="来源赎回与链上 outcome token 余额归零后的结算对账",
+            )
+
+    async def _record_reconciled_redemption(
+        self,
+        position_id: int,
+        *,
+        transaction_hash: str | None,
+        detail: str,
+    ) -> None:
+        async with self.database.sessions() as session:
+            position = await session.get(CopyPosition, position_id)
+            existing = await session.scalar(
+                select(CopyRedemption).where(CopyRedemption.copy_position_id == position_id)
+            )
+            if (
+                position is None
+                or position.attributed_size <= ZERO
+                or existing is not None
+            ):
+                return
+            payout = position.attributed_size
+            cost = position.attributed_cost
+            realized = payout - cost
+            session.add(
+                CopyRedemption(
+                    copy_position_id=position.id,
+                    status="reconciled",
+                    size=position.attributed_size,
+                    payout_usdc=payout,
+                    transaction_hash=transaction_hash,
+                    attempts=0,
+                    last_error=(
+                        None
+                        if transaction_hash
+                        else "未找到执行钱包赎回交易哈希，按来源赎回与链上余额完成对账。"
+                    ),
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+            )
+            position.attributed_size = ZERO
+            position.attributed_cost = ZERO
+            position.realized_pnl += realized
+            position.status = "reconciled"
+            position.updated_at = utcnow()
+            session.add(
+                CopyLedger(
+                    subscription_id=position.subscription_id,
+                    copy_position_id=position.id,
+                    order_id=None,
+                    type="reconcile_redeem",
+                    amount_usdc=payout,
+                    realized_pnl=realized,
+                    detail=detail,
+                    timestamp=utcnow(),
+                )
+            )
+            await session.commit()
 
     async def _leader_opened(self, subscription_id: int, event_id: int) -> None:
         async with self.database.sessions() as session:
@@ -761,17 +973,30 @@ class CopyTradingEngine:
             if position is None:
                 return
             size = redemption.size
-            payout = None
+            # A redeemed outcome has a $1 payout per share.  The source event is
+            # already a durable terminal signal, so this is the execution position's
+            # own share count, not the source wallet's amount.
+            payout = size
             condition_id = position.condition_id
             outcome_index = position.outcome_index
             neg_risk = bool(position.neg_risk)
         trader = await self._trader()
-        transaction_hash = await trader.redeem(
-            condition_id=condition_id,
-            size=size,
-            outcome_index=outcome_index,
-            neg_risk=neg_risk,
-        )
+        try:
+            transaction_hash = await trader.redeem(
+                condition_id=condition_id,
+                size=size,
+                outcome_index=outcome_index,
+                neg_risk=neg_risk,
+            )
+        except Exception as error:
+            async with self.database.sessions() as session:
+                redemption = await session.get(CopyRedemption, redemption_id)
+                if redemption is not None and redemption.status == "pending":
+                    redemption.attempts += 1
+                    redemption.last_error = str(error)[:1000]
+                    redemption.updated_at = utcnow()
+                    await session.commit()
+            raise
         async with self.database.sessions() as session:
             redemption = await session.get(CopyRedemption, redemption_id)
             if redemption is None or redemption.status != "pending":
@@ -779,7 +1004,7 @@ class CopyTradingEngine:
             position = await session.get(CopyPosition, redemption.copy_position_id)
             assert position is not None
             cost = position.attributed_cost
-            realized = (payout - cost) if payout is not None else ZERO
+            realized = payout - cost
             redemption.status = "completed"
             redemption.payout_usdc = payout
             redemption.transaction_hash = transaction_hash
@@ -796,7 +1021,7 @@ class CopyTradingEngine:
                     copy_position_id=position.id,
                     order_id=None,
                     type="redeem",
-                    amount_usdc=payout or ZERO,
+                    amount_usdc=payout,
                     realized_pnl=realized,
                     detail="观察钱包赎回后一次性赎回归因仓位",
                     timestamp=utcnow(),

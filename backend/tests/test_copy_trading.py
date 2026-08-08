@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from alembic import command
@@ -384,17 +385,65 @@ def test_large_increases_stop_at_remaining_position_cap(app_client_factory):
     assert any(order["reason"] == "单仓最大投入已满" for order in data["orders"])
 
 
-def test_large_increase_does_not_rescue_skipped_initial_open(app_client_factory):
+def test_small_initial_open_is_topped_up_to_market_minimum(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     add_event(client, subscription, "opened", after="5")
-    add_event(client, subscription, "increased", before="5", after="205")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    assert len(data["positions"]) == 1
+    buys = [order for order in data["orders"] if order["side"] == "BUY"]
+    assert len(buys) == 1
+    assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("2.75")
+    assert Decimal(str(buys[0]["filled_size"])) == Decimal("5")
+
+
+def test_small_initial_open_still_respects_risk_caps(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+
+    async def limit_position_cap() -> None:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            row.position_cap_usdc = Decimal("2")
+            await session.commit()
+
+    client.portal.call(limit_position_cap)
+    add_event(client, subscription, "opened", after="5")
     tick(client)
 
     data = dashboard(client, subscription)
     assert data["positions"] == []
-    assert all(Decimal(str(order["filled_usdc"])) == 0 for order in data["orders"])
-    assert any(order["reason"] == "首次建仓未成功，不追随后续加仓" for order in data["orders"])
+    assert any(
+        order["reason"] == "剩余风控额度低于市场最小下单金额"
+        for order in data["orders"]
+    )
+
+
+def test_small_large_increase_is_not_topped_up(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+
+    async def reduce_copy_ratio() -> None:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            row.copy_ratio_percent = Decimal("1")
+            await session.commit()
+
+    client.portal.call(reduce_copy_ratio)
+    add_event(client, subscription, "opened")
+    add_event(client, subscription, "increased", before="100", after="300")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    buys = [order for order in data["orders"] if order["side"] == "BUY"]
+    assert len(buys) == 2
+    assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("0")
+    assert buys[0]["reason"] == "按执行比例计算后低于市场最小下单份数"
+    assert Decimal(str(buys[1]["filled_usdc"])) == Decimal("2.75")
 
 
 def test_unfilled_large_increase_preserves_existing_position(app_client_factory):
@@ -470,6 +519,42 @@ def test_redeemed_runs_once_without_a_sell_order(app_client_factory):
     assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
 
 
+def test_retries_redemption_after_deposit_wallet_credentials_are_configured(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    class MissingRelayerCredentialsTrader(FakeLiveTrader):
+        async def redeem(self, **kwargs) -> str:
+            raise TradingUnavailable("Deposit Wallet 自动赎回需要 Relayer API 凭证")
+
+    async def missing_credentials_trader() -> MissingRelayerCredentialsTrader:
+        return MissingRelayerCredentialsTrader()
+
+    client.app.state.copy_engine._trader = missing_credentials_trader
+    add_event(client, subscription, "redeemed", before="100", after="0", payout="100")
+    tick(client)
+
+    async def pending_redemption() -> CopyRedemption:
+        async with client.app.state.database.sessions() as session:
+            redemption = await session.scalar(select(CopyRedemption))
+            assert redemption is not None
+            return redemption
+
+    pending = client.portal.call(pending_redemption)
+    assert pending.status == "pending"
+    assert pending.transaction_hash is None
+    assert pending.last_error == "Deposit Wallet 自动赎回需要 Relayer API 凭证"
+
+    async def configured_trader() -> FakeLiveTrader:
+        return FakeLiveTrader()
+
+    client.app.state.copy_engine._trader = configured_trader
+    tick(client)
+    assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
+
+
 def test_processed_redemption_with_zero_onchain_balance_reconciles_redemption(
     app_client_factory,
 ):
@@ -499,6 +584,47 @@ def test_processed_redemption_with_zero_onchain_balance_reconciles_redemption(
     position_status, redemption_status, realized_pnl = client.portal.call(reconciliation)
     assert (position_status, redemption_status) == ("reconciled", "reconciled")
     assert realized_pnl > Decimal("0")
+
+
+def test_manual_redemption_reconciles_a_pending_automatic_redemption(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    async def create_pending_redemption() -> None:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            assert position is not None
+            session.add(
+                CopyRedemption(
+                    copy_position_id=position.id,
+                    status="pending",
+                    size=position.attributed_size,
+                    payout_usdc=None,
+                    transaction_hash=None,
+                    attempts=1,
+                    last_error="自动赎回提交失败",
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+            )
+            position.status = "redeeming"
+            await session.commit()
+
+    client.portal.call(create_pending_redemption)
+    add_event(client, subscription, "redeemed", before="100", after="0", payout="100")
+    tick(client)
+    data = dashboard(client, subscription)
+    assert data["positions"][0]["status"] == "reconciled"
+
+    async def redemption_status() -> str:
+        async with client.app.state.database.sessions() as session:
+            redemption = await session.scalar(select(CopyRedemption))
+            assert redemption is not None
+            return redemption.status
+
+    assert client.portal.call(redemption_status) == "reconciled"
 
 
 def test_forced_balance_refresh_updates_execution_account(app_client_factory):
@@ -935,6 +1061,88 @@ def test_v2_prepared_order_captures_hash_trade_id_and_actual_fee(monkeypatch, si
     assert result.fee_usdc == Decimal("0.025")
     assert result.signed_order_hash == prepared.signed_order_hash
     assert str(calls["order_type"]) == "FAK"
+
+
+def test_deposit_wallet_redemption_uses_safe_relayer_with_builder_credentials(monkeypatch):
+    calls: dict[str, object] = {}
+
+    class FakeKeychain:
+        def get_secret(self, reference):
+            if reference.service == "test":
+                return "0xprivate"
+            assert reference.service == "test.builder"
+            return (
+                '{"key":"builder-key","secret":"builder-secret",'
+                '"passphrase":"builder-passphrase"}'
+            )
+
+    class FakeBuilderApiKeyCreds:
+        def __init__(self, **values):
+            calls["credentials"] = values
+
+    class FakeBuilderConfig:
+        def __init__(self, **values):
+            self.values = values
+            calls["builder_config"] = self
+
+    class FakeTransaction:
+        def __init__(self, **values):
+            calls["transaction"] = values
+
+    class FakeRelayerTxType:
+        PROXY = "proxy"
+        SAFE = "safe"
+
+    class FakeResponse:
+        transaction_hash = "0xfallback"
+
+        def wait(self):
+            return {"transactionHash": "0xredeemed"}
+
+    class FakeRelayClient:
+        def __init__(self, *args, **kwargs):
+            calls["relay_args"] = args
+            calls["relay_kwargs"] = kwargs
+
+        def execute(self, transactions, description):
+            calls["transactions"] = transactions
+            calls["description"] = description
+            return FakeResponse()
+
+    relayer_client = ModuleType("py_builder_relayer_client.client")
+    relayer_client.RelayClient = FakeRelayClient
+    relayer_models = ModuleType("py_builder_relayer_client.models")
+    relayer_models.RelayerTxType = FakeRelayerTxType
+    relayer_models.Transaction = FakeTransaction
+    signing_config = ModuleType("py_builder_signing_sdk.config")
+    signing_config.BuilderApiKeyCreds = FakeBuilderApiKeyCreds
+    signing_config.BuilderConfig = FakeBuilderConfig
+    monkeypatch.setitem(sys.modules, "py_builder_relayer_client.client", relayer_client)
+    monkeypatch.setitem(sys.modules, "py_builder_relayer_client.models", relayer_models)
+    monkeypatch.setitem(sys.modules, "py_builder_signing_sdk.config", signing_config)
+
+    trader = OfficialClobTrader(
+        host="https://example.test",
+        keychain=FakeKeychain(),
+        key_reference=SimpleNamespace(service="test", account=SELF_ADDRESS),
+        signature_type=3,
+        funder_address=SELF_ADDRESS,
+    )
+    monkeypatch.setattr(trader, "_redemption_call", lambda *_: ("0xdestination", "0xdata"))
+
+    assert trader._redeem_sync(CONDITION_ID, Decimal("10"), 1, False) == "0xredeemed"
+    assert calls["credentials"] == {
+        "key": "builder-key",
+        "secret": "builder-secret",
+        "passphrase": "builder-passphrase",
+    }
+    assert calls["relay_kwargs"] == {
+        "private_key": "0xprivate",
+        "builder_config": calls["builder_config"],
+        "relay_tx_type": FakeRelayerTxType.SAFE,
+        "rpc_url": "https://polygon.drpc.org",
+    }
+    assert calls["transaction"] == {"to": "0xdestination", "data": "0xdata", "value": "0"}
 
 
 def test_reset_migration_removes_copy_rows_and_preserves_monitor_rows(tmp_path: Path):

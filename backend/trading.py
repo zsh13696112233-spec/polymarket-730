@@ -522,8 +522,8 @@ class OfficialClobTrader:
         private_key = self.keychain.get_secret(self.key_reference)
         if self.signature_type == 0:
             return self._redeem_eoa(private_key, destination, data)
-        if self.signature_type == 3:
-            raise TradingUnavailable("Deposit Wallet 自动赎回需要 Relayer API 凭证")
+        if self.signature_type not in {1, 3}:
+            raise TradingUnavailable("自动赎回只支持 EOA、Proxy 或 Deposit Wallet")
         try:
             from py_builder_relayer_client.client import RelayClient
             from py_builder_relayer_client.models import RelayerTxType, Transaction

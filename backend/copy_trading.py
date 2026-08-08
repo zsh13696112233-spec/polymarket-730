@@ -24,7 +24,7 @@ from backend.models import (
     ExecutionAccount,
     PositionEvent,
 )
-from backend.polymarket import OrderBookSnapshot, PolymarketClient
+from backend.polymarket import OrderBookSnapshot, PolymarketAPIError, PolymarketClient
 from backend.trading import (
     MarketTradeRequest,
     OfficialClobTrader,
@@ -772,7 +772,23 @@ class CopyTradingEngine:
             await self._execute_redemption(redemption_id, event_id)
             return
 
-        book = await self.client.fetch_order_book(event.asset_id)
+        try:
+            book = await self.client.fetch_order_book(event.asset_id)
+        except PolymarketAPIError:
+            resolutions = await self.client.fetch_market_resolutions([event.condition_id])
+            resolution = resolutions.get(event.condition_id)
+            payout = (
+                resolution.payout_by_asset_id.get(event.asset_id)
+                if resolution is not None
+                else None
+            )
+            if payout == ZERO:
+                await self._record_resolved_loss(position_id, resolution.resolved_at)
+                return
+            if payout == ONE:
+                await self._leader_redeemed(subscription_id, event_id)
+                return
+            raise
         if book.best_bid is None:
             raise TradingUnavailable("市场当前没有可成交买盘，完整清仓未执行")
         worst_price = market_worst_price(
@@ -806,6 +822,33 @@ class CopyTradingEngine:
             neg_risk=neg_risk,
         )
         await self._execute_order(order_id, request, book)
+
+    async def _record_resolved_loss(self, position_id: int, resolved_at: datetime) -> None:
+        """Close a losing resolved outcome that no longer has a CLOB book."""
+        async with self.database.sessions() as session:
+            position = await session.get(CopyPosition, position_id)
+            if position is None or position.attributed_size <= ZERO:
+                return
+            cost = position.attributed_cost
+            position.attributed_size = ZERO
+            position.attributed_cost = ZERO
+            position.reserved_buy_usdc = ZERO
+            position.realized_pnl -= cost
+            position.status = "settled_loss"
+            position.updated_at = utcnow()
+            session.add(
+                CopyLedger(
+                    subscription_id=position.subscription_id,
+                    copy_position_id=position.id,
+                    order_id=None,
+                    type="settle_loss",
+                    amount_usdc=ZERO,
+                    realized_pnl=-cost,
+                    detail="市场已结算且该 outcome 兑付为 0，按已结算亏损入账",
+                    timestamp=resolved_at,
+                )
+            )
+            await session.commit()
 
     def _new_order(
         self,

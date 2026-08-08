@@ -25,7 +25,12 @@ from backend.models import (
     WatchedWallet,
 )
 from backend.monitor import utcnow
-from backend.polymarket import OrderBookLevel, OrderBookSnapshot
+from backend.polymarket import (
+    MarketResolution,
+    OrderBookLevel,
+    OrderBookSnapshot,
+    PolymarketAPIError,
+)
 from backend.schemas import RehearsalExecuteRequest, RehearsalPreviewRequest
 from backend.trading import (
     V2_EXCHANGE_ADDRESS,
@@ -34,6 +39,7 @@ from backend.trading import (
     OfficialClobTrader,
     TradeResult,
     TradingUnavailable,
+    is_effectively_filled,
     simulate_market_order,
 )
 
@@ -804,6 +810,43 @@ def test_market_fak_cancels_unfilled_remainder():
     assert result.status == "partially_filled"
     assert result.filled_size == Decimal("6")
     assert "取消" in (result.reason or "")
+
+
+def test_fak_rounding_dust_is_not_reported_as_partial_fill():
+    assert is_effectively_filled(Decimal("10.000001"), Decimal("9.999999"))
+    assert not is_effectively_filled(Decimal("10"), Decimal("9.99"))
+
+
+def test_resolved_losing_outcome_without_orderbook_is_written_off(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    async def missing_book(asset_id: str) -> OrderBookSnapshot:
+        raise PolymarketAPIError("Polymarket 接口返回 404：订单簿不存在")
+
+    fake.fetch_order_book = missing_book  # type: ignore[attr-defined]
+    fake.market_resolutions[CONDITION_ID] = MarketResolution(
+        condition_id=CONDITION_ID,
+        payout_by_asset_id={"asset-simple": Decimal("0")},
+        resolved_at=datetime(2026, 8, 8, 2, 0),
+    )
+    close_event_id = add_event(client, subscription, "closed", before="100", after="0")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    assert data["positions"][0]["status"] == "settled_loss"
+    assert Decimal(str(data["positions"][0]["attributed_size"])) == 0
+    assert Decimal(str(data["portfolio"]["realized_pnl"])) < 0
+
+    async def processed_event_id() -> int:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            return row.last_processed_event_id
+
+    assert client.portal.call(processed_event_id) == close_event_id
 
 
 def test_market_slippage_is_one_cents_setting_for_both_sides():

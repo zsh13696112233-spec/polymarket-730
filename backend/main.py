@@ -269,6 +269,39 @@ async def copy_daily_realized_pnl(
     return [CopyDailyRealizedPnlRead(date=day, realized_pnl=totals[day]) for day in sorted(totals)]
 
 
+async def copy_position_marks(
+    request: Request,
+    positions: list[CopyPosition],
+) -> dict[int, Decimal | None]:
+    """Return conservative marks, using final payout when a resolved book is gone."""
+    open_positions = [position for position in positions if position.attributed_size > 0]
+    quote_semaphore = asyncio.Semaphore(5)
+
+    async def fetch_bid(position: CopyPosition) -> tuple[int, Decimal | None]:
+        async with quote_semaphore:
+            try:
+                book = await request.app.state.polymarket_client.fetch_order_book(position.asset_id)
+            except Exception:
+                return position.id, None
+            return position.id, book.best_bid
+
+    marks = dict(await asyncio.gather(*(fetch_bid(position) for position in open_positions)))
+    missing = [position for position in open_positions if marks.get(position.id) is None]
+    if not missing:
+        return marks
+    try:
+        resolutions = await request.app.state.polymarket_client.fetch_market_resolutions(
+            [position.condition_id for position in missing]
+        )
+    except Exception:
+        return marks
+    for position in missing:
+        resolution = resolutions.get(position.condition_id)
+        if resolution is not None and position.asset_id in resolution.payout_by_asset_id:
+            marks[position.id] = resolution.payout_by_asset_id[position.asset_id]
+    return marks
+
+
 async def workspace_position_reads(
     request: Request,
     session: Any,
@@ -304,18 +337,7 @@ async def workspace_position_reads(
             totals[f"{side}_size"] = size or Decimal("0")
             totals[f"{side}_usdc"] = amount or Decimal("0")
 
-    open_positions = [position for position in positions if position.attributed_size > 0]
-    quote_semaphore = asyncio.Semaphore(5)
-
-    async def fetch_bid(position: CopyPosition) -> tuple[int, Decimal | None]:
-        async with quote_semaphore:
-            try:
-                book = await request.app.state.polymarket_client.fetch_order_book(position.asset_id)
-            except Exception:
-                return position.id, None
-            return position.id, book.best_bid
-
-    bids = dict(await asyncio.gather(*(fetch_bid(position) for position in open_positions)))
+    bids = await copy_position_marks(request, positions)
     valued_at = utcnow()
     result: list[CopyWorkspacePositionRead] = []
     for position in positions:
@@ -1900,22 +1922,7 @@ def create_app(
                     totals[f"{side}_size"] = size or Decimal("0")
                     totals[f"{side}_usdc"] = amount or Decimal("0")
             open_positions = [item for item in positions if item.attributed_size > 0]
-            quote_semaphore = asyncio.Semaphore(5)
-
-            async def fetch_position_bid(position: CopyPosition) -> tuple[int, Decimal | None]:
-                async with quote_semaphore:
-                    try:
-                        book = await request.app.state.polymarket_client.fetch_order_book(
-                            position.asset_id
-                        )
-                    except Exception:
-                        return position.id, None
-                    return position.id, book.best_bid
-
-            quote_rows = await asyncio.gather(
-                *(fetch_position_bid(position) for position in open_positions)
-            )
-            bids = dict(quote_rows)
+            bids = await copy_position_marks(request, positions)
             valued_at = utcnow()
             position_responses: list[CopyPositionRead] = []
             for position in positions:

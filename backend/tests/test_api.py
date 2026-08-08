@@ -21,6 +21,7 @@ from backend.models import (
 from backend.monitor import utcnow
 from backend.polymarket import (
     ClosedPositionSnapshot,
+    MarketResolution,
     PolymarketAPIError,
     RedemptionSnapshot,
     SettlementEvidence,
@@ -2033,6 +2034,33 @@ def test_copy_workspace_serializes_positions_with_wallet_metadata(app_client_fac
     assert item["tracked_wallet_id"] == wallet["id"]
     assert item["tracked_wallet_label"] == wallet["label"]
     assert item["tracked_wallet_address"] == wallet["proxy_wallet"]
+
+
+def test_copy_workspace_uses_final_payout_when_a_resolved_book_is_gone(app_client_factory):
+    client, fake = app_client_factory([[]])
+    wallet = add_wallet(client)
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": wallet["id"]},
+    ).json()
+    assert client.portal is not None
+    client.portal.call(partial(add_copy_position, client.app.state.database, subscription["id"]))
+
+    async def missing_book(asset_id: str):
+        raise PolymarketAPIError("Polymarket 接口返回 404：订单簿不存在")
+
+    fake.fetch_order_book = missing_book  # type: ignore[attr-defined]
+    condition_id = "0x" + "c" * 64
+    fake.market_resolutions[condition_id] = MarketResolution(
+        condition_id=condition_id,
+        payout_by_asset_id={"copy-asset-1": Decimal("0")},
+        resolved_at=datetime(2026, 8, 8, 2, 0),
+    )
+
+    overview = client.get("/api/copy-trading/overview").json()
+    assert overview["totals"]["valuation_complete"] is True
+    assert overview["totals"]["unpriced_positions"] == 0
+    assert overview["totals"]["total_pnl"] == pytest.approx(-4)
 
 
 def test_copy_workspace_rejects_invalid_filters(app_client_factory):

@@ -324,8 +324,25 @@ def test_one_cycle_opens_exactly_once_and_duplicate_ticks_do_nothing(app_client_
     assert len(buys) == 1
     assert buys[0]["leader_event_id"] == event_id
     assert buys[0]["source"] == "copy"
+    assert Decimal(str(buys[0]["leader_purchase_usdc"])) == Decimal("50")
+    assert Decimal(str(buys[0]["proportional_target_usdc"])) == Decimal("5")
     assert data["positions"][0]["cycle_no"] == 1
     assert data["positions"][0]["attributed_size"] > 0
+
+
+def test_workspace_order_apis_return_amount_snapshots(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    overview = client.get("/api/copy-trading/overview")
+    orders = client.get("/api/copy-trading/orders")
+    assert overview.status_code == 200, overview.text
+    assert orders.status_code == 200, orders.text
+    for order in (overview.json()["recent_orders"][0], orders.json()["items"][0]):
+        assert Decimal(str(order["leader_purchase_usdc"])) == Decimal("50")
+        assert Decimal(str(order["proportional_target_usdc"])) == Decimal("5")
 
 
 def test_small_increased_and_decreased_are_monitor_only_events(app_client_factory):
@@ -358,6 +375,8 @@ def test_large_increase_follows_ratio_and_reuses_existing_position(app_client_fa
     buys = [order for order in data["orders"] if order["side"] == "BUY"]
     assert len(buys) == 2
     increase_order = next(order for order in buys if order["leader_event_id"] == event_id)
+    assert Decimal(str(increase_order["leader_purchase_usdc"])) == Decimal("100")
+    assert Decimal(str(increase_order["proportional_target_usdc"])) == Decimal("10")
     assert Decimal(str(increase_order["filled_usdc"])) == Decimal("10")
     assert data["positions"][0]["id"] == position_id
     assert Decimal(str(data["positions"][0]["attributed_cost"])) == initial_cost + Decimal("10")
@@ -418,6 +437,8 @@ def test_small_initial_open_still_respects_risk_caps(app_client_factory):
     assert data["positions"] == []
     assert any(
         order["reason"] == "剩余风控额度低于市场最小下单金额"
+        and Decimal(str(order["leader_purchase_usdc"])) == Decimal("2.5")
+        and Decimal(str(order["proportional_target_usdc"])) == Decimal("0.25")
         for order in data["orders"]
     )
 
@@ -1282,4 +1303,6 @@ def test_live_only_migration_deletes_paper_graph_and_preserves_live_orders(tmp_p
             "SELECT large_increase_threshold_usdc FROM copy_subscriptions WHERE id = 2"
         ).fetchone() == (100,)
         assert "mode" not in order_columns
+        assert "leader_purchase_usdc" in order_columns
+        assert "proportional_target_usdc" in order_columns
         assert "uq_copy_subscriptions_single_live" not in indexes

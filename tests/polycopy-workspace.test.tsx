@@ -55,6 +55,8 @@ const filledOrder = {
   asset_id: "asset-one",
   side: "BUY",
   requested_usdc: 10,
+  leader_purchase_usdc: 100,
+  proportional_target_usdc: 10,
   filled_size: 20,
   filled_usdc: 9.8,
   fee_usdc: 0.02,
@@ -170,6 +172,11 @@ describe("PolyCopy workspace", () => {
     expect(screen.getByText("策略一")).toBeInTheDocument();
     expect(screen.getAllByText("Will Team A win?").length).toBeGreaterThan(0);
     expect(screen.getAllByText("+$7.50").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("源钱包交易金额").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("按比例目标金额").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("执行预算").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("实际执行金额").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$100.00").length).toBeGreaterThan(0);
   });
 
   it("展示最近 30 日的已实现盈亏柱状图", async () => {

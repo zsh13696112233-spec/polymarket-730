@@ -180,6 +180,8 @@ class CopyOrderRead(APIModel):
     signed_order_hash: str | None
     requested_size: DecimalNumber
     requested_usdc: DecimalNumber
+    leader_purchase_usdc: DecimalNumber | None
+    proportional_target_usdc: DecimalNumber | None
     limit_price: DecimalNumber
     reference_price: DecimalNumber | None
     filled_size: DecimalNumber

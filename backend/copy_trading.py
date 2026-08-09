@@ -23,6 +23,7 @@ from backend.models import (
     CurrentPosition,
     ExecutionAccount,
     PositionEvent,
+    PositionEventFill,
 )
 from backend.polymarket import OrderBookSnapshot, PolymarketAPIError, PolymarketClient
 from backend.trading import (
@@ -544,9 +545,8 @@ class CopyTradingEngine:
         if book.best_ask is None:
             await self._record_skip(subscription_id, event, "市场当前没有可成交卖盘")
             return
-        reference = event.average_fill_price or event.after_avg_price or book.best_ask
-        leader_cost = abs(event.delta_size) * reference
-        requested = leader_cost * subscription.copy_ratio_percent / Decimal("100")
+        leader_purchase_usdc = await self._leader_purchase_usdc(event)
+        requested = leader_purchase_usdc * subscription.copy_ratio_percent / Decimal("100")
         worst_price = market_worst_price(
             book.best_ask, book.tick_size, subscription.market_slippage_cents, side="BUY"
         )
@@ -598,6 +598,8 @@ class CopyTradingEngine:
                 price=worst_price,
                 reference=book.best_ask,
                 key=f"copy:open:{event.id}",
+                leader_purchase_usdc=leader_purchase_usdc,
+                proportional_target_usdc=requested,
             )
             session.add(order)
             try:
@@ -630,9 +632,8 @@ class CopyTradingEngine:
             )
             if prior_order is not None:
                 return
-            reference = event.average_fill_price or event.after_avg_price
-            leader_cost = abs(event.delta_size) * reference
-            if leader_cost < subscription.large_increase_threshold_usdc:
+            leader_purchase_usdc = await self._leader_purchase_usdc(event)
+            if leader_purchase_usdc < subscription.large_increase_threshold_usdc:
                 return
             position = await session.scalar(
                 select(CopyPosition)
@@ -683,7 +684,7 @@ class CopyTradingEngine:
         if book.best_ask is None:
             await self._record_skip(subscription_id, event, "市场当前没有可成交卖盘")
             return
-        requested = leader_cost * subscription.copy_ratio_percent / Decimal("100")
+        requested = leader_purchase_usdc * subscription.copy_ratio_percent / Decimal("100")
         usage = await self._risk_usage(subscription_id, account, position_id=position.id)
         allowed, reason = allowed_buy_usdc(requested, subscription=subscription, usage=usage)
         if allowed <= ZERO:
@@ -715,6 +716,8 @@ class CopyTradingEngine:
                 price=worst_price,
                 reference=book.best_ask,
                 key=f"copy:increase:{event.id}",
+                leader_purchase_usdc=leader_purchase_usdc,
+                proportional_target_usdc=requested,
             )
             session.add(order)
             try:
@@ -884,6 +887,20 @@ class CopyTradingEngine:
             )
             await session.commit()
 
+    async def _leader_purchase_usdc(self, event: PositionEvent) -> Decimal:
+        """Return the source wallet's BUY amount for this settled position event."""
+        async with self.database.sessions() as session:
+            amount = await session.scalar(
+                select(func.sum(PositionEventFill.amount)).where(
+                    PositionEventFill.event_id == event.id,
+                    PositionEventFill.side == "BUY",
+                )
+            )
+        if amount is not None and amount > ZERO:
+            return amount
+        reference = event.average_fill_price or event.after_avg_price
+        return abs(event.delta_size) * reference
+
     def _new_order(
         self,
         *,
@@ -898,6 +915,8 @@ class CopyTradingEngine:
         asset_id: str | None = None,
         condition_id: str | None = None,
         source: str = "copy",
+        leader_purchase_usdc: Decimal | None = None,
+        proportional_target_usdc: Decimal | None = None,
     ) -> CopyOrder:
         requested_size = amount / price if side == "BUY" else amount
         requested_usdc = amount if side == "BUY" else amount * price
@@ -918,6 +937,8 @@ class CopyTradingEngine:
             side=side,
             requested_size=requested_size,
             requested_usdc=requested_usdc,
+            leader_purchase_usdc=leader_purchase_usdc,
+            proportional_target_usdc=proportional_target_usdc,
             limit_price=price,
             reference_price=reference,
             filled_size=ZERO,
@@ -1087,6 +1108,14 @@ class CopyTradingEngine:
             await session.commit()
 
     async def _record_skip(self, subscription_id: int, event: PositionEvent, reason: str) -> None:
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+        leader_purchase_usdc = await self._leader_purchase_usdc(event)
+        proportional_target_usdc = (
+            leader_purchase_usdc * subscription.copy_ratio_percent / Decimal("100")
+            if subscription is not None
+            else None
+        )
         order = self._new_order(
             subscription_id=subscription_id,
             position_id=None,
@@ -1096,6 +1125,8 @@ class CopyTradingEngine:
             price=event.after_avg_price or Decimal("0.01"),
             reference=event.after_avg_price or Decimal("0.01"),
             key=f"copy:{'increase' if event.type == 'increased' else 'open'}:{event.id}",
+            leader_purchase_usdc=leader_purchase_usdc,
+            proportional_target_usdc=proportional_target_usdc,
         )
         order.status = "skipped"
         order.reason = reason

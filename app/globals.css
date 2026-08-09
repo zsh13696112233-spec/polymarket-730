@@ -4592,7 +4592,7 @@ summary:focus-visible {
 
 .pcTable {
   width: 100%;
-  min-width: 950px;
+  min-width: 1240px;
   border-collapse: collapse;
   table-layout: auto;
 }
@@ -4654,13 +4654,15 @@ summary:focus-visible {
   table-layout: fixed;
 }
 
-.pcOrderTimeColumn { width: 16%; }
-.pcOrderMarketColumn { width: 34%; }
-.pcOrderSideColumn { width: 10%; }
-.pcOrderPlannedColumn { width: 8.5%; }
+.pcOrderTimeColumn { width: 9%; }
+.pcOrderMarketColumn { width: 20%; }
+.pcOrderSideColumn { width: 7%; }
+.pcOrderLeaderColumn { width: 10%; }
+.pcOrderTargetColumn { width: 10%; }
+.pcOrderPlannedColumn { width: 10%; }
 .pcOrderFilledColumn { width: 10%; }
-.pcOrderPriceColumn { width: 9%; }
-.pcOrderStatusColumn { width: 12.5%; }
+.pcOrderPriceColumn { width: 8%; }
+.pcOrderStatusColumn { width: 16%; }
 
 .pcMarketIdentity {
   max-width: 430px;

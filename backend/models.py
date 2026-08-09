@@ -252,6 +252,8 @@ class CopyOrder(Base):
     side: Mapped[str] = mapped_column(String(4), nullable=False)
     requested_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     requested_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    leader_purchase_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    proportional_target_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     limit_price: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     reference_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     filled_size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)

@@ -81,6 +81,8 @@ type CopyOrder = {
   asset_id: string;
   side: "BUY" | "SELL";
   requested_usdc: Numeric;
+  leader_purchase_usdc: Numeric | null;
+  proportional_target_usdc: Numeric | null;
   filled_size: Numeric;
   filled_usdc: Numeric;
   fee_usdc: Numeric;
@@ -549,12 +551,14 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
             <col className="pcOrderTimeColumn" />
             <col className="pcOrderMarketColumn" />
             <col className="pcOrderSideColumn" />
+            <col className="pcOrderLeaderColumn" />
+            <col className="pcOrderTargetColumn" />
             <col className="pcOrderPlannedColumn" />
             <col className="pcOrderFilledColumn" />
             <col className="pcOrderPriceColumn" />
             <col className="pcOrderStatusColumn" />
           </colgroup>
-          <thead><tr><th>时间</th><th>市场 / 来源</th><th>方向</th><th className="numeric">计划金额</th><th className="numeric">实际成交</th><th className="numeric">成交价</th><th>状态 / 原因</th></tr></thead>
+          <thead><tr><th>时间</th><th>市场 / 来源</th><th>方向</th><th className="numeric">源钱包交易金额</th><th className="numeric">按比例目标金额</th><th className="numeric">执行预算</th><th className="numeric">实际执行金额</th><th className="numeric">成交价</th><th>状态 / 原因</th></tr></thead>
           <tbody>
             {orders.map((order) => {
               const state = orderState[order.status] || { label: order.status, tone: "neutral" };
@@ -563,6 +567,8 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
                   <td className="pcTimeCell"><time>{dateTime(order.created_at)}</time><small>#{order.id}</small></td>
                   <td><MarketIdentity order={order} /></td>
                   <td><Badge label={order.side === "BUY" ? "买入" : "卖出"} tone={order.side === "BUY" ? "buy" : "sell"} /></td>
+                  <td className="numeric">{money(order.side === "BUY" ? order.leader_purchase_usdc : null)}</td>
+                  <td className="numeric">{money(order.side === "BUY" ? order.proportional_target_usdc : null)}</td>
                   <td className="numeric">{money(order.requested_usdc)}</td>
                   <td className="numeric"><strong>{money(order.filled_usdc)}</strong><small>{number(order.fee_usdc) > 0 ? `费用 ${money(order.fee_usdc)}` : ""}</small></td>
                   <td className="numeric">{price(order.average_fill_price ?? order.reference_price ?? order.limit_price)}</td>
@@ -579,7 +585,7 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
           return (
             <article className="pcMobileCard" key={order.id}>
               <div className="pcMobileCardHeader"><MarketIdentity order={order} /><Badge label={state.label} tone={state.tone} /></div>
-              <dl><div><dt>方向</dt><dd>{order.side === "BUY" ? "买入" : "卖出"}</dd></div><div><dt>实际成交</dt><dd>{money(order.filled_usdc)}</dd></div><div><dt>成交价</dt><dd>{price(order.average_fill_price)}</dd></div><div><dt>时间</dt><dd>{dateTime(order.created_at)}</dd></div></dl>
+              <dl><div><dt>方向</dt><dd>{order.side === "BUY" ? "买入" : "卖出"}</dd></div><div><dt>源钱包交易金额</dt><dd>{money(order.side === "BUY" ? order.leader_purchase_usdc : null)}</dd></div><div><dt>按比例目标金额</dt><dd>{money(order.side === "BUY" ? order.proportional_target_usdc : null)}</dd></div><div><dt>执行预算</dt><dd>{money(order.requested_usdc)}</dd></div><div><dt>实际执行金额</dt><dd>{money(order.filled_usdc)}</dd></div><div><dt>成交价</dt><dd>{price(order.average_fill_price)}</dd></div><div><dt>时间</dt><dd>{dateTime(order.created_at)}</dd></div></dl>
               {order.reason && <p>{order.reason}</p>}
             </article>
           );

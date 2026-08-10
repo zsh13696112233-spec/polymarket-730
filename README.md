@@ -1,97 +1,97 @@
-# 仓位观察｜Polymarket 钱包持仓监控
+# Position Watch｜Polymarket Wallet Position Monitor
 
-一个本机运行的 Polymarket 钱包持仓监控与受限自动跟单工具。公开观察功能只关注实际持仓：
+A local Polymarket wallet position monitor and limited auto copy-trading tool. Public watch focuses only on actual positions:
 
-- 多钱包标签切换
-- 设置全局跟单比例，在当前持仓展示建议持有目标，并按后续净建仓、加仓、减仓或清仓计算建议买卖份额及估算 USDC
-- 设置一个只读“我的钱包”，自动标出与跟踪钱包同市场、同方向的共同持仓
-- 共同持仓展示双方份额比例，并可展开查看各自成本、市值、盈亏和买入批次
-- 当仍在共同持有时，对方加仓、减仓或清仓会生成可标记已读的站内提醒
-- 持仓按当前市值从高到低排列
-- 展示均价、现价、份额、成本、市值和盈亏
-- 回填公开成交，并按北京时间选择 `All` 或具体购买日期查看剩余买入批次
-- 同一仓位分日买入时独立计算份额、成本、市值和盈亏；减仓按 FIFO 抵扣
-- 普通持仓每 15 秒检测；变化稳定 15 秒、最长等待 60 秒后生成跟单可消费的持仓事件
-- 记录链上主动赎回，展示赎回份额、到账 USDC 和交易哈希
-- 展开变化记录可查看对应逐笔成交
-- 一键跳转到 Polymarket 市场页面
-- 一个执行钱包可为多个观察钱包分别配置并同时开启实盘跟单
-- 自动跟单适用于所有仍开放交易的市场，只处理建仓、清仓和赎回；加仓与减仓只保留监控记录
+- Switch between multiple labeled wallets
+- Set a global copy ratio to show suggested hold targets on current positions, and compute suggested buy/sell shares plus estimated USDC for later net opens, adds, reduces, or closes
+- Set a read-only “My Wallet” to auto-highlight overlapping positions with watched wallets in the same market and direction
+- Overlapping positions show both sides’ share ratios, and can expand to show each side’s cost, market value, P&L, and buy lots
+- While still co-holding, the other wallet’s adds, reduces, or closes generate markable in-app alerts
+- Positions sorted by current market value, high to low
+- Show average price, current price, shares, cost, market value, and P&L
+- Backfill public trades, and view remaining buy lots by Beijing time for `All` or a specific purchase date
+- Same position bought across days keeps independent share, cost, market value, and P&L; reduces use FIFO
+- Regular positions are checked every 15 seconds; after a change stays stable for 15 seconds (max wait 60 seconds), emit copy-consumable position events
+- Record on-chain redemptions, showing redeemed shares, received USDC, and transaction hash
+- Expand change history to inspect matching fills
+- One-click jump to the Polymarket market page
+- One execution wallet can configure and run live copy-trading for multiple watched wallets at once
+- Auto copy applies to all markets still open for trading, and only handles opens, closes, and redemptions; adds and reduces are monitor-only
 
-公开监控不会读取目标钱包的未成交挂单。每个钱包都必须由用户在页面明确确认后才会开启实盘；关闭开关后停止新买入，但继续跟随清仓和赎回。独立的 $1 单边 FAK 演练会真实花费资金，用于验证钱包、费用和余额。实盘私钥不会进入数据库、API 或日志，只能通过隐藏 CLI 导入 macOS 钥匙串。
+Public monitoring does not read the target wallet’s open orders. Each wallet must be explicitly confirmed on the page before live trading starts; turning the switch off stops new buys, but continues following closes and redemptions. A separate $1 one-sided FAK dry run spends real funds to verify wallet, fees, and balances. Live private keys never enter the database, API, or logs; they can only be imported into the macOS Keychain via a hidden CLI.
 
-## 三事件自动跟单 V2
+## Three-Event Auto Copy V2
 
-页面中选择观察钱包后，可在“实盘自动跟单”卡片为该钱包独立配置四项参数：10% 跟单、单仓最大投入 $20、钱包固定额度 $160、当前盘口保护 ±5¢。多个运行中钱包的固定额度合计不能超过执行钱包实时可用资本；预算、现金保留、每日买入上限和亏损熔断按所有钱包合计控制。
+After selecting a watched wallet on the page, configure four parameters independently for that wallet in the “Live Auto Copy” card: 10% copy ratio, $20 max per position, $160 fixed wallet budget, and ±5¢ current book protection. The sum of fixed budgets across running wallets cannot exceed the execution wallet’s real-time available capital; budget, cash reserve, daily buy cap, and loss circuit breaker are controlled across all wallets combined.
 
-Dashboard 同时展示当前归因持仓与历史周期。当前仓位按 CLOB 当前买一价估算可卖出市值、浮动盈亏和总盈亏；历史记录展示累计投入、累计卖出和已实现盈亏。实盘订单记录 V2 签名订单哈希、订单 ID、trade ID 和实际费用。
+The dashboard shows both current attributed positions and historical cycles. Current positions estimate sellable market value, unrealized P&L, and total P&L from the CLOB best bid; history shows cumulative invested, cumulative sold, and realized P&L. Live order records include the V2 signed order hash, order ID, trade ID, and actual fees.
 
-跟单引擎只读取普通持仓监控生成的稳定事件：`opened` 按观察钱包建仓成本比例执行一次 FAK 买入；`increased`、`decreased` 完全忽略；`closed` 一次卖出全部归因仓位；`redeemed` 一次赎回全部归因仓位。清仓或赎回后同一资产再次建仓会建立新周期。系统不设置开赛截止，只确认市场当前开放交易。
+The copy engine only reads stable events from regular position monitoring: `opened` executes one proportional FAK buy based on the watched wallet’s open cost; `increased` and `decreased` are ignored; `closed` sells the full attributed position once; `redeemed` redeems the full attributed position once. Opening the same asset again after a close or redemption starts a new cycle. There is no kickoff cutoff; the system only confirms the market is currently open for trading.
 
-交易客户端使用 `py-clob-client-v2==1.1.0`、pUSD 和 V2 Exchange；支持旧版 Magic/Proxy 签名类型 `1` 与新版 Deposit Wallet 类型 `3`，新配置默认使用类型 `3`。绑定“我的钱包”后，填写签名 EOA 与 Polymarket 资金钱包，再用终端导入执行私钥：
-
-```bash
-uv run python -m backend.copy_cli set-key --account 0x你的签名钱包地址
-```
-
-私钥输入不会回显。Proxy 钱包若需自动赎回，还需加入 Polymarket Builder Program，并把 Builder 凭证保存到钥匙串：
+The trading client uses `py-clob-client-v2==1.1.0`, pUSD, and V2 Exchange; it supports legacy Magic/Proxy signature type `1` and the newer Deposit Wallet type `3`, with new configs defaulting to type `3`. After binding “My Wallet”, enter the signing EOA and Polymarket funding wallet, then import the execution private key from the terminal:
 
 ```bash
-uv run python -m backend.copy_cli set-builder-creds --account 0x你的签名钱包地址
+uv run python -m backend.copy_cli set-key --account 0xYourSigningWalletAddress
 ```
 
-随后回到页面验证签名地址、Proxy 地址、pUSD 余额和 V2 Exchange 授权。$1 演练要求二次确认，含费用不得超过 $1，且成交、pUSD 与 outcome token 余额一致才显示成功；演练仓位不会归入自动跟单。请使用专用热钱包且不要手动交易该钱包。
+Private key input is not echoed. For Proxy wallets that need auto-redemption, also join the Polymarket Builder Program and save Builder credentials to the Keychain:
 
-## 环境要求
+```bash
+uv run python -m backend.copy_cli set-builder-creds --account 0xYourSigningWalletAddress
+```
+
+Then return to the page to verify the signing address, Proxy address, pUSD balance, and V2 Exchange approvals. The $1 dry run requires a second confirmation, must stay at or under $1 including fees, and only shows success when fills, pUSD, and outcome token balances match; dry-run positions are not included in auto copy. Use a dedicated hot wallet and do not trade that wallet manually.
+
+## Requirements
 
 - Node.js `>=22.13.0`
 - [uv](https://docs.astral.sh/uv/)
 
-## 首次安装
+## First-time setup
 
 ```bash
 npm ci
 UV_CACHE_DIR=.uv-cache uv sync
 ```
 
-如需修改默认检测参数，可复制 `.env.example` 为 `.env` 后调整。
+To change default detection parameters, copy `.env.example` to `.env` and adjust as needed.
 
-## 本地运行
+## Local run
 
-开发模式：
+Development mode:
 
 ```bash
 npm run dev:all
 ```
 
-启动脚本会先正常停止占用 `3000` 或 `8730` 端口的旧服务，再启动新进程。
+The start script first cleanly stops any old services on ports `3000` or `8730`, then starts new processes.
 
-打开 [http://localhost:3000](http://localhost:3000)，然后在页面中添加钱包地址或 Polymarket 个人页链接。
+Open [http://localhost:3000](http://localhost:3000), then add a wallet address or Polymarket profile link on the page.
 
-稳定运行：
+Stable run:
 
 ```bash
 npm run build
 npm run start:local
 ```
 
-两个命令都只监听本机地址。关闭终端后，监控停止。
+Both commands listen on localhost only. Monitoring stops when the terminal is closed.
 
-## 数据
+## Data
 
-SQLite 数据库默认保存在：
+The SQLite database is stored by default at:
 
 ```text
 data/polymarket-watch.db
 ```
 
-钱包、当前持仓、公开成交、等待合并的变化以及历史明细都由后端持久化。停用钱包不会删除历史记录。
+Wallets, current positions, public trades, pending merged changes, and history details are all persisted by the backend. Disabling a wallet does not delete history.
 
-## 验证
+## Verification
 
 ```bash
 npm test
 npm run lint
 ```
 
-后端 API 文档在服务启动后可通过 [http://127.0.0.1:8730/docs](http://127.0.0.1:8730/docs) 查看。
+Backend API docs are available at [http://127.0.0.1:8730/docs](http://127.0.0.1:8730/docs) after the service starts.

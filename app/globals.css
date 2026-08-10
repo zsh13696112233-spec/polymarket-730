@@ -5844,9 +5844,9 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   font-size: 12px;
 }
 
-.pcSystemSettingsForm .pcFormHint,
-.pcSystemSettingsForm .pcFormSuccess,
-.pcSystemSettingsForm .pcFormError {
+.pcSystemSettings .pcFormHint,
+.pcSystemSettings .pcFormSuccess,
+.pcSystemSettings .pcFormError {
   font-size: 12px;
   line-height: 1.6;
 }

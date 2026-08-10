@@ -5808,7 +5808,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 }
 
 .pcSystemSettings .pcPanelHeader p {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -5819,7 +5819,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcSettingsIntro {
   margin: 0 0 16px;
   color: var(--pc-text-2);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -5847,16 +5847,25 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcSystemSettingsForm .pcFormHint,
 .pcSystemSettingsForm .pcFormSuccess,
 .pcSystemSettingsForm .pcFormError {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
 .pcSystemSettings .pcAccountSummary span {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .pcSystemSettings .pcAccountSummary strong {
   font-size: 14px;
+}
+
+.pcSystemSettings .pcAccountSummary small,
+.pcSystemSettings .pcCommandHint,
+.pcSystemSettings .pcCommandHint code,
+.pcSystemSettings .pcRehearsalPreview small,
+.pcSystemSettings .pcEmptyState p {
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 /* Keep the risk controls legible without enlarging the compact dashboard. */

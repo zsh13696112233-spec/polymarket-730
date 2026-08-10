@@ -290,6 +290,7 @@ class CopyStrategyOverviewRead(APIModel):
     subscription: CopySubscriptionRead
     wallet: CopyWalletSummaryRead
     portfolio: CopyPortfolioSummaryRead
+    lifetime_bought_usdc: DecimalNumber = Decimal("0")
     open_positions: int
     stale: bool
 

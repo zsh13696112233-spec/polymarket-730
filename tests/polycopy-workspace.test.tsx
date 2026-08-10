@@ -106,6 +106,7 @@ const overview = {
       unpriced_positions: 0,
       valued_at: "2026-08-06T08:00:00Z",
     },
+    lifetime_bought_usdc: 42.5,
     open_positions: 1,
     stale: false,
   }],
@@ -177,6 +178,30 @@ describe("PolyCopy workspace", () => {
     expect(screen.getAllByText("执行预算").length).toBeGreaterThan(0);
     expect(screen.getAllByText("实际执行金额").length).toBeGreaterThan(0);
     expect(screen.getAllByText("$100.00").length).toBeGreaterThan(0);
+    const totalInvestment = screen.getByText("钱包总投入").closest("div");
+    expect(totalInvestment).not.toBeNull();
+    expect(within(totalInvestment!).getByText("$42.50")).toBeInTheDocument();
+  });
+
+  it("无成交钱包的总投入显示为零", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) {
+        return json({
+          ...overview,
+          strategies: overview.strategies.map((strategy) => ({
+            ...strategy,
+            lifetime_bought_usdc: 0,
+          })),
+        });
+      }
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+    render(<PolyCopyWorkspace view="overview" />);
+    const totalInvestment = (await screen.findByText("钱包总投入")).closest("div");
+    expect(totalInvestment).not.toBeNull();
+    expect(within(totalInvestment!).getByText("$0.00")).toBeInTheDocument();
   });
 
   it("展示最近 30 日的已实现盈亏柱状图", async () => {

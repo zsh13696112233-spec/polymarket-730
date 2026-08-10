@@ -11,7 +11,9 @@ from sqlalchemy import select
 
 from backend.main import create_app
 from backend.models import (
+    CopyFill,
     CopyLedger,
+    CopyOrder,
     CopyPosition,
     PositionChangeCandidate,
     PositionEvent,
@@ -203,6 +205,80 @@ async def add_copy_position(database, subscription_id: int) -> None:
                 updated_at=now,
             )
         )
+        await session.commit()
+
+
+async def insert_copy_buy_fill_fixture(
+    database,
+    purchases: list[tuple[int, str, int, list[Decimal]]],
+) -> None:
+    now = utcnow()
+    async with database.sessions() as session:
+        for fixture_index, (subscription_id, asset_id, cycle_no, amounts) in enumerate(purchases):
+            position = CopyPosition(
+                subscription_id=subscription_id,
+                asset_id=asset_id,
+                condition_id="0x" + f"{fixture_index + 1:064x}",
+                title=f"累计投入测试市场 {fixture_index + 1}",
+                outcome="Yes",
+                outcome_index=0,
+                neg_risk=False,
+                event_slug=f"lifetime-bought-{fixture_index + 1}",
+                settlement_date=None,
+                cycle_no=cycle_no,
+                attributed_size=Decimal("0"),
+                attributed_cost=Decimal("0"),
+                reserved_buy_usdc=Decimal("0"),
+                realized_pnl=Decimal("0"),
+                status="dust_closed",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(position)
+            await session.flush()
+            total_amount = sum(amounts, start=Decimal("0"))
+            total_size = total_amount * Decimal("2")
+            order = CopyOrder(
+                subscription_id=subscription_id,
+                copy_position_id=position.id,
+                leader_event_id=None,
+                idempotency_key=f"lifetime-bought-{subscription_id}-{asset_id}-{cycle_no}",
+                source="copy",
+                signed_order_hash=None,
+                asset_id=asset_id,
+                condition_id=position.condition_id,
+                side="BUY",
+                requested_size=total_size + Decimal("1"),
+                requested_usdc=total_amount + Decimal("1"),
+                leader_purchase_usdc=total_amount * Decimal("10"),
+                proportional_target_usdc=total_amount + Decimal("1"),
+                limit_price=Decimal("0.55"),
+                reference_price=Decimal("0.50"),
+                filled_size=total_size,
+                filled_usdc=total_amount,
+                fee_usdc=Decimal("9.99"),
+                status="partially_filled",
+                reason="累计投入测试部分成交",
+                external_order_id=None,
+                external_trade_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(order)
+            await session.flush()
+            for fill_index, amount in enumerate(amounts):
+                session.add(
+                    CopyFill(
+                        order_id=order.id,
+                        fingerprint=f"lifetime-bought-{order.id}-{fill_index}",
+                        external_trade_id=f"trade-{order.id}-{fill_index}",
+                        size=amount * Decimal("2"),
+                        price=Decimal("0.50"),
+                        amount=amount,
+                        fee_usdc=Decimal("1.23"),
+                        timestamp=now + timedelta(seconds=fill_index),
+                    )
+                )
         await session.commit()
 
 
@@ -2057,6 +2133,70 @@ def test_copy_workspace_aggregates_multiple_strategies(app_client_factory):
     )
     assert orders.status_code == 200
     assert orders.json() == {"items": [], "next_cursor": None}
+
+
+def test_copy_workspace_aggregates_lifetime_bought_by_wallet(app_client_factory):
+    client, _ = app_client_factory([[], []])
+    first_wallet = add_wallet(client)
+    second_wallet = client.post(
+        "/api/wallets",
+        json={"address": OTHER_ADDRESS, "label": "第二策略"},
+    ).json()
+    first_subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": first_wallet["id"]},
+    ).json()
+    second_subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": second_wallet["id"]},
+    ).json()
+    assert client.portal is not None
+    client.portal.call(
+        insert_copy_buy_fill_fixture,
+        client.app.state.database,
+        [
+            (
+                first_subscription["id"],
+                "first-wallet-asset",
+                1,
+                [Decimal("4"), Decimal("1.25")],
+            ),
+            (
+                first_subscription["id"],
+                "first-wallet-asset",
+                2,
+                [Decimal("3.75")],
+            ),
+            (
+                second_subscription["id"],
+                "second-wallet-asset",
+                1,
+                [Decimal("50")],
+            ),
+        ],
+    )
+
+    response = client.get("/api/copy-trading/overview")
+
+    assert response.status_code == 200, response.text
+    strategies = {item["wallet"]["id"]: item for item in response.json()["strategies"]}
+    assert strategies[first_wallet["id"]]["lifetime_bought_usdc"] == pytest.approx(9)
+    assert strategies[second_wallet["id"]]["lifetime_bought_usdc"] == pytest.approx(50)
+    assert strategies[first_wallet["id"]]["subscription"]["open_exposure_usdc"] == 0
+
+
+def test_copy_workspace_returns_zero_lifetime_bought_for_new_wallet(app_client_factory):
+    client, _ = app_client_factory([[]])
+    wallet = add_wallet(client)
+    client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": wallet["id"]},
+    )
+
+    response = client.get("/api/copy-trading/overview")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["strategies"][0]["lifetime_bought_usdc"] == 0
 
 
 def test_copy_workspace_returns_complete_shanghai_daily_realized_pnl_points(

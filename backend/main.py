@@ -1804,6 +1804,10 @@ def create_app(
                         subscription=await copy_subscription_read(session, subscription),
                         wallet=CopyWalletSummaryRead.model_validate(wallet),
                         portfolio=workspace_portfolio(strategy_positions, valued_at),
+                        lifetime_bought_usdc=sum(
+                            (item.lifetime_bought_usdc for item in strategy_positions),
+                            start=Decimal("0"),
+                        ),
                         open_positions=sum(
                             1 for item in strategy_positions if item.attributed_size > 0
                         ),

@@ -72,6 +72,7 @@ type Strategy = {
   subscription: Subscription;
   wallet: Wallet;
   portfolio: Portfolio;
+  lifetime_bought_usdc: Numeric;
   open_positions: number;
   stale: boolean;
 };
@@ -735,7 +736,7 @@ function OverviewPage({
                 <article className="pcStrategyRow" key={wallet.id}>
                   <div className="pcStrategyIdentity"><span className="pcWalletAvatar">{(wallet.label || "0x").slice(0, 2).toUpperCase()}</span><span><strong>{wallet.label || shortAddress(wallet.proxy_wallet)}</strong><small>{shortAddress(wallet.proxy_wallet)}{strategy?.stale ? " · 数据延迟" : ""}</small></span></div>
                   <div className="pcStrategyStatus"><Badge label={state.label} tone={state.tone} />{subscription && <small>{number(subscription.copy_ratio_percent)}% · 单市场 {money(subscription.position_cap_usdc)}</small>}</div>
-                  <dl className="pcStrategyMetrics"><div><dt>当前敞口</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日买入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div></dl>
+                  <dl className="pcStrategyMetrics"><div><dt>当前敞口</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日买入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>钱包总投入</dt><dd>{money(strategy?.lifetime_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div></dl>
                   <div className="pcStrategyActions">
                     <button className="pcButton ghost" type="button" onClick={() => onConfigure(wallet)}>{subscription ? "参数" : "配置"}</button>
                     {strategy && <button className={`pcSwitch ${subscription?.enabled ? "on" : ""}`} type="button" role="switch" aria-checked={subscription?.enabled} aria-label={`${wallet.label}${subscription?.enabled ? "暂停策略" : "恢复策略"}`} disabled={busyId === subscription?.id || subscription?.state === "closing"} onClick={() => onToggle(strategy)}><span /></button>}

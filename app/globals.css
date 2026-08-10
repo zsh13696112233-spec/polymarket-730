@@ -5802,6 +5802,96 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcAccountSummary strong { color: #fff0a3; }
 .pcCommandHint code { border-color: #75682a; background: #101108; color: #ffe052; }
 
+/* System settings are low-frequency, high-impact controls: favor readability. */
+.pcSystemSettings .pcPanelHeader h2 {
+  font-size: 17px;
+}
+
+.pcSystemSettings .pcPanelHeader p {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pcSystemSettingsForm {
+  font-size: 13px;
+}
+
+.pcSettingsIntro {
+  margin: 0 0 16px;
+  color: var(--pc-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pcSystemSettingsForm .pcField {
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pcSystemSettingsForm .pcField > small {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.pcSystemSettingsForm .pcField input {
+  height: 42px;
+  font-size: 16px;
+}
+
+.pcSystemSettingsForm .pcUnitInput b {
+  font-size: 12px;
+}
+
+.pcSystemSettingsForm .pcFormHint,
+.pcSystemSettingsForm .pcFormSuccess,
+.pcSystemSettingsForm .pcFormError {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pcSystemSettings .pcAccountSummary span {
+  font-size: 11px;
+}
+
+.pcSystemSettings .pcAccountSummary strong {
+  font-size: 14px;
+}
+
+/* Keep the risk controls legible without enlarging the compact dashboard. */
+.pcQuickSettings {
+  font-size: 13px;
+}
+
+.pcQuickSettingsIntro {
+  margin: 0 0 16px;
+  color: var(--pc-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pcQuickSettings .pcField {
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pcQuickSettings .pcField > small {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.pcQuickSettings .pcField input {
+  height: 42px;
+  font-size: 16px;
+}
+
+.pcQuickSettings .pcUnitInput b {
+  font-size: 12px;
+}
+
 .pcDailyPnlPanel {
   min-width: 0;
   max-width: 100%;

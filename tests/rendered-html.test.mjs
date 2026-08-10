@@ -65,7 +65,7 @@ test("keeps PolyCopy workspace behavior in the client", async () => {
   assert.match(workspace, /NEXT_PUBLIC_API_BASE/);
   assert.match(workspace, /copy-trading\/overview/);
   assert.match(workspace, /copy-trading\/orders/);
-  assert.doesNotMatch(workspace, /跟单/);
+  assert.match(workspace, /跟单比例/);
   assert.match(legacy, /new EventSource/);
   assert.match(legacy, /event\/\$\{eventPath\}\/\$\{encodeURIComponent\(marketSlug\)\}/);
   assert.match(legacy, /average_fill_price/);

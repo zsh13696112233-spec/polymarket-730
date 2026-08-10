@@ -1179,6 +1179,73 @@ def test_redemption_uses_fifo_cost_for_entry_price_and_profit(
     assert event["copy_recommendation"] is None
 
 
+def test_redemption_without_asset_or_outcome_uses_unique_trade_balance(
+    app_client_factory,
+):
+    condition_id = "0x" + "e" * 64
+    winner = position(
+        asset_id="winner-asset",
+        condition_id=condition_id,
+        size="59.666665",
+        outcome="Winner",
+    )
+    loser = position(
+        asset_id="loser-asset",
+        condition_id=condition_id,
+        size="69.7446",
+        outcome="Loser",
+    )
+    client, fake = app_client_factory([[winner, loser]])
+    now = utcnow()
+    fake.trades = [
+        TradeSnapshot(
+            asset_id=winner.asset_id,
+            condition_id=condition_id,
+            side="BUY",
+            size=winner.size,
+            price=Decimal("0.54"),
+            timestamp=now - timedelta(seconds=2),
+            transaction_hash="0xwinnerbuy",
+            outcome=winner.outcome,
+        ),
+        TradeSnapshot(
+            asset_id=loser.asset_id,
+            condition_id=condition_id,
+            side="BUY",
+            size=loser.size,
+            price=Decimal("0.47"),
+            timestamp=now - timedelta(seconds=1),
+            transaction_hash="0xloserbuy",
+            outcome=loser.outcome,
+        ),
+    ]
+    fake.redemptions = [
+        RedemptionSnapshot(
+            asset_id="",
+            condition_id=condition_id,
+            title="稍后补全元数据的赎回",
+            outcome="",
+            outcome_index=999,
+            event_slug="ambiguous-redemption",
+            market_slug="ambiguous-redemption",
+            size=winner.size,
+            usdc_size=winner.size,
+            timestamp=now + timedelta(seconds=1),
+            transaction_hash="0xmanualredeem",
+        )
+    ]
+
+    wallet = add_wallet(client)
+    event = client.get(
+        "/api/position-events",
+        params={"wallet_id": wallet["id"]},
+    ).json()["items"][0]
+
+    assert event["asset_id"] == winner.asset_id
+    assert event["outcome"] == winner.outcome
+    assert event["transaction_hash"] == "0xmanualredeem"
+
+
 def test_redemption_failure_does_not_interrupt_wallet_sync(app_client_factory):
     client, fake = app_client_factory([[]])
     wallet = add_wallet(client)
@@ -1869,6 +1936,43 @@ def test_resolved_market_disappearance_does_not_create_close_event(
     assert events["items"] == []
     positions = client.get("/api/positions", params={"wallet_id": wallet["id"]}).json()
     assert positions["summary"]["count"] == 0
+
+
+def test_resolved_disappearance_reuses_existing_onchain_redemption(
+    app_client_factory,
+):
+    initial = position(size="10")
+    client, fake = app_client_factory([[initial], [], []])
+    now = utcnow()
+    fake.evidence = SettlementEvidence(
+        resolved_condition_ids=frozenset({initial.condition_id}),
+        redeemable_asset_ids=frozenset({initial.asset_id}),
+        non_trade_condition_ids=frozenset(),
+    )
+    fake.market_resolutions[initial.condition_id] = MarketResolution(
+        condition_id=initial.condition_id,
+        payout_by_asset_id={initial.asset_id: Decimal("1")},
+        resolved_at=now + timedelta(seconds=2),
+    )
+    fake.redemptions = [
+        redemption(
+            condition_id=initial.condition_id,
+            title=initial.title,
+            timestamp=now + timedelta(seconds=1),
+            size="10",
+            transaction_hash="0xsingle-redemption",
+        )
+    ]
+    wallet = add_wallet(client)
+
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    client.post(f"/api/wallets/{wallet['id']}/sync")
+    events = client.get("/api/position-events", params={"wallet_id": wallet["id"]}).json()
+
+    redeemed = [item for item in events["items"] if item["type"] == "redeemed"]
+    assert len(redeemed) == 1
+    assert redeemed[0]["transaction_hash"] == "0xsingle-redemption"
+    assert redeemed[0]["asset_id"] == initial.asset_id
 
 
 def test_remote_failure_keeps_last_positions_and_marks_stale(app_client_factory):

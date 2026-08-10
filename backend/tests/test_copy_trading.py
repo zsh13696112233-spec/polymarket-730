@@ -23,6 +23,7 @@ from backend.models import (
     CopySubscription,
     ExecutionAccount,
     PositionEvent,
+    PositionEventFill,
     WatchedWallet,
 )
 from backend.monitor import utcnow
@@ -38,6 +39,7 @@ from backend.trading import (
     V2_NEG_RISK_EXCHANGE_ADDRESS,
     MarketTradeRequest,
     OfficialClobTrader,
+    RedemptionSubmissionUnknown,
     TradeResult,
     TradingUnavailable,
     is_effectively_filled,
@@ -404,18 +406,19 @@ def test_large_increases_stop_at_remaining_position_cap(app_client_factory):
     assert any(order["reason"] == "单仓最大投入已满" for order in data["orders"])
 
 
-def test_small_initial_open_is_topped_up_to_market_minimum(app_client_factory):
+def test_small_initial_open_is_skipped_below_market_minimum(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     add_event(client, subscription, "opened", after="5")
     tick(client)
 
     data = dashboard(client, subscription)
-    assert len(data["positions"]) == 1
+    assert data["positions"] == []
     buys = [order for order in data["orders"] if order["side"] == "BUY"]
     assert len(buys) == 1
-    assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("2.75")
-    assert Decimal(str(buys[0]["filled_size"])) == Decimal("5")
+    assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("0")
+    assert Decimal(str(buys[0]["proportional_target_usdc"])) == Decimal("0.25")
+    assert buys[0]["reason"] == "按执行比例计算后低于市场最小下单份数"
 
 
 def test_small_initial_open_still_respects_risk_caps(app_client_factory):
@@ -436,7 +439,7 @@ def test_small_initial_open_still_respects_risk_caps(app_client_factory):
     data = dashboard(client, subscription)
     assert data["positions"] == []
     assert any(
-        order["reason"] == "剩余风控额度低于市场最小下单金额"
+        order["reason"] == "按执行比例计算后低于市场最小下单份数"
         and Decimal(str(order["leader_purchase_usdc"])) == Decimal("2.5")
         and Decimal(str(order["proportional_target_usdc"])) == Decimal("0.25")
         for order in data["orders"]
@@ -463,8 +466,52 @@ def test_small_large_increase_is_not_topped_up(app_client_factory):
     buys = [order for order in data["orders"] if order["side"] == "BUY"]
     assert len(buys) == 2
     assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("0")
-    assert buys[0]["reason"] == "按执行比例计算后低于市场最小下单份数"
-    assert Decimal(str(buys[1]["filled_usdc"])) == Decimal("2.75")
+    assert buys[0]["reason"] == "首次建仓未成功，不追随后续加仓"
+    assert Decimal(str(buys[1]["filled_usdc"])) == Decimal("0")
+    assert buys[1]["reason"] == "按执行比例计算后低于市场最小下单份数"
+
+
+def test_mixed_buy_sell_event_uses_net_position_cost_increase(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    event_id = add_event(client, subscription, "increased", before="100", after="110")
+
+    async def add_mixed_fills() -> None:
+        async with client.app.state.database.sessions() as session:
+            now = utcnow()
+            session.add_all(
+                [
+                    PositionEventFill(
+                        event_id=event_id,
+                        fingerprint=f"mixed-buy-{event_id}",
+                        side="BUY",
+                        size=Decimal("300"),
+                        price=Decimal("0.50"),
+                        amount=Decimal("150"),
+                        timestamp=now,
+                        transaction_hash="0xmixedbuy",
+                    ),
+                    PositionEventFill(
+                        event_id=event_id,
+                        fingerprint=f"mixed-sell-{event_id}",
+                        side="SELL",
+                        size=Decimal("290"),
+                        price=Decimal("0.50"),
+                        amount=Decimal("145"),
+                        timestamp=now,
+                        transaction_hash="0xmixedsell",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    client.portal.call(add_mixed_fills)
+    tick(client)
+
+    buys = [order for order in dashboard(client, subscription)["orders"] if order["side"] == "BUY"]
+    assert len(buys) == 1
 
 
 def test_unfilled_large_increase_preserves_existing_position(app_client_factory):
@@ -519,6 +566,60 @@ def test_closed_is_the_only_sell_signal_and_sells_all_attributed_size(app_client
     assert Decimal(str(closed["positions"][0]["attributed_size"])) == 0
 
 
+def test_untradeable_sell_dust_is_written_off(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    class PartialSellTrader(FakeLiveTrader):
+        async def submit_prepared_market(self, prepared):
+            self.calls += 1
+            request = prepared.request
+            if request.side == "BUY":
+                return await super().submit_prepared_market(prepared)
+            filled_size = request.amount - Decimal("0.001762")
+            return TradeResult(
+                status="partially_filled",
+                external_order_id=f"order-{self.calls}",
+                external_trade_id=f"trade-{self.calls}",
+                filled_size=filled_size,
+                filled_usdc=filled_size * request.worst_price,
+                average_price=request.worst_price,
+                signed_order_hash=prepared.signed_order_hash,
+                reason="FAK 部分成交，剩余已取消",
+            )
+
+    trader = PartialSellTrader()
+
+    async def get_trader():
+        return trader
+
+    client.app.state.copy_engine._trader = get_trader
+    add_event(client, subscription, "closed", before="100", after="0")
+    tick(client)
+
+    result = dashboard(client, subscription)
+    position = result["positions"][0]
+    assert Decimal(str(position["attributed_size"])) == 0
+    assert Decimal(str(position["attributed_cost"])) == 0
+    assert position["status"] == "dust_closed"
+
+    async def dust_writeoff() -> CopyLedger:
+        async with client.app.state.database.sessions() as session:
+            row = await session.scalar(
+                select(CopyLedger)
+                .where(CopyLedger.copy_position_id == position["id"])
+                .where(CopyLedger.type == "dust_writeoff")
+            )
+            assert row is not None
+            return row
+
+    ledger = client.portal.call(dust_writeoff)
+    assert Decimal(str(ledger.amount_usdc)) == 0
+    assert Decimal(str(ledger.realized_pnl)) < 0
+
+
 def test_redeemed_runs_once_without_a_sell_order(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
@@ -540,7 +641,120 @@ def test_redeemed_runs_once_without_a_sell_order(app_client_factory):
     assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
 
 
-def test_retries_redemption_after_deposit_wallet_credentials_are_configured(app_client_factory):
+def test_resolved_source_disappearance_redeems_copied_winner(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    fake.market_resolutions[CONDITION_ID] = MarketResolution(
+        condition_id=CONDITION_ID,
+        payout_by_asset_id={"asset-simple": Decimal("1")},
+        resolved_at=utcnow(),
+    )
+
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+
+    position = dashboard(client, subscription)["positions"][0]
+    assert Decimal(str(position["attributed_size"])) == 0
+    assert position["status"] == "redeemed"
+
+
+def test_resolved_source_disappearance_records_fractional_payout(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    before = dashboard(client, subscription)["positions"][0]
+    before_size = Decimal(str(before["attributed_size"]))
+    fake.market_resolutions[CONDITION_ID] = MarketResolution(
+        condition_id=CONDITION_ID,
+        payout_by_asset_id={"asset-simple": Decimal("0.5")},
+        resolved_at=utcnow(),
+    )
+
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+
+    async def redemption_payout() -> Decimal:
+        async with client.app.state.database.sessions() as session:
+            row = await session.scalar(select(CopyRedemption))
+            assert row is not None
+            return row.payout_usdc or Decimal("0")
+
+    assert abs(client.portal.call(redemption_payout) - before_size * Decimal("0.5")) < Decimal(
+        "0.000000000001"
+    )
+
+
+def test_auto_redeem_false_defers_resolution_redemption(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    fake.market_resolutions[CONDITION_ID] = MarketResolution(
+        condition_id=CONDITION_ID,
+        payout_by_asset_id={"asset-simple": Decimal("1")},
+        resolved_at=utcnow(),
+    )
+
+    async def set_auto_redeem(enabled: bool) -> None:
+        async with client.app.state.database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            assert account is not None
+            account.auto_redeem = enabled
+            await session.commit()
+
+    client.portal.call(set_auto_redeem, False)
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+    assert dashboard(client, subscription)["positions"][0]["status"] == "open"
+
+    client.portal.call(set_auto_redeem, True)
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+    assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
+
+
+def test_resolved_source_disappearance_writes_off_copied_loser(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    fake.market_resolutions[CONDITION_ID] = MarketResolution(
+        condition_id=CONDITION_ID,
+        payout_by_asset_id={"asset-simple": Decimal("0")},
+        resolved_at=utcnow(),
+    )
+
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+
+    position = dashboard(client, subscription)["positions"][0]
+    assert Decimal(str(position["attributed_size"])) == 0
+    assert position["status"] == "settled_loss"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "Deposit Wallet 自动赎回需要 Relayer API 凭证",
+        "缺少官方 Builder Relayer 客户端",
+        "Builder 凭证格式无效",
+        "自动赎回提交失败：expected safe is not deployed",
+    ],
+)
+def test_retries_redemption_after_pre_submit_error_is_fixed(app_client_factory, failure):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     add_event(client, subscription, "opened")
@@ -548,7 +762,7 @@ def test_retries_redemption_after_deposit_wallet_credentials_are_configured(app_
 
     class MissingRelayerCredentialsTrader(FakeLiveTrader):
         async def redeem(self, **kwargs) -> str:
-            raise TradingUnavailable("Deposit Wallet 自动赎回需要 Relayer API 凭证")
+            raise TradingUnavailable(failure)
 
     async def missing_credentials_trader() -> MissingRelayerCredentialsTrader:
         return MissingRelayerCredentialsTrader()
@@ -566,7 +780,7 @@ def test_retries_redemption_after_deposit_wallet_credentials_are_configured(app_
     pending = client.portal.call(pending_redemption)
     assert pending.status == "pending"
     assert pending.transaction_hash is None
-    assert pending.last_error == "Deposit Wallet 自动赎回需要 Relayer API 凭证"
+    assert pending.last_error == failure
 
     async def configured_trader() -> FakeLiveTrader:
         return FakeLiveTrader()
@@ -574,6 +788,38 @@ def test_retries_redemption_after_deposit_wallet_credentials_are_configured(app_
     client.app.state.copy_engine._trader = configured_trader
     tick(client)
     assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
+
+
+def test_unknown_redemption_result_persists_transaction_hash_without_retry(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    class UnknownResultTrader(FakeLiveTrader):
+        async def redeem(self, **kwargs) -> str:
+            raise RedemptionSubmissionUnknown("自动赎回结果待确认", "0xpendingredeem")
+
+    trader = UnknownResultTrader()
+
+    async def unknown_result_trader() -> UnknownResultTrader:
+        return trader
+
+    client.app.state.copy_engine._trader = unknown_result_trader
+    add_event(client, subscription, "redeemed", before="100", after="0", payout="100")
+    tick(client)
+    trader.onchain_balance = Decimal("1000")
+    tick(client)
+
+    async def pending_redemption() -> tuple[str, str | None, int]:
+        async with client.app.state.database.sessions() as session:
+            row = await session.scalar(select(CopyRedemption))
+            assert row is not None
+            return row.status, row.transaction_hash, row.attempts
+
+    assert client.portal.call(pending_redemption) == ("pending", "0xpendingredeem", 1)
 
 
 def test_processed_redemption_with_zero_onchain_balance_reconciles_redemption(
@@ -646,6 +892,101 @@ def test_manual_redemption_reconciles_a_pending_automatic_redemption(app_client_
             return redemption.status
 
     assert client.portal.call(redemption_status) == "reconciled"
+
+
+def test_synthetic_execution_redemption_reconciles_pending_position_by_size(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    redemption_error = "自动赎回提交失败：expected safe is not deployed"
+
+    async def create_pending_redemption_and_execution_event() -> int:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            account = await session.get(ExecutionAccount, 1)
+            subscription_row = await session.get(CopySubscription, subscription["id"])
+            assert position is not None and account is not None and subscription_row is not None
+            now = utcnow()
+            session.add(
+                CopyRedemption(
+                    copy_position_id=position.id,
+                    status="pending",
+                    size=position.attributed_size,
+                    payout_usdc=None,
+                    transaction_hash=None,
+                    attempts=1,
+                    last_error=redemption_error,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            execution_event = PositionEvent(
+                wallet_id=account.wallet_id,
+                asset_id=f"redeem:{position.condition_id}:999",
+                condition_id=position.condition_id,
+                type="redeemed",
+                title=position.title,
+                outcome="",
+                event_slug=position.event_slug,
+                delta_size=-position.attributed_size,
+                before_size=position.attributed_size,
+                after_size=Decimal("0"),
+                before_avg_price=Decimal("0"),
+                after_avg_price=Decimal("0"),
+                average_fill_price=None,
+                current_value=Decimal("0"),
+                reconciliation_status="onchain",
+                first_detected_at=now,
+                settled_at=now,
+                payout_amount=position.attributed_size,
+                redemption_cost_basis=None,
+                transaction_hash="0xmanualredeem",
+            )
+            session.add(execution_event)
+            position.status = "redeeming"
+            subscription_row.last_error = redemption_error
+            await session.commit()
+            return execution_event.id
+
+    execution_event_id = client.portal.call(create_pending_redemption_and_execution_event)
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+
+    async def reconciliation() -> tuple[str, str, str | None, str, str, str | None]:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            execution_event = await session.get(PositionEvent, execution_event_id)
+            subscription_row = await session.get(CopySubscription, subscription["id"])
+            assert (
+                position is not None
+                and redemption is not None
+                and execution_event is not None
+                and subscription_row is not None
+            )
+            return (
+                position.status,
+                redemption.status,
+                redemption.transaction_hash,
+                execution_event.asset_id,
+                execution_event.outcome,
+                subscription_row.last_error,
+            )
+
+    result = client.portal.call(reconciliation)
+    assert result == (
+        "reconciled",
+        "reconciled",
+        "0xmanualredeem",
+        "asset-simple",
+        "Yes",
+        None,
+    )
 
 
 def test_forced_balance_refresh_updates_execution_account(app_client_factory):
@@ -1093,8 +1434,7 @@ def test_deposit_wallet_redemption_uses_safe_relayer_with_builder_credentials(mo
                 return "0xprivate"
             assert reference.service == "test.builder"
             return (
-                '{"key":"builder-key","secret":"builder-secret",'
-                '"passphrase":"builder-passphrase"}'
+                '{"key":"builder-key","secret":"builder-secret","passphrase":"builder-passphrase"}'
             )
 
     class FakeBuilderApiKeyCreds:

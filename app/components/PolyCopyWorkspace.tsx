@@ -291,6 +291,11 @@ const orderState: Record<string, { label: string; tone: string }> = {
   interrupted_before_submit: { label: "提交中断", tone: "danger" },
 };
 
+const positionState: Record<string, { label: string; tone: string }> = {
+  open: { label: "持仓中", tone: "success" },
+  dust_closed: { label: "零碎残留已核销", tone: "neutral" },
+};
+
 function Badge({ label, tone = "neutral" }: { label: string; tone?: string }) {
   return <span className={`pcBadge ${tone}`}>{label}</span>;
 }
@@ -504,31 +509,32 @@ function QuickSettingsModal({
   }
 
   return (
-    <Modal title={`快速设置 · ${wallet.label || shortAddress(wallet.proxy_wallet)}`} eyebrow="四项核心参数" onClose={onClose}>
-      <form className="pcForm" onSubmit={submit}>
+    <Modal title={`钱包策略设置 · ${wallet.label || shortAddress(wallet.proxy_wallet)}`} eyebrow="跟单与资金边界" onClose={onClose}>
+      <form className="pcForm pcQuickSettings" onSubmit={submit}>
+        <p className="pcQuickSettingsIntro">这些设置决定该目标钱包如何跟单；保存后仅影响之后的新订单。</p>
         <div className="pcFormGrid three">
           <label className="pcField">
-            <span>执行比例</span>
+            <span>跟单比例</span>
             <div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={ratio} onChange={(event) => setRatio(event.target.value)} /><b>%</b></div>
-            <small>按目标钱包首次建仓和大额加仓成本计算</small>
+            <small>目标钱包每买入 $100，本策略按此比例买入；例如 10% 约买 $10。</small>
           </label>
           <label className="pcField">
-            <span>单市场上限</span>
+            <span>单个市场最多投入</span>
             <div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={positionCap} onChange={(event) => setPositionCap(event.target.value)} /><b>USDC</b></div>
-            <small>该目标钱包独立生效</small>
+            <small>同一市场累计买入的最高金额；达到后不再继续加仓。</small>
           </label>
           <label className="pcField">
-            <span>大额加仓阈值</span>
+            <span>加仓触发金额</span>
             <div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={largeIncreaseThreshold} onChange={(event) => setLargeIncreaseThreshold(event.target.value)} /><b>USDC</b></div>
-            <small>单次净加仓达到后按比例跟随</small>
+            <small>目标钱包单次净加仓达到此金额才跟随；低于该值只记录、不下单。</small>
           </label>
           <label className="pcField">
-            <span>每日买入上限</span>
+            <span>今日最多买入</span>
             <div className="pcUnitInput"><input type="number" min="0" step="0.01" value={dailyLimit} onChange={(event) => setDailyLimit(event.target.value)} disabled={!account} /><b>USDC</b></div>
-            <small>{account ? "全部策略共享" : "绑定执行钱包后可配置"}</small>
+            <small>{account ? "所有跟单策略共享的当日总买入额度；达到后当天不再开新仓。" : "绑定执行钱包后可配置。"}</small>
           </label>
         </div>
-        <p className="pcFormHint">滑点、钱包固定额度和账户资金边界位于“设置 → 高级参数”。</p>
+        <p className="pcFormHint">滑点、总敞口、现金保留额等账户级风控参数位于“设置 → 高级参数”。</p>
         {error && <p className="pcFormError" role="alert">{error}</p>}
         <div className="pcModalActions">
           <button className="pcButton ghost" type="button" onClick={onClose}>取消</button>
@@ -780,8 +786,8 @@ function PositionsPage({ overview }: { overview: Overview }) {
       {data && scope === "open" && <div className="pcInlineSummary"><div><span>持仓成本</span><strong>{money(data.portfolio.open_cost_usdc)}</strong></div><div><span>当前市值</span><strong>{money(data.portfolio.market_value_usdc)}</strong></div><div><span>浮动盈亏</span><Pnl value={data.portfolio.unrealized_pnl} /></div><div><span>已实现盈亏</span><Pnl value={data.portfolio.realized_pnl} /></div>{!data.portfolio.valuation_complete && <p>{data.portfolio.unpriced_positions} 个仓位未定价，汇总盈亏暂不显示。</p>}</div>}
       {loading ? <LoadingState /> : error ? <div className="pcAlert danger"><span>!</span><p><strong>持仓读取失败</strong>{error}</p></div> : !data?.items.length ? <EmptyState title={scope === "open" ? "暂无自动策略持仓" : "暂无历史仓位"} message={scope === "open" ? "策略完成首次买入后，仓位会出现在这里。" : "已完成清仓或赎回的仓位会保留在这里。"} /> : (
         <>
-          <div className="pcTableWrap pcDesktopOnly"><table className="pcTable"><thead><tr><th>市场 / Outcome</th><th>来源钱包</th><th className="numeric">成本 / 均价</th><th className="numeric">当前价 / 市值</th><th className="numeric">浮动盈亏</th><th className="numeric">已实现 / 总盈亏</th><th>状态</th></tr></thead><tbody>{data.items.map((position) => <tr key={position.id}><td><a className="pcMarketIdentity" href={position.event_slug ? `https://polymarket.com/event/${position.event_slug}` : undefined} target="_blank" rel="noreferrer"><strong>{position.title}</strong><span>{position.outcome}</span></a></td><td><span className="pcWalletCell"><strong>{position.tracked_wallet_label}</strong><small>{shortAddress(position.tracked_wallet_address)}</small></span></td><td className="numeric"><strong>{money(scope === "open" ? position.attributed_cost : position.lifetime_bought_usdc)}</strong><small>{price(position.average_entry_price)}</small></td><td className="numeric">{position.valuation_status === "unavailable" ? <span className="pcMissing">未定价</span> : <><strong>{price(position.current_bid)}</strong><small>{money(position.current_value)}</small></>}</td><td className="numeric"><Pnl value={position.unrealized_pnl} secondary={position.unrealized_pnl_percent === null ? undefined : `${number(position.unrealized_pnl_percent).toFixed(2)}%`} /></td><td className="numeric"><Pnl value={position.total_pnl} secondary={`已实现 ${money(position.realized_pnl)}`} /></td><td><Badge label={position.status === "open" ? "持仓中" : position.status} tone={position.status === "open" ? "success" : "neutral"} /></td></tr>)}</tbody></table></div>
-          <div className="pcMobileCards">{data.items.map((position) => <article className="pcMobileCard" key={position.id}><div className="pcMobileCardHeader"><span className="pcMarketIdentity"><strong>{position.title}</strong><span>{position.outcome} · {position.tracked_wallet_label}</span></span><Badge label={position.status === "open" ? "持仓中" : position.status} tone={position.status === "open" ? "success" : "neutral"} /></div><dl><div><dt>成本</dt><dd>{money(position.attributed_cost)}</dd></div><div><dt>当前市值</dt><dd>{money(position.current_value)}</dd></div><div><dt>浮动盈亏</dt><dd><Pnl value={position.unrealized_pnl} /></dd></div><div><dt>总盈亏</dt><dd><Pnl value={position.total_pnl} /></dd></div></dl></article>)}</div>
+          <div className="pcTableWrap pcDesktopOnly"><table className="pcTable"><thead><tr><th>市场 / Outcome</th><th>来源钱包</th><th className="numeric">成本 / 均价</th><th className="numeric">当前价 / 市值</th><th className="numeric">浮动盈亏</th><th className="numeric">已实现 / 总盈亏</th><th>状态</th></tr></thead><tbody>{data.items.map((position) => { const state = positionState[position.status] || { label: position.status, tone: "neutral" }; return <tr key={position.id}><td><a className="pcMarketIdentity" href={position.event_slug ? `https://polymarket.com/event/${position.event_slug}` : undefined} target="_blank" rel="noreferrer"><strong>{position.title}</strong><span>{position.outcome}</span></a></td><td><span className="pcWalletCell"><strong>{position.tracked_wallet_label}</strong><small>{shortAddress(position.tracked_wallet_address)}</small></span></td><td className="numeric"><strong>{money(scope === "open" ? position.attributed_cost : position.lifetime_bought_usdc)}</strong><small>{price(position.average_entry_price)}</small></td><td className="numeric">{position.valuation_status === "unavailable" ? <span className="pcMissing">未定价</span> : <><strong>{price(position.current_bid)}</strong><small>{money(position.current_value)}</small></>}</td><td className="numeric"><Pnl value={position.unrealized_pnl} secondary={position.unrealized_pnl_percent === null ? undefined : `${number(position.unrealized_pnl_percent).toFixed(2)}%`} /></td><td className="numeric"><Pnl value={position.total_pnl} secondary={`已实现 ${money(position.realized_pnl)}`} /></td><td><Badge label={state.label} tone={state.tone} /></td></tr>; })}</tbody></table></div>
+          <div className="pcMobileCards">{data.items.map((position) => { const state = positionState[position.status] || { label: position.status, tone: "neutral" }; return <article className="pcMobileCard" key={position.id}><div className="pcMobileCardHeader"><span className="pcMarketIdentity"><strong>{position.title}</strong><span>{position.outcome} · {position.tracked_wallet_label}</span></span><Badge label={state.label} tone={state.tone} /></div><dl><div><dt>成本</dt><dd>{money(position.attributed_cost)}</dd></div><div><dt>当前市值</dt><dd>{money(position.current_value)}</dd></div><div><dt>浮动盈亏</dt><dd><Pnl value={position.unrealized_pnl} /></dd></div><div><dt>总盈亏</dt><dd><Pnl value={position.total_pnl} /></dd></div></dl></article>; })}</div>
         </>
       )}
     </section>
@@ -867,19 +873,26 @@ function AccountRiskForm({ account, onSaved }: { account: Account; onSaved: () =
     daily_buy_limit_usdc: String(account.daily_buy_limit_usdc),
     daily_loss_limit_usdc: String(account.daily_loss_limit_usdc),
   });
+  const [autoRedeem, setAutoRedeem] = useState(account.auto_redeem);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setMessage(null);
     try {
-      await api("/api/copy-trading/account", { method: "PUT", body: JSON.stringify({ wallet_id: account.wallet_id, signer_address: account.signer_address, funder_address: account.funder_address, signature_type: account.signature_type, auto_redeem: account.auto_redeem, ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, Number(value)])) }) });
+      await api("/api/copy-trading/account", { method: "PUT", body: JSON.stringify({ wallet_id: account.wallet_id, signer_address: account.signer_address, funder_address: account.funder_address, signature_type: account.signature_type, auto_redeem: autoRedeem, ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, Number(value)])) }) });
       setMessage("资金风控已保存，重新验证账户后生效。"); onSaved();
     } catch (submitError) { setMessage(submitError instanceof Error ? submitError.message : "保存失败"); }
     finally { setBusy(false); }
   }
-  const labels: Record<keyof typeof values, string> = { budget_usdc: "钱包预算", cash_reserve_usdc: "现金保留额", max_total_exposure_usdc: "总敞口上限", daily_buy_limit_usdc: "每日买入上限", daily_loss_limit_usdc: "每日亏损熔断" };
-  return <form className="pcSettingsForm" onSubmit={submit}><div className="pcFormGrid settings">{(Object.keys(values) as Array<keyof typeof values>).map((key) => <label className="pcField" key={key}><span>{labels[key]}</span><div className="pcUnitInput"><input type="number" min="0" step="0.01" value={values[key]} onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))} /><b>USDC</b></div></label>)}</div>{message && <p className={message.includes("已保存") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}<div className="pcSettingsActions"><button className="pcButton primary" type="submit" disabled={busy}>{busy ? "正在保存…" : "保存资金风控"}</button></div></form>;
+  const fields: Record<keyof typeof values, { label: string; hint: string }> = {
+    budget_usdc: { label: "执行钱包总预算", hint: "分配给自动跟单的总资金；必须不低于“必须保留的现金”。" },
+    cash_reserve_usdc: { label: "必须保留的现金", hint: "这部分 USDC 不用于开仓，用于保证钱包始终保留可用余额。" },
+    max_total_exposure_usdc: { label: "全部策略总持仓上限", hint: "所有目标钱包当前持仓成本的总和不能超过此金额。" },
+    daily_buy_limit_usdc: { label: "今日全部策略最多买入", hint: "当天所有策略累计新买入的最高金额；达到后当天停止开新仓。" },
+    daily_loss_limit_usdc: { label: "单日亏损暂停线", hint: "当天已实现亏损达到此金额后，系统停止当天的新买入。" },
+  };
+  return <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={submit}><div className="pcSettingsIntro">这些资金限制由所有策略共享；数值越小，系统承担的风险越低。</div><div className="pcFormGrid settings">{(Object.keys(values) as Array<keyof typeof values>).map((key) => <label className="pcField" key={key}><span>{fields[key].label}</span><div className="pcUnitInput"><input type="number" min="0" step="0.01" value={values[key]} onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))} /><b>USDC</b></div><small>{fields[key].hint}</small></label>)}<label className="pcField"><span>市场结算后自动赎回</span><select value={autoRedeem ? "enabled" : "disabled"} onChange={(event) => setAutoRedeem(event.target.value === "enabled")}><option value="enabled">开启</option><option value="disabled">关闭</option></select><small>关闭后只保留可赎回仓位，不会由系统自动提交链上赎回交易。</small></label></div>{message && <p className={message.includes("已保存") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}<div className="pcSettingsActions"><button className="pcButton primary" type="submit" disabled={busy}>{busy ? "正在保存…" : "保存资金风控"}</button></div></form>;
 }
 
 function AdvancedStrategyForm({ strategy, onSaved }: { strategy: Strategy; onSaved: () => void }) {
@@ -896,7 +909,7 @@ function AdvancedStrategyForm({ strategy, onSaved }: { strategy: Strategy; onSav
     } catch (submitError) { setMessage(submitError instanceof Error ? submitError.message : "保存失败"); }
     finally { setBusy(false); }
   }
-  return <form className="pcSettingsForm" onSubmit={submit}><div className="pcFormGrid two"><label className="pcField"><span>钱包固定额度</span><div className="pcUnitInput"><input type="number" min="0" step="0.01" value={totalCap} onChange={(event) => setTotalCap(event.target.value)} /><b>USDC</b></div><small>该策略可占用的最大总额度</small></label><label className="pcField"><span>盘口保护</span><div className="pcUnitInput"><input type="number" min="0" max="50" step="0.01" value={slippage} onChange={(event) => setSlippage(event.target.value)} /><b>¢</b></div><small>相对当前最优价允许的最大偏移</small></label></div>{message && <p className={message.includes("已保存") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}<div className="pcSettingsActions"><button className="pcButton primary" type="submit" disabled={busy}>{busy ? "正在保存…" : "保存高级参数"}</button></div></form>;
+  return <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={submit}><div className="pcFormGrid two"><label className="pcField"><span>此目标钱包总投入上限</span><div className="pcUnitInput"><input type="number" min="0" step="0.01" value={totalCap} onChange={(event) => setTotalCap(event.target.value)} /><b>USDC</b></div><small>该目标钱包对应策略所有持仓成本的总和不能超过此金额。</small></label><label className="pcField"><span>可接受价格偏差（滑点）</span><div className="pcUnitInput"><input type="number" min="0" max="50" step="0.01" value={slippage} onChange={(event) => setSlippage(event.target.value)} /><b>¢</b></div><small>允许成交价比当前最优价最多差多少美分；超过时订单不会提交。</small></label></div>{message && <p className={message.includes("已保存") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}<div className="pcSettingsActions"><button className="pcButton primary" type="submit" disabled={busy}>{busy ? "正在保存…" : "保存高级参数"}</button></div></form>;
 }
 
 function RehearsalForm({ enabled }: { enabled: boolean }) {
@@ -962,7 +975,7 @@ function SettingsPage({
     finally { setBusy(false); }
   }
 
-  return <div className="pcSettingsStack">
+  return <div className="pcSettingsStack pcSystemSettings">
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION ACCOUNT</span><h2>执行钱包</h2><p>唯一资金账户，为全部策略提供共享余额与风险边界。</p></div>{account && <Badge label={account.status === "ready" ? "已验证" : account.status === "insufficient_balance" ? "余额不足" : "待验证"} tone={account.status === "ready" ? "success" : "warning"} />}</header>{account ? <div className="pcAccountSummary"><div><span>签名地址</span><strong>{shortAddress(account.signer_address)}</strong></div><div><span>资金地址</span><strong>{shortAddress(account.funder_address)}</strong></div><div><span>当前余额</span><strong>{money(account.collateral_balance)}</strong><small>{account.last_balance_at ? `更新于 ${dateTime(account.last_balance_at)}` : "尚未刷新"}</small></div><div><span>密钥状态</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><button className="pcButton ghost" type="button" disabled={busy} onClick={refreshBalance}>{busy ? "正在刷新…" : "刷新余额"}</button><button className="pcButton ghost" type="button" disabled={busy} onClick={verify}>验证密钥与余额</button></div> : <EmptyState title="尚未绑定执行钱包" message="先设置“我的钱包”，再将其绑定为唯一执行账户。" action={<button className="pcButton primary" type="button" disabled={busy} onClick={bindAccount}>{selfWallet ? "绑定执行钱包" : "设置我的钱包"}</button>} />}{message && <p className={message.includes("完成") || message.includes("已绑定") || message.includes("已刷新") ? "pcFormSuccess pcPanelMessage" : "pcFormError pcPanelMessage"}>{message}</p>}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">CAPITAL RISK</span><h2>资金风控</h2><p>这些限制由所有目标钱包共享，修改后需要重新验证执行账户。</p></div></header>{account ? <AccountRiskForm account={account} onSaved={onReload} /> : <EmptyState title="等待执行钱包" message="绑定执行钱包后可配置预算、现金保留和每日风控。" />}</section>
     <section className="pcPanel"><header className="pcPanelHeader pcFilterHeader"><div><span className="pcEyebrow">ADVANCED STRATEGY</span><h2>策略高级参数</h2><p>常用的执行比例和单市场上限请在总览页快速调整。</p></div>{overview.strategies.length > 0 && <label className="pcSelect"><span>目标钱包</span><select value={strategyId} onChange={(event) => setStrategyId(event.target.value)}>{overview.strategies.map((item) => <option value={item.subscription.id} key={item.subscription.id}>{item.wallet.label}</option>)}</select></label>}</header>{strategy ? <AdvancedStrategyForm key={strategy.subscription.id} strategy={strategy} onSaved={onReload} /> : <EmptyState title="暂无已配置策略" message="从总览页为目标钱包创建策略后，可在这里调整高级参数。" />}</section>

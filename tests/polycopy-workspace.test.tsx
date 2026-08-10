@@ -231,8 +231,8 @@ describe("PolyCopy workspace", () => {
     const user = userEvent.setup();
     render(<PolyCopyWorkspace view="overview" />);
     await user.click(await screen.findByRole("button", { name: "参数" }));
-    const dialog = await screen.findByRole("dialog", { name: /快速设置/ });
-    const threshold = within(dialog).getByRole("spinbutton", { name: /^大额加仓阈值/ });
+    const dialog = await screen.findByRole("dialog", { name: /钱包策略设置/ });
+    const threshold = within(dialog).getByRole("spinbutton", { name: /^加仓触发金额/ });
     expect(threshold).toHaveValue(100);
     await user.clear(threshold);
     await user.type(threshold, "250");
@@ -254,5 +254,16 @@ describe("PolyCopy workspace", () => {
     const table = await screen.findByRole("table");
     expect(within(table).getByText("风控阻止")).toBeInTheDocument();
     expect(within(table).getByText("每日买入上限已用完")).toBeInTheDocument();
+  });
+
+  it("设置页允许关闭自动赎回", async () => {
+    const user = userEvent.setup();
+    render(<PolyCopyWorkspace view="settings" />);
+    const autoRedeem = await screen.findByRole("combobox", { name: /市场结算后自动赎回/ });
+    await user.selectOptions(autoRedeem, "disabled");
+    await user.click(screen.getByRole("button", { name: "保存资金风控" }));
+    await waitFor(() => expect(requestBodies).toContainEqual(expect.objectContaining({
+      auto_redeem: false,
+    })));
   });
 });

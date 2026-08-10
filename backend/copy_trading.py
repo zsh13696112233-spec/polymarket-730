@@ -35,17 +35,53 @@ from backend.trading import (
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
+# CLOB outcome-token quantities are executable to two decimal places. A smaller
+# remainder cannot be submitted as a follow-up sell order.
+UNTRADEABLE_DUST_SIZE = Decimal("0.01")
+REDEMPTION_SIZE_TOLERANCE = Decimal("0.000001")
+REDEMPTION_SIZE_RELATIVE_TOLERANCE = Decimal("0.000001")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 RETRYABLE_REDEMPTION_CREDENTIAL_ERRORS = frozenset(
     {
         "Deposit Wallet 自动赎回需要 Relayer API 凭证",
         "钥匙串中没有找到执行钱包密钥",
+        "缺少官方 Builder Relayer 客户端",
+        "Builder 凭证格式无效",
     }
+)
+RETRYABLE_REDEMPTION_ERROR_MARKERS = (
+    "expected safe is not deployed",
+    "自动赎回准备失败：",
 )
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def redemption_sizes_match(actual: Decimal, expected: Decimal) -> bool:
+    tolerance = max(
+        REDEMPTION_SIZE_TOLERANCE,
+        abs(expected) * REDEMPTION_SIZE_RELATIVE_TOLERANCE,
+    )
+    return abs(actual - expected) <= tolerance
+
+
+def redemption_error_is_retryable(message: str | None) -> bool:
+    if not message:
+        return False
+    normalized = message.lower()
+    return message in RETRYABLE_REDEMPTION_CREDENTIAL_ERRORS or any(
+        marker in normalized for marker in RETRYABLE_REDEMPTION_ERROR_MARKERS
+    )
+
+
+def event_payout_for_size(event: PositionEvent, size: Decimal) -> Decimal:
+    """Scale a source or execution redemption payout to the copied share count."""
+    if event.payout_amount is None or event.before_size <= ZERO:
+        return size
+    payout_rate = max(ZERO, min(ONE, event.payout_amount / event.before_size))
+    return size * payout_rate
 
 
 def market_worst_price(
@@ -188,6 +224,7 @@ class CopyTradingEngine:
             for subscription_id in ids:
                 try:
                     await self.reconcile_pending_orders(subscription_id)
+                    await self.write_off_untradeable_dust(subscription_id)
                     await self.process_position_events(subscription_id)
                     await self.reconcile_terminal_positions(subscription_id)
                     await self.process_redemptions(subscription_id)
@@ -326,6 +363,7 @@ class CopyTradingEngine:
                 ).all()
             )
             candidates: list[tuple[int, int | None, int | None]] = []
+            repaired_execution_event = False
             for position in positions:
                 buy_event_id = await session.scalar(
                     select(func.max(CopyOrder.leader_event_id)).where(
@@ -360,6 +398,33 @@ class CopyTradingEngine:
                     if account is not None
                     else None
                 )
+                if execution_redemption is None and account is not None:
+                    unresolved_execution_redemptions = list(
+                        (
+                            await session.scalars(
+                                select(PositionEvent)
+                                .where(
+                                    PositionEvent.wallet_id == account.wallet_id,
+                                    PositionEvent.condition_id == position.condition_id,
+                                    PositionEvent.type == "redeemed",
+                                    PositionEvent.settled_at >= position.created_at,
+                                )
+                                .order_by(PositionEvent.id.desc())
+                            )
+                        ).all()
+                    )
+                    size_matches = [
+                        event
+                        for event in unresolved_execution_redemptions
+                        if event.asset_id.startswith("redeem:")
+                        and redemption_sizes_match(event.before_size, position.attributed_size)
+                    ]
+                    if len(size_matches) == 1:
+                        execution_redemption = size_matches[0]
+                        execution_redemption.asset_id = position.asset_id
+                        if not execution_redemption.outcome:
+                            execution_redemption.outcome = position.outcome
+                        repaired_execution_event = True
                 if source_redemption is not None or execution_redemption is not None:
                     candidates.append(
                         (
@@ -368,8 +433,8 @@ class CopyTradingEngine:
                             execution_redemption.id if execution_redemption is not None else None,
                         )
                     )
-        if not candidates:
-            return
+            if repaired_execution_event:
+                await session.commit()
         for position_id, source_event_id, execution_event_id in candidates:
             async with self.database.sessions() as session:
                 position = await session.get(CopyPosition, position_id)
@@ -388,24 +453,165 @@ class CopyTradingEngine:
                     if execution_event_id is not None
                     else None
                 )
+                source_event = (
+                    await session.get(PositionEvent, source_event_id)
+                    if source_event_id is not None
+                    else None
+                )
             if execution_event is not None:
                 await self._record_reconciled_redemption(
                     position_id,
                     transaction_hash=execution_event.transaction_hash,
                     detail="执行钱包链上赎回事件与归因持仓匹配后的结算对账",
+                    payout_usdc=event_payout_for_size(
+                        execution_event,
+                        position.attributed_size,
+                    ),
                 )
                 continue
-            assert source_event_id is not None
+            assert source_event is not None
             trader = await self._trader()
             balance = await trader.onchain_outcome_balance(asset_id)
             if balance > ZERO:
-                await self._leader_redeemed(subscription_id, source_event_id)
+                await self._leader_redeemed(subscription_id, source_event.id)
                 continue
             await self._record_reconciled_redemption(
                 position_id,
                 transaction_hash=None,
                 detail="来源赎回与链上 outcome token 余额归零后的结算对账",
+                payout_usdc=event_payout_for_size(source_event, position.attributed_size),
             )
+        await self.reconcile_resolved_source_disappearances(subscription_id)
+
+    async def reconcile_resolved_source_disappearances(self, subscription_id: int) -> None:
+        """Settle copied positions when their source position vanished at resolution.
+
+        The public positions endpoint removes settled outcomes. When its matching
+        terminal event was missed, use the official resolution instead of leaving
+        the execution wallet's copied outcome open indefinitely.
+        """
+        async with self.database.sessions() as session:
+            subscription = await session.get(CopySubscription, subscription_id)
+            if subscription is None:
+                return
+            account = await session.get(ExecutionAccount, 1)
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(
+                            CopyPosition.subscription_id == subscription_id,
+                            CopyPosition.attributed_size > ZERO,
+                            CopyPosition.status.in_(["open", "manual_exit"]),
+                        )
+                    )
+                ).all()
+            )
+            source_assets = set(
+                (
+                    await session.scalars(
+                        select(CurrentPosition.asset_id).where(
+                            CurrentPosition.wallet_id == subscription.tracked_wallet_id,
+                        )
+                    )
+                ).all()
+            )
+        missing_source_positions = [
+            position for position in positions if position.asset_id not in source_assets
+        ]
+        if not missing_source_positions:
+            return
+        resolutions = await self.client.fetch_market_resolutions(
+            position.condition_id for position in missing_source_positions
+        )
+        for position in missing_source_positions:
+            resolution = resolutions.get(position.condition_id)
+            payout = (
+                resolution.payout_by_asset_id.get(position.asset_id)
+                if resolution is not None
+                else None
+            )
+            if payout is None:
+                continue
+            if payout <= ZERO:
+                await self._record_resolved_loss(position.id, resolution.resolved_at)
+                continue
+            if account is not None and not account.auto_redeem:
+                continue
+            redemption_id = await self._start_resolution_redemption(position.id, payout)
+            if redemption_id is not None:
+                await self._execute_redemption(redemption_id, event_id=None)
+
+    async def _start_resolution_redemption(
+        self,
+        position_id: int,
+        payout_rate: Decimal,
+    ) -> int | None:
+        async with self.database.sessions() as session:
+            position = await session.get(CopyPosition, position_id)
+            account = await session.get(ExecutionAccount, 1)
+            existing = await session.scalar(
+                select(CopyRedemption).where(CopyRedemption.copy_position_id == position_id)
+            )
+            if (
+                position is None
+                or position.attributed_size <= ZERO
+                or existing is not None
+                or (account is not None and not account.auto_redeem)
+            ):
+                return None
+            redemption = CopyRedemption(
+                copy_position_id=position.id,
+                status="pending",
+                size=position.attributed_size,
+                payout_usdc=position.attributed_size * payout_rate,
+                transaction_hash=None,
+                attempts=0,
+                last_error=None,
+                created_at=utcnow(),
+                updated_at=utcnow(),
+            )
+            session.add(redemption)
+            position.status = "redeeming"
+            position.updated_at = utcnow()
+            await session.commit()
+            return redemption.id
+
+    async def write_off_untradeable_dust(self, subscription_id: int) -> None:
+        """Close historical partial-fill remainders that cannot be sold on CLOB."""
+        async with self.database.sessions() as session:
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(
+                            CopyPosition.subscription_id == subscription_id,
+                            CopyPosition.status == "manual_exit",
+                            CopyPosition.attributed_size > ZERO,
+                            CopyPosition.attributed_size < UNTRADEABLE_DUST_SIZE,
+                        )
+                    )
+                ).all()
+            )
+            for position in positions:
+                dust_cost = position.attributed_cost
+                position.attributed_size = ZERO
+                position.attributed_cost = ZERO
+                position.realized_pnl -= dust_cost
+                position.status = "dust_closed"
+                position.updated_at = utcnow()
+                session.add(
+                    CopyLedger(
+                        subscription_id=subscription_id,
+                        copy_position_id=position.id,
+                        order_id=None,
+                        type="dust_writeoff",
+                        amount_usdc=ZERO,
+                        realized_pnl=-dust_cost,
+                        detail="卖出后剩余数量低于最小可交易粒度，按零值核销",
+                        timestamp=utcnow(),
+                    )
+                )
+            if positions:
+                await session.commit()
 
     async def _record_reconciled_redemption(
         self,
@@ -413,6 +619,7 @@ class CopyTradingEngine:
         *,
         transaction_hash: str | None,
         detail: str,
+        payout_usdc: Decimal | None = None,
     ) -> None:
         async with self.database.sessions() as session:
             position = await session.get(CopyPosition, position_id)
@@ -425,12 +632,16 @@ class CopyTradingEngine:
                 or (existing is not None and existing.status != "pending")
             ):
                 return
-            payout = position.attributed_size
+            payout = payout_usdc if payout_usdc is not None else position.attributed_size
             cost = position.attributed_cost
             realized = payout - cost
+            failed_redemption_error = existing.last_error if existing is not None else None
+            resolved_transaction_hash = transaction_hash or (
+                existing.transaction_hash if existing is not None else None
+            )
             reconciliation_error = (
                 None
-                if transaction_hash
+                if resolved_transaction_hash
                 else "未找到执行钱包赎回交易哈希，按来源赎回与链上余额完成对账。"
             )
             if existing is None:
@@ -440,7 +651,7 @@ class CopyTradingEngine:
                         status="reconciled",
                         size=position.attributed_size,
                         payout_usdc=payout,
-                        transaction_hash=transaction_hash,
+                        transaction_hash=resolved_transaction_hash,
                         attempts=0,
                         last_error=reconciliation_error,
                         created_at=utcnow(),
@@ -450,7 +661,7 @@ class CopyTradingEngine:
             else:
                 existing.status = "reconciled"
                 existing.payout_usdc = payout
-                existing.transaction_hash = transaction_hash
+                existing.transaction_hash = resolved_transaction_hash
                 existing.last_error = reconciliation_error
                 existing.updated_at = utcnow()
             position.attributed_size = ZERO
@@ -458,6 +669,14 @@ class CopyTradingEngine:
             position.realized_pnl += realized
             position.status = "reconciled"
             position.updated_at = utcnow()
+            subscription = await session.get(CopySubscription, position.subscription_id)
+            if (
+                subscription is not None
+                and failed_redemption_error
+                and subscription.last_error == failed_redemption_error
+            ):
+                subscription.last_error = None
+                subscription.updated_at = utcnow()
             session.add(
                 CopyLedger(
                     copy_position_id=position.id,
@@ -550,10 +769,9 @@ class CopyTradingEngine:
         worst_price = market_worst_price(
             book.best_ask, book.tick_size, subscription.market_slippage_cents, side="BUY"
         )
-        minimum_order_usdc = book.min_order_size * worst_price
         usage = await self._risk_usage(subscription_id, account)
         allowed, reason = allowed_buy_usdc(
-            max(requested, minimum_order_usdc),
+            requested,
             subscription=subscription,
             usage=usage,
         )
@@ -561,7 +779,7 @@ class CopyTradingEngine:
             await self._record_skip(subscription_id, event, reason or "风险额度不足")
             return
         if allowed / worst_price < book.min_order_size:
-            await self._record_skip(subscription_id, event, "剩余风控额度低于市场最小下单金额")
+            await self._record_skip(subscription_id, event, "按执行比例计算后低于市场最小下单份数")
             return
 
         now = utcnow()
@@ -751,6 +969,9 @@ class CopyTradingEngine:
             event = await session.get(PositionEvent, event_id)
             if subscription is None or event is None:
                 return
+            account = await session.get(ExecutionAccount, 1)
+            if redeem and account is not None and not account.auto_redeem:
+                return
             position = await session.scalar(
                 select(CopyPosition)
                 .where(
@@ -771,16 +992,24 @@ class CopyTradingEngine:
                     if (
                         existing.status != "pending"
                         or existing.transaction_hash is not None
-                        or existing.last_error not in RETRYABLE_REDEMPTION_CREDENTIAL_ERRORS
+                        or not redemption_error_is_retryable(existing.last_error)
                     ):
                         return
+                    if existing.payout_usdc is None:
+                        existing.payout_usdc = event_payout_for_size(
+                            event,
+                            position.attributed_size,
+                        )
+                        existing.updated_at = utcnow()
+                        await session.commit()
                     redemption_id = existing.id
                 else:
+                    payout = event_payout_for_size(event, position.attributed_size)
                     redemption = CopyRedemption(
                         copy_position_id=position.id,
                         status="pending",
                         size=position.attributed_size,
-                        payout_usdc=None,
+                        payout_usdc=payout,
                         transaction_hash=None,
                         attempts=0,
                         last_error=None,
@@ -888,18 +1117,28 @@ class CopyTradingEngine:
             await session.commit()
 
     async def _leader_purchase_usdc(self, event: PositionEvent) -> Decimal:
-        """Return the source wallet's BUY amount for this settled position event."""
+        """Return the source wallet's net position-cost increase for this event."""
+        net_cost_increase = (
+            event.after_size * event.after_avg_price - event.before_size * event.before_avg_price
+        )
+        if net_cost_increase > ZERO:
+            return net_cost_increase
         async with self.database.sessions() as session:
-            amount = await session.scalar(
+            buy_amount = await session.scalar(
                 select(func.sum(PositionEventFill.amount)).where(
-                    PositionEventFill.event_id == event.id,
-                    PositionEventFill.side == "BUY",
+                    PositionEventFill.event_id == event.id, PositionEventFill.side == "BUY"
                 )
             )
-        if amount is not None and amount > ZERO:
-            return amount
+            sell_amount = await session.scalar(
+                select(func.sum(PositionEventFill.amount)).where(
+                    PositionEventFill.event_id == event.id, PositionEventFill.side == "SELL"
+                )
+            )
+        net_fill_amount = (buy_amount or ZERO) - (sell_amount or ZERO)
+        if net_fill_amount > ZERO:
+            return net_fill_amount
         reference = event.average_fill_price or event.after_avg_price
-        return abs(event.delta_size) * reference
+        return max(ZERO, event.delta_size * reference)
 
     def _new_order(
         self,
@@ -1099,6 +1338,24 @@ class CopyTradingEngine:
                                 timestamp=utcnow(),
                             )
                         )
+                        if ZERO < position.attributed_size < UNTRADEABLE_DUST_SIZE:
+                            dust_cost = position.attributed_cost
+                            position.attributed_size = ZERO
+                            position.attributed_cost = ZERO
+                            position.realized_pnl -= dust_cost
+                            position.status = "dust_closed"
+                            session.add(
+                                CopyLedger(
+                                    subscription_id=order.subscription_id,
+                                    copy_position_id=position.id,
+                                    order_id=order.id,
+                                    type="dust_writeoff",
+                                    amount_usdc=ZERO,
+                                    realized_pnl=-dust_cost,
+                                    detail="卖出后剩余数量低于最小可交易粒度，按零值核销",
+                                    timestamp=utcnow(),
+                                )
+                            )
                     if position is not None:
                         position.updated_at = utcnow()
             elif position is not None and order.side == "BUY":
@@ -1227,10 +1484,7 @@ class CopyTradingEngine:
             if position is None:
                 return
             size = redemption.size
-            # A redeemed outcome has a $1 payout per share.  The source event is
-            # already a durable terminal signal, so this is the execution position's
-            # own share count, not the source wallet's amount.
-            payout = size
+            payout = redemption.payout_usdc if redemption.payout_usdc is not None else size
             condition_id = position.condition_id
             outcome_index = position.outcome_index
             neg_risk = bool(position.neg_risk)
@@ -1248,6 +1502,9 @@ class CopyTradingEngine:
                 if redemption is not None and redemption.status == "pending":
                     redemption.attempts += 1
                     redemption.last_error = str(error)[:1000]
+                    transaction_hash = getattr(error, "transaction_hash", None)
+                    if transaction_hash:
+                        redemption.transaction_hash = str(transaction_hash)[:100]
                     redemption.updated_at = utcnow()
                     await session.commit()
             raise
@@ -1285,6 +1542,9 @@ class CopyTradingEngine:
 
     async def process_redemptions(self, subscription_id: int) -> None:
         async with self.database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is not None and not account.auto_redeem:
+                return
             rows = list(
                 (
                     await session.scalars(
@@ -1297,14 +1557,11 @@ class CopyTradingEngine:
                     )
                 ).all()
             )
-        # A pending live redemption is deliberately not retried automatically: its
-        # chain transaction must first be reconciled by transaction hash. The missing
-        # Deposit Wallet Relayer credential error is raised before a transaction is
-        # submitted, so it is safe to retry after credentials are configured.
+        # Only errors known to occur before submission are retried. Unknown submission
+        # results remain pending until their transaction or token balance is reconciled.
         for redemption in rows:
-            if (
-                redemption.transaction_hash is None
-                and redemption.last_error in RETRYABLE_REDEMPTION_CREDENTIAL_ERRORS
+            if redemption.transaction_hash is None and redemption_error_is_retryable(
+                redemption.last_error
             ):
                 await self._execute_redemption(redemption.id, event_id=None)
 

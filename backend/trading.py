@@ -28,6 +28,14 @@ class TradingUnavailable(RuntimeError):
     pass
 
 
+class RedemptionSubmissionUnknown(TradingUnavailable):
+    """A redemption may have been submitted and must not be blindly retried."""
+
+    def __init__(self, message: str, transaction_hash: str | None = None) -> None:
+        super().__init__(message)
+        self.transaction_hash = transaction_hash
+
+
 @dataclass(frozen=True, slots=True)
 class MarketTradeRequest:
     asset_id: str
@@ -553,18 +561,31 @@ class OfficialClobTrader:
                 relay_tx_type=relay_type,
                 rpc_url=self.rpc_url,
             )
+        except Exception as error:
+            raise TradingUnavailable(f"自动赎回准备失败：{error}") from error
+        try:
             response = client.execute(
                 [Transaction(to=destination, data=data, value="0")],
                 "自动赎回策略持仓",
             )
-            result = response.wait()
         except Exception as error:
             raise TradingUnavailable(f"自动赎回提交失败：{error}") from error
+        response_hash = getattr(response, "transaction_hash", None)
+        try:
+            result = response.wait()
+        except Exception as error:
+            raise RedemptionSubmissionUnknown(
+                f"自动赎回结果待确认：{error}",
+                str(response_hash) if response_hash else None,
+            ) from error
         if result is None:
-            raise TradingUnavailable("自动赎回未在等待窗口内确认")
+            raise RedemptionSubmissionUnknown(
+                "自动赎回未在等待窗口内确认",
+                str(response_hash) if response_hash else None,
+            )
         transaction_hash = (
             result.get("transactionHash") if isinstance(result, dict) else None
-        ) or response.transaction_hash
+        ) or response_hash
         if not transaction_hash:
             raise TradingUnavailable("自动赎回没有返回交易哈希")
         return str(transaction_hash)

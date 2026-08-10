@@ -7215,3 +7215,68 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcAccountSummary span, .pcCommandHint { color: #a09a75; }
 .pcAccountSummary strong { color: #fff0a3; }
 .pcCommandHint code { border-color: #75682a; background: #101108; color: #ffe052; }
+
+/* Keep supporting copy readable everywhere, including the legacy analysis view. */
+.pcRoot {
+  --pc-supporting-font-size: 13px;
+}
+
+.pcRoot small,
+.pcRoot .pcSidebar small,
+.pcRoot .pcTitleGroup p,
+.pcRoot .pcAsOf,
+.pcRoot .pcPanelHeader p,
+.pcRoot .pcFormHint,
+.pcRoot .pcFormError,
+.pcRoot .pcFormSuccess,
+.pcRoot .pcSettingsIntro,
+.pcRoot .pcQuickSettingsIntro,
+.pcRoot .pcCommandHint,
+.pcRoot .pcCommandHint code,
+.pcRoot .pcAccountSummary span,
+.pcRoot .pcRehearsalPreview > span,
+.pcRoot .pcAlert p,
+.pcRoot .pcInlineError,
+.pcRoot .pcInlineSummary > p,
+.pcRoot .pcLoading,
+.pcRoot .pcEmptyState p,
+.pcRoot .pcDailyPnlEmpty,
+.pcRoot .pcMissing,
+.pcRoot .privacyNote,
+.pcRoot .formError,
+.pcRoot .keychainHint,
+.pcRoot .copyTradingError,
+.pcRoot .deleteWalletDescription,
+.pcRoot .deleteWalletNote,
+.pcRoot .copyTradingLead,
+.pcRoot .comparisonPrompt,
+.pcRoot .comparisonError,
+.pcRoot .comparisonStale,
+.pcRoot .copyPositionEmpty,
+.pcRoot .loadingState,
+.pcRoot .emptyState p,
+.pcRoot .welcomeError,
+.pcRoot .readOnlyNote,
+.pcRoot .sortNote,
+.pcRoot .emptyCycleTrades,
+.pcRoot .walletRecordedPnlNotice,
+.pcRoot .copyTradingEmpty,
+.pcRoot .staleBanner,
+.pcRoot .purchaseHistoryNotice,
+.pcRoot .cycleHistoryWarning,
+.pcRoot .copyValuationWarning,
+.pcRoot .noFills,
+.pcRoot .costUnavailable,
+.pcRoot .copyValueMissing,
+.pcRoot .lastUpdated,
+.pcRoot .walletMeta,
+.pcRoot .activityMeta,
+.pcRoot .comparisonMarketMeta {
+  font-size: var(--pc-supporting-font-size) !important;
+  line-height: 1.55;
+}
+
+.pcRoot input::placeholder,
+.pcRoot textarea::placeholder {
+  font-size: var(--pc-supporting-font-size);
+}

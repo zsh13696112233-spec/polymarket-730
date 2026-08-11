@@ -35,6 +35,8 @@ from backend.polymarket import (
 )
 from backend.schemas import RehearsalExecuteRequest, RehearsalPreviewRequest
 from backend.trading import (
+    FAK_BUY_FILL_TOLERANCE,
+    FAK_SELL_FILL_TOLERANCE,
     V2_EXCHANGE_ADDRESS,
     V2_NEG_RISK_EXCHANGE_ADDRESS,
     MarketTradeRequest,
@@ -1300,8 +1302,29 @@ def test_market_fak_cancels_unfilled_remainder():
 
 
 def test_fak_rounding_dust_is_not_reported_as_partial_fill():
-    assert is_effectively_filled(Decimal("10.000001"), Decimal("9.999999"))
-    assert not is_effectively_filled(Decimal("10"), Decimal("9.99"))
+    assert is_effectively_filled(
+        Decimal("5.20034620017986"),
+        Decimal("5.199998"),
+        tolerance=FAK_BUY_FILL_TOLERANCE,
+    )
+    assert is_effectively_filled(
+        Decimal("29.519996"),
+        Decimal("29.51"),
+        tolerance=FAK_SELL_FILL_TOLERANCE,
+    )
+
+
+def test_fak_executable_remainder_is_reported_as_partial_fill():
+    assert not is_effectively_filled(
+        Decimal("10"),
+        Decimal("9.99"),
+        tolerance=FAK_BUY_FILL_TOLERANCE,
+    )
+    assert not is_effectively_filled(
+        Decimal("10"),
+        Decimal("9.99"),
+        tolerance=FAK_SELL_FILL_TOLERANCE,
+    )
 
 
 def test_resolved_losing_outcome_without_orderbook_is_written_off(app_client_factory):
@@ -1645,3 +1668,47 @@ def test_live_only_migration_deletes_paper_graph_and_preserves_live_orders(tmp_p
         assert "leader_purchase_usdc" in order_columns
         assert "proportional_target_usdc" in order_columns
         assert "uq_copy_subscriptions_single_live" not in indexes
+
+
+def test_fak_rounding_migration_normalizes_only_non_executable_remainders(tmp_path: Path):
+    database_path = tmp_path / "fak-rounding.db"
+    config = AlembicConfig(str(Path("backend/alembic.ini").resolve()))
+    config.attributes["database_url"] = f"sqlite+aiosqlite:///{database_path}"
+    command.upgrade(config, "0016_copy_order_amount_snapshots")
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    order_columns = (
+        "idempotency_key,source,asset_id,condition_id,side,requested_size,requested_usdc,"
+        "limit_price,filled_size,filled_usdc,fee_usdc,status,reason,created_at,updated_at"
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            f"""INSERT INTO copy_orders ({order_columns})
+            VALUES ('buy-dust','copy','buy-asset',?,'BUY',19.8228651793941,16.849435402485,
+                    .85,22.453332,16.839999,0,'partially_filled','FAK 部分成交，剩余已取消',?,?)""",
+            (CONDITION_ID, now, now),
+        )
+        connection.execute(
+            f"""INSERT INTO copy_orders ({order_columns})
+            VALUES ('sell-dust','copy','sell-asset',?,'SELL',29.519996,26.538476404,
+                    .899,29.51,29.48049,0,'partially_filled','FAK 部分成交，剩余已取消',?,?)""",
+            (CONDITION_ID, now, now),
+        )
+        connection.execute(
+            f"""INSERT INTO copy_orders ({order_columns})
+            VALUES ('real-partial','copy','partial-asset',?,'SELL',10,9,
+                    .9,9.98,8.982,0,'partially_filled','FAK 部分成交，剩余已取消',?,?)""",
+            (CONDITION_ID, now, now),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT idempotency_key, status, reason FROM copy_orders ORDER BY id"
+        ).fetchall()
+    assert rows == [
+        ("buy-dust", "filled", None),
+        ("sell-dust", "filled", None),
+        ("real-partial", "partially_filled", "FAK 部分成交，剩余已取消"),
+    ]

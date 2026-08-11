@@ -16,7 +16,12 @@ from backend.keychain import KeychainReference, MacOSKeychain
 from backend.polymarket import OrderBookSnapshot
 
 ZERO = Decimal("0")
-FAK_FILL_TOLERANCE = Decimal("0.00001")
+# The exchange rounds quoted USDC and outcome-token quantities independently.
+# A FAK buy can therefore leave just under one cent, while a sell can leave
+# just under one 0.01-share lot.  Neither remainder is actionable in the
+# product and should not be presented as a cancelled partial order.
+FAK_BUY_FILL_TOLERANCE = Decimal("0.01")
+FAK_SELL_FILL_TOLERANCE = Decimal("0.01")
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
@@ -65,14 +70,19 @@ class PreparedMarketOrder:
     signed_order_hash: str
 
 
-def is_effectively_filled(requested: Decimal, filled: Decimal) -> bool:
+def is_effectively_filled(
+    requested: Decimal,
+    filled: Decimal,
+    *,
+    tolerance: Decimal,
+) -> bool:
     """Treat exchange rounding dust as a complete FAK fill.
 
-    The CLOB reports USDC amounts with finite precision.  A few micro-USDC of
-    difference is not an executable remainder and should not be presented as a
-    cancelled partial order.
+    The CLOB reports USDC and outcome-token amounts with finite precision.
+    A remainder strictly smaller than the relevant executable precision should
+    not be presented as a cancelled partial order.
     """
-    return filled >= requested - FAK_FILL_TOLERANCE
+    return filled >= requested or filled > requested - tolerance
 
 
 def simulate_market_order(
@@ -230,7 +240,15 @@ class OfficialClobTrader:
                 filled_size = making
                 filled_usdc = taking
             requested_fill = filled_usdc if request.side == "BUY" else filled_size
-            fully_filled = is_effectively_filled(request.amount, requested_fill)
+            fully_filled = is_effectively_filled(
+                request.amount,
+                requested_fill,
+                tolerance=(
+                    FAK_BUY_FILL_TOLERANCE
+                    if request.side == "BUY"
+                    else FAK_SELL_FILL_TOLERANCE
+                ),
+            )
             return TradeResult(
                 status="filled" if fully_filled else "partially_filled",
                 external_order_id=str(order_id) if order_id else None,

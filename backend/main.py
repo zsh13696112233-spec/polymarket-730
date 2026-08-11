@@ -234,6 +234,7 @@ async def copy_daily_realized_pnl(
     session: Any,
     *,
     reference_time: datetime | None = None,
+    tracked_wallet_id: int | None = None,
 ) -> list[CopyDailyRealizedPnlRead]:
     reference = reference_time or datetime.now(SHANGHAI)
     if reference.tzinfo is None:
@@ -242,13 +243,15 @@ async def copy_daily_realized_pnl(
     today = local_reference.date()
     local_end = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=SHANGHAI)
     utc_end = local_end.astimezone(UTC).replace(tzinfo=None)
+    ledger_query = select(CopyLedger).where(CopyLedger.timestamp < utc_end)
+    if tracked_wallet_id is not None:
+        ledger_query = ledger_query.join(
+            CopySubscription,
+            CopySubscription.id == CopyLedger.subscription_id,
+        ).where(CopySubscription.tracked_wallet_id == tracked_wallet_id)
     ledger = list(
         (
-            await session.scalars(
-                select(CopyLedger)
-                .where(CopyLedger.timestamp < utc_end)
-                .order_by(CopyLedger.timestamp.asc())
-            )
+            await session.scalars(ledger_query.order_by(CopyLedger.timestamp.asc()))
         ).all()
     )
     default_first_day = today - timedelta(days=29)
@@ -259,14 +262,27 @@ async def copy_daily_realized_pnl(
     )
     first_day = min(default_first_day, earliest_day)
     days = (today - first_day).days + 1
-    totals: dict[date, Decimal] = {
+    realized_totals: dict[date, Decimal] = {
+        first_day + timedelta(days=offset): Decimal("0") for offset in range(days)
+    }
+    bought_totals: dict[date, Decimal] = {
         first_day + timedelta(days=offset): Decimal("0") for offset in range(days)
     }
     for entry in ledger:
         local_day = entry.timestamp.replace(tzinfo=UTC).astimezone(SHANGHAI).date()
-        if local_day in totals:
-            totals[local_day] += entry.realized_pnl
-    return [CopyDailyRealizedPnlRead(date=day, realized_pnl=totals[day]) for day in sorted(totals)]
+        if local_day not in realized_totals:
+            continue
+        realized_totals[local_day] += entry.realized_pnl
+        if entry.type == "buy":
+            bought_totals[local_day] += entry.amount_usdc
+    return [
+        CopyDailyRealizedPnlRead(
+            date=day,
+            realized_pnl=realized_totals[day],
+            bought_usdc=bought_totals[day],
+        )
+        for day in sorted(realized_totals)
+    ]
 
 
 async def copy_position_marks(
@@ -1739,7 +1755,10 @@ def create_app(
         "/api/copy-trading/overview",
         response_model=CopyOverviewRead,
     )
-    async def get_copy_workspace_overview(request: Request) -> CopyOverviewRead:
+    async def get_copy_workspace_overview(
+        request: Request,
+        tracked_wallet_id: Annotated[int | None, Query(gt=0)] = None,
+    ) -> CopyOverviewRead:
         database: Database = request.app.state.database
         async with database.sessions() as session:
             subscriptions = list(
@@ -1851,7 +1870,11 @@ def create_app(
                     valuation_complete=global_portfolio.valuation_complete,
                     unpriced_positions=global_portfolio.unpriced_positions,
                 ),
-                daily_realized_pnl=await copy_daily_realized_pnl(session, reference_time=valued_at),
+                daily_realized_pnl=await copy_daily_realized_pnl(
+                    session,
+                    reference_time=valued_at,
+                    tracked_wallet_id=tracked_wallet_id,
+                ),
                 strategies=strategies,
                 recent_orders=await workspace_order_reads(session, recent_orders),
                 as_of=valued_at,

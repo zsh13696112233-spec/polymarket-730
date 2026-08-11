@@ -141,6 +141,7 @@ type Overview = {
   daily_realized_pnl: Array<{
     date: string;
     realized_pnl: Numeric;
+    bought_usdc?: Numeric;
   }>;
   strategies: Strategy[];
   recent_orders: CopyOrder[];
@@ -606,16 +607,65 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
   );
 }
 
-function DailyRealizedPnlChart({ items }: { items: Overview["daily_realized_pnl"] }) {
+function DailyRealizedPnlChart({
+  items,
+  strategies,
+}: {
+  items: Overview["daily_realized_pnl"];
+  strategies: Strategy[];
+}) {
   const [range, setRange] = useState<"7" | "15" | "30" | "all">("30");
-  const visibleItems = range === "all" ? items : items.slice(-Number(range));
+  const [walletId, setWalletId] = useState("all");
+  const [filteredItems, setFilteredItems] = useState<Overview["daily_realized_pnl"] | null>(null);
+  const [loadingWallet, setLoadingWallet] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletReloadKey, setWalletReloadKey] = useState(0);
+
+  useEffect(() => {
+    if (walletId === "all") {
+      setFilteredItems(null);
+      setLoadingWallet(false);
+      setWalletError(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingWallet(true);
+    setFilteredItems(null);
+    setWalletError(null);
+    void api<Overview>(`/api/copy-trading/overview?tracked_wallet_id=${encodeURIComponent(walletId)}`)
+      .then((result) => {
+        if (!cancelled) {
+          setFilteredItems(result.daily_realized_pnl ?? []);
+          setLoadingWallet(false);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setFilteredItems(null);
+          setWalletError(loadError instanceof Error ? loadError.message : "无法读取钱包盈亏");
+          setLoadingWallet(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [walletId, walletReloadKey]);
+
+  const selectedStrategy = strategies.find((strategy) => String(strategy.wallet.id) === walletId);
+  const waitingForWallet = walletId !== "all" && walletError === null && (loadingWallet || filteredItems === null);
+  const chartItems = walletId === "all" ? items : (filteredItems ?? []);
+  const visibleItems = waitingForWallet || walletError ? [] : range === "all" ? chartItems : chartItems.slice(-Number(range));
   const values = visibleItems.map((item) => number(item.realized_pnl));
   const maximum = Math.max(0, ...values.map((value) => Math.abs(value)));
   const total = values.reduce((sum, value) => sum + value, 0);
+  const invested = visibleItems.reduce((sum, item) => sum + number(item.bought_usdc ?? 0), 0);
   const profitableDays = values.filter((value) => value > 0).length;
   const totalTone = total > 0 ? "profit" : total < 0 ? "loss" : "flat";
   const rangeLabel = range === "all" ? "全部" : `${range} 日`;
   const labelStep = visibleItems.length <= 7 ? 1 : visibleItems.length <= 15 ? 2 : 5;
+  const description = selectedStrategy
+    ? `${selectedStrategy.wallet.label} 按北京时间汇总的已实现盈亏。`
+    : "全部策略按北京时间汇总的已实现盈亏。";
   const chartStyle = {
     "--pc-daily-pnl-columns": visibleItems.length,
     "--pc-daily-pnl-min-width": `${range === "all" ? Math.max(340, visibleItems.length * 18) : 340}px`,
@@ -627,9 +677,18 @@ function DailyRealizedPnlChart({ items }: { items: Overview["daily_realized_pnl"
         <div>
           <span className="pcEyebrow">REALIZED PNL · 30 DAYS</span>
           <h2 id="daily-pnl-title">每日盈亏</h2>
-          <p>全部策略按北京时间汇总的已实现盈亏。</p>
+          <p>{description}</p>
         </div>
         <div className="pcDailyPnlHeaderTools">
+          <label className="pcSelect">
+            <span>目标钱包</span>
+            <select value={walletId} onChange={(event) => setWalletId(event.target.value)} aria-label="目标钱包">
+              <option value="all">全部钱包</option>
+              {strategies.map((strategy) => (
+                <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>
+              ))}
+            </select>
+          </label>
           <div className="pcDailyPnlRanges" aria-label="每日盈亏日期范围">
             {(["7", "15", "30", "all"] as const).map((value) => (
               <button type="button" key={value} className={range === value ? "active" : ""} aria-pressed={range === value} onClick={() => setRange(value)}>
@@ -638,12 +697,41 @@ function DailyRealizedPnlChart({ items }: { items: Overview["daily_realized_pnl"
             ))}
           </div>
           <dl className="pcDailyPnlSummary">
-            <div><dt>{rangeLabel}累计</dt><dd className={totalTone}>{signedMoney(total)}</dd></div>
-            <div><dt>盈利天数</dt><dd>{profitableDays} 天</dd></div>
+            <div>
+              <dt>{rangeLabel}投入</dt>
+              <dd>{waitingForWallet ? "…" : walletError ? "—" : money(invested)}</dd>
+            </div>
+            <div>
+              <dt>{rangeLabel}累计</dt>
+              <dd className={waitingForWallet || walletError ? "flat" : totalTone}>
+                {waitingForWallet ? "…" : walletError ? "—" : signedMoney(total)}
+              </dd>
+            </div>
+            <div>
+              <dt>盈利天数</dt>
+              <dd>{waitingForWallet ? "…" : walletError ? "—" : `${profitableDays} 天`}</dd>
+            </div>
           </dl>
         </div>
       </header>
-      {maximum === 0 ? (
+      {walletError ? (
+        <div className="pcAlert danger" role="alert">
+          <span>!</span>
+          <p>
+            <strong>钱包盈亏读取失败</strong>
+            {walletError}
+          </p>
+          <button
+            className="pcButton ghost"
+            type="button"
+            onClick={() => setWalletReloadKey((value) => value + 1)}
+          >
+            重试
+          </button>
+        </div>
+      ) : waitingForWallet ? (
+        <div className="pcDailyPnlEmpty" role="status">正在加载钱包盈亏…</div>
+      ) : maximum === 0 ? (
         <div className="pcDailyPnlEmpty" role="status">近 30 日暂无已实现盈亏</div>
       ) : (
         <div className="pcDailyPnlScroll">
@@ -721,7 +809,7 @@ function OverviewPage({
         {metrics.map((metric) => <article className="pcMetricCard" key={metric.label}><span>{metric.label}</span><strong className={metric.tone}><PixelAmount value={metric.value} /></strong><small>{metric.meta}</small></article>)}
       </section>
 
-      <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} />
+      <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} strategies={overview.strategies} />
 
       <section className="pcPanel">
         <header className="pcPanelHeader">

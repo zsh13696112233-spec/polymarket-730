@@ -77,7 +77,8 @@ const filledOrder = {
 const dailyRealizedPnl = Array.from({ length: 31 }, (_, index) => {
   const date = new Date(Date.UTC(2026, 6, 7 + index)).toISOString().slice(0, 10);
   const realizedPnl = index === 0 ? 5 : index === 29 ? 3 : index === 30 ? -1 : 0;
-  return { date, realized_pnl: realizedPnl };
+  const boughtUsdc = index === 0 ? 20 : index === 29 ? 10 : index === 30 ? 5 : 0;
+  return { date, realized_pnl: realizedPnl, bought_usdc: boughtUsdc };
 });
 
 const overview = {
@@ -170,7 +171,7 @@ describe("PolyCopy workspace", () => {
   it("展示全局资金、策略状态和最近记录", async () => {
     render(<PolyCopyWorkspace view="overview" />);
     expect(await screen.findByText("执行钱包余额")).toBeInTheDocument();
-    expect(screen.getByText("策略一")).toBeInTheDocument();
+    expect(screen.getAllByText("策略一").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Will Team A win?").length).toBeGreaterThan(0);
     expect(screen.getAllByText("+$7.50").length).toBeGreaterThan(0);
     expect(screen.getAllByText("源钱包交易金额").length).toBeGreaterThan(0);
@@ -209,14 +210,133 @@ describe("PolyCopy workspace", () => {
     render(<PolyCopyWorkspace view="overview" />);
     const chart = await screen.findByRole("region", { name: "每日盈亏" });
     expect(within(chart).getByText("+$2.00")).toBeInTheDocument();
+    expect(within(chart).getByText("$15.00")).toBeInTheDocument();
     expect(within(chart).getByText("1 天")).toBeInTheDocument();
     expect(within(chart).getByRole("img", { name: /2026年8月5日.*\+\$3\.00/ })).toBeInTheDocument();
     expect(within(chart).getByRole("img", { name: /2026年8月6日.*-\$1\.00/ })).toBeInTheDocument();
     expect(within(chart).queryByRole("img", { name: /2026年7月7日/ })).not.toBeInTheDocument();
+    expect(within(chart).getByRole("combobox", { name: "目标钱包" })).toHaveValue("all");
 
     await user.click(within(chart).getByRole("button", { name: "全部" }));
     expect(within(chart).getByText("+$7.00")).toBeInTheDocument();
+    expect(within(chart).getByText("$35.00")).toBeInTheDocument();
     expect(within(chart).getByRole("img", { name: /2026年7月7日.*\+\$5\.00/ })).toBeInTheDocument();
+  });
+
+  it("每日盈亏可按目标钱包单独查看", async () => {
+    const user = userEvent.setup();
+    const walletDailyPnl = dailyRealizedPnl.map((item, index) => ({
+      ...item,
+      realized_pnl: index === 29 ? 4 : index === 30 ? -2 : 0,
+      bought_usdc: index === 29 ? 8 : index === 30 ? 2 : 0,
+    }));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(url);
+      if (init?.body) requestBodies.push(JSON.parse(String(init.body)));
+      if (url.includes("/api/copy-trading/overview")) {
+        if (url.includes("tracked_wallet_id=1")) {
+          return json({ ...overview, daily_realized_pnl: walletDailyPnl });
+        }
+        return json(overview);
+      }
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+
+    render(<PolyCopyWorkspace view="overview" />);
+    const chart = await screen.findByRole("region", { name: "每日盈亏" });
+    const walletSelect = within(chart).getByRole("combobox", { name: "目标钱包" });
+    expect(within(chart).getByText("全部策略按北京时间汇总的已实现盈亏。")).toBeInTheDocument();
+
+    await user.selectOptions(walletSelect, "1");
+    await waitFor(() => expect(requests.some((url) => url.includes("tracked_wallet_id=1"))).toBe(true));
+    expect(await within(chart).findByText("策略一 按北京时间汇总的已实现盈亏。")).toBeInTheDocument();
+    expect(within(chart).getByText("+$2.00")).toBeInTheDocument();
+    expect(within(chart).getByText("$10.00")).toBeInTheDocument();
+    expect(within(chart).getByRole("img", { name: /2026年8月5日.*\+\$4\.00/ })).toBeInTheDocument();
+    expect(within(chart).getByRole("img", { name: /2026年8月6日.*-\$2\.00/ })).toBeInTheDocument();
+  });
+
+  it("切换目标钱包时汇总与图表同步进入加载态", async () => {
+    const user = userEvent.setup();
+    let resolveWallet!: (value: Response) => void;
+    const walletOverview = new Promise<Response>((resolve) => {
+      resolveWallet = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(url);
+      if (init?.body) requestBodies.push(JSON.parse(String(init.body)));
+      if (url.includes("/api/copy-trading/overview")) {
+        if (url.includes("tracked_wallet_id=1")) {
+          return walletOverview;
+        }
+        return json(overview);
+      }
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+
+    render(<PolyCopyWorkspace view="overview" />);
+    const chart = await screen.findByRole("region", { name: "每日盈亏" });
+    expect(within(chart).getByText("+$2.00")).toBeInTheDocument();
+
+    await user.selectOptions(within(chart).getByRole("combobox", { name: "目标钱包" }), "1");
+    expect(await within(chart).findByText("正在加载钱包盈亏…")).toBeInTheDocument();
+    expect(within(chart).getByText("策略一 按北京时间汇总的已实现盈亏。")).toBeInTheDocument();
+    expect(within(chart).getAllByText("…").length).toBeGreaterThanOrEqual(2);
+    expect(within(chart).queryByText("+$2.00")).not.toBeInTheDocument();
+
+    resolveWallet(json({
+      ...overview,
+      daily_realized_pnl: dailyRealizedPnl.map((item, index) => ({
+        ...item,
+        realized_pnl: index === 29 ? 4 : index === 30 ? -2 : 0,
+      })),
+    }));
+    expect(await within(chart).findByText("+$2.00")).toBeInTheDocument();
+  });
+
+  it("钱包盈亏读取失败时展示错误与重试", async () => {
+    const user = userEvent.setup();
+    let failWallet = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(url);
+      if (init?.body) requestBodies.push(JSON.parse(String(init.body)));
+      if (url.includes("/api/copy-trading/overview")) {
+        if (url.includes("tracked_wallet_id=1")) {
+          if (failWallet) {
+            return json({ detail: "钱包盈亏服务暂时不可用" }, 503);
+          }
+          return json({
+            ...overview,
+            daily_realized_pnl: dailyRealizedPnl.map((item, index) => ({
+              ...item,
+              realized_pnl: index === 29 ? 4 : index === 30 ? -2 : 0,
+            })),
+          });
+        }
+        return json(overview);
+      }
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+
+    render(<PolyCopyWorkspace view="overview" />);
+    const chart = await screen.findByRole("region", { name: "每日盈亏" });
+    await user.selectOptions(within(chart).getByRole("combobox", { name: "目标钱包" }), "1");
+
+    expect(await within(chart).findByText("钱包盈亏读取失败")).toBeInTheDocument();
+    expect(within(chart).getByText("钱包盈亏服务暂时不可用")).toBeInTheDocument();
+    expect(within(chart).queryByText("近 30 日暂无已实现盈亏")).not.toBeInTheDocument();
+    expect(within(chart).getAllByText("—").length).toBeGreaterThanOrEqual(2);
+
+    failWallet = false;
+    await user.click(within(chart).getByRole("button", { name: "重试" }));
+    expect(await within(chart).findByRole("img", { name: /2026年8月5日.*\+\$4\.00/ })).toBeInTheDocument();
+    expect(within(chart).getByText("+$2.00")).toBeInTheDocument();
   });
 
   it("每日盈亏全部为零时展示空状态", async () => {

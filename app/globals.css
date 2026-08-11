@@ -5917,10 +5917,20 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   overflow: hidden;
 }
 
+.pcDailyPnlPanel > .pcAlert {
+  margin: 0 16px 16px;
+}
+
 .pcDailyPnlHeaderTools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 28px;
+  justify-content: flex-end;
+  gap: 16px 28px;
+}
+
+.pcDailyPnlHeaderTools .pcSelect {
+  min-width: 0;
 }
 
 .pcDailyPnlRanges {

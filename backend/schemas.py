@@ -270,6 +270,7 @@ class CopyOverviewTotalsRead(APIModel):
 class CopyDailyRealizedPnlRead(APIModel):
     date: date
     realized_pnl: DecimalNumber = Decimal("0")
+    bought_usdc: DecimalNumber = Decimal("0")
 
 
 class CopyWalletSummaryRead(APIModel):

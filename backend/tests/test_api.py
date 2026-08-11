@@ -59,33 +59,43 @@ async def insert_daily_pnl_fixture(database, subscription_ids: list[int], local_
 
     async with database.sessions() as session:
         rows = [
-            (subscription_ids[0], "sell", Decimal("2"), local_day, 0),
-            (subscription_ids[0], "redeem", Decimal("3"), local_day, 23),
-            (subscription_ids[1], "reconcile_redeem", Decimal("-1"), local_day, 12),
-            (subscription_ids[1], "buy", Decimal("0"), local_day, 13),
+            (subscription_ids[0], "sell", Decimal("0"), Decimal("2"), local_day, 0),
+            (subscription_ids[0], "redeem", Decimal("0"), Decimal("3"), local_day, 23),
+            (subscription_ids[1], "reconcile_redeem", Decimal("0"), Decimal("-1"), local_day, 12),
+            (subscription_ids[1], "buy", Decimal("12"), Decimal("0"), local_day, 13),
             (
                 subscription_ids[1],
                 "sell",
+                Decimal("0"),
                 Decimal("-2"),
                 local_day - timedelta(days=2),
                 12,
             ),
             (
                 subscription_ids[0],
+                "buy",
+                Decimal("8"),
+                Decimal("0"),
+                local_day - timedelta(days=2),
+                10,
+            ),
+            (
+                subscription_ids[0],
                 "redeem",
+                Decimal("0"),
                 Decimal("1"),
                 local_day - timedelta(days=40),
                 12,
             ),
         ]
-        for subscription_id, entry_type, pnl, day, hour in rows:
+        for subscription_id, entry_type, amount, pnl, day, hour in rows:
             session.add(
                 CopyLedger(
                     subscription_id=subscription_id,
                     copy_position_id=None,
                     order_id=None,
                     type=entry_type,
-                    amount_usdc=Decimal("0"),
+                    amount_usdc=amount,
                     realized_pnl=pnl,
                     detail="每日盈亏测试",
                     timestamp=utc_timestamp(day, hour),
@@ -2241,10 +2251,93 @@ def test_copy_workspace_returns_complete_shanghai_daily_realized_pnl_points(
     assert points[0]["date"] == (local_day - timedelta(days=40)).isoformat()
     assert points[-1]["date"] == today.isoformat()
     point_by_date = {point["date"]: point["realized_pnl"] for point in points}
+    bought_by_date = {point["date"]: point["bought_usdc"] for point in points}
     assert point_by_date[local_day.isoformat()] == pytest.approx(4)
     assert point_by_date[(local_day - timedelta(days=1)).isoformat()] == 0
     assert point_by_date[(local_day - timedelta(days=2)).isoformat()] == pytest.approx(-2)
     assert point_by_date[(local_day - timedelta(days=40)).isoformat()] == pytest.approx(1)
+    assert bought_by_date[local_day.isoformat()] == pytest.approx(12)
+    assert bought_by_date[(local_day - timedelta(days=2)).isoformat()] == pytest.approx(8)
+    assert bought_by_date[(local_day - timedelta(days=40)).isoformat()] == 0
+
+
+def test_copy_workspace_filters_daily_realized_pnl_by_tracked_wallet(
+    app_client_factory,
+):
+    client, _ = app_client_factory([[], []])
+    first = add_wallet(client)
+    second = client.post(
+        "/api/wallets",
+        json={"address": OTHER_ADDRESS, "label": "第二策略"},
+    ).json()
+    subscriptions = []
+    for wallet in (first, second):
+        response = client.post(
+            "/api/copy-trading/subscriptions",
+            json={
+                "tracked_wallet_id": wallet["id"],
+                "copy_ratio_percent": 10,
+                "position_cap_usdc": 20,
+                "total_exposure_cap_usdc": 80,
+                "market_slippage_cents": 5,
+            },
+        )
+        assert response.status_code == 201, response.text
+        subscriptions.append(response.json())
+
+    shanghai = ZoneInfo("Asia/Shanghai")
+    today = datetime.now(shanghai).date()
+    local_day = today - timedelta(days=1)
+    assert client.portal is not None
+    client.portal.call(
+        insert_daily_pnl_fixture,
+        client.app.state.database,
+        [subscription["id"] for subscription in subscriptions],
+        local_day,
+    )
+
+    first_response = client.get(
+        "/api/copy-trading/overview",
+        params={"tracked_wallet_id": first["id"]},
+    )
+    assert first_response.status_code == 200, first_response.text
+    first_points = {
+        point["date"]: point["realized_pnl"]
+        for point in first_response.json()["daily_realized_pnl"]
+    }
+    first_bought = {
+        point["date"]: point["bought_usdc"]
+        for point in first_response.json()["daily_realized_pnl"]
+    }
+    assert first_points[local_day.isoformat()] == pytest.approx(5)
+    assert first_points[(local_day - timedelta(days=2)).isoformat()] == 0
+    assert first_points[(local_day - timedelta(days=40)).isoformat()] == pytest.approx(1)
+    assert first_bought[local_day.isoformat()] == 0
+    assert first_bought[(local_day - timedelta(days=2)).isoformat()] == pytest.approx(8)
+
+    second_response = client.get(
+        "/api/copy-trading/overview",
+        params={"tracked_wallet_id": second["id"]},
+    )
+    assert second_response.status_code == 200, second_response.text
+    second_points = {
+        point["date"]: point["realized_pnl"]
+        for point in second_response.json()["daily_realized_pnl"]
+    }
+    second_bought = {
+        point["date"]: point["bought_usdc"]
+        for point in second_response.json()["daily_realized_pnl"]
+    }
+    assert second_points[local_day.isoformat()] == pytest.approx(-1)
+    assert second_points[(local_day - timedelta(days=2)).isoformat()] == pytest.approx(-2)
+    assert (local_day - timedelta(days=40)).isoformat() not in second_points
+    assert second_bought[local_day.isoformat()] == pytest.approx(12)
+    assert second_bought[(local_day - timedelta(days=2)).isoformat()] == 0
+    assert len(second_response.json()["daily_realized_pnl"]) == 30
+
+    # Filtering daily pnl must not shrink strategy list or totals payload.
+    assert len(first_response.json()["strategies"]) == 2
+    assert len(second_response.json()["strategies"]) == 2
 
 
 def test_copy_workspace_serializes_positions_with_wallet_metadata(app_client_factory):

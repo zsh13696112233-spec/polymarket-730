@@ -4320,6 +4320,16 @@ summary:focus-visible {
   gap: 11px;
 }
 
+a.pcStrategyIdentity {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+a.pcStrategyIdentity:hover strong {
+  color: #ffe35d;
+}
+
 .pcWalletAvatar {
   display: grid;
   width: 34px;

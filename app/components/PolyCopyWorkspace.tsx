@@ -210,6 +210,10 @@ function shortAddress(value: string | null | undefined) {
   return value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value;
 }
 
+function profileUrl(proxyWallet: string) {
+  return `https://polymarket.com/profile/${proxyWallet}`;
+}
+
 const pixelGlyphs: Record<string, string[]> = {
   "0": ["0110", "1001", "1001", "1001", "1001", "1001", "0110"],
   "1": ["0010", "0110", "0010", "0010", "0010", "0010", "0111"],
@@ -734,7 +738,7 @@ function OverviewPage({
               const state = subscription ? strategyState[subscription.state] || { label: subscription.state, tone: "neutral" } : { label: "未配置", tone: "neutral" };
               return (
                 <article className="pcStrategyRow" key={wallet.id}>
-                  <div className="pcStrategyIdentity"><span className="pcWalletAvatar">{(wallet.label || "0x").slice(0, 2).toUpperCase()}</span><span><strong>{wallet.label || shortAddress(wallet.proxy_wallet)}</strong><small>{shortAddress(wallet.proxy_wallet)}{strategy?.stale ? " · 数据延迟" : ""}</small></span></div>
+                  <a className="pcStrategyIdentity" href={profileUrl(wallet.proxy_wallet)} target="_blank" rel="noreferrer" aria-label={`查看 ${wallet.label || shortAddress(wallet.proxy_wallet)} 的 Polymarket 主页`}><span className="pcWalletAvatar">{(wallet.label || "0x").slice(0, 2).toUpperCase()}</span><span><strong>{wallet.label || shortAddress(wallet.proxy_wallet)}</strong><small>{shortAddress(wallet.proxy_wallet)}{strategy?.stale ? " · 数据延迟" : ""}</small></span></a>
                   <div className="pcStrategyStatus"><Badge label={state.label} tone={state.tone} />{subscription && <small>{number(subscription.copy_ratio_percent)}% · 单市场 {money(subscription.position_cap_usdc)}</small>}</div>
                   <dl className="pcStrategyMetrics"><div><dt>当前敞口</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日买入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>钱包总投入</dt><dd>{money(strategy?.lifetime_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div></dl>
                   <div className="pcStrategyActions">

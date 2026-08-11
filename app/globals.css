@@ -7413,7 +7413,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 
 @media (min-width: 961px) and (max-width: 1280px) {
   .pcStrategyRow {
-    grid-template-columns: minmax(220px, 1fr) minmax(112px, 132px) 172px !important;
+    grid-template-columns: minmax(220px, 460px) minmax(112px, 132px) minmax(0, 1fr) !important;
     column-gap: 16px !important;
     row-gap: 12px !important;
   }

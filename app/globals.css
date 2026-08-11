@@ -7306,3 +7306,8 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   color: #b998ff;
   filter: drop-shadow(0 0 8px rgba(185, 152, 255, 0.2));
 }
+
+.pcDailyPnlSummary dd.invested {
+  color: #66b7ff;
+  filter: drop-shadow(0 0 8px rgba(102, 183, 255, 0.2));
+}

@@ -48,7 +48,11 @@ export function PolyCopyShell({
       />
       <aside className={`pcSidebar ${menuOpen ? "open" : ""}`}>
         <Link className="pcBrand" href="/" aria-label="PolyCopy 首页">
-          <span className="pcBrandMark">P</span>
+          <img
+            className="pcBrandMark"
+            src="/icon.svg"
+            alt="PolyCopy 标志"
+          />
           <span>
             <strong>PolyCopy</strong>
             <small>POLYMARKET COPY TRADING</small>

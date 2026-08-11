@@ -3922,17 +3922,10 @@ summary:focus-visible {
 }
 
 .pcBrandMark {
-  display: grid;
   width: 36px;
   height: 36px;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 10px;
-  background: linear-gradient(145deg, #6d92ff, #315fee);
-  color: #fff;
-  font-size: 17px;
-  font-weight: 850;
-  box-shadow: 0 8px 24px rgba(49, 95, 238, 0.24);
+  filter: drop-shadow(0 8px 16px rgba(49, 95, 238, 0.2));
 }
 
 .pcBrand > span:last-child,

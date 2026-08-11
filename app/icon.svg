@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>PolyCopy</title>
+  <defs>
+    <linearGradient id="polycopy-gradient" x1="16" y1="12" x2="48" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6e91ff" />
+      <stop offset="1" stop-color="#31d6a1" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="#0a0f1a" />
+  <path d="M20 50V14h17a13 13 0 0 1 0 26H20" fill="none" stroke="url(#polycopy-gradient)" stroke-linecap="round" stroke-linejoin="round" stroke-width="8" />
+</svg>

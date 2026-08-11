@@ -42,16 +42,21 @@ test("server-renders the PolyCopy workspace and product metadata", async () => {
   assert.match(html, /记录/);
   assert.match(html, /property="og:image"/i);
   assert.match(html, /http:\/\/localhost(?::3000)?\/og\.png/i);
+  assert.match(
+    html,
+    /<link(?=[^>]*rel="icon")(?=[^>]*href="(?:https?:\/\/[^\"]+)?\/icon\.svg(?:\?[^\"]*)?")[^>]*>/i,
+  );
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
 test("keeps PolyCopy workspace behavior in the client", async () => {
-  const [page, workspace, legacy, layout, css] = await Promise.all([
+  const [page, workspace, legacy, layout, css, icon] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/PolyCopyWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/analysis/legacy.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/icon.svg", import.meta.url), "utf8"),
   ]);
 
   await assert.rejects(
@@ -74,4 +79,6 @@ test("keeps PolyCopy workspace behavior in the client", async () => {
   assert.doesNotMatch(layout, /next\/font|Starter Project|codex-preview/);
   assert.match(css, /@media \(max-width: 760px\)/);
   assert.match(css, /\.positionCards/);
+  assert.match(icon, /viewBox="0 0 64 64"/);
+  assert.match(icon, /polycopy-gradient/);
 });

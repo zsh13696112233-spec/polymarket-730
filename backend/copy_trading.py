@@ -769,9 +769,10 @@ class CopyTradingEngine:
         worst_price = market_worst_price(
             book.best_ask, book.tick_size, subscription.market_slippage_cents, side="BUY"
         )
+        minimum_order_usdc = book.min_order_size * worst_price
         usage = await self._risk_usage(subscription_id, account)
         allowed, reason = allowed_buy_usdc(
-            requested,
+            max(requested, minimum_order_usdc),
             subscription=subscription,
             usage=usage,
         )
@@ -779,7 +780,7 @@ class CopyTradingEngine:
             await self._record_skip(subscription_id, event, reason or "风险额度不足")
             return
         if allowed / worst_price < book.min_order_size:
-            await self._record_skip(subscription_id, event, "按执行比例计算后低于市场最小下单份数")
+            await self._record_skip(subscription_id, event, "剩余风控额度低于市场最小下单金额")
             return
 
         now = utcnow()

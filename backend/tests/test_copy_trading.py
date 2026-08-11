@@ -406,19 +406,19 @@ def test_large_increases_stop_at_remaining_position_cap(app_client_factory):
     assert any(order["reason"] == "单仓最大投入已满" for order in data["orders"])
 
 
-def test_small_initial_open_is_skipped_below_market_minimum(app_client_factory):
+def test_small_initial_open_is_topped_up_to_market_minimum(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     add_event(client, subscription, "opened", after="5")
     tick(client)
 
     data = dashboard(client, subscription)
-    assert data["positions"] == []
+    assert len(data["positions"]) == 1
     buys = [order for order in data["orders"] if order["side"] == "BUY"]
     assert len(buys) == 1
-    assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("0")
+    assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("2.75")
+    assert Decimal(str(buys[0]["filled_size"])) == Decimal("5")
     assert Decimal(str(buys[0]["proportional_target_usdc"])) == Decimal("0.25")
-    assert buys[0]["reason"] == "按执行比例计算后低于市场最小下单份数"
 
 
 def test_small_initial_open_still_respects_risk_caps(app_client_factory):
@@ -439,7 +439,7 @@ def test_small_initial_open_still_respects_risk_caps(app_client_factory):
     data = dashboard(client, subscription)
     assert data["positions"] == []
     assert any(
-        order["reason"] == "按执行比例计算后低于市场最小下单份数"
+        order["reason"] == "剩余风控额度低于市场最小下单金额"
         and Decimal(str(order["leader_purchase_usdc"])) == Decimal("2.5")
         and Decimal(str(order["proportional_target_usdc"])) == Decimal("0.25")
         for order in data["orders"]
@@ -466,9 +466,8 @@ def test_small_large_increase_is_not_topped_up(app_client_factory):
     buys = [order for order in data["orders"] if order["side"] == "BUY"]
     assert len(buys) == 2
     assert Decimal(str(buys[0]["filled_usdc"])) == Decimal("0")
-    assert buys[0]["reason"] == "首次建仓未成功，不追随后续加仓"
-    assert Decimal(str(buys[1]["filled_usdc"])) == Decimal("0")
-    assert buys[1]["reason"] == "按执行比例计算后低于市场最小下单份数"
+    assert buys[0]["reason"] == "按执行比例计算后低于市场最小下单份数"
+    assert Decimal(str(buys[1]["filled_usdc"])) == Decimal("2.75")
 
 
 def test_mixed_buy_sell_event_uses_net_position_cost_increase(app_client_factory):

@@ -16,12 +16,9 @@ from backend.keychain import KeychainReference, MacOSKeychain
 from backend.polymarket import OrderBookSnapshot
 
 ZERO = Decimal("0")
-# The exchange rounds quoted USDC and outcome-token quantities independently.
-# A FAK buy can therefore leave just under one cent, while a sell can leave
-# just under one 0.01-share lot.  Neither remainder is actionable in the
-# product and should not be presented as a cancelled partial order.
-FAK_BUY_FILL_TOLERANCE = Decimal("0.01")
-FAK_SELL_FILL_TOLERANCE = Decimal("0.01")
+# Small FAK remainders are not retried.  Treat up to 50 cents of residual
+# value as completed in the product while retaining the actual balances.
+FAK_IGNORABLE_REMAINDER_USDC = Decimal("0.50")
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
@@ -79,10 +76,10 @@ def is_effectively_filled(
     """Treat exchange rounding dust as a complete FAK fill.
 
     The CLOB reports USDC and outcome-token amounts with finite precision.
-    A remainder strictly smaller than the relevant executable precision should
-    not be presented as a cancelled partial order.
+    A remainder no greater than the configured ignored value should not be
+    presented as a cancelled partial order.
     """
-    return filled >= requested or filled > requested - tolerance
+    return filled >= requested - tolerance
 
 
 def simulate_market_order(
@@ -240,14 +237,15 @@ class OfficialClobTrader:
                 filled_size = making
                 filled_usdc = taking
             requested_fill = filled_usdc if request.side == "BUY" else filled_size
+            tolerance = (
+                FAK_IGNORABLE_REMAINDER_USDC
+                if request.side == "BUY"
+                else FAK_IGNORABLE_REMAINDER_USDC / request.worst_price
+            )
             fully_filled = is_effectively_filled(
                 request.amount,
                 requested_fill,
-                tolerance=(
-                    FAK_BUY_FILL_TOLERANCE
-                    if request.side == "BUY"
-                    else FAK_SELL_FILL_TOLERANCE
-                ),
+                tolerance=tolerance,
             )
             return TradeResult(
                 status="filled" if fully_filled else "partially_filled",

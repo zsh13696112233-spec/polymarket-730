@@ -25,8 +25,11 @@ def upgrade() -> None:
             SET status = 'filled', reason = NULL
             WHERE status = 'partially_filled'
               AND (
-                (side = 'BUY' AND filled_usdc > requested_usdc - 0.01)
-                OR (side = 'SELL' AND filled_size > requested_size - 0.01)
+                (side = 'BUY' AND filled_usdc >= requested_usdc - 0.50)
+                OR (
+                  side = 'SELL'
+                  AND filled_size >= requested_size - (0.50 / limit_price)
+                )
               )
             """
         )

@@ -35,8 +35,7 @@ from backend.polymarket import (
 )
 from backend.schemas import RehearsalExecuteRequest, RehearsalPreviewRequest
 from backend.trading import (
-    FAK_BUY_FILL_TOLERANCE,
-    FAK_SELL_FILL_TOLERANCE,
+    FAK_IGNORABLE_REMAINDER_USDC,
     V2_EXCHANGE_ADDRESS,
     V2_NEG_RISK_EXCHANGE_ADDRESS,
     MarketTradeRequest,
@@ -1301,29 +1300,29 @@ def test_market_fak_cancels_unfilled_remainder():
     assert "取消" in (result.reason or "")
 
 
-def test_fak_rounding_dust_is_not_reported_as_partial_fill():
+def test_fak_ignorable_remainder_is_not_reported_as_partial_fill():
     assert is_effectively_filled(
         Decimal("5.20034620017986"),
-        Decimal("5.199998"),
-        tolerance=FAK_BUY_FILL_TOLERANCE,
+        Decimal("4.70034620017986"),
+        tolerance=FAK_IGNORABLE_REMAINDER_USDC,
     )
     assert is_effectively_filled(
         Decimal("29.519996"),
         Decimal("29.51"),
-        tolerance=FAK_SELL_FILL_TOLERANCE,
+        tolerance=FAK_IGNORABLE_REMAINDER_USDC / Decimal("0.899"),
     )
 
 
 def test_fak_executable_remainder_is_reported_as_partial_fill():
     assert not is_effectively_filled(
         Decimal("10"),
-        Decimal("9.99"),
-        tolerance=FAK_BUY_FILL_TOLERANCE,
+        Decimal("9.499999"),
+        tolerance=FAK_IGNORABLE_REMAINDER_USDC,
     )
     assert not is_effectively_filled(
         Decimal("10"),
-        Decimal("9.99"),
-        tolerance=FAK_SELL_FILL_TOLERANCE,
+        Decimal("9.4"),
+        tolerance=FAK_IGNORABLE_REMAINDER_USDC / Decimal("0.9"),
     )
 
 
@@ -1696,7 +1695,7 @@ def test_fak_rounding_migration_normalizes_only_non_executable_remainders(tmp_pa
         connection.execute(
             f"""INSERT INTO copy_orders ({order_columns})
             VALUES ('real-partial','copy','partial-asset',?,'SELL',10,9,
-                    .9,9.98,8.982,0,'partially_filled','FAK 部分成交，剩余已取消',?,?)""",
+                    .9,9.4,8.46,0,'partially_filled','FAK 部分成交，剩余已取消',?,?)""",
             (CONDITION_ID, now, now),
         )
         connection.commit()

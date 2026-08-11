@@ -705,13 +705,13 @@ function DailyRealizedPnlChart({
             <div>
               <dt>{rangeLabel}投入</dt>
               <dd className={waitingForWallet || walletError ? "flat" : "invested"}>
-                {waitingForWallet ? "…" : walletError ? "—" : <PixelAmount value={money(invested)} />}
+                {waitingForWallet ? "…" : walletError ? "—" : money(invested)}
               </dd>
             </div>
             <div>
               <dt>{rangeLabel}累计</dt>
               <dd className={waitingForWallet || walletError ? "flat" : totalTone}>
-                {waitingForWallet ? "…" : walletError ? "—" : <PixelAmount value={signedMoney(total)} />}
+                {waitingForWallet ? "…" : walletError ? "—" : signedMoney(total)}
               </dd>
             </div>
             <div>
@@ -719,7 +719,7 @@ function DailyRealizedPnlChart({
               <dd className={waitingForWallet || walletError ? "flat" : "days"}>
                 {waitingForWallet ? "…" : walletError ? "—" : (
                   <>
-                    <PixelAmount value={String(profitableDays)} />
+                    {profitableDays}
                     <span className="pcDailyPnlUnit">天</span>
                   </>
                 )}

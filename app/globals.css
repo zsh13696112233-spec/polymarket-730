@@ -6025,16 +6025,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   filter: drop-shadow(0 0 8px rgba(242, 195, 25, 0.18));
 }
 
-.pcDailyPnlSummary dd .pcPixelAmount {
-  width: auto;
-  justify-content: flex-end;
-}
-
-.pcDailyPnlSummary dd .pcPixelAmountGlyphs {
-  height: 0.88em;
-  filter: drop-shadow(0 0 0.14em currentColor);
-}
-
 .pcDailyPnlSummary dd.invested,
 .pcDailyPnlSummary dd.days {
   color: #ffe052;

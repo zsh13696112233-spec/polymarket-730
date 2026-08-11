@@ -7300,3 +7300,9 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcRoot textarea::placeholder {
   font-size: var(--pc-supporting-font-size);
 }
+
+/* Treat profitable-day count as a performance metric, distinct from monetary PnL. */
+.pcDailyPnlSummary dd.days {
+  color: #b998ff;
+  filter: drop-shadow(0 0 8px rgba(185, 152, 255, 0.2));
+}

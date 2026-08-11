@@ -637,17 +637,25 @@ function DailyRealizedPnlChart({
   const [walletError, setWalletError] = useState<string | null>(null);
   const [walletReloadKey, setWalletReloadKey] = useState(0);
 
+  function selectWallet(nextWalletId: string) {
+    setWalletId(nextWalletId);
+    setFilteredItems(null);
+    setWalletError(null);
+    setLoadingWallet(nextWalletId !== "all");
+  }
+
+  function reloadWalletPnl() {
+    setFilteredItems(null);
+    setWalletError(null);
+    setLoadingWallet(true);
+    setWalletReloadKey((value) => value + 1);
+  }
+
   useEffect(() => {
     if (walletId === "all") {
-      setFilteredItems(null);
-      setLoadingWallet(false);
-      setWalletError(null);
       return;
     }
     let cancelled = false;
-    setLoadingWallet(true);
-    setFilteredItems(null);
-    setWalletError(null);
     void api<Overview>(`/api/copy-trading/overview?tracked_wallet_id=${encodeURIComponent(walletId)}`)
       .then((result) => {
         if (!cancelled) {
@@ -699,7 +707,7 @@ function DailyRealizedPnlChart({
           <div className="pcDailyPnlFilters">
             <label className="pcSelect pcDailyPnlFilterField">
               <span>目标钱包</span>
-              <select value={walletId} onChange={(event) => setWalletId(event.target.value)} aria-label="目标钱包">
+              <select value={walletId} onChange={(event) => selectWallet(event.target.value)} aria-label="目标钱包">
                 <option value="all">全部钱包</option>
                 {strategies.map((strategy) => (
                   <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>
@@ -754,7 +762,7 @@ function DailyRealizedPnlChart({
           <button
             className="pcButton ghost"
             type="button"
-            onClick={() => setWalletReloadKey((value) => value + 1)}
+            onClick={reloadWalletPnl}
           >
             重试
           </button>
@@ -829,7 +837,7 @@ function OverviewPage({
   const metrics = [
     { label: "执行钱包余额", value: money(overview.totals.collateral_balance), meta: overview.account?.last_balance_at ? `更新于 ${dateTime(overview.account.last_balance_at)}` : "等待账户验证", tone: "" },
     { label: "可用额度", value: money(overview.totals.available_capacity_usdc), meta: `今日已买入 ${money(overview.totals.daily_bought_usdc)}`, tone: "" },
-    { label: "当前敞口", value: money(overview.totals.open_exposure_usdc), meta: `${overview.strategies.filter((item) => item.subscription.enabled).length} 个策略运行中`, tone: "" },
+    { label: "持仓成本", value: money(overview.totals.open_exposure_usdc), meta: `${overview.strategies.filter((item) => item.subscription.enabled).length} 个策略运行中`, tone: "" },
     { label: "总盈亏", value: total === null ? "未完整定价" : signedMoney(total), meta: overview.totals.valuation_complete ? "包含已实现与浮动盈亏" : `${overview.totals.unpriced_positions} 个仓位缺少报价`, tone: total === null ? "" : number(total) > 0 ? "profit" : number(total) < 0 ? "loss" : "" },
   ];
   return (
@@ -857,8 +865,8 @@ function OverviewPage({
               return (
                 <article className="pcStrategyRow" key={wallet.id}>
                   <a className="pcStrategyIdentity" href={profileUrl(wallet.proxy_wallet)} target="_blank" rel="noreferrer" aria-label={`查看 ${wallet.label || shortAddress(wallet.proxy_wallet)} 的 Polymarket 主页`}><span className="pcWalletAvatar">{(wallet.label || "0x").slice(0, 2).toUpperCase()}</span><span><strong>{wallet.label || shortAddress(wallet.proxy_wallet)}</strong><small>{shortAddress(wallet.proxy_wallet)}{strategy?.stale ? " · 数据延迟" : ""}</small></span></a>
-                  <div className="pcStrategyStatus"><Badge label={state.label} tone={state.tone} />{subscription && <small>{number(subscription.copy_ratio_percent)}% · 单市场 {money(subscription.position_cap_usdc)}</small>}</div>
-                  <dl className="pcStrategyMetrics"><div><dt>当前敞口</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日买入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>钱包总投入</dt><dd>{money(strategy?.lifetime_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div></dl>
+                  <div className="pcStrategyStatus"><Badge label={state.label} tone={state.tone} />{subscription && <small>{number(subscription.copy_ratio_percent)}% · {money(subscription.position_cap_usdc)}</small>}</div>
+                  <dl className="pcStrategyMetrics"><div><dt>持仓成本</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日投入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>今日已实现盈亏</dt><dd><Pnl value={subscription?.daily_realized_pnl ?? 0} /></dd></div><div><dt>钱包总投入</dt><dd>{money(strategy?.lifetime_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div></dl>
                   <div className="pcStrategyActions">
                     <button className="pcButton ghost" type="button" onClick={() => onConfigure(wallet)}>{subscription ? "参数" : "配置"}</button>
                     {strategy && <button className={`pcSwitch ${subscription?.enabled ? "on" : ""}`} type="button" role="switch" aria-checked={subscription?.enabled} aria-label={`${wallet.label}${subscription?.enabled ? "暂停策略" : "恢复策略"}`} disabled={busyId === subscription?.id || subscription?.state === "closing"} onClick={() => onToggle(strategy)}><span /></button>}

@@ -2306,8 +2306,7 @@ def test_copy_workspace_filters_daily_realized_pnl_by_tracked_wallet(
         for point in first_response.json()["daily_realized_pnl"]
     }
     first_bought = {
-        point["date"]: point["bought_usdc"]
-        for point in first_response.json()["daily_realized_pnl"]
+        point["date"]: point["bought_usdc"] for point in first_response.json()["daily_realized_pnl"]
     }
     assert first_points[local_day.isoformat()] == pytest.approx(5)
     assert first_points[(local_day - timedelta(days=2)).isoformat()] == 0

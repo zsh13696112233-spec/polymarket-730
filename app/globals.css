@@ -4294,8 +4294,9 @@ summary:focus-visible {
   display: grid;
   min-height: 82px;
   align-items: center;
-  grid-template-columns: minmax(190px, 0.85fr) minmax(130px, 0.65fr) minmax(390px, 1.65fr) 130px;
-  gap: 18px;
+  grid-template-columns: minmax(168px, 0.8fr) auto minmax(0, 1fr) 130px;
+  column-gap: 20px;
+  row-gap: 12px;
   padding: 13px 18px;
   border-bottom: 1px solid var(--pc-line-soft);
 }
@@ -4363,8 +4364,9 @@ a.pcStrategyIdentity:hover strong {
 
 .pcStrategyStatus {
   display: grid;
+  width: max-content;
   min-height: 37px;
-  align-content: start;
+  align-content: center;
   justify-items: start;
   gap: 5px;
 }
@@ -4372,6 +4374,8 @@ a.pcStrategyIdentity:hover strong {
 .pcStrategyStatus small {
   color: var(--pc-text-3);
   font-size: 8px;
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
 .pcBadge {
@@ -4426,7 +4430,7 @@ a.pcStrategyIdentity:hover strong {
 
 .pcStrategyMetrics {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
   margin: 0;
 }
@@ -5289,8 +5293,8 @@ a.pcMarketIdentity:hover strong {
 
 @media (max-width: 1180px) {
   .pcStrategyRow {
-    grid-template-columns: minmax(180px, 0.85fr) minmax(120px, 0.6fr) minmax(310px, 1.4fr) 130px;
-    gap: 12px;
+    grid-template-columns: minmax(150px, 0.75fr) auto minmax(0, 1fr) 130px;
+    column-gap: 16px;
   }
 
   .pcFormGrid.settings {
@@ -5340,7 +5344,7 @@ a.pcMarketIdentity:hover strong {
   }
 
   .pcStrategyRow {
-    grid-template-columns: minmax(180px, 1fr) minmax(120px, 0.55fr) 130px;
+    grid-template-columns: minmax(180px, 1fr) auto 130px;
   }
 
   .pcStrategyMetrics {
@@ -6660,8 +6664,9 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 
 .pcStrategyRow {
   min-height: 70px;
-  grid-template-columns: minmax(190px, 0.85fr) minmax(115px, 0.55fr) minmax(390px, 1.65fr) 172px;
-  gap: 12px;
+  grid-template-columns: minmax(168px, 0.8fr) auto minmax(0, 1fr) 172px;
+  column-gap: 18px;
+  row-gap: 10px;
   padding: 10px 12px;
   border-bottom-color: #d0cfc5;
 }
@@ -6683,7 +6688,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcWalletCell strong { color: #30312a; font-size: 10px; }
 .pcStrategyIdentity small,
 .pcWalletCell small { margin-top: 3px; color: #77766d; font-size: 7px; }
-.pcStrategyStatus { min-height: 33px; gap: 4px; }
+.pcStrategyStatus { width: max-content; min-height: 33px; gap: 4px; }
 .pcStrategyStatus small { color: #77766d; font-size: 7px; }
 
 .pcBadge {
@@ -7389,4 +7394,40 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcDailyPnlSummary dd.invested {
   color: #66b7ff;
   filter: drop-shadow(0 0 8px rgba(102, 183, 255, 0.2));
+}
+
+/* Strategy rows keep fixed identity and action columns so six live metrics
+   always share the remaining space instead of stretching the wallet column. */
+@media (min-width: 1281px) {
+  .pcStrategyRow {
+    grid-template-columns: minmax(260px, 320px) minmax(120px, 140px) minmax(0, 1fr) 172px !important;
+    column-gap: clamp(16px, 1.5vw, 24px) !important;
+    row-gap: 12px !important;
+  }
+
+  .pcStrategyMetrics {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 12px !important;
+  }
+}
+
+@media (min-width: 961px) and (max-width: 1280px) {
+  .pcStrategyRow {
+    grid-template-columns: minmax(220px, 1fr) minmax(112px, 132px) 172px !important;
+    column-gap: 16px !important;
+    row-gap: 12px !important;
+  }
+
+  .pcStrategyActions {
+    grid-row: 1;
+    grid-column: 3;
+  }
+
+  .pcStrategyMetrics {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px !important;
+    padding-left: 0;
+  }
 }

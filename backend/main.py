@@ -249,11 +249,7 @@ async def copy_daily_realized_pnl(
             CopySubscription,
             CopySubscription.id == CopyLedger.subscription_id,
         ).where(CopySubscription.tracked_wallet_id == tracked_wallet_id)
-    ledger = list(
-        (
-            await session.scalars(ledger_query.order_by(CopyLedger.timestamp.asc()))
-        ).all()
-    )
+    ledger = list((await session.scalars(ledger_query.order_by(CopyLedger.timestamp.asc()))).all())
     default_first_day = today - timedelta(days=29)
     earliest_day = (
         ledger[0].timestamp.replace(tzinfo=UTC).astimezone(SHANGHAI).date()

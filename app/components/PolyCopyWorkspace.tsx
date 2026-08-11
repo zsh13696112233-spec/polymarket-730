@@ -680,36 +680,50 @@ function DailyRealizedPnlChart({
           <p>{description}</p>
         </div>
         <div className="pcDailyPnlHeaderTools">
-          <label className="pcSelect">
-            <span>目标钱包</span>
-            <select value={walletId} onChange={(event) => setWalletId(event.target.value)} aria-label="目标钱包">
-              <option value="all">全部钱包</option>
-              {strategies.map((strategy) => (
-                <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>
-              ))}
-            </select>
-          </label>
-          <div className="pcDailyPnlRanges" aria-label="每日盈亏日期范围">
-            {(["7", "15", "30", "all"] as const).map((value) => (
-              <button type="button" key={value} className={range === value ? "active" : ""} aria-pressed={range === value} onClick={() => setRange(value)}>
-                {value === "all" ? "全部" : `${value}天`}
-              </button>
-            ))}
+          <div className="pcDailyPnlFilters">
+            <label className="pcSelect pcDailyPnlFilterField">
+              <span>目标钱包</span>
+              <select value={walletId} onChange={(event) => setWalletId(event.target.value)} aria-label="目标钱包">
+                <option value="all">全部钱包</option>
+                {strategies.map((strategy) => (
+                  <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="pcDailyPnlFilterField">
+              <span>日期范围</span>
+              <div className="pcDailyPnlRanges" aria-label="每日盈亏日期范围">
+                {(["7", "15", "30", "all"] as const).map((value) => (
+                  <button type="button" key={value} className={range === value ? "active" : ""} aria-pressed={range === value} onClick={() => setRange(value)}>
+                    {value === "all" ? "全部" : `${value}天`}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           <dl className="pcDailyPnlSummary">
             <div>
               <dt>{rangeLabel}投入</dt>
-              <dd>{waitingForWallet ? "…" : walletError ? "—" : money(invested)}</dd>
+              <dd className={waitingForWallet || walletError ? "flat" : "invested"}>
+                {waitingForWallet ? "…" : walletError ? "—" : <PixelAmount value={money(invested)} />}
+              </dd>
             </div>
             <div>
               <dt>{rangeLabel}累计</dt>
               <dd className={waitingForWallet || walletError ? "flat" : totalTone}>
-                {waitingForWallet ? "…" : walletError ? "—" : signedMoney(total)}
+                {waitingForWallet ? "…" : walletError ? "—" : <PixelAmount value={signedMoney(total)} />}
               </dd>
             </div>
             <div>
               <dt>盈利天数</dt>
-              <dd>{waitingForWallet ? "…" : walletError ? "—" : `${profitableDays} 天`}</dd>
+              <dd className={waitingForWallet || walletError ? "flat" : "days"}>
+                {waitingForWallet ? "…" : walletError ? "—" : (
+                  <>
+                    <PixelAmount value={String(profitableDays)} />
+                    <span className="pcDailyPnlUnit">天</span>
+                  </>
+                )}
+              </dd>
             </div>
           </dl>
         </div>

@@ -5924,34 +5924,66 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcDailyPnlHeaderTools {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-end;
   justify-content: flex-end;
-  gap: 16px 28px;
+  gap: 18px 28px;
+}
+
+.pcDailyPnlFilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 14px;
+}
+
+.pcDailyPnlFilterField {
+  display: grid;
+  gap: 5px;
+  color: var(--pc-text-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.pcDailyPnlFilterField > span {
+  line-height: 1;
 }
 
 .pcDailyPnlHeaderTools .pcSelect {
   min-width: 0;
+  gap: 5px;
+  font-size: 11px;
+}
+
+.pcDailyPnlHeaderTools .pcSelect select {
+  height: 38px;
+  min-width: 156px;
+  padding: 0 32px 0 12px;
+  font-size: 13px;
 }
 
 .pcDailyPnlRanges {
   display: inline-flex;
-  padding: 2px;
+  align-items: center;
+  height: 38px;
+  padding: 3px;
   border: 1px solid #75682a;
   border-radius: 6px;
   background: #090a07;
+  box-sizing: border-box;
 }
 
 .pcDailyPnlRanges button {
-  min-width: 38px;
-  height: 27px;
-  padding: 0 8px;
+  min-width: 46px;
+  height: 100%;
+  padding: 0 10px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--pc-text-3);
   cursor: pointer;
   font: inherit;
-  font-size: 10px;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .pcDailyPnlRanges button:hover { color: #fff6ba; }
@@ -5964,31 +5996,72 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .pcDailyPnlSummary {
   display: flex;
   flex: 0 0 auto;
-  gap: 26px;
+  gap: 28px;
   margin: 0;
 }
 
 .pcDailyPnlSummary > div {
   display: grid;
   justify-items: end;
-  gap: 4px;
+  gap: 5px;
 }
 
 .pcDailyPnlSummary dt {
   color: var(--pc-text-3);
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .pcDailyPnlSummary dd {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 5px;
   margin: 0;
-  color: var(--pc-text);
-  font-size: 17px;
+  color: #ffe052;
+  font-size: 28px;
   font-weight: 720;
   font-variant-numeric: tabular-nums;
+  filter: drop-shadow(0 0 8px rgba(242, 195, 25, 0.18));
 }
 
-.pcDailyPnlSummary dd.profit { color: var(--pc-green); }
-.pcDailyPnlSummary dd.loss { color: var(--pc-red); }
+.pcDailyPnlSummary dd .pcPixelAmount {
+  width: auto;
+  justify-content: flex-end;
+}
+
+.pcDailyPnlSummary dd .pcPixelAmountGlyphs {
+  height: 0.88em;
+  filter: drop-shadow(0 0 0.14em currentColor);
+}
+
+.pcDailyPnlSummary dd.invested,
+.pcDailyPnlSummary dd.days {
+  color: #ffe052;
+}
+
+.pcDailyPnlSummary dd.profit {
+  color: #31e49d;
+  filter: drop-shadow(0 0 8px rgba(49, 228, 157, 0.2));
+}
+
+.pcDailyPnlSummary dd.loss {
+  color: #ff5e75;
+  filter: drop-shadow(0 0 8px rgba(255, 94, 117, 0.2));
+}
+
+.pcDailyPnlSummary dd.flat {
+  color: #b7a45a;
+  filter: none;
+}
+
+.pcDailyPnlUnit {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  opacity: 0.78;
+}
 
 .pcDailyPnlScroll {
   width: 100%;
@@ -6139,18 +6212,41 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .pcDailyPnlHeaderTools {
     align-items: flex-end;
     flex-direction: column-reverse;
-    gap: 8px;
+    gap: 12px;
+  }
+
+  .pcDailyPnlFilters {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .pcDailyPnlRanges button {
-    min-width: 34px;
-    height: 25px;
-    padding-inline: 6px;
-    font-size: 9px;
+    min-width: 42px;
+    padding-inline: 8px;
+    font-size: 12px;
   }
 
-  .pcDailyPnlSummary dt { font-size: 8px; }
-  .pcDailyPnlSummary dd { font-size: 13px; }
+  .pcDailyPnlHeaderTools .pcSelect {
+    font-size: 10px;
+  }
+
+  .pcDailyPnlFilterField {
+    font-size: 10px;
+  }
+
+  .pcDailyPnlHeaderTools .pcSelect select,
+  .pcDailyPnlRanges {
+    height: 34px;
+  }
+
+  .pcDailyPnlHeaderTools .pcSelect select {
+    min-width: 148px;
+    font-size: 12px;
+  }
+
+  .pcDailyPnlSummary dt { font-size: 11px; }
+  .pcDailyPnlSummary dd { font-size: 22px; }
+  .pcDailyPnlUnit { font-size: 11px; }
   .pcDailyPnlChart { min-width: var(--pc-daily-pnl-min-width); padding-inline: 14px; }
 }
 

@@ -54,6 +54,7 @@ const filledOrder = {
   id: 101,
   asset_id: "asset-one",
   side: "BUY",
+  requested_size: 20,
   requested_usdc: 10,
   leader_purchase_usdc: 100,
   proportional_target_usdc: 10,
@@ -122,10 +123,15 @@ function json(payload: unknown, status = 200) {
 describe("PolyCopy workspace", () => {
   const requests: string[] = [];
   const requestBodies: unknown[] = [];
+  let recordsResponse: unknown;
 
   beforeEach(() => {
     requests.length = 0;
     requestBodies.length = 0;
+    recordsResponse = {
+      items: [{ ...filledOrder, status: "blocked", reason: "每日买入上限已用完" }],
+      next_cursor: null,
+    };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       requests.push(url);
@@ -160,7 +166,7 @@ describe("PolyCopy workspace", () => {
         portfolio: { open_cost_usdc: 10, market_value_usdc: null, unrealized_pnl: null, realized_pnl: 0, total_pnl: null, valuation_complete: false, unpriced_positions: 1, valued_at: "2026-08-06T08:00:00Z" },
         as_of: "2026-08-06T08:00:00Z",
       });
-      if (url.includes("/api/copy-trading/orders")) return json({ items: [{ ...filledOrder, status: "blocked", reason: "每日买入上限已用完" }], next_cursor: null });
+      if (url.includes("/api/copy-trading/orders")) return json(recordsResponse);
       return json({ ...subscription, enabled: false, state: "exit_only" });
     }));
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -400,6 +406,33 @@ describe("PolyCopy workspace", () => {
     const table = await screen.findByRole("table");
     expect(within(table).getByText("风控阻止")).toBeInTheDocument();
     expect(within(table).getByText("每日买入上限已用完")).toBeInTheDocument();
+  });
+
+  it("记录页展示部分成交时取消的金额或份数", async () => {
+    recordsResponse = {
+      items: [
+        {
+          ...filledOrder,
+          side: "SELL",
+          requested_size: 25,
+          filled_size: 20,
+          status: "partially_filled",
+          reason: "FAK 部分成交，剩余已取消",
+        },
+        {
+          ...filledOrder,
+          side: "BUY",
+          requested_usdc: 10,
+          filled_usdc: 7.75,
+          status: "partially_filled",
+          reason: "FAK 部分成交，剩余已取消",
+        },
+      ],
+      next_cursor: null,
+    };
+    render(<PolyCopyWorkspace view="records" />);
+    expect((await screen.findAllByText("已取消 5 份")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("已取消 $2.25").length).toBeGreaterThan(0);
   });
 
   it("设置页允许关闭自动赎回", async () => {

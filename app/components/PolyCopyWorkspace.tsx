@@ -81,6 +81,7 @@ type CopyOrder = {
   id: number;
   asset_id: string;
   side: "BUY" | "SELL";
+  requested_size: Numeric;
   requested_usdc: Numeric;
   leader_purchase_usdc: Numeric | null;
   proportional_target_usdc: Numeric | null;
@@ -181,6 +182,10 @@ function money(value: Numeric | null | undefined, fallback = "—") {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(number(value));
+}
+
+function shares(value: Numeric | null | undefined) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(number(value));
 }
 
 function signedMoney(value: Numeric | null | undefined, fallback = "—") {
@@ -296,6 +301,15 @@ const orderState: Record<string, { label: string; tone: string }> = {
   reconciliation_pending: { label: "待核对", tone: "danger" },
   interrupted_before_submit: { label: "提交中断", tone: "danger" },
 };
+
+function cancelledRemainder(order: CopyOrder) {
+  if (order.status !== "partially_filled") return null;
+  const remainder = order.side === "BUY"
+    ? number(order.requested_usdc) - number(order.filled_usdc)
+    : number(order.requested_size) - number(order.filled_size);
+  if (remainder <= 0) return null;
+  return order.side === "BUY" ? `已取消 ${money(remainder)}` : `已取消 ${shares(remainder)} 份`;
+}
 
 const positionState: Record<string, { label: string; tone: string }> = {
   open: { label: "持仓中", tone: "success" },
@@ -574,6 +588,7 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
           <tbody>
             {orders.map((order) => {
               const state = orderState[order.status] || { label: order.status, tone: "neutral" };
+              const cancelled = cancelledRemainder(order);
               return (
                 <tr key={order.id}>
                   <td className="pcTimeCell"><time>{dateTime(order.created_at)}</time><small>#{order.id}</small></td>
@@ -584,7 +599,7 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
                   <td className="numeric">{money(order.requested_usdc)}</td>
                   <td className="numeric"><strong>{money(order.filled_usdc)}</strong><small>{number(order.fee_usdc) > 0 ? `费用 ${money(order.fee_usdc)}` : ""}</small></td>
                   <td className="numeric">{price(order.average_fill_price ?? order.reference_price ?? order.limit_price)}</td>
-                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{order.reason && <small title={order.reason}>{order.reason}</small>}</td>
+                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{cancelled && <small>{cancelled}</small>}{order.reason && <small title={order.reason}>{order.reason}</small>}</td>
                 </tr>
               );
             })}
@@ -594,11 +609,12 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
       <div className="pcMobileCards">
         {orders.map((order) => {
           const state = orderState[order.status] || { label: order.status, tone: "neutral" };
+          const cancelled = cancelledRemainder(order);
           return (
             <article className="pcMobileCard" key={order.id}>
               <div className="pcMobileCardHeader"><MarketIdentity order={order} /><Badge label={state.label} tone={state.tone} /></div>
               <dl><div><dt>方向</dt><dd>{order.side === "BUY" ? "买入" : "卖出"}</dd></div><div><dt>源钱包交易金额</dt><dd>{money(order.side === "BUY" ? order.leader_purchase_usdc : null)}</dd></div><div><dt>按比例目标金额</dt><dd>{money(order.side === "BUY" ? order.proportional_target_usdc : null)}</dd></div><div><dt>执行预算</dt><dd>{money(order.requested_usdc)}</dd></div><div><dt>实际执行金额</dt><dd>{money(order.filled_usdc)}</dd></div><div><dt>成交价</dt><dd>{price(order.average_fill_price)}</dd></div><div><dt>时间</dt><dd>{dateTime(order.created_at)}</dd></div></dl>
-              {order.reason && <p>{order.reason}</p>}
+              {(cancelled || order.reason) && <p>{[cancelled, order.reason].filter(Boolean).join(" · ")}</p>}
             </article>
           );
         })}

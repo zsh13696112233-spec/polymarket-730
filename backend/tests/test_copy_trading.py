@@ -44,6 +44,7 @@ from backend.trading import (
     TradeResult,
     TradingUnavailable,
     is_effectively_filled,
+    normalize_fak_result,
     simulate_market_order,
 )
 
@@ -1326,6 +1327,27 @@ def test_fak_executable_remainder_is_reported_as_partial_fill():
     )
 
 
+def test_reconciled_fak_buy_ignores_ten_mills_of_residual_value():
+    request = MarketTradeRequest(
+        asset_id="asset",
+        side="BUY",
+        amount=Decimal("19.999999998"),
+        worst_price=Decimal("0.65"),
+    )
+    result = normalize_fak_result(
+        request,
+        TradeResult(
+            status="partially_filled",
+            external_order_id="order",
+            filled_size=Decimal("36.345453"),
+            filled_usdc=Decimal("19.989999"),
+            reason="FAK 部分成交，剩余已取消",
+        ),
+    )
+    assert result.status == "filled"
+    assert result.reason is None
+
+
 def test_resolved_losing_outcome_without_orderbook_is_written_off(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
@@ -1669,11 +1691,11 @@ def test_live_only_migration_deletes_paper_graph_and_preserves_live_orders(tmp_p
         assert "uq_copy_subscriptions_single_live" not in indexes
 
 
-def test_fak_rounding_migration_normalizes_only_non_executable_remainders(tmp_path: Path):
+def test_fak_rounding_migration_normalizes_only_ignored_remainders(tmp_path: Path):
     database_path = tmp_path / "fak-rounding.db"
     config = AlembicConfig(str(Path("backend/alembic.ini").resolve()))
     config.attributes["database_url"] = f"sqlite+aiosqlite:///{database_path}"
-    command.upgrade(config, "0016_copy_order_amount_snapshots")
+    command.upgrade(config, "0017_normalize_fak_rounding_dust")
     now = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
     order_columns = (
         "idempotency_key,source,asset_id,condition_id,side,requested_size,requested_usdc,"
@@ -1684,6 +1706,13 @@ def test_fak_rounding_migration_normalizes_only_non_executable_remainders(tmp_pa
             f"""INSERT INTO copy_orders ({order_columns})
             VALUES ('buy-dust','copy','buy-asset',?,'BUY',19.8228651793941,16.849435402485,
                     .85,22.453332,16.839999,0,'partially_filled','FAK 部分成交，剩余已取消',?,?)""",
+            (CONDITION_ID, now, now),
+        )
+        connection.execute(
+            f"""INSERT INTO copy_orders ({order_columns})
+            VALUES ('buy-after-migration','copy','buy-after-asset',?,'BUY',30.7692307661538,
+                    19.999999998,.65,36.345453,19.989999,0,'partially_filled',
+                    'FAK 部分成交，剩余已取消',?,?)""",
             (CONDITION_ID, now, now),
         )
         connection.execute(
@@ -1708,6 +1737,7 @@ def test_fak_rounding_migration_normalizes_only_non_executable_remainders(tmp_pa
         ).fetchall()
     assert rows == [
         ("buy-dust", "filled", None),
+        ("buy-after-migration", "filled", None),
         ("sell-dust", "filled", None),
         ("real-partial", "partially_filled", "FAK 部分成交，剩余已取消"),
     ]

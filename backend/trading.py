@@ -82,6 +82,30 @@ def is_effectively_filled(
     return filled >= requested - tolerance
 
 
+def normalize_fak_result(
+    request: MarketTradeRequest,
+    result: TradeResult,
+) -> TradeResult:
+    """Apply the ignored-remainder rule to every FAK response shape.
+
+    Some submissions return fill amounts immediately, while others must be
+    reconciled through ``get_order``. The response path must not change the
+    product-facing status for the same economic fill.
+    """
+    if result.status != "partially_filled":
+        return result
+    requested_fill = result.filled_usdc if request.side == "BUY" else result.filled_size
+    if request.side == "BUY":
+        tolerance = FAK_IGNORABLE_REMAINDER_USDC
+    elif request.worst_price > ZERO:
+        tolerance = FAK_IGNORABLE_REMAINDER_USDC / request.worst_price
+    else:
+        return result
+    if not is_effectively_filled(request.amount, requested_fill, tolerance=tolerance):
+        return result
+    return dataclasses.replace(result, status="filled", reason=None)
+
+
 def simulate_market_order(
     request: MarketTradeRequest,
     book: OrderBookSnapshot,
@@ -236,19 +260,8 @@ class OfficialClobTrader:
             else:
                 filled_size = making
                 filled_usdc = taking
-            requested_fill = filled_usdc if request.side == "BUY" else filled_size
-            tolerance = (
-                FAK_IGNORABLE_REMAINDER_USDC
-                if request.side == "BUY"
-                else FAK_IGNORABLE_REMAINDER_USDC / request.worst_price
-            )
-            fully_filled = is_effectively_filled(
-                request.amount,
-                requested_fill,
-                tolerance=tolerance,
-            )
-            return TradeResult(
-                status="filled" if fully_filled else "partially_filled",
+            result = TradeResult(
+                status="partially_filled",
                 external_order_id=str(order_id) if order_id else None,
                 filled_size=filled_size,
                 filled_usdc=filled_usdc,
@@ -256,8 +269,9 @@ class OfficialClobTrader:
                 fee_usdc=self._fee_for_trade_sync(trade_id),
                 signed_order_hash=prepared.signed_order_hash,
                 external_trade_id=trade_id,
-                reason=None if fully_filled else "FAK 部分成交，剩余已取消",
+                reason="FAK 部分成交，剩余已取消",
             )
+            return normalize_fak_result(request, result)
         if order_id:
             try:
                 result = self._order_status_sync(str(order_id))

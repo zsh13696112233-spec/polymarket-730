@@ -31,6 +31,7 @@ from backend.trading import (
     OfficialClobTrader,
     TradeResult,
     TradingUnavailable,
+    normalize_fak_result,
 )
 
 ZERO = Decimal("0")
@@ -1250,6 +1251,15 @@ class CopyTradingEngine:
             order = await session.get(CopyOrder, order_id)
             if order is None:
                 return
+            result = normalize_fak_result(
+                MarketTradeRequest(
+                    asset_id=order.asset_id,
+                    side=order.side,
+                    amount=(order.requested_usdc if order.side == "BUY" else order.requested_size),
+                    worst_price=order.limit_price,
+                ),
+                result,
+            )
             order.status = result.status
             order.external_order_id = result.external_order_id
             order.external_trade_id = result.external_trade_id

@@ -25,7 +25,12 @@ from backend.models import (
     PositionEvent,
     PositionEventFill,
 )
-from backend.polymarket import OrderBookSnapshot, PolymarketAPIError, PolymarketClient
+from backend.polymarket import (
+    OrderBookSnapshot,
+    PolymarketAPIError,
+    PolymarketClient,
+    PositionSnapshot,
+)
 from backend.trading import (
     MarketTradeRequest,
     OfficialClobTrader,
@@ -51,8 +56,10 @@ RETRYABLE_REDEMPTION_CREDENTIAL_ERRORS = frozenset(
     }
 )
 RETRYABLE_REDEMPTION_ERROR_MARKERS = (
-    "expected safe is not deployed",
+    "expected safe ",
     "自动赎回准备失败：",
+    "等待市场完成链上结算",
+    "未消耗 outcome token",
 )
 
 
@@ -88,6 +95,17 @@ def event_payout_for_size(event: PositionEvent, size: Decimal) -> Decimal:
         return size
     payout_rate = max(ZERO, min(ONE, event.payout_amount / event.before_size))
     return size * payout_rate
+
+
+def redeemable_position_payout_rate(position: PositionSnapshot) -> Decimal:
+    """Estimate the finalized payout exposed by Data API for a redeemable token."""
+    rate = position.current_price
+    if position.size > ZERO and position.current_value >= ZERO:
+        rate = position.current_value / position.size
+    rate = max(ZERO, min(ONE, rate))
+    # Data API marks resolved winners near 1 (for example 0.9995) rather than
+    # returning the exact CTF payout. Preserve genuine partial resolutions.
+    return ONE if rate >= Decimal("0.99") else rate
 
 
 def market_worst_price(
@@ -234,6 +252,7 @@ class CopyTradingEngine:
                     await self.process_position_events(subscription_id)
                     await self.reconcile_terminal_positions(subscription_id)
                     await self.process_redemptions(subscription_id)
+                    await self.process_execution_redeemable_positions(subscription_id)
                     await self._finish_closing(subscription_id)
                 except Exception as error:
                     async with self.database.sessions() as session:
@@ -551,6 +570,68 @@ class CopyTradingEngine:
             if account is not None and not account.auto_redeem:
                 continue
             redemption_id = await self._start_resolution_redemption(position.id, payout)
+            if redemption_id is not None:
+                await self._execute_redemption(redemption_id, event_id=None)
+
+    async def process_execution_redeemable_positions(self, subscription_id: int) -> None:
+        """Redeem copied tokens as soon as the execution wallet reports them redeemable.
+
+        Data API can expose the on-chain redeemable state before Gamma changes a
+        market from proposed to finalized. This path deliberately does not wait for
+        the source wallet to redeem its own remaining tokens.
+        """
+        async with self.database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if (
+                account is None
+                or not account.auto_redeem
+                or not account.funder_address
+                or account.status != "ready"
+            ):
+                return
+            positions = list(
+                (
+                    await session.scalars(
+                        select(CopyPosition).where(
+                            CopyPosition.subscription_id == subscription_id,
+                            CopyPosition.attributed_size > ZERO,
+                            CopyPosition.status.in_(["open", "redeeming", "manual_exit"]),
+                        )
+                    )
+                ).all()
+            )
+            funder_address = account.funder_address
+        if not positions:
+            return
+
+        redeemable = await self.client.fetch_redeemable_positions(
+            funder_address,
+            condition_ids=(position.condition_id for position in positions),
+        )
+        redeemable_by_asset = {position.asset_id: position for position in redeemable}
+        candidates = [
+            (position, redeemable_by_asset[position.asset_id])
+            for position in positions
+            if position.asset_id in redeemable_by_asset
+        ]
+        if not candidates:
+            return
+
+        trader = await self._trader()
+        for position, redeemable_position in candidates:
+            payout_rate = redeemable_position_payout_rate(redeemable_position)
+            if payout_rate <= ZERO:
+                continue
+            balance = await trader.onchain_outcome_balance(position.asset_id)
+            if balance <= ZERO:
+                await self._record_reconciled_redemption(
+                    position.id,
+                    transaction_hash=None,
+                    detail="执行钱包可赎回仓位与链上 outcome token 余额归零后的结算对账",
+                    payout_usdc=position.attributed_size * payout_rate,
+                )
+                continue
+            redemption_id = await self._start_resolution_redemption(position.id, payout_rate)
             if redemption_id is not None:
                 await self._execute_redemption(redemption_id, event_id=None)
 
@@ -1511,17 +1592,34 @@ class CopyTradingEngine:
                 return
             size = redemption.size
             payout = redemption.payout_usdc if redemption.payout_usdc is not None else size
+            asset_id = position.asset_id
             condition_id = position.condition_id
             outcome_index = position.outcome_index
             neg_risk = bool(position.neg_risk)
         trader = await self._trader()
         try:
+            if not neg_risk:
+                payout_rate = await trader.onchain_redemption_payout_rate(
+                    condition_id,
+                    outcome_index,
+                    neg_risk,
+                )
+                if payout_rate is None:
+                    raise TradingUnavailable("等待市场完成链上结算后再自动赎回")
+                if payout_rate <= ZERO:
+                    raise TradingUnavailable("链上结算结果没有可赎回金额")
+                payout = size * payout_rate
             transaction_hash = await trader.redeem(
                 condition_id=condition_id,
                 size=size,
                 outcome_index=outcome_index,
                 neg_risk=neg_risk,
             )
+            remaining_balance = await trader.onchain_outcome_balance(asset_id)
+            if remaining_balance > REDEMPTION_SIZE_TOLERANCE:
+                raise TradingUnavailable(
+                    f"自动赎回链上交易 {transaction_hash} 未消耗 outcome token，任务保持待处理"
+                )
         except Exception as error:
             async with self.database.sessions() as session:
                 redemption = await session.get(CopyRedemption, redemption_id)
@@ -1540,18 +1638,28 @@ class CopyTradingEngine:
                 return
             position = await session.get(CopyPosition, redemption.copy_position_id)
             assert position is not None
+            failed_redemption_error = redemption.last_error
             cost = position.attributed_cost
             realized = payout - cost
             redemption.status = "completed"
             redemption.payout_usdc = payout
             redemption.transaction_hash = transaction_hash
             redemption.attempts += 1
+            redemption.last_error = None
             redemption.updated_at = utcnow()
             position.attributed_size = ZERO
             position.attributed_cost = ZERO
             position.realized_pnl += realized
             position.status = "redeemed"
             position.updated_at = utcnow()
+            subscription = await session.get(CopySubscription, position.subscription_id)
+            if (
+                subscription is not None
+                and failed_redemption_error
+                and subscription.last_error == failed_redemption_error
+            ):
+                subscription.last_error = None
+                subscription.updated_at = utcnow()
             session.add(
                 CopyLedger(
                     subscription_id=position.subscription_id,

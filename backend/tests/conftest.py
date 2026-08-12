@@ -82,6 +82,8 @@ class FakePolymarketClient:
         self.market_resolutions: dict[str, MarketResolution] = {}
         self.market_resolution_error: Exception | None = None
         self.market_resolution_calls: list[list[str]] = []
+        self.redeemable_positions: list[PositionSnapshot] = []
+        self.redeemable_position_calls: list[tuple[str, list[str]]] = []
 
     async def resolve_profile(self, raw_input: str, requested_label: str | None) -> PublicProfile:
         address = parse_wallet_input(raw_input)
@@ -98,6 +100,20 @@ class FakePolymarketClient:
                 raise value
             self.last_snapshot = value
         return list(self.last_snapshot)
+
+    async def fetch_redeemable_positions(
+        self,
+        user: str,
+        *,
+        condition_ids: Any = None,
+    ) -> list[PositionSnapshot]:
+        conditions = list(condition_ids or [])
+        self.redeemable_position_calls.append((user, conditions))
+        return [
+            position
+            for position in self.redeemable_positions
+            if not conditions or position.condition_id in conditions
+        ]
 
     async def fetch_settlement_evidence(
         self,

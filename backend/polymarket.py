@@ -558,6 +558,34 @@ class PolymarketClient:
                 by_asset[position.asset_id] = position
         return list(by_asset.values())
 
+    async def fetch_redeemable_positions(
+        self,
+        user: str,
+        *,
+        condition_ids: Iterable[str] | None = None,
+    ) -> list[PositionSnapshot]:
+        """Return the complete redeemable snapshot for the requested conditions."""
+        conditions = list(dict.fromkeys(condition_ids or []))
+        non_mergeable, mergeable = await asyncio.gather(
+            self._fetch_positions_variant(
+                user,
+                redeemable=True,
+                mergeable=False,
+                condition_ids=conditions,
+            ),
+            self._fetch_positions_variant(
+                user,
+                redeemable=True,
+                mergeable=True,
+                condition_ids=conditions,
+            ),
+        )
+        by_asset: dict[str, PositionSnapshot] = {}
+        for position in [*non_mergeable, *mergeable]:
+            if position.size > ZERO:
+                by_asset[position.asset_id] = position
+        return list(by_asset.values())
+
     async def fetch_closed_positions(self, user: str) -> list[ClosedPositionSnapshot]:
         cache_key = user.lower()
         cached = self._closed_positions_cache.get(cache_key)

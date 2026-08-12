@@ -385,6 +385,37 @@ async def test_active_snapshot_requires_both_complete_mergeable_pages():
 
 
 @pytest.mark.asyncio
+async def test_redeemable_snapshot_targets_conditions_and_deduplicates_assets():
+    conditions = ["0x" + "1" * 64, "0x" + "2" * 64]
+    calls: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        calls.append(params)
+        return httpx.Response(200, json=[raw_position("redeemable-asset")])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        positions = await client.fetch_redeemable_positions(
+            TEST_ADDRESS,
+            condition_ids=conditions,
+        )
+    finally:
+        await client.close()
+
+    assert [item.asset_id for item in positions] == ["redeemable-asset"]
+    assert Counter(call["mergeable"] for call in calls) == {"false": 1, "true": 1}
+    for call in calls:
+        assert call["redeemable"] == "true"
+        assert call["market"] == ",".join(conditions)
+
+
+@pytest.mark.asyncio
 async def test_failure_on_any_mergeable_page_rejects_whole_snapshot():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.params["mergeable"] == "true":

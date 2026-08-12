@@ -20,7 +20,10 @@ ZERO = Decimal("0")
 # value as completed in the product while retaining the actual balances.
 FAK_IGNORABLE_REMAINDER_USDC = Decimal("0.50")
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+# Polymarket outcome token IDs are CTF positions collateralized by bridged
+# Polygon USDC.e. The V2 order client may report pUSD collateral balances, but
+# passing pUSD to redeemPositions addresses a different, empty CTF position.
+CTF_COLLATERAL_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 V2_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
 V2_NEG_RISK_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
@@ -315,6 +318,21 @@ class OfficialClobTrader:
         """Read the conditional-token balance from Polygon, independent of CLOB cache."""
         return await asyncio.to_thread(self._onchain_outcome_balance_sync, asset_id)
 
+    async def onchain_redemption_payout_rate(
+        self,
+        condition_id: str,
+        outcome_index: int | None,
+        neg_risk: bool,
+    ) -> Decimal | None:
+        """Read the finalized CTF payout, or None while resolution is incomplete."""
+        if neg_risk or outcome_index is None:
+            return None
+        return await asyncio.to_thread(
+            self._onchain_redemption_payout_rate_sync,
+            condition_id,
+            outcome_index,
+        )
+
     async def trade_fee(self, external_trade_id: str) -> Decimal:
         return await asyncio.to_thread(self._fee_for_trade_sync, external_trade_id)
 
@@ -428,6 +446,25 @@ class OfficialClobTrader:
         except ValueError as error:
             raise TradingUnavailable("outcome token id 无效，无法链上对账") from error
         data = "0x00fdd58e" + f"{int(funder, 16):064x}{token_id:064x}"
+        return Decimal(self._rpc_uint_call_sync(data)) / Decimal("1000000")
+
+    def _onchain_redemption_payout_rate_sync(
+        self,
+        condition_id: str,
+        outcome_index: int,
+    ) -> Decimal | None:
+        normalized = condition_id.removeprefix("0x")
+        if len(normalized) != 64:
+            raise TradingUnavailable("赎回 condition id 无效，无法验证链上结算")
+        if outcome_index < 0:
+            raise TradingUnavailable("赎回 outcome index 无效，无法验证链上结算")
+        denominator = self._rpc_uint_call_sync(f"0xdd34de67{normalized}")
+        if denominator <= 0:
+            return None
+        numerator = self._rpc_uint_call_sync(f"0x0504c814{normalized}{outcome_index:064x}")
+        return Decimal(numerator) / Decimal(denominator)
+
+    def _rpc_uint_call_sync(self, data: str) -> int:
         payload = json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -439,7 +476,10 @@ class OfficialClobTrader:
         request = Request(
             self.rpc_url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "polymarket-wallet-monitor/0.1",
+            },
             method="POST",
         )
         try:
@@ -447,11 +487,9 @@ class OfficialClobTrader:
                 response_payload = json.loads(response.read().decode())
             if response_payload.get("error"):
                 raise TradingUnavailable(f"Polygon RPC 链上对账失败：{response_payload['error']}")
-            return Decimal(int(str(response_payload.get("result") or "0x0"), 16)) / Decimal(
-                "1000000"
-            )
+            return int(str(response_payload.get("result") or "0x0"), 16)
         except (OSError, URLError, ValueError, json.JSONDecodeError) as error:
-            raise TradingUnavailable(f"无法读取链上 outcome token 余额：{error}") from error
+            raise TradingUnavailable(f"无法读取 Polygon 链上状态：{error}") from error
 
     def _fee_for_trade_sync(self, trade_id: str | None) -> Decimal:
         if not trade_id:
@@ -538,7 +576,7 @@ class OfficialClobTrader:
             signature = "redeemPositions(address,bytes32,bytes32,uint256[])"
             arguments = encode(
                 ["address", "bytes32", "bytes32", "uint256[]"],
-                [PUSD_ADDRESS, bytes(32), condition_bytes, [1, 2]],
+                [CTF_COLLATERAL_ADDRESS, bytes(32), condition_bytes, [1, 2]],
             )
             destination = CTF_ADDRESS
         data = "0x" + (keccak(text=signature)[:4] + arguments).hex()
@@ -564,7 +602,12 @@ class OfficialClobTrader:
             raise TradingUnavailable("自动赎回只支持 EOA、Proxy 或 Deposit Wallet")
         try:
             from py_builder_relayer_client.client import RelayClient
-            from py_builder_relayer_client.models import RelayerTxType, Transaction
+            from py_builder_relayer_client.models import (
+                DepositWalletCall,
+                RelayerTxType,
+                Transaction,
+                TransactionType,
+            )
             from py_builder_signing_sdk.config import BuilderApiKeyCreds, BuilderConfig
         except ImportError as error:
             raise TradingUnavailable("缺少官方 Builder Relayer 客户端") from error
@@ -581,24 +624,53 @@ class OfficialClobTrader:
             )
         except (KeyError, TypeError, ValueError) as error:
             raise TradingUnavailable("Builder 凭证格式无效") from error
-        relay_type = RelayerTxType.PROXY if self.signature_type == 1 else RelayerTxType.SAFE
+        client_kwargs: dict[str, Any] = {
+            "private_key": private_key,
+            "builder_config": BuilderConfig(local_builder_creds=credentials),
+            "rpc_url": self.rpc_url,
+        }
+        if self.signature_type == 1:
+            client_kwargs["relay_tx_type"] = RelayerTxType.PROXY
         try:
             client = RelayClient(
                 self.relayer_url,
                 137,
-                private_key=private_key,
-                builder_config=BuilderConfig(local_builder_creds=credentials),
-                relay_tx_type=relay_type,
-                rpc_url=self.rpc_url,
+                **client_kwargs,
             )
         except Exception as error:
             raise TradingUnavailable(f"自动赎回准备失败：{error}") from error
         try:
-            response = client.execute(
-                [Transaction(to=destination, data=data, value="0")],
-                "自动赎回策略持仓",
-            )
+            if self.signature_type == 1:
+                response = client.execute(
+                    [Transaction(to=destination, data=data, value="0")],
+                    "自动赎回策略持仓",
+                )
+            else:
+                assert self.funder_address is not None
+                expected_wallet = client.get_expected_deposit_wallet()
+                if expected_wallet.lower() != self.funder_address.lower():
+                    raise TradingUnavailable("Deposit Wallet 资金地址与签名地址推导结果不一致")
+                if not client.get_deployed(
+                    self.funder_address,
+                    TransactionType.WALLET.value,
+                ):
+                    raise TradingUnavailable("Deposit Wallet 尚未部署")
+                nonce_payload = client.get_nonce(
+                    client.signer.address(),
+                    TransactionType.WALLET.value,
+                )
+                nonce = nonce_payload.get("nonce") if isinstance(nonce_payload, dict) else None
+                if nonce is None:
+                    raise TradingUnavailable("Deposit Wallet 自动赎回无法获取 nonce")
+                response = client.execute_deposit_wallet_batch(
+                    [DepositWalletCall(target=destination, data=data, value="0")],
+                    wallet_address=self.funder_address,
+                    nonce=str(nonce),
+                    deadline=str(int(time.time()) + 600),
+                )
         except Exception as error:
+            if isinstance(error, TradingUnavailable):
+                raise
             raise TradingUnavailable(f"自动赎回提交失败：{error}") from error
         response_hash = getattr(response, "transaction_hash", None)
         try:

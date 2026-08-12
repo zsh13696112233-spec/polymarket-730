@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from backend.copy_trading import RiskUsage, allowed_buy_usdc, market_worst_price
+from backend.keychain import KeychainReference, MacOSKeychain
 from backend.models import (
     CopyLedger,
     CopyOrder,
@@ -34,7 +36,9 @@ from backend.polymarket import (
     PolymarketAPIError,
 )
 from backend.schemas import RehearsalExecuteRequest, RehearsalPreviewRequest
+from backend.tests.conftest import position
 from backend.trading import (
+    CTF_COLLATERAL_ADDRESS,
     FAK_IGNORABLE_REMAINDER_USDC,
     V2_EXCHANGE_ADDRESS,
     V2_NEG_RISK_EXCHANGE_ADDRESS,
@@ -58,6 +62,10 @@ class FakeLiveTrader:
         self.balance = Decimal(balance)
         self.onchain_balance = Decimal("0")
         self.onchain_balance_calls: list[str] = []
+        self.onchain_payout_rate: Decimal | None = Decimal("1")
+        self.onchain_payout_calls: list[tuple[str, int | None, bool]] = []
+        self.redemption_calls: list[dict[str, object]] = []
+        self.consume_balance_on_redeem = True
         self.calls = 0
 
     async def collateral_balance(self) -> Decimal:
@@ -89,11 +97,23 @@ class FakeLiveTrader:
         return Decimal("0")
 
     async def redeem(self, **kwargs) -> str:
+        self.redemption_calls.append(kwargs)
+        if self.consume_balance_on_redeem:
+            self.onchain_balance = Decimal("0")
         return "0xredeemed"
 
     async def onchain_outcome_balance(self, asset_id: str) -> Decimal:
         self.onchain_balance_calls.append(asset_id)
         return self.onchain_balance
+
+    async def onchain_redemption_payout_rate(
+        self,
+        condition_id: str,
+        outcome_index: int | None,
+        neg_risk: bool,
+    ) -> Decimal | None:
+        self.onchain_payout_calls.append((condition_id, outcome_index, neg_risk))
+        return self.onchain_payout_rate
 
 
 def install_book(fake, *, ask: str = "0.50", bid: str = "0.49", depth: str = "1000") -> None:
@@ -677,6 +697,8 @@ def test_resolved_source_disappearance_records_fractional_payout(app_client_fact
         payout_by_asset_id={"asset-simple": Decimal("0.5")},
         resolved_at=utcnow(),
     )
+    trader = client.portal.call(client.app.state.copy_engine._trader)
+    trader.onchain_payout_rate = Decimal("0.5")
 
     client.portal.call(
         client.app.state.copy_engine.reconcile_terminal_positions,
@@ -755,6 +777,7 @@ def test_resolved_source_disappearance_writes_off_copied_loser(app_client_factor
         "缺少官方 Builder Relayer 客户端",
         "Builder 凭证格式无效",
         "自动赎回提交失败：expected safe is not deployed",
+        "自动赎回提交失败：expected safe 0x1234 is not deployed",
     ],
 )
 def test_retries_redemption_after_pre_submit_error_is_fixed(app_client_factory, failure):
@@ -791,6 +814,15 @@ def test_retries_redemption_after_pre_submit_error_is_fixed(app_client_factory, 
     client.app.state.copy_engine._trader = configured_trader
     tick(client)
     assert dashboard(client, subscription)["positions"][0]["status"] == "redeemed"
+
+    async def completed_redemption() -> tuple[str | None, str | None]:
+        async with client.app.state.database.sessions() as session:
+            redemption = await session.scalar(select(CopyRedemption))
+            subscription_row = await session.get(CopySubscription, subscription["id"])
+            assert redemption is not None and subscription_row is not None
+            return redemption.last_error, subscription_row.last_error
+
+    assert client.portal.call(completed_redemption) == (None, None)
 
 
 def test_unknown_redemption_result_persists_transaction_hash_without_retry(
@@ -1151,6 +1183,167 @@ def test_settlement_execution_event_with_zero_balance_preserves_original_error(
     assert redemption_error in last_error
     assert "对账说明" in last_error
     assert trader.onchain_balance_calls == ["asset-simple"]
+
+
+def test_execution_wallet_redeemable_position_triggers_before_gamma_finalizes(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    trader = client.portal.call(client.app.state.copy_engine._trader)
+    trader.onchain_balance = Decimal("20.243242")
+    trader.onchain_payout_rate = None
+    fake.redeemable_positions = [
+        position(
+            asset_id="asset-simple",
+            condition_id=CONDITION_ID,
+            size="20.2432",
+            current_price="0.9995",
+            current_value="20.2331",
+        )
+    ]
+    add_event(
+        client,
+        subscription,
+        "decreased",
+        before="100",
+        after="0.1",
+        price="0.50",
+    )
+
+    tick(client)
+
+    async def pending_state() -> tuple[str, str, str | None]:
+        async with client.app.state.database.sessions() as session:
+            copy_position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            assert copy_position is not None and redemption is not None
+            return copy_position.status, redemption.status, redemption.last_error
+
+    pending_position, pending_redemption, pending_error = client.portal.call(pending_state)
+    assert pending_position == "redeeming"
+    assert pending_redemption == "pending"
+    assert pending_error == "等待市场完成链上结算后再自动赎回"
+    assert trader.redemption_calls == []
+
+    trader.onchain_payout_rate = Decimal("1")
+    tick(client)
+
+    async def state() -> tuple[str, Decimal, str, Decimal, str | None]:
+        async with client.app.state.database.sessions() as session:
+            copy_position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            assert copy_position is not None and redemption is not None
+            return (
+                copy_position.status,
+                copy_position.attributed_size,
+                redemption.status,
+                redemption.payout_usdc or Decimal("0"),
+                redemption.transaction_hash,
+            )
+
+    position_status, size, redemption_status, payout, transaction_hash = client.portal.call(state)
+    assert position_status == "redeemed"
+    assert size == Decimal("0")
+    assert redemption_status == "completed"
+    assert payout > Decimal("0")
+    assert transaction_hash == "0xredeemed"
+    assert trader.onchain_balance_calls == ["asset-simple", "asset-simple"]
+    assert trader.onchain_payout_calls == [
+        (CONDITION_ID, None, False),
+        (CONDITION_ID, None, False),
+    ]
+    assert len(trader.redemption_calls) == 1
+    assert trader.redemption_calls[0]["condition_id"] == CONDITION_ID
+    assert trader.redemption_calls[0]["size"] > Decimal("0")
+    assert trader.redemption_calls[0]["neg_risk"] is False
+    assert fake.market_resolution_calls
+    assert fake.market_resolutions == {}
+    assert fake.redeemable_position_calls[-1] == (SELF_ADDRESS, [CONDITION_ID])
+
+
+def test_confirmed_relayer_transaction_without_token_consumption_stays_pending(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    trader = client.portal.call(client.app.state.copy_engine._trader)
+    trader.onchain_balance = Decimal("10")
+    trader.consume_balance_on_redeem = False
+    fake.redeemable_positions = [
+        position(
+            asset_id="asset-simple",
+            condition_id=CONDITION_ID,
+            size="10",
+            current_price="1",
+            current_value="10",
+        )
+    ]
+
+    tick(client)
+
+    async def state() -> tuple[str, Decimal, str, str | None, str | None, int]:
+        async with client.app.state.database.sessions() as session:
+            copy_position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            assert copy_position is not None and redemption is not None
+            return (
+                copy_position.status,
+                copy_position.attributed_size,
+                redemption.status,
+                redemption.transaction_hash,
+                redemption.last_error,
+                redemption.attempts,
+            )
+
+    position_status, size, redemption_status, tx_hash, last_error, attempts = client.portal.call(
+        state
+    )
+    assert position_status == "redeeming"
+    assert size > Decimal("0")
+    assert redemption_status == "pending"
+    assert tx_hash is None
+    assert last_error is not None and "未消耗 outcome token" in last_error
+    assert attempts == 1
+
+
+def test_onchain_balance_rpc_request_includes_user_agent(monkeypatch):
+    captured_headers: dict[str, str] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        @staticmethod
+        def read() -> bytes:
+            return b'{"jsonrpc":"2.0","id":1,"result":"0x0f4240"}'
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 15
+        captured_headers.update(dict(request.header_items()))
+        return Response()
+
+    monkeypatch.setattr("backend.trading.urlopen", fake_urlopen)
+    trader = OfficialClobTrader(
+        host="https://clob.test",
+        keychain=MacOSKeychain(),
+        key_reference=KeychainReference(service="unused", account="unused"),
+        signature_type=3,
+        funder_address=SELF_ADDRESS,
+        rpc_url="https://polygon.test",
+    )
+
+    assert trader._onchain_outcome_balance_sync("1") == Decimal("1")
+    assert captured_headers["User-agent"] == "polymarket-wallet-monitor/0.1"
 
 
 def test_forced_balance_refresh_updates_execution_account(app_client_factory):
@@ -1631,7 +1824,7 @@ def test_v2_prepared_order_captures_hash_trade_id_and_actual_fee(monkeypatch, si
     assert str(calls["order_type"]) == "FAK"
 
 
-def test_deposit_wallet_redemption_uses_safe_relayer_with_builder_credentials(monkeypatch):
+def test_deposit_wallet_redemption_uses_wallet_batch_with_builder_credentials(monkeypatch):
     calls: dict[str, object] = {}
 
     class FakeKeychain:
@@ -1656,9 +1849,16 @@ def test_deposit_wallet_redemption_uses_safe_relayer_with_builder_credentials(mo
         def __init__(self, **values):
             calls["transaction"] = values
 
+    class FakeDepositWalletCall:
+        def __init__(self, **values):
+            calls["deposit_wallet_call"] = values
+
     class FakeRelayerTxType:
         PROXY = "proxy"
         SAFE = "safe"
+
+    class FakeTransactionType:
+        WALLET = SimpleNamespace(value="WALLET")
 
     class FakeResponse:
         transaction_hash = "0xfallback"
@@ -1670,17 +1870,35 @@ def test_deposit_wallet_redemption_uses_safe_relayer_with_builder_credentials(mo
         def __init__(self, *args, **kwargs):
             calls["relay_args"] = args
             calls["relay_kwargs"] = kwargs
+            self.signer = SimpleNamespace(address=lambda: SELF_ADDRESS)
 
-        def execute(self, transactions, description):
-            calls["transactions"] = transactions
-            calls["description"] = description
+        @staticmethod
+        def get_expected_deposit_wallet():
+            return SELF_ADDRESS
+
+        @staticmethod
+        def get_deployed(address, signer_type):
+            calls["deployed"] = (address, signer_type)
+            return True
+
+        @staticmethod
+        def get_nonce(address, signer_type):
+            calls["nonce"] = (address, signer_type)
+            return {"nonce": "52"}
+
+        @staticmethod
+        def execute_deposit_wallet_batch(calls_to_execute, **kwargs):
+            calls["calls_to_execute"] = calls_to_execute
+            calls["batch_kwargs"] = kwargs
             return FakeResponse()
 
     relayer_client = ModuleType("py_builder_relayer_client.client")
     relayer_client.RelayClient = FakeRelayClient
     relayer_models = ModuleType("py_builder_relayer_client.models")
+    relayer_models.DepositWalletCall = FakeDepositWalletCall
     relayer_models.RelayerTxType = FakeRelayerTxType
     relayer_models.Transaction = FakeTransaction
+    relayer_models.TransactionType = FakeTransactionType
     signing_config = ModuleType("py_builder_signing_sdk.config")
     signing_config.BuilderApiKeyCreds = FakeBuilderApiKeyCreds
     signing_config.BuilderConfig = FakeBuilderConfig
@@ -1706,10 +1924,39 @@ def test_deposit_wallet_redemption_uses_safe_relayer_with_builder_credentials(mo
     assert calls["relay_kwargs"] == {
         "private_key": "0xprivate",
         "builder_config": calls["builder_config"],
-        "relay_tx_type": FakeRelayerTxType.SAFE,
         "rpc_url": "https://polygon.drpc.org",
     }
-    assert calls["transaction"] == {"to": "0xdestination", "data": "0xdata", "value": "0"}
+    assert calls["deposit_wallet_call"] == {
+        "target": "0xdestination",
+        "data": "0xdata",
+        "value": "0",
+    }
+    assert calls["deployed"] == (SELF_ADDRESS, "WALLET")
+    assert calls["nonce"] == (SELF_ADDRESS, "WALLET")
+    assert calls["batch_kwargs"]["wallet_address"] == SELF_ADDRESS
+    assert calls["batch_kwargs"]["nonce"] == "52"
+    assert int(calls["batch_kwargs"]["deadline"]) > int(time.time())
+
+
+def test_standard_redemption_uses_ctf_usdc_e_collateral():
+    from eth_abi import decode
+
+    destination, data = OfficialClobTrader._redemption_call(
+        CONDITION_ID,
+        Decimal("10"),
+        1,
+        False,
+    )
+    collateral, parent, condition, index_sets = decode(
+        ["address", "bytes32", "bytes32", "uint256[]"],
+        bytes.fromhex(data[10:]),
+    )
+
+    assert destination.lower() == "0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
+    assert collateral.lower() == CTF_COLLATERAL_ADDRESS.lower()
+    assert parent == bytes(32)
+    assert condition == bytes.fromhex(CONDITION_ID[2:])
+    assert index_sets == (1, 2)
 
 
 def test_reset_migration_removes_copy_rows_and_preserves_monitor_rows(tmp_path: Path):

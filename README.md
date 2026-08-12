@@ -28,7 +28,7 @@ The dashboard shows both current attributed positions and historical cycles. Cur
 
 The copy engine only reads stable events from regular position monitoring: `opened` executes one proportional FAK buy based on the watched wallet’s open cost; `increased` and `decreased` are ignored; `closed` sells the full attributed position once; `redeemed` redeems the full attributed position once. Opening the same asset again after a close or redemption starts a new cycle. There is no kickoff cutoff; the system only confirms the market is currently open for trading.
 
-The trading client uses `py-clob-client-v2==1.1.0`, pUSD, and V2 Exchange; it supports legacy Magic/Proxy signature type `1` and the newer Deposit Wallet type `3`, with new configs defaulting to type `3`. After binding “My Wallet”, enter the signing EOA and Polymarket funding wallet, then import the execution private key from the terminal:
+The trading client uses the official unified `polymarket-client==0.5.0`, pUSD, and the applicable Exchange or Neg Risk Exchange adapter. It supports Proxy signature type `1` and Deposit Wallet signature type `3`, with new configs defaulting to type `3`. After binding “My Wallet”, enter the signing EOA and Polymarket funding wallet, then import the execution private key from the terminal:
 
 ```bash
 uv run python -m backend.copy_cli set-key --account 0xYourSigningWalletAddress

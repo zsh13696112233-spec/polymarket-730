@@ -19,6 +19,7 @@ from backend.models import (
     CopyOrder,
     CopyPosition,
     CopyRedemption,
+    CopyRedemptionExecution,
     CopySubscription,
     CurrentPosition,
     ExecutionAccount,
@@ -33,9 +34,9 @@ from backend.polymarket import (
 )
 from backend.trading import (
     MarketTradeRequest,
-    OfficialClobTrader,
     TradeResult,
     TradingUnavailable,
+    UnifiedPolymarketTrader,
     normalize_fak_result,
 )
 
@@ -186,7 +187,7 @@ class CopyTradingEngine:
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
         self._trader_cache_key: tuple[object, ...] | None = None
-        self._trader_cache: OfficialClobTrader | None = None
+        self._trader_cache: UnifiedPolymarketTrader | None = None
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -196,14 +197,17 @@ class CopyTradingEngine:
         self._wake.set()
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        self._task = None
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        if self._trader_cache is not None:
+            await self._trader_cache.close()
+            self._trader_cache = None
+            self._trader_cache_key = None
 
     async def _run(self) -> None:
         while True:
@@ -1269,6 +1273,7 @@ class CopyTradingEngine:
             idempotency_key=key,
             source=source,
             signed_order_hash=None,
+            execution_provider="unified_sdk",
             asset_id=resolved_asset_id,
             condition_id=resolved_condition_id,
             side=side,
@@ -1380,23 +1385,58 @@ class CopyTradingEngine:
                     f"{order.id}|{result.external_trade_id or result.external_order_id or 'local'}|"
                     f"{result.filled_size}|{result.filled_usdc}".encode()
                 ).hexdigest()
-                existing = await session.scalar(
-                    select(CopyFill.id).where(CopyFill.fingerprint == fingerprint)
-                )
-                if existing is None:
-                    average = result.average_price or result.filled_usdc / result.filled_size
-                    session.add(
-                        CopyFill(
-                            order_id=order.id,
-                            fingerprint=fingerprint,
-                            external_trade_id=result.external_trade_id,
-                            size=result.filled_size,
-                            price=average,
-                            amount=result.filled_usdc,
-                            fee_usdc=result.fee_usdc,
-                            timestamp=utcnow(),
+                if result.fills:
+                    existing = await session.scalar(
+                        select(CopyFill.id).where(
+                            CopyFill.order_id == order.id,
+                            CopyFill.external_trade_id.in_(
+                                [fill.external_trade_id for fill in result.fills]
+                            ),
                         )
                     )
+                else:
+                    existing = await session.scalar(
+                        select(CopyFill.id).where(CopyFill.fingerprint == fingerprint)
+                    )
+                if existing is None:
+                    average = result.average_price or result.filled_usdc / result.filled_size
+                    if result.fills:
+                        for fill in result.fills:
+                            fill_fingerprint = hashlib.sha256(
+                                f"{order.id}|{fill.external_trade_id}|{fill.size}|"
+                                f"{fill.price}|{fill.bucket_index}".encode()
+                            ).hexdigest()
+                            session.add(
+                                CopyFill(
+                                    order_id=order.id,
+                                    fingerprint=fill_fingerprint,
+                                    external_trade_id=fill.external_trade_id,
+                                    transaction_hash=fill.transaction_hash,
+                                    bucket_index=fill.bucket_index,
+                                    settlement_status=fill.settlement_status,
+                                    size=fill.size,
+                                    price=fill.price,
+                                    amount=fill.amount,
+                                    fee_usdc=fill.fee_usdc,
+                                    timestamp=utcnow(),
+                                )
+                            )
+                    else:
+                        session.add(
+                            CopyFill(
+                                order_id=order.id,
+                                fingerprint=fingerprint,
+                                external_trade_id=result.external_trade_id,
+                                transaction_hash=None,
+                                bucket_index=None,
+                                settlement_status="confirmed",
+                                size=result.filled_size,
+                                price=average,
+                                amount=result.filled_usdc,
+                                fee_usdc=result.fee_usdc,
+                                timestamp=utcnow(),
+                            )
+                        )
                     if position is not None and order.side == "BUY":
                         position.attributed_size += result.filled_size
                         position.attributed_cost += result.filled_usdc + result.fee_usdc
@@ -1597,6 +1637,19 @@ class CopyTradingEngine:
             outcome_index = position.outcome_index
             neg_risk = bool(position.neg_risk)
         trader = await self._trader()
+        if hasattr(trader, "start_redemption"):
+            try:
+                await self._execute_unified_redemption(redemption_id)
+            except Exception as error:
+                async with self.database.sessions() as session:
+                    redemption = await session.get(CopyRedemption, redemption_id)
+                    if redemption is not None and redemption.status == "pending":
+                        redemption.attempts += 1
+                        redemption.last_error = str(error)[:1000]
+                        redemption.updated_at = utcnow()
+                        await session.commit()
+                raise
+            return
         try:
             if not neg_risk:
                 payout_rate = await trader.onchain_redemption_payout_rate(
@@ -1672,6 +1725,298 @@ class CopyTradingEngine:
                     timestamp=utcnow(),
                 )
             )
+            await session.commit()
+
+    async def _execute_unified_redemption(self, redemption_id: int) -> None:
+        trader = await self._trader()
+        now = utcnow()
+        async with self.database.sessions() as session:
+            redemption = await session.get(CopyRedemption, redemption_id)
+            account = await session.get(ExecutionAccount, 1)
+            if redemption is None or redemption.status != "pending" or account is None:
+                return
+            if not account.auto_redeem or not account.funder_address:
+                return
+            position = await session.get(CopyPosition, redemption.copy_position_id)
+            if position is None or position.attributed_size <= ZERO:
+                return
+            condition_id = position.condition_id
+            outcome_index = position.outcome_index
+            neg_risk = bool(position.neg_risk)
+            payout_rate = await trader.onchain_redemption_payout_rate(
+                condition_id, outcome_index, neg_risk
+            )
+            if not neg_risk and payout_rate is None:
+                raise TradingUnavailable("等待市场完成链上结算后再自动赎回")
+            if payout_rate is not None and payout_rate <= ZERO:
+                raise TradingUnavailable("链上结算结果没有可赎回金额")
+            if payout_rate is not None:
+                effective_payout_rate = payout_rate
+            elif redemption.payout_usdc is not None and redemption.size > ZERO:
+                effective_payout_rate = redemption.payout_usdc / redemption.size
+            else:
+                effective_payout_rate = ONE
+            estimated_payout = position.attributed_size * effective_payout_rate
+            execution = await session.scalar(
+                select(CopyRedemptionExecution).where(
+                    CopyRedemptionExecution.wallet_address == account.funder_address.lower(),
+                    CopyRedemptionExecution.condition_id == condition_id,
+                )
+            )
+            if execution is not None:
+                redemption.execution_id = execution.id
+                redemption.execution_provider = "unified_sdk"
+                if execution.status in {"submitting", "submitted", "manual_review", "completed"}:
+                    if execution.status == "completed":
+                        redemption.status = "manual_review"
+                        redemption.last_error = (
+                            "同 condition 的统一 SDK 赎回已完成，需要按链上余额人工分账"
+                        )
+                    await session.commit()
+                    return
+            else:
+                execution = CopyRedemptionExecution(
+                    wallet_address=account.funder_address.lower(),
+                    condition_id=condition_id,
+                    method="redeem_positions",
+                    execution_provider="unified_sdk",
+                    status="pending",
+                    estimated_payout_usdc=estimated_payout,
+                    attempts=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(execution)
+                await session.flush()
+                redemption.execution_id = execution.id
+                redemption.execution_provider = "unified_sdk"
+            execution_id = execution.id
+            siblings = list(
+                (
+                    await session.scalars(
+                        select(CopyRedemption)
+                        .join(CopyPosition)
+                        .where(
+                            CopyPosition.condition_id == condition_id,
+                            CopyRedemption.status == "pending",
+                        )
+                    )
+                ).all()
+            )
+            for sibling in siblings:
+                sibling.execution_id = execution.id
+                sibling.execution_provider = "unified_sdk"
+            estimated_payout = sum(
+                (
+                    sibling.payout_usdc
+                    if sibling.payout_usdc is not None
+                    else sibling.size * effective_payout_rate
+                    for sibling in siblings
+                ),
+                ZERO,
+            )
+            attributed_rows = (
+                await session.execute(
+                    select(CopyPosition.asset_id, func.sum(CopyPosition.attributed_size))
+                    .where(
+                        CopyPosition.condition_id == condition_id,
+                        CopyPosition.attributed_size > ZERO,
+                    )
+                    .group_by(CopyPosition.asset_id)
+                )
+            ).all()
+            attributed_by_asset = {
+                str(linked_asset_id): Decimal(linked_size or ZERO)
+                for linked_asset_id, linked_size in attributed_rows
+            }
+            execution.estimated_payout_usdc = estimated_payout
+            execution.updated_at = utcnow()
+            await session.commit()
+
+        redeemable_before = await self.client.fetch_redeemable_positions(account.funder_address)
+        for wallet_position in redeemable_before:
+            if wallet_position.condition_id != condition_id:
+                continue
+            attributed = attributed_by_asset.get(wallet_position.asset_id, ZERO)
+            if not redemption_sizes_match(wallet_position.size, attributed):
+                async with self.database.sessions() as session:
+                    execution = await session.get(CopyRedemptionExecution, execution_id)
+                    assert execution is not None
+                    execution.status = "manual_review"
+                    execution.last_error = "执行钱包含有无法归因的同 condition token"
+                    execution.updated_at = utcnow()
+                    await session.commit()
+                return
+        before_balances = {
+            linked_asset_id: await trader.onchain_outcome_balance(linked_asset_id)
+            for linked_asset_id in attributed_by_asset
+        }
+        before_outcome = sum(before_balances.values(), ZERO)
+        before_pusd = await trader.onchain_collateral_balance()
+        if any(
+            not redemption_sizes_match(before_balances.get(linked_asset_id, ZERO), attributed_size)
+            for linked_asset_id, attributed_size in attributed_by_asset.items()
+        ):
+            async with self.database.sessions() as session:
+                execution = await session.get(CopyRedemptionExecution, execution_id)
+                assert execution is not None
+                execution.status = "manual_review"
+                execution.last_error = "执行钱包含有无法归因的同 outcome token，拒绝全量赎回"
+                execution.before_outcome_balance = before_outcome
+                execution.updated_at = utcnow()
+                await session.commit()
+            return
+
+        async with self.database.sessions() as session:
+            execution = await session.get(CopyRedemptionExecution, execution_id)
+            assert execution is not None
+            execution.status = "submitting"
+            execution.before_outcome_balance = before_outcome
+            execution.before_pusd_balance = before_pusd
+            execution.attempts += 1
+            execution.updated_at = utcnow()
+            await session.commit()
+
+        try:
+            prepared = await trader.start_redemption(
+                condition_id=condition_id,
+                neg_risk=neg_risk,
+            )
+        except Exception as error:
+            async with self.database.sessions() as session:
+                execution = await session.get(CopyRedemptionExecution, execution_id)
+                redemption = await session.get(CopyRedemption, redemption_id)
+                if execution is not None:
+                    execution.status = "manual_review"
+                    execution.last_error = str(error)[:1000]
+                    execution.relayer_transaction_id = getattr(error, "transaction_id", None)
+                    execution.transaction_hash = getattr(error, "transaction_hash", None)
+                    execution.updated_at = utcnow()
+                if redemption is not None:
+                    redemption.status = "manual_review"
+                    redemption.last_error = str(error)[:1000]
+                    redemption.transaction_hash = getattr(error, "transaction_hash", None)
+                    redemption.attempts += 1
+                    redemption.updated_at = utcnow()
+                await session.commit()
+            raise
+
+        async with self.database.sessions() as session:
+            execution = await session.get(CopyRedemptionExecution, execution_id)
+            redemption = await session.get(CopyRedemption, redemption_id)
+            assert execution is not None and redemption is not None
+            execution.status = "submitted"
+            execution.relayer_transaction_id = prepared.transaction_id
+            execution.transaction_hash = prepared.transaction_hash
+            execution.submitted_at = utcnow()
+            execution.updated_at = utcnow()
+            redemption.status = "submitted"
+            redemption.transaction_hash = prepared.transaction_hash
+            redemption.attempts += 1
+            redemption.updated_at = utcnow()
+            await session.commit()
+
+        try:
+            transaction_hash = await trader.wait_redemption(prepared)
+            receipt_ok = await trader.transaction_receipt_success(transaction_hash)
+            after_balances = {
+                linked_asset_id: await trader.onchain_outcome_balance(linked_asset_id)
+                for linked_asset_id in attributed_by_asset
+            }
+            after_outcome = sum(after_balances.values(), ZERO)
+            after_pusd = await trader.onchain_collateral_balance()
+            actual_delta = after_pusd - before_pusd
+            if receipt_ok is not True:
+                raise TradingUnavailable("赎回交易尚未获得成功 receipt")
+            if any(balance > REDEMPTION_SIZE_TOLERANCE for balance in after_balances.values()):
+                raise TradingUnavailable("赎回确认后 outcome token 仍未归零")
+            expected = estimated_payout
+            if abs(actual_delta - expected) > Decimal("0.000001"):
+                raise TradingUnavailable(f"赎回 pUSD 增量 {actual_delta} 与预期 {expected} 不一致")
+            remaining = await self.client.fetch_redeemable_positions(
+                account.funder_address  # type: ignore[union-attr]
+            )
+            if any(item.condition_id == condition_id for item in remaining):
+                raise TradingUnavailable("Data API 仍将 condition token 标记为可赎回")
+        except Exception as error:
+            async with self.database.sessions() as session:
+                execution = await session.get(CopyRedemptionExecution, execution_id)
+                redemption = await session.get(CopyRedemption, redemption_id)
+                if execution is not None:
+                    execution.status = "manual_review"
+                    execution.transaction_hash = (
+                        str(getattr(error, "transaction_hash", None) or prepared.transaction_hash)
+                        if getattr(error, "transaction_hash", None) or prepared.transaction_hash
+                        else None
+                    )
+                    execution.last_error = str(error)[:1000]
+                    execution.updated_at = utcnow()
+                if redemption is not None:
+                    redemption.status = "manual_review"
+                    redemption.transaction_hash = execution.transaction_hash if execution else None
+                    redemption.last_error = str(error)[:1000]
+                    redemption.updated_at = utcnow()
+                await session.commit()
+            raise
+
+        async with self.database.sessions() as session:
+            execution = await session.get(CopyRedemptionExecution, execution_id)
+            assert execution is not None
+            execution.status = "completed"
+            execution.transaction_hash = transaction_hash
+            execution.after_outcome_balance = after_outcome
+            execution.after_pusd_balance = after_pusd
+            execution.actual_pusd_delta = actual_delta
+            execution.completed_at = utcnow()
+            execution.last_error = None
+            execution.updated_at = utcnow()
+            linked = list(
+                (
+                    await session.scalars(
+                        select(CopyRedemption).where(
+                            CopyRedemption.execution_id == execution_id,
+                            CopyRedemption.status.in_(["pending", "submitted"]),
+                        )
+                    )
+                ).all()
+            )
+            if not linked:
+                linked = [await session.get(CopyRedemption, redemption_id)]  # type: ignore[list-item]
+            for item in linked:
+                if item is None:
+                    continue
+                linked_position = await session.get(CopyPosition, item.copy_position_id)
+                if linked_position is None:
+                    continue
+                payout = (
+                    item.payout_usdc
+                    if item.payout_usdc is not None
+                    else linked_position.attributed_size * effective_payout_rate
+                )
+                cost = linked_position.attributed_cost
+                realized = payout - cost
+                item.status = "completed"
+                item.payout_usdc = payout
+                item.transaction_hash = transaction_hash
+                item.last_error = None
+                item.updated_at = utcnow()
+                linked_position.attributed_size = ZERO
+                linked_position.attributed_cost = ZERO
+                linked_position.realized_pnl += realized
+                linked_position.status = "redeemed"
+                linked_position.updated_at = utcnow()
+                session.add(
+                    CopyLedger(
+                        subscription_id=linked_position.subscription_id,
+                        copy_position_id=linked_position.id,
+                        order_id=None,
+                        type="redeem",
+                        amount_usdc=payout,
+                        realized_pnl=realized,
+                        detail="统一 SDK condition 级自动赎回",
+                        timestamp=utcnow(),
+                    )
+                )
             await session.commit()
 
     async def process_redemptions(self, subscription_id: int) -> None:
@@ -1859,7 +2204,7 @@ class CopyTradingEngine:
                         position.updated_at = utcnow()
                 await session.commit()
 
-    async def _trader(self) -> OfficialClobTrader:
+    async def _trader(self) -> UnifiedPolymarketTrader:
         async with self.database.sessions() as session:
             account = await session.get(ExecutionAccount, 1)
         if (
@@ -1876,7 +2221,9 @@ class CopyTradingEngine:
             account.funder_address,
         )
         if self._trader_cache is None or self._trader_cache_key != key:
-            self._trader_cache = OfficialClobTrader(
+            if self._trader_cache is not None:
+                await self._trader_cache.close()
+            self._trader_cache = UnifiedPolymarketTrader(
                 host=self.settings.clob_api_url,
                 keychain=self.keychain,
                 key_reference=KeychainReference(

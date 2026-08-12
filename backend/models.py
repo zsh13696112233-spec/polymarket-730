@@ -247,6 +247,7 @@ class CopyOrder(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="copy")
     signed_order_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    execution_provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
     asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
     condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
     side: Mapped[str] = mapped_column(String(4), nullable=False)
@@ -268,7 +269,7 @@ class CopyOrder(Base):
 
     subscription: Mapped[CopySubscription] = relationship(back_populates="orders")
     fills: Mapped[list[CopyFill]] = relationship(
-        back_populates="order", cascade="all, delete-orphan"
+        back_populates="order", cascade="all, delete-orphan", lazy="selectin"
     )
 
 
@@ -282,6 +283,9 @@ class CopyFill(Base):
     )
     fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
     external_trade_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    transaction_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bucket_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    settlement_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     price: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     amount: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
@@ -312,6 +316,37 @@ class CopyLedger(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class CopyRedemptionExecution(Base):
+    __tablename__ = "copy_redemption_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "wallet_address", "condition_id", name="uq_copy_redemption_execution_wallet_condition"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    wallet_address: Mapped[str] = mapped_column(String(42), nullable=False)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    execution_provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    estimated_payout_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    actual_pusd_delta: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    before_outcome_balance: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    after_outcome_balance: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    before_pusd_balance: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    after_pusd_balance: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    relayer_transaction_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    transaction_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class CopyRedemption(Base):
     __tablename__ = "copy_redemptions"
     __table_args__ = (UniqueConstraint("copy_position_id", name="uq_copy_redemptions_position"),)
@@ -320,10 +355,14 @@ class CopyRedemption(Base):
     copy_position_id: Mapped[int] = mapped_column(
         ForeignKey("copy_positions.id", ondelete="RESTRICT"), nullable=False
     )
+    execution_id: Mapped[int | None] = mapped_column(
+        ForeignKey("copy_redemption_executions.id", ondelete="SET NULL"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
     payout_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     transaction_hash: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    execution_provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

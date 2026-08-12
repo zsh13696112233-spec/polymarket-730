@@ -92,6 +92,13 @@ type CopyOrder = {
   limit_price: Numeric;
   average_fill_price: Numeric | null;
   status: string;
+  execution_provider: string | null;
+  fills: Array<{
+    external_trade_id: string | null;
+    transaction_hash: string | null;
+    bucket_index: number | null;
+    settlement_status: string | null;
+  }>;
   reason: string | null;
   created_at: string;
   tracked_wallet_id: number | null;
@@ -115,6 +122,10 @@ type CopyPosition = {
   attributed_cost: Numeric;
   realized_pnl: Numeric;
   status: string;
+  redemption_status: string | null;
+  redemption_execution_provider: string | null;
+  redemption_transaction_id: string | null;
+  redemption_transaction_hash: string | null;
   average_entry_price: Numeric | null;
   current_bid: Numeric | null;
   current_value: Numeric | null;
@@ -300,6 +311,7 @@ const orderState: Record<string, { label: string; tone: string }> = {
   submitted: { label: "已提交", tone: "processing" },
   reconciliation_pending: { label: "待核对", tone: "danger" },
   interrupted_before_submit: { label: "提交中断", tone: "danger" },
+  manual_review: { label: "人工检查", tone: "danger" },
 };
 
 function cancelledRemainder(order: CopyOrder) {
@@ -599,7 +611,7 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
                   <td className="numeric">{money(order.requested_usdc)}</td>
                   <td className="numeric"><strong>{money(order.filled_usdc)}</strong><small>{number(order.fee_usdc) > 0 ? `费用 ${money(order.fee_usdc)}` : ""}</small></td>
                   <td className="numeric">{price(order.average_fill_price ?? order.reference_price ?? order.limit_price)}</td>
-                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{cancelled && <small>{cancelled}</small>}{order.reason && <small title={order.reason}>{order.reason}</small>}</td>
+                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{order.execution_provider && <small>{order.execution_provider === "unified_sdk" ? "官方 SDK" : "历史执行"} · {order.fills.length} fills</small>}{cancelled && <small>{cancelled}</small>}{order.reason && <small title={order.reason}>{order.reason}</small>}</td>
                 </tr>
               );
             })}

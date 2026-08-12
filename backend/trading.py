@@ -4,27 +4,23 @@ import asyncio
 import dataclasses
 import hashlib
 import json
-import threading
-import time
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from backend.keychain import KeychainReference, MacOSKeychain
+from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.polymarket import OrderBookSnapshot
 
 ZERO = Decimal("0")
-# Small FAK remainders are not retried.  Treat up to 50 cents of residual
-# value as completed in the product while retaining the actual balances.
+BASE_UNITS = Decimal("1000000")
 FAK_IGNORABLE_REMAINDER_USDC = Decimal("0.50")
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-# Polymarket outcome token IDs are CTF positions collateralized by bridged
-# Polygon USDC.e. The V2 order client may report pUSD collateral balances, but
-# passing pUSD to redeemPositions addresses a different, empty CTF position.
-CTF_COLLATERAL_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+COLLATERAL_ADAPTER = "0xAdA100Db00Ca00073811820692005400218FcE1f"
+NEG_RISK_COLLATERAL_ADAPTER = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 V2_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
 V2_NEG_RISK_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
 
@@ -36,9 +32,15 @@ class TradingUnavailable(RuntimeError):
 class RedemptionSubmissionUnknown(TradingUnavailable):
     """A redemption may have been submitted and must not be blindly retried."""
 
-    def __init__(self, message: str, transaction_hash: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        transaction_hash: str | None = None,
+        transaction_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.transaction_hash = transaction_hash
+        self.transaction_id = transaction_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,18 @@ class MarketTradeRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class TradeFillResult:
+    external_trade_id: str
+    size: Decimal
+    price: Decimal
+    amount: Decimal
+    fee_usdc: Decimal
+    transaction_hash: str | None
+    bucket_index: int | None
+    settlement_status: str
+
+
+@dataclass(frozen=True, slots=True)
 class TradeResult:
     status: str
     external_order_id: str | None
@@ -60,6 +74,8 @@ class TradeResult:
     fee_usdc: Decimal = ZERO
     signed_order_hash: str | None = None
     external_trade_id: str | None = None
+    external_trade_ids: tuple[str, ...] = ()
+    fills: tuple[TradeFillResult, ...] = ()
     reason: str | None = None
 
 
@@ -70,31 +86,25 @@ class PreparedMarketOrder:
     signed_order_hash: str
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedRedemption:
+    condition_id: str
+    transaction_id: str | None
+    transaction_hash: str | None
+    handle: Any
+
+
 def is_effectively_filled(
     requested: Decimal,
     filled: Decimal,
     *,
     tolerance: Decimal,
 ) -> bool:
-    """Treat exchange rounding dust as a complete FAK fill.
-
-    The CLOB reports USDC and outcome-token amounts with finite precision.
-    A remainder no greater than the configured ignored value should not be
-    presented as a cancelled partial order.
-    """
     return filled >= requested - tolerance
 
 
-def normalize_fak_result(
-    request: MarketTradeRequest,
-    result: TradeResult,
-) -> TradeResult:
-    """Apply the ignored-remainder rule to every FAK response shape.
-
-    Some submissions return fill amounts immediately, while others must be
-    reconciled through ``get_order``. The response path must not change the
-    product-facing status for the same economic fill.
-    """
+def normalize_fak_result(request: MarketTradeRequest, result: TradeResult) -> TradeResult:
+    """Keep the existing product rule for economically irrelevant FAK dust."""
     if result.status != "partially_filled":
         return result
     requested_fill = result.filled_usdc if request.side == "BUY" else result.filled_size
@@ -109,12 +119,8 @@ def normalize_fak_result(
     return dataclasses.replace(result, status="filled", reason=None)
 
 
-def simulate_market_order(
-    request: MarketTradeRequest,
-    book: OrderBookSnapshot,
-) -> TradeResult:
+def simulate_market_order(request: MarketTradeRequest, book: OrderBookSnapshot) -> TradeResult:
     """Execute once against current depth and cancel any unfilled remainder."""
-
     levels = (
         sorted(book.asks, key=lambda level: level.price)
         if request.side == "BUY"
@@ -161,8 +167,8 @@ def simulate_market_order(
     )
 
 
-class OfficialClobTrader:
-    """Thin adapter around Polymarket's V2 CLOB client and pUSD collateral."""
+class UnifiedPolymarketTrader:
+    """Project boundary around Polymarket's unified async Python SDK."""
 
     def __init__(
         self,
@@ -183,164 +189,432 @@ class OfficialClobTrader:
         self.relayer_url = relayer_url
         self.rpc_url = rpc_url
         self._client: Any | None = None
-        self._client_lock = threading.Lock()
+        self._client_lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            await client.close()
+
+    async def _client_async(self) -> Any:
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._client is not None:
+                return self._client
+            self._client = await self._build_client()
+            return self._client
+
+    async def _build_client(self) -> Any:
+        try:
+            from polymarket import AsyncSecureClient, BuilderApiKey
+        except ImportError as error:
+            raise TradingUnavailable("缺少 polymarket-client==0.5.0，实盘功能不可用") from error
+        if self.signature_type not in {1, 3} or not self.funder_address:
+            raise TradingUnavailable("统一 SDK 实盘只允许 Proxy 或 Deposit Wallet")
+        private_key = self.keychain.get_secret(self.key_reference)
+        api_key = None
+        builder_reference = KeychainReference(
+            service=f"{self.key_reference.service}.builder",
+            account=self.key_reference.account,
+        )
+        try:
+            values = json.loads(self.keychain.get_secret(builder_reference))
+            api_key = BuilderApiKey(
+                key=values["key"],
+                secret=values["secret"],
+                passphrase=values["passphrase"],
+            )
+        except KeychainError:
+            # Orders do not require a Builder key. Gasless wallet operations will
+            # fail closed if the wallet cannot be operated without one.
+            api_key = None
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise TradingUnavailable("Builder 凭证格式无效") from error
+        try:
+            client = await AsyncSecureClient.create(
+                private_key=private_key,
+                wallet=self.funder_address,
+                api_key=api_key,
+            )
+        except Exception as error:
+            raise TradingUnavailable(f"统一 SDK 客户端创建失败：{error}") from error
+        expected_type = {1: "POLY_PROXY", 3: "DEPOSIT_WALLET"}[self.signature_type]
+        if str(client.wallet).lower() != self.funder_address.lower():
+            await client.close()
+            raise TradingUnavailable("SDK 资金钱包与配置地址不一致")
+        if str(client.wallet_type) != expected_type:
+            await client.close()
+            raise TradingUnavailable(f"SDK 钱包类型 {client.wallet_type} 与 signature_type 不一致")
+        return client
+
+    async def signer_address(self) -> str:
+        return str((await self._client_async()).signer).lower()
+
+    async def wallet_type(self) -> str:
+        return str((await self._client_async()).wallet_type)
 
     async def submit_market(self, request: MarketTradeRequest) -> TradeResult:
         prepared = await self.prepare_market(request)
         return await self.submit_prepared_market(prepared)
 
     async def prepare_market(self, request: MarketTradeRequest) -> PreparedMarketOrder:
-        return await asyncio.to_thread(self._prepare_market_sync, request)
+        client = await self._client_async()
+        try:
+            # The pinned SDK owns market metadata resolution. This explicit check
+            # prevents stale local attribution data from changing the exchange used.
+            from polymarket._internal.actions.orders.market_data import fetch_neg_risk
+
+            sdk_neg_risk = await fetch_neg_risk(client._ctx, token_id=request.asset_id)
+            if sdk_neg_risk != request.neg_risk:
+                raise TradingUnavailable("本地 Neg Risk 标记与 SDK 市场元数据不一致")
+            if request.side == "BUY":
+                signed_order = await client.create_market_order(
+                    token_id=request.asset_id,
+                    side="BUY",
+                    amount=request.amount,
+                    max_spend=request.amount,
+                    max_price=request.worst_price,
+                    order_type="FAK",
+                )
+            else:
+                signed_order = await client.create_market_order(
+                    token_id=request.asset_id,
+                    side="SELL",
+                    shares=request.amount,
+                    min_price=request.worst_price,
+                    order_type="FAK",
+                )
+        except TradingUnavailable:
+            raise
+        except Exception as error:
+            raise TradingUnavailable(f"Polymarket 统一 SDK FAK 签名失败：{error}") from error
+        canonical_fields = {
+            field.name: getattr(signed_order, field.name)
+            for field in dataclasses.fields(signed_order)
+            if field.name != "signature"
+        }
+        canonical = json.dumps(canonical_fields, sort_keys=True, separators=(",", ":"), default=str)
+        fingerprint = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+        return PreparedMarketOrder(request, signed_order, fingerprint)
 
     async def submit_prepared_market(self, prepared: PreparedMarketOrder) -> TradeResult:
-        return await asyncio.to_thread(self._submit_prepared_market_sync, prepared)
-
-    def _prepare_market_sync(self, request: MarketTradeRequest) -> PreparedMarketOrder:
+        client = await self._client_async()
         try:
-            from py_clob_client_v2.clob_types import (
-                MarketOrderArgs,
-                OrderType,
-                PartialCreateOrderOptions,
-            )
-        except ImportError as error:
-            raise TradingUnavailable("缺少官方 py-clob-client，实盘下单已拒绝") from error
-
-        try:
-            if self.signature_type not in {1, 3}:
-                raise TradingUnavailable("V2 实盘只允许 Proxy 或 Deposit Wallet")
-            client = self._client_sync()
-            args = MarketOrderArgs(
-                token_id=request.asset_id,
-                amount=float(request.amount),
-                side="BUY" if request.side == "BUY" else "SELL",
-                price=float(request.worst_price),
-                order_type=OrderType.FAK,
-            )
-            options = PartialCreateOrderOptions(neg_risk=request.neg_risk)
-            signed_order = client.create_market_order(args, options)
+            response = await client.post_order(prepared.signed_order)
         except Exception as error:
-            if isinstance(error, TradingUnavailable):
-                raise
-            raise TradingUnavailable(f"Polymarket V2 FAK 签名失败：{error}") from error
-        canonical = json.dumps(
-            dataclasses.asdict(signed_order), sort_keys=True, separators=(",", ":"), default=str
-        )
-        signed_hash = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
-        return PreparedMarketOrder(request, signed_order, signed_hash)
-
-    def _submit_prepared_market_sync(self, prepared: PreparedMarketOrder) -> TradeResult:
-        try:
-            from py_clob_client_v2.clob_types import OrderType
-        except ImportError as error:
-            raise TradingUnavailable("缺少 py-clob-client-v2，实盘下单已拒绝") from error
-        request = prepared.request
-        try:
-            response = self._client_sync().post_order(prepared.signed_order, OrderType.FAK)
-        except Exception as error:
-            raise TradingUnavailable(f"Polymarket V2 FAK 提交结果不明：{error}") from error
-        if not isinstance(response, dict):
-            raise TradingUnavailable("Polymarket 实盘下单返回格式无效")
-        if response.get("success") is False or response.get("errorMsg"):
+            raise TradingUnavailable(f"Polymarket FAK 提交结果不明：{error}") from error
+        if not response.ok and response.code == "not_enough_balance":
+            if await self._repair_missing_order_approval(prepared.request):
+                try:
+                    response = await client.post_order(prepared.signed_order)
+                except Exception as error:
+                    raise TradingUnavailable(f"补授权后 FAK 提交结果不明：{error}") from error
+        if not response.ok:
+            return self._rejected_result(response, prepared.signed_order_hash)
+        trade_ids = tuple(str(value) for value in response.trade_ids)
+        if not trade_ids:
+            # An accepted FAK can be matched before the POST response is enriched
+            # with trade ids. Resolve its associate trades without resubmitting.
+            for attempt in range(10):
+                try:
+                    accepted = await client.get_order(order_id=str(response.order_id))
+                    trade_ids = tuple(str(value) for value in accepted.associate_trades)
+                except Exception:
+                    trade_ids = ()
+                if trade_ids:
+                    response = response.model_copy(update={"trade_ids": trade_ids})
+                    break
+                if attempt < 9:
+                    await asyncio.sleep(0.5)
+        if not trade_ids:
             return TradeResult(
-                status="unfilled",
-                external_order_id=None,
+                status="submitted",
+                external_order_id=str(response.order_id),
                 signed_order_hash=prepared.signed_order_hash,
-                reason=str(response.get("errorMsg") or "Polymarket 拒绝订单"),
+                external_trade_id=None,
+                external_trade_ids=trade_ids,
+                reason="订单已接受，等待成交 ID 和结算对账",
             )
-        order_id = response.get("orderID") or response.get("orderId") or response.get("id")
-        trade_ids = response.get("tradeIDs") or response.get("tradeIds") or []
-        trade_id = str(trade_ids[0]) if isinstance(trade_ids, list) and trade_ids else None
         try:
-            making = Decimal(str(response.get("makingAmount") or 0))
-            taking = Decimal(str(response.get("takingAmount") or 0))
-        except (ArithmeticError, ValueError):
-            making = ZERO
-            taking = ZERO
-        if making > ZERO and taking > ZERO:
-            if request.side == "BUY":
-                filled_size = taking
-                filled_usdc = making
-            else:
-                filled_size = making
-                filled_usdc = taking
-            result = TradeResult(
-                status="partially_filled",
-                external_order_id=str(order_id) if order_id else None,
-                filled_size=filled_size,
-                filled_usdc=filled_usdc,
-                average_price=filled_usdc / filled_size,
-                fee_usdc=self._fee_for_trade_sync(trade_id),
+            await client.wait_for_order_fill_settlement(response)
+        except TimeoutError:
+            return TradeResult(
+                status="submitted",
+                external_order_id=str(response.order_id),
                 signed_order_hash=prepared.signed_order_hash,
-                external_trade_id=trade_id,
-                reason="FAK 部分成交，剩余已取消",
+                external_trade_id=trade_ids[0],
+                external_trade_ids=trade_ids,
+                reason="成交结算超时，等待对账",
             )
-            return normalize_fak_result(request, result)
-        if order_id:
-            try:
-                result = self._order_status_sync(str(order_id))
-                if result.filled_size <= ZERO:
-                    return TradeResult(
-                        status="unfilled",
-                        external_order_id=str(order_id),
-                        signed_order_hash=prepared.signed_order_hash,
-                        reason="FAK 未成交，订单已取消",
-                    )
-                return dataclasses.replace(
-                    result,
-                    signed_order_hash=prepared.signed_order_hash,
-                    external_trade_id=trade_id,
-                    fee_usdc=self._fee_for_trade_sync(trade_id),
-                )
-            except TradingUnavailable:
-                # A successful POST with an order id is not retried. Returning the
-                # accepted id lets the engine reconcile it without duplicating a market order.
-                return TradeResult(
-                    status="submitted",
-                    external_order_id=str(order_id),
-                    signed_order_hash=prepared.signed_order_hash,
-                    external_trade_id=trade_id,
-                )
-        raise TradingUnavailable("FAK 市价订单已提交但没有返回订单编号，结果无法确认")
-
-    async def cancel(self, external_order_id: str) -> None:
-        await asyncio.to_thread(self._cancel_sync, external_order_id)
-
-    async def collateral_balance(self) -> Decimal:
-        return await asyncio.to_thread(self._collateral_balance_sync)
-
-    async def collateral_allowances(self) -> dict[str, Decimal]:
-        return await asyncio.to_thread(self._collateral_allowances_sync)
-
-    async def outcome_balance(self, asset_id: str) -> Decimal:
-        return await asyncio.to_thread(self._outcome_balance_sync, asset_id)
-
-    async def onchain_outcome_balance(self, asset_id: str) -> Decimal:
-        """Read the conditional-token balance from Polygon, independent of CLOB cache."""
-        return await asyncio.to_thread(self._onchain_outcome_balance_sync, asset_id)
-
-    async def onchain_redemption_payout_rate(
-        self,
-        condition_id: str,
-        outcome_index: int | None,
-        neg_risk: bool,
-    ) -> Decimal | None:
-        """Read the finalized CTF payout, or None while resolution is incomplete."""
-        if neg_risk or outcome_index is None:
-            return None
-        return await asyncio.to_thread(
-            self._onchain_redemption_payout_rate_sync,
-            condition_id,
-            outcome_index,
+        except Exception as error:
+            return TradeResult(
+                status="reconciliation_pending",
+                external_order_id=str(response.order_id),
+                signed_order_hash=prepared.signed_order_hash,
+                external_trade_id=trade_ids[0],
+                external_trade_ids=trade_ids,
+                reason=f"成交结算需要人工核对：{error}",
+            )
+        fills = await self._confirmed_fills(trade_ids)
+        if not fills:
+            return TradeResult(
+                status="reconciliation_pending",
+                external_order_id=str(response.order_id),
+                signed_order_hash=prepared.signed_order_hash,
+                external_trade_id=trade_ids[0],
+                external_trade_ids=trade_ids,
+                reason="订单已接受但没有可确认的 fill",
+            )
+        filled_size = sum((fill.size for fill in fills), ZERO)
+        filled_usdc = sum((fill.amount for fill in fills), ZERO)
+        fee_usdc = sum((fill.fee_usdc for fill in fills), ZERO)
+        requested = prepared.request.amount
+        actual = filled_usdc if prepared.request.side == "BUY" else filled_size
+        status = "filled" if actual >= requested else "partially_filled"
+        result = TradeResult(
+            status=status,
+            external_order_id=str(response.order_id),
+            filled_size=filled_size,
+            filled_usdc=filled_usdc,
+            average_price=filled_usdc / filled_size if filled_size else None,
+            fee_usdc=fee_usdc,
+            signed_order_hash=prepared.signed_order_hash,
+            external_trade_id=trade_ids[0],
+            external_trade_ids=trade_ids,
+            fills=fills,
+            reason=("FAK 部分成交，剩余已取消" if status == "partially_filled" else None),
         )
+        return normalize_fak_result(prepared.request, result)
+
+    @staticmethod
+    def _rejected_result(response: Any, fingerprint: str) -> TradeResult:
+        code = str(response.code)
+        status = "blocked" if code == "not_enough_balance" else "unfilled"
+        retryable = code == "market_not_ready"
+        return TradeResult(
+            status=status,
+            external_order_id=None,
+            signed_order_hash=fingerprint,
+            reason=(f"可重试：{response.message}" if retryable else str(response.message)),
+        )
+
+    async def _repair_missing_order_approval(self, request: MarketTradeRequest) -> bool:
+        client = await self._client_async()
+        asset_type = "COLLATERAL" if request.side == "BUY" else "CONDITIONAL"
+        balance = await client.get_balance_allowance(
+            asset_type=asset_type,
+            token_id=None if request.side == "BUY" else request.asset_id,
+        )
+        required = int(request.amount * BASE_UNITS)
+        if balance.balance < required:
+            return False
+        spender = V2_NEG_RISK_EXCHANGE_ADDRESS if request.neg_risk else V2_EXCHANGE_ADDRESS
+        allowance = next(
+            (
+                value
+                for address, value in balance.allowances.items()
+                if address.lower() == spender.lower()
+            ),
+            0,
+        )
+        if allowance >= required:
+            return False
+        try:
+            if request.side == "BUY":
+                handle = await client.approve_erc20(
+                    token_address=PUSD_ADDRESS,
+                    spender_address=spender,
+                    amount="max",
+                    metadata="Approve pUSD for Polymarket V2 order",
+                )
+            else:
+                token = NEG_RISK_ADAPTER if request.neg_risk else CTF_ADDRESS
+                handle = await client.approve_erc1155_for_all(
+                    token_address=token,
+                    operator_address=spender,
+                    metadata="Approve outcome tokens for Polymarket V2 order",
+                )
+            await handle.wait()
+        except Exception as error:
+            raise TradingUnavailable(f"目标 Exchange 授权失败：{error}") from error
+        refreshed = await client.get_balance_allowance(
+            asset_type=asset_type,
+            token_id=None if request.side == "BUY" else request.asset_id,
+        )
+        return any(
+            address.lower() == spender.lower() and value >= required
+            for address, value in refreshed.allowances.items()
+        )
+
+    async def _confirmed_fills(self, trade_ids: tuple[str, ...]) -> tuple[TradeFillResult, ...]:
+        client = await self._client_async()
+        rows: list[TradeFillResult] = []
+        for trade_id in trade_ids:
+            page = await client.list_account_trades(id=trade_id).first_page()
+            trade = next((item for item in page.items if str(item.id) == trade_id), None)
+            if trade is None or str(trade.status).upper() != "CONFIRMED":
+                continue
+            fee = await self._fee_for_trade(trade)
+            rows.append(
+                TradeFillResult(
+                    external_trade_id=trade_id,
+                    size=Decimal(trade.size),
+                    price=Decimal(trade.price),
+                    amount=Decimal(trade.size) * Decimal(trade.price),
+                    fee_usdc=fee,
+                    transaction_hash=(
+                        str(trade.transaction_hash) if trade.transaction_hash else None
+                    ),
+                    bucket_index=int(trade.bucket_index),
+                    settlement_status=str(trade.status).lower(),
+                )
+            )
+        return tuple(rows)
+
+    async def _fee_for_trade(self, trade: Any) -> Decimal:
+        if str(trade.trader_side).upper() != "TAKER":
+            return ZERO
+        try:
+            from polymarket._internal.actions.orders.market_data import fetch_platform_fee_info
+
+            client = await self._client_async()
+            info = await fetch_platform_fee_info(client._ctx, condition_id=trade.condition_id)
+            price = Decimal(trade.price)
+            effective_rate = info.rate * ((price * (Decimal(1) - price)) ** info.exponent)
+            fee = Decimal(trade.size) * effective_rate
+            return fee.quantize(Decimal("0.00001"), rounding=ROUND_DOWN)
+        except Exception as error:
+            raise TradingUnavailable(f"无法计算成交 {trade.id} 的平台费：{error}") from error
 
     async def trade_fee(self, external_trade_id: str) -> Decimal:
-        return await asyncio.to_thread(self._fee_for_trade_sync, external_trade_id)
+        fills = await self._confirmed_fills((external_trade_id,))
+        return fills[0].fee_usdc if fills else ZERO
 
-    async def signer_address(self) -> str:
-        return await asyncio.to_thread(lambda: str(self._client_sync().get_address()).lower())
+    async def collateral_balance(self) -> Decimal:
+        payload = await (await self._client_async()).get_balance_allowance(asset_type="COLLATERAL")
+        return Decimal(payload.balance) / BASE_UNITS
+
+    async def collateral_allowances(self) -> dict[str, Decimal]:
+        payload = await (await self._client_async()).get_balance_allowance(asset_type="COLLATERAL")
+        return {
+            address.lower(): Decimal(value) / BASE_UNITS
+            for address, value in payload.allowances.items()
+        }
+
+    async def ensure_ready_approvals(self) -> None:
+        """Grant only the V2 exchange approvals required by this product."""
+        client = await self._client_async()
+        collateral = await client.get_balance_allowance(asset_type="COLLATERAL")
+        for exchange, token in (
+            (V2_EXCHANGE_ADDRESS, CTF_ADDRESS),
+            (V2_NEG_RISK_EXCHANGE_ADDRESS, NEG_RISK_ADAPTER),
+        ):
+            allowance = next(
+                (
+                    value
+                    for address, value in collateral.allowances.items()
+                    if address.lower() == exchange.lower()
+                ),
+                0,
+            )
+            if allowance <= 0:
+                handle = await client.approve_erc20(
+                    token_address=PUSD_ADDRESS,
+                    spender_address=exchange,
+                    amount="max",
+                    metadata="Approve pUSD for Polymarket V2 exchange",
+                )
+                await handle.wait()
+            if not await self._is_approved_for_all(token, exchange):
+                handle = await client.approve_erc1155_for_all(
+                    token_address=token,
+                    operator_address=exchange,
+                    metadata="Approve outcome tokens for Polymarket V2 exchange",
+                )
+                await handle.wait()
+
+    async def outcome_balance(self, asset_id: str) -> Decimal:
+        payload = await (await self._client_async()).get_balance_allowance(
+            asset_type="CONDITIONAL", token_id=asset_id
+        )
+        return Decimal(payload.balance) / BASE_UNITS
 
     async def order_status(self, external_order_id: str) -> TradeResult:
-        return await asyncio.to_thread(self._order_status_sync, external_order_id)
+        try:
+            order = await (await self._client_async()).get_order(order_id=external_order_id)
+        except Exception as error:
+            raise TradingUnavailable(f"无法同步统一 SDK 订单：{error}") from error
+        matched = Decimal(order.size_matched)
+        price = Decimal(order.price)
+        original = Decimal(order.original_size)
+        status = str(order.status).lower()
+        if matched >= original > ZERO:
+            status = "filled"
+        elif matched > ZERO:
+            status = "partially_filled"
+        return TradeResult(
+            status=status,
+            external_order_id=external_order_id,
+            filled_size=matched,
+            filled_usdc=matched * price,
+            average_price=price if matched else None,
+        )
+
+    async def cancel(self, external_order_id: str) -> None:
+        try:
+            await (await self._client_async()).cancel_order(order_id=external_order_id)
+        except Exception as error:
+            raise TradingUnavailable(f"Polymarket 实盘撤单失败：{error}") from error
+
+    async def start_redemption(
+        self,
+        *,
+        condition_id: str,
+        neg_risk: bool,
+    ) -> PreparedRedemption:
+        client = await self._client_async()
+        token = NEG_RISK_ADAPTER if neg_risk else CTF_ADDRESS
+        adapter = NEG_RISK_COLLATERAL_ADAPTER if neg_risk else COLLATERAL_ADAPTER
+        if not await self._is_approved_for_all(token, adapter):
+            try:
+                approval = await client.approve_erc1155_for_all(
+                    token_address=token,
+                    operator_address=adapter,
+                    metadata="Approve attributable outcome tokens for redemption",
+                )
+                await approval.wait()
+            except Exception as error:
+                raise TradingUnavailable(f"赎回 Adapter 授权失败：{error}") from error
+            if not await self._is_approved_for_all(token, adapter):
+                raise TradingUnavailable("赎回 Adapter 授权确认后仍未生效")
+        try:
+            handle = await client.redeem_positions(condition_id=condition_id)
+        except Exception as error:
+            raise RedemptionSubmissionUnknown(f"自动赎回提交结果不明：{error}") from error
+        return PreparedRedemption(
+            condition_id=condition_id,
+            transaction_id=getattr(handle, "transaction_id", None),
+            transaction_hash=getattr(handle, "transaction_hash", None),
+            handle=handle,
+        )
+
+    async def wait_redemption(self, prepared: PreparedRedemption) -> str:
+        try:
+            outcome = await prepared.handle.wait()
+        except Exception as error:
+            raise RedemptionSubmissionUnknown(
+                f"自动赎回结果待确认：{error}",
+                prepared.transaction_hash,
+                prepared.transaction_id,
+            ) from error
+        transaction_hash = getattr(outcome, "transaction_hash", None) or prepared.transaction_hash
+        if not transaction_hash:
+            raise RedemptionSubmissionUnknown(
+                "自动赎回确认结果没有交易哈希",
+                transaction_id=prepared.transaction_id,
+            )
+        return str(transaction_hash)
 
     async def redeem(
         self,
@@ -350,128 +624,83 @@ class OfficialClobTrader:
         outcome_index: int | None,
         neg_risk: bool,
     ) -> str:
-        return await asyncio.to_thread(
-            self._redeem_sync,
-            condition_id,
-            size,
-            outcome_index,
-            neg_risk,
+        del size, outcome_index
+        return await self.wait_redemption(
+            await self.start_redemption(condition_id=condition_id, neg_risk=neg_risk)
         )
 
-    def _client_sync(self) -> Any:
-        if self._client is not None:
-            return self._client
-        with self._client_lock:
-            if self._client is not None:
-                return self._client
-            self._client = self._build_client_sync()
-            return self._client
-
-    def _build_client_sync(self) -> Any:
-        try:
-            from py_clob_client_v2.client import ClobClient
-            from py_clob_client_v2.constants import POLYGON
-        except ImportError as error:
-            raise TradingUnavailable("缺少 py-clob-client-v2，实盘功能不可用") from error
-        if self.signature_type not in {1, 3}:
-            raise TradingUnavailable("V2 实盘只允许 Proxy 或 Deposit Wallet")
-        if not self.funder_address:
-            raise TradingUnavailable("V2 实盘必须配置 Proxy 资金钱包地址")
-        private_key = self.keychain.get_secret(self.key_reference)
-        kwargs: dict[str, Any] = {
-            "host": self.host,
-            "key": private_key,
-            "chain_id": POLYGON,
-            "signature_type": self.signature_type,
-        }
-        if self.funder_address:
-            kwargs["funder"] = self.funder_address
-        client = ClobClient(**kwargs)
-        client.set_api_creds(client.create_or_derive_api_key())
-        return client
-
-    def _collateral_balance_sync(self) -> Decimal:
-        try:
-            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
-        except ImportError as error:
-            raise TradingUnavailable("官方客户端不支持余额查询") from error
-        try:
-            payload = self._client_sync().get_balance_allowance(
-                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-            )
-            raw = payload.get("balance") if isinstance(payload, dict) else None
-            balance = Decimal(str(raw))
-        except Exception as error:
-            raise TradingUnavailable(f"无法验证执行钱包余额：{error}") from error
-        # The CLOB endpoint currently returns collateral in six-decimal base units.
-        return balance / Decimal("1000000")
-
-    def _collateral_allowances_sync(self) -> dict[str, Decimal]:
-        try:
-            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
-
-            payload = self._client_sync().get_balance_allowance(
-                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-            )
-            raw = payload.get("allowances", {}) if isinstance(payload, dict) else {}
-            if not isinstance(raw, dict):
-                return {}
-            return {
-                str(address).lower(): Decimal(str(value)) / Decimal("1000000")
-                for address, value in raw.items()
-            }
-        except Exception as error:
-            raise TradingUnavailable(f"无法验证 pUSD 授权：{error}") from error
-
-    def _outcome_balance_sync(self, asset_id: str) -> Decimal:
-        try:
-            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
-        except ImportError as error:
-            raise TradingUnavailable("官方 V2 客户端不支持 outcome token 余额查询") from error
-        try:
-            payload = self._client_sync().get_balance_allowance(
-                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=asset_id)
-            )
-            raw = payload.get("balance") if isinstance(payload, dict) else None
-            return Decimal(str(raw)) / Decimal("1000000")
-        except Exception as error:
-            raise TradingUnavailable(f"无法验证 outcome token 余额：{error}") from error
-
-    def _onchain_outcome_balance_sync(self, asset_id: str) -> Decimal:
-        funder = (self.funder_address or "").removeprefix("0x").lower()
-        if len(funder) != 40:
-            raise TradingUnavailable("缺少可用于链上对账的执行资金地址")
+    async def onchain_outcome_balance(self, asset_id: str) -> Decimal:
+        wallet = self._validated_wallet_hex()
         try:
             token_id = int(asset_id)
         except ValueError as error:
             raise TradingUnavailable("outcome token id 无效，无法链上对账") from error
-        data = "0x00fdd58e" + f"{int(funder, 16):064x}{token_id:064x}"
-        return Decimal(self._rpc_uint_call_sync(data)) / Decimal("1000000")
+        data = "0x00fdd58e" + f"{wallet:064x}{token_id:064x}"
+        return Decimal(await self._rpc_uint_call(CTF_ADDRESS, data)) / BASE_UNITS
 
-    def _onchain_redemption_payout_rate_sync(
+    def _onchain_outcome_balance_sync(self, asset_id: str) -> Decimal:
+        """Synchronous verifier retained for diagnostics and focused unit tests."""
+        wallet = self._validated_wallet_hex()
+        try:
+            token_id = int(asset_id)
+        except ValueError as error:
+            raise TradingUnavailable("outcome token id 无效，无法链上对账") from error
+        data = "0x00fdd58e" + f"{wallet:064x}{token_id:064x}"
+        result = self._rpc_sync("eth_call", [{"to": CTF_ADDRESS, "data": data}, "latest"])
+        return Decimal(int(str(result or "0x0"), 16)) / BASE_UNITS
+
+    async def onchain_collateral_balance(self) -> Decimal:
+        wallet = self._validated_wallet_hex()
+        data = "0x70a08231" + f"{wallet:064x}"
+        return Decimal(await self._rpc_uint_call(PUSD_ADDRESS, data)) / BASE_UNITS
+
+    async def onchain_redemption_payout_rate(
         self,
         condition_id: str,
-        outcome_index: int,
+        outcome_index: int | None,
+        neg_risk: bool,
     ) -> Decimal | None:
+        if neg_risk or outcome_index is None:
+            return None
         normalized = condition_id.removeprefix("0x")
-        if len(normalized) != 64:
-            raise TradingUnavailable("赎回 condition id 无效，无法验证链上结算")
-        if outcome_index < 0:
-            raise TradingUnavailable("赎回 outcome index 无效，无法验证链上结算")
-        denominator = self._rpc_uint_call_sync(f"0xdd34de67{normalized}")
+        if len(normalized) != 64 or outcome_index < 0:
+            raise TradingUnavailable("赎回 condition/outcome 无效，无法验证链上结算")
+        denominator = await self._rpc_uint_call(CTF_ADDRESS, f"0xdd34de67{normalized}")
         if denominator <= 0:
             return None
-        numerator = self._rpc_uint_call_sync(f"0x0504c814{normalized}{outcome_index:064x}")
+        numerator = await self._rpc_uint_call(
+            CTF_ADDRESS, f"0x0504c814{normalized}{outcome_index:064x}"
+        )
         return Decimal(numerator) / Decimal(denominator)
 
-    def _rpc_uint_call_sync(self, data: str) -> int:
+    async def transaction_receipt_success(self, transaction_hash: str) -> bool | None:
+        receipt = await self._rpc("eth_getTransactionReceipt", [transaction_hash])
+        if receipt is None:
+            return None
+        return int(str(receipt.get("status") or "0x0"), 16) == 1
+
+    async def _is_approved_for_all(self, token: str, operator: str) -> bool:
+        owner = self._validated_wallet_hex()
+        operator_int = int(operator.removeprefix("0x"), 16)
+        data = "0xe985e9c5" + f"{owner:064x}{operator_int:064x}"
+        return bool(await self._rpc_uint_call(token, data))
+
+    def _validated_wallet_hex(self) -> int:
+        normalized = (self.funder_address or "").removeprefix("0x")
+        if len(normalized) != 40:
+            raise TradingUnavailable("缺少可用于链上对账的执行钱包地址")
+        return int(normalized, 16)
+
+    async def _rpc_uint_call(self, to: str, data: str) -> int:
+        result = await self._rpc("eth_call", [{"to": to, "data": data}, "latest"])
+        return int(str(result or "0x0"), 16)
+
+    async def _rpc(self, method: str, params: list[Any]) -> Any:
+        return await asyncio.to_thread(self._rpc_sync, method, params)
+
+    def _rpc_sync(self, method: str, params: list[Any]) -> Any:
         payload = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "eth_call",
-                "params": [{"to": CTF_ADDRESS, "data": data}, "latest"],
-            }
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         ).encode()
         request = Request(
             self.rpc_url,
@@ -483,275 +712,10 @@ class OfficialClobTrader:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=15) as response:  # noqa: S310 - configured RPC endpoint
-                response_payload = json.loads(response.read().decode())
-            if response_payload.get("error"):
-                raise TradingUnavailable(f"Polygon RPC 链上对账失败：{response_payload['error']}")
-            return int(str(response_payload.get("result") or "0x0"), 16)
+            with urlopen(request, timeout=15) as response:  # noqa: S310
+                body = json.loads(response.read().decode())
         except (OSError, URLError, ValueError, json.JSONDecodeError) as error:
             raise TradingUnavailable(f"无法读取 Polygon 链上状态：{error}") from error
-
-    def _fee_for_trade_sync(self, trade_id: str | None) -> Decimal:
-        if not trade_id:
-            return ZERO
-        try:
-            from py_clob_client_v2.clob_types import TradeParams
-
-            payload = self._client_sync().get_trades(TradeParams(id=trade_id))
-            rows = payload.get("trades", []) if isinstance(payload, dict) else []
-            row = next((item for item in rows if isinstance(item, dict)), None)
-            if row is None:
-                return ZERO
-            for key in ("fee_usdc", "feeAmount", "fee_amount", "taker_fee"):
-                raw = row.get(key)
-                if raw not in (None, ""):
-                    fee = Decimal(str(raw))
-                    return fee / Decimal("1000000") if fee >= Decimal("1000") else fee
-            fee_bps = Decimal(str(row.get("fee_rate_bps") or row.get("feeRateBps") or 0))
-            size = Decimal(str(row.get("size") or row.get("matched_size") or 0))
-            price = Decimal(str(row.get("price") or 0))
-            return size * price * fee_bps / Decimal("10000")
-        except Exception:
-            # The order remains reconcilable by trade id. A later status refresh can
-            # fill the fee rather than inventing a value.
-            return ZERO
-
-    def _order_status_sync(self, external_order_id: str) -> TradeResult:
-        try:
-            payload = self._client_sync().get_order(external_order_id)
-        except Exception as error:
-            raise TradingUnavailable(f"无法同步实盘订单：{error}") from error
-        if not isinstance(payload, dict):
-            raise TradingUnavailable("实盘订单状态返回格式无效")
-        matched = Decimal(str(payload.get("size_matched") or payload.get("sizeMatched") or 0))
-        price = Decimal(str(payload.get("price") or 0))
-        raw_status = str(payload.get("status") or "open").lower()
-        status_map = {
-            "live": "open",
-            "matched": "filled",
-            "canceled": "canceled",
-            "cancelled": "canceled",
-        }
-        status = status_map.get(raw_status, raw_status)
-        original = Decimal(str(payload.get("original_size") or payload.get("originalSize") or 0))
-        if original > ZERO and matched >= original:
-            status = "filled"
-        elif matched > ZERO and original > matched:
-            status = "partially_filled"
-        elif matched > ZERO and status == "open":
-            status = "partially_filled"
-        return TradeResult(
-            status=status,
-            external_order_id=external_order_id,
-            filled_size=matched,
-            filled_usdc=matched * price,
-            average_price=price if matched > ZERO else None,
-        )
-
-    @staticmethod
-    def _redemption_call(
-        condition_id: str,
-        size: Decimal,
-        outcome_index: int | None,
-        neg_risk: bool,
-    ) -> tuple[str, str]:
-        try:
-            from eth_abi import encode
-            from eth_utils import keccak
-        except ImportError as error:
-            raise TradingUnavailable("缺少赎回交易编码依赖") from error
-        normalized = condition_id.removeprefix("0x")
-        if len(normalized) != 64:
-            raise TradingUnavailable("赎回 condition id 无效")
-        condition_bytes = bytes.fromhex(normalized)
-        if neg_risk:
-            raw_amount = int((size * Decimal("1000000")).to_integral_value())
-            amounts = [0, 0]
-            index = outcome_index if outcome_index in {0, 1} else 0
-            amounts[index] = raw_amount
-            signature = "redeemPositions(bytes32,uint256[])"
-            arguments = encode(["bytes32", "uint256[]"], [condition_bytes, amounts])
-            destination = NEG_RISK_ADAPTER
-        else:
-            signature = "redeemPositions(address,bytes32,bytes32,uint256[])"
-            arguments = encode(
-                ["address", "bytes32", "bytes32", "uint256[]"],
-                [CTF_COLLATERAL_ADDRESS, bytes(32), condition_bytes, [1, 2]],
-            )
-            destination = CTF_ADDRESS
-        data = "0x" + (keccak(text=signature)[:4] + arguments).hex()
-        return destination, data
-
-    def _redeem_sync(
-        self,
-        condition_id: str,
-        size: Decimal,
-        outcome_index: int | None,
-        neg_risk: bool,
-    ) -> str:
-        destination, data = self._redemption_call(
-            condition_id,
-            size,
-            outcome_index,
-            neg_risk,
-        )
-        private_key = self.keychain.get_secret(self.key_reference)
-        if self.signature_type == 0:
-            return self._redeem_eoa(private_key, destination, data)
-        if self.signature_type not in {1, 3}:
-            raise TradingUnavailable("自动赎回只支持 EOA、Proxy 或 Deposit Wallet")
-        try:
-            from py_builder_relayer_client.client import RelayClient
-            from py_builder_relayer_client.models import (
-                DepositWalletCall,
-                RelayerTxType,
-                Transaction,
-                TransactionType,
-            )
-            from py_builder_signing_sdk.config import BuilderApiKeyCreds, BuilderConfig
-        except ImportError as error:
-            raise TradingUnavailable("缺少官方 Builder Relayer 客户端") from error
-        builder_reference = KeychainReference(
-            service=f"{self.key_reference.service}.builder",
-            account=self.key_reference.account,
-        )
-        try:
-            values = json.loads(self.keychain.get_secret(builder_reference))
-            credentials = BuilderApiKeyCreds(
-                key=values["key"],
-                secret=values["secret"],
-                passphrase=values["passphrase"],
-            )
-        except (KeyError, TypeError, ValueError) as error:
-            raise TradingUnavailable("Builder 凭证格式无效") from error
-        client_kwargs: dict[str, Any] = {
-            "private_key": private_key,
-            "builder_config": BuilderConfig(local_builder_creds=credentials),
-            "rpc_url": self.rpc_url,
-        }
-        if self.signature_type == 1:
-            client_kwargs["relay_tx_type"] = RelayerTxType.PROXY
-        try:
-            client = RelayClient(
-                self.relayer_url,
-                137,
-                **client_kwargs,
-            )
-        except Exception as error:
-            raise TradingUnavailable(f"自动赎回准备失败：{error}") from error
-        try:
-            if self.signature_type == 1:
-                response = client.execute(
-                    [Transaction(to=destination, data=data, value="0")],
-                    "自动赎回策略持仓",
-                )
-            else:
-                assert self.funder_address is not None
-                expected_wallet = client.get_expected_deposit_wallet()
-                if expected_wallet.lower() != self.funder_address.lower():
-                    raise TradingUnavailable("Deposit Wallet 资金地址与签名地址推导结果不一致")
-                if not client.get_deployed(
-                    self.funder_address,
-                    TransactionType.WALLET.value,
-                ):
-                    raise TradingUnavailable("Deposit Wallet 尚未部署")
-                nonce_payload = client.get_nonce(
-                    client.signer.address(),
-                    TransactionType.WALLET.value,
-                )
-                nonce = nonce_payload.get("nonce") if isinstance(nonce_payload, dict) else None
-                if nonce is None:
-                    raise TradingUnavailable("Deposit Wallet 自动赎回无法获取 nonce")
-                response = client.execute_deposit_wallet_batch(
-                    [DepositWalletCall(target=destination, data=data, value="0")],
-                    wallet_address=self.funder_address,
-                    nonce=str(nonce),
-                    deadline=str(int(time.time()) + 600),
-                )
-        except Exception as error:
-            if isinstance(error, TradingUnavailable):
-                raise
-            raise TradingUnavailable(f"自动赎回提交失败：{error}") from error
-        response_hash = getattr(response, "transaction_hash", None)
-        try:
-            result = response.wait()
-        except Exception as error:
-            raise RedemptionSubmissionUnknown(
-                f"自动赎回结果待确认：{error}",
-                str(response_hash) if response_hash else None,
-            ) from error
-        if result is None:
-            raise RedemptionSubmissionUnknown(
-                "自动赎回未在等待窗口内确认",
-                str(response_hash) if response_hash else None,
-            )
-        transaction_hash = (
-            result.get("transactionHash") if isinstance(result, dict) else None
-        ) or response_hash
-        if not transaction_hash:
-            raise TradingUnavailable("自动赎回没有返回交易哈希")
-        return str(transaction_hash)
-
-    def _redeem_eoa(self, private_key: str, destination: str, data: str) -> str:
-        try:
-            import requests
-            from eth_account import Account
-        except ImportError as error:
-            raise TradingUnavailable("缺少 EOA 赎回依赖") from error
-        account = Account.from_key(private_key)
-        if self.funder_address and account.address.lower() != self.funder_address.lower():
-            raise TradingUnavailable("EOA 签名地址与资金地址不一致，拒绝赎回")
-
-        def rpc(method: str, params: list[Any]) -> Any:
-            response = requests.post(
-                self.rpc_url,
-                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-                timeout=15,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if payload.get("error"):
-                raise TradingUnavailable(f"Polygon RPC 拒绝赎回：{payload['error']}")
-            return payload.get("result")
-
-        try:
-            nonce = int(rpc("eth_getTransactionCount", [account.address, "pending"]), 16)
-            gas_price = int(rpc("eth_gasPrice", []), 16)
-            transaction = {
-                "chainId": 137,
-                "from": account.address,
-                "to": destination,
-                "nonce": nonce,
-                "gasPrice": gas_price,
-                "value": 0,
-                "data": data,
-            }
-            estimate = int(rpc("eth_estimateGas", [transaction]), 16)
-            transaction["gas"] = max(100_000, estimate * 12 // 10)
-            signed = Account.sign_transaction(transaction, private_key)
-            raw = getattr(signed, "raw_transaction", None) or getattr(
-                signed, "rawTransaction", None
-            )
-            if raw is None:
-                raise TradingUnavailable("签名库没有返回原始交易")
-            raw_hex = raw.hex().removeprefix("0x")
-            transaction_hash = rpc("eth_sendRawTransaction", ["0x" + raw_hex])
-            for _ in range(30):
-                receipt = rpc("eth_getTransactionReceipt", [transaction_hash])
-                if receipt is not None:
-                    if int(receipt.get("status", "0x0"), 16) != 1:
-                        raise TradingUnavailable("自动赎回链上执行失败")
-                    return str(transaction_hash)
-                time.sleep(2)
-        except TradingUnavailable:
-            raise
-        except Exception as error:
-            raise TradingUnavailable(f"EOA 自动赎回失败：{error}") from error
-        raise TradingUnavailable("EOA 自动赎回未在等待窗口内确认")
-
-    def _cancel_sync(self, external_order_id: str) -> None:
-        try:
-            client = self._client_sync()
-            client.cancel(external_order_id)
-        except Exception as error:
-            raise TradingUnavailable(f"Polymarket 实盘撤单失败：{error}") from error
+        if body.get("error"):
+            raise TradingUnavailable(f"Polygon RPC 链上对账失败：{body['error']}")
+        return body.get("result")

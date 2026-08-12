@@ -150,6 +150,10 @@ class CopyPositionRead(APIModel):
     reserved_buy_usdc: DecimalNumber
     realized_pnl: DecimalNumber
     status: str
+    redemption_status: str | None = None
+    redemption_execution_provider: str | None = None
+    redemption_transaction_id: str | None = None
+    redemption_transaction_hash: str | None = None
     updated_at: datetime
     average_entry_price: DecimalNumber | None = None
     current_bid: DecimalNumber | None = None
@@ -170,6 +174,17 @@ class CopyPositionRead(APIModel):
         return _as_utc_iso(value)
 
 
+class CopyFillRead(APIModel):
+    external_trade_id: str | None
+    transaction_hash: str | None
+    bucket_index: int | None
+    settlement_status: str | None
+    size: DecimalNumber
+    price: DecimalNumber
+    amount: DecimalNumber
+    fee_usdc: DecimalNumber
+
+
 class CopyOrderRead(APIModel):
     id: int
     subscription_id: int | None
@@ -178,6 +193,7 @@ class CopyOrderRead(APIModel):
     side: Literal["BUY", "SELL"]
     source: Literal["copy", "rehearsal"]
     signed_order_hash: str | None
+    execution_provider: str | None
     requested_size: DecimalNumber
     requested_usdc: DecimalNumber
     leader_purchase_usdc: DecimalNumber | None
@@ -191,6 +207,7 @@ class CopyOrderRead(APIModel):
     reason: str | None
     external_order_id: str | None
     external_trade_id: str | None
+    fills: list[CopyFillRead] = Field(default_factory=list)
     created_at: datetime
 
     @field_serializer("created_at", when_used="json")

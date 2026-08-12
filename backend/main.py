@@ -27,6 +27,8 @@ from backend.models import (
     CopyLedger,
     CopyOrder,
     CopyPosition,
+    CopyRedemption,
+    CopyRedemptionExecution,
     CopySubscription,
     CurrentPosition,
     ExecutionAccount,
@@ -101,8 +103,8 @@ from backend.trading import (
     V2_EXCHANGE_ADDRESS,
     V2_NEG_RISK_EXCHANGE_ADDRESS,
     MarketTradeRequest,
-    OfficialClobTrader,
     TradingUnavailable,
+    UnifiedPolymarketTrader,
 )
 
 
@@ -321,6 +323,28 @@ async def workspace_position_reads(
     wallet_by_subscription: dict[int, WatchedWallet],
 ) -> tuple[list[CopyWorkspacePositionRead], CopyPortfolioSummaryRead]:
     position_ids = [position.id for position in positions]
+    redemption_by_position: dict[int, tuple[str, str | None, str | None, str | None]] = {}
+    if position_ids:
+        redemption_rows = (
+            await session.execute(
+                select(
+                    CopyRedemption.copy_position_id,
+                    CopyRedemption.status,
+                    CopyRedemption.execution_provider,
+                    CopyRedemptionExecution.relayer_transaction_id,
+                    CopyRedemption.transaction_hash,
+                )
+                .outerjoin(
+                    CopyRedemptionExecution,
+                    CopyRedemptionExecution.id == CopyRedemption.execution_id,
+                )
+                .where(CopyRedemption.copy_position_id.in_(position_ids))
+            )
+        ).all()
+        redemption_by_position = {
+            int(position_id): (status, provider, transaction_id, transaction_hash)
+            for position_id, status, provider, transaction_id, transaction_hash in redemption_rows
+        }
     fill_totals: dict[int, dict[str, Decimal]] = {}
     if position_ids:
         aggregate_rows = (
@@ -404,6 +428,7 @@ async def workspace_position_reads(
             valuation_status = "not_applicable"
             position_valued_at = None
         position_payload = CopyPositionRead.model_validate(position).model_dump()
+        redemption_audit = redemption_by_position.get(position.id)
         result.append(
             CopyWorkspacePositionRead.model_validate(
                 {
@@ -424,6 +449,16 @@ async def workspace_position_reads(
                     "lifetime_average_buy_price": lifetime_average_buy_price,
                     "valuation_status": valuation_status,
                     "valued_at": position_valued_at,
+                    "redemption_status": redemption_audit[0] if redemption_audit else None,
+                    "redemption_execution_provider": (
+                        redemption_audit[1] if redemption_audit else None
+                    ),
+                    "redemption_transaction_id": (
+                        redemption_audit[2] if redemption_audit else None
+                    ),
+                    "redemption_transaction_hash": (
+                        redemption_audit[3] if redemption_audit else None
+                    ),
                 }
             )
         )
@@ -1103,7 +1138,7 @@ def create_app(
             account = await session.get(ExecutionAccount, 1)
             if account is None or not account.keychain_service or not account.keychain_account:
                 raise HTTPException(status_code=409, detail="请先配置执行账户和钥匙串密钥")
-            trader = OfficialClobTrader(
+            trader = UnifiedPolymarketTrader(
                 host=settings_for_request.clob_api_url,
                 keychain=keychain,
                 key_reference=KeychainReference(
@@ -1117,13 +1152,20 @@ def create_app(
             )
             execution_wallet = await session.get(WatchedWallet, account.wallet_id)
             try:
-                signer_address, balance, allowances = await asyncio.gather(
+                await trader.ensure_ready_approvals()
+                signer_address, wallet_type, balance, allowances = await asyncio.gather(
                     trader.signer_address(),
+                    trader.wallet_type(),
                     trader.collateral_balance(),
                     trader.collateral_allowances(),
                 )
                 if signer_address != (account.signer_address or "").lower():
                     raise TradingUnavailable("钥匙串私钥与配置的签名地址不一致")
+                expected_wallet_type = {1: "POLY_PROXY", 3: "DEPOSIT_WALLET"}.get(
+                    account.signature_type
+                )
+                if wallet_type != expected_wallet_type:
+                    raise TradingUnavailable("SDK 钱包类型与 signature_type 配置不一致")
                 if (
                     execution_wallet is None
                     or (account.funder_address or "").lower()
@@ -1144,6 +1186,8 @@ def create_app(
                 account.updated_at = utcnow()
                 await session.commit()
                 raise HTTPException(status_code=502, detail=str(error)) from error
+            finally:
+                await trader.close()
             account.collateral_balance = balance
             account.last_balance_at = utcnow()
             account.status = (
@@ -1274,7 +1318,7 @@ def create_app(
                 or not account.keychain_account
             ):
                 raise HTTPException(status_code=409, detail="V2 执行钱包当前不可用")
-            trader = OfficialClobTrader(
+            trader = UnifiedPolymarketTrader(
                 host=settings_for_request.clob_api_url,
                 keychain=keychain,
                 key_reference=KeychainReference(
@@ -1288,6 +1332,7 @@ def create_app(
             )
         book = await request.app.state.polymarket_client.fetch_order_book(preview.asset_id)
         if book.best_ask is None:
+            await trader.close()
             raise HTTPException(status_code=409, detail="市场已不再开放交易")
         worst_price = min(
             Decimal("0.99"),
@@ -1309,6 +1354,7 @@ def create_app(
             idempotency_key=f"rehearsal:{payload.confirmation_id}",
             source="rehearsal",
             signed_order_hash=None,
+            execution_provider="unified_sdk",
             asset_id=preview.asset_id,
             condition_id=preview.condition_id,
             side="BUY",
@@ -1351,6 +1397,7 @@ def create_app(
                 planned.reason = str(error)[:1000]
                 planned.updated_at = utcnow()
                 await session.commit()
+            await trader.close()
             raise HTTPException(
                 status_code=502,
                 detail="演练提交结果待对账；系统不会自动重试",
@@ -1366,6 +1413,7 @@ def create_app(
         await request.app.state.copy_engine._apply_result(order_id, result)
         total_spent = result.filled_usdc + result.fee_usdc
         if total_spent > preview.max_total_usdc:
+            await trader.close()
             raise HTTPException(
                 status_code=500,
                 detail=(f"演练订单超过 {preview.max_total_usdc} USDC 硬上限，已标记审计"),
@@ -1390,8 +1438,11 @@ def create_app(
                 completed.reason = "订单成交与 pUSD/outcome token 余额尚未一致"
                 completed.updated_at = utcnow()
                 await session.commit()
+                await trader.close()
                 raise HTTPException(status_code=502, detail=completed.reason)
-            return CopyOrderRead.model_validate(completed)
+            response = CopyOrderRead.model_validate(completed)
+            await trader.close()
+            return response
 
     @application.get(
         "/api/copy-trading/subscriptions",
@@ -1690,7 +1741,7 @@ def create_app(
             "unfilled": ["unfilled"],
             "skipped": ["skipped", "blocked"],
             "processing": ["planned", "signed", "submitted"],
-            "attention": ["reconciliation_pending", "interrupted_before_submit"],
+            "attention": ["reconciliation_pending", "interrupted_before_submit", "manual_review"],
         }
         if status_group is not None and status_group not in status_groups:
             raise HTTPException(status_code=422, detail="记录状态筛选无效")

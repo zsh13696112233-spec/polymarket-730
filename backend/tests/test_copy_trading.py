@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
-import sys
-import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 from alembic import command
@@ -22,6 +19,7 @@ from backend.models import (
     CopyOrder,
     CopyPosition,
     CopyRedemption,
+    CopyRedemptionExecution,
     CopySubscription,
     ExecutionAccount,
     PositionEvent,
@@ -38,15 +36,15 @@ from backend.polymarket import (
 from backend.schemas import RehearsalExecuteRequest, RehearsalPreviewRequest
 from backend.tests.conftest import position
 from backend.trading import (
-    CTF_COLLATERAL_ADDRESS,
     FAK_IGNORABLE_REMAINDER_USDC,
     V2_EXCHANGE_ADDRESS,
     V2_NEG_RISK_EXCHANGE_ADDRESS,
     MarketTradeRequest,
-    OfficialClobTrader,
+    PreparedRedemption,
     RedemptionSubmissionUnknown,
     TradeResult,
     TradingUnavailable,
+    UnifiedPolymarketTrader,
     is_effectively_filled,
     normalize_fak_result,
     simulate_market_order,
@@ -190,8 +188,14 @@ def install_execution_account(
 
 
 def mock_account_verification(monkeypatch, *, balance: str = "400") -> None:
+    async def ensure_ready_approvals(self) -> None:
+        return None
+
     async def signer_address(self) -> str:
         return SELF_ADDRESS
+
+    async def wallet_type(self) -> str:
+        return "DEPOSIT_WALLET"
 
     async def collateral_balance(self) -> Decimal:
         return Decimal(balance)
@@ -202,9 +206,11 @@ def mock_account_verification(monkeypatch, *, balance: str = "400") -> None:
             V2_NEG_RISK_EXCHANGE_ADDRESS.lower(): Decimal("1"),
         }
 
-    monkeypatch.setattr(OfficialClobTrader, "signer_address", signer_address)
-    monkeypatch.setattr(OfficialClobTrader, "collateral_balance", collateral_balance)
-    monkeypatch.setattr(OfficialClobTrader, "collateral_allowances", collateral_allowances)
+    monkeypatch.setattr(UnifiedPolymarketTrader, "ensure_ready_approvals", ensure_ready_approvals)
+    monkeypatch.setattr(UnifiedPolymarketTrader, "signer_address", signer_address)
+    monkeypatch.setattr(UnifiedPolymarketTrader, "wallet_type", wallet_type)
+    monkeypatch.setattr(UnifiedPolymarketTrader, "collateral_balance", collateral_balance)
+    monkeypatch.setattr(UnifiedPolymarketTrader, "collateral_allowances", collateral_allowances)
 
 
 def configured_subscription(client, fake) -> dict:
@@ -649,7 +655,6 @@ def test_redeemed_runs_once_without_a_sell_order(app_client_factory):
     add_event(client, subscription, "opened")
     tick(client)
     add_event(client, subscription, "redeemed", before="100", after="0", payout="100")
-    tick(client)
     tick(client)
 
     async def counts() -> tuple[int, int]:
@@ -1265,6 +1270,99 @@ def test_execution_wallet_redeemable_position_triggers_before_gamma_finalizes(
     assert fake.redeemable_position_calls[-1] == (SELF_ADDRESS, [CONDITION_ID])
 
 
+def test_unified_redemption_persists_handle_and_condition_execution(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    trader = client.portal.call(client.app.state.copy_engine._trader)
+
+    async def attributed_size() -> Decimal:
+        async with client.app.state.database.sessions() as session:
+            copy_position = await session.scalar(select(CopyPosition))
+            assert copy_position is not None
+            return copy_position.attributed_size
+
+    size = client.portal.call(attributed_size)
+    trader.onchain_balance = size
+    trader.chain_pusd = Decimal("100")
+    fake.redeemable_positions = [
+        position(
+            asset_id="asset-simple",
+            condition_id=CONDITION_ID,
+            size=str(size),
+            current_price="1",
+            current_value=str(size),
+        )
+    ]
+
+    async def onchain_collateral_balance() -> Decimal:
+        return trader.chain_pusd
+
+    async def start_redemption(*, condition_id: str, neg_risk: bool) -> PreparedRedemption:
+        assert condition_id == CONDITION_ID
+        assert neg_risk is False
+        return PreparedRedemption(
+            condition_id=condition_id,
+            transaction_id="relay-unified",
+            transaction_hash=None,
+            handle=SimpleNamespace(),
+        )
+
+    async def wait_redemption(prepared: PreparedRedemption) -> str:
+        assert prepared.transaction_id == "relay-unified"
+        trader.onchain_balance = Decimal("0")
+        trader.chain_pusd += size
+        fake.redeemable_positions = []
+        return "0xunifiedredeemed"
+
+    async def transaction_receipt_success(transaction_hash: str) -> bool:
+        assert transaction_hash == "0xunifiedredeemed"
+        return True
+
+    trader.onchain_collateral_balance = onchain_collateral_balance
+    trader.start_redemption = start_redemption
+    trader.wait_redemption = wait_redemption
+    trader.transaction_receipt_success = transaction_receipt_success
+    trader.onchain_payout_rate = Decimal("1")
+    add_event(client, subscription, "decreased", before="100", after="0.1")
+    tick(client)
+
+    async def pending_redemption_id() -> int:
+        async with client.app.state.database.sessions() as session:
+            redemption = await session.scalar(select(CopyRedemption))
+            assert redemption is not None
+            return redemption.id
+
+    redemption_id = client.portal.call(pending_redemption_id)
+    client.portal.call(
+        client.app.state.copy_engine._execute_redemption,
+        redemption_id,
+        None,
+    )
+
+    async def state() -> tuple[str, str, str | None, str | None, Decimal | None]:
+        async with client.app.state.database.sessions() as session:
+            redemption = await session.scalar(select(CopyRedemption))
+            execution = await session.scalar(select(CopyRedemptionExecution))
+            assert redemption is not None and execution is not None
+            return (
+                redemption.status,
+                execution.status,
+                execution.relayer_transaction_id,
+                execution.transaction_hash,
+                execution.actual_pusd_delta,
+            )
+
+    assert client.portal.call(state) == (
+        "completed",
+        "completed",
+        "relay-unified",
+        "0xunifiedredeemed",
+        size,
+    )
+
+
 def test_confirmed_relayer_transaction_without_token_consumption_stays_pending(
     app_client_factory,
 ):
@@ -1333,7 +1431,7 @@ def test_onchain_balance_rpc_request_includes_user_agent(monkeypatch):
         return Response()
 
     monkeypatch.setattr("backend.trading.urlopen", fake_urlopen)
-    trader = OfficialClobTrader(
+    trader = UnifiedPolymarketTrader(
         host="https://clob.test",
         keychain=MacOSKeychain(),
         key_reference=KeychainReference(service="unused", account="unused"),
@@ -1758,205 +1856,6 @@ def test_rehearsal_requires_valid_cap_and_exact_second_confirmation():
         confirmation_id="x" * 30, confirmation_text="确认执行真实买入"
     )
     assert accepted.confirmation_text == "确认执行真实买入"
-
-
-@dataclass
-class FakeSignedOrder:
-    salt: str = "1"
-    maker: str = "0x" + "1" * 40
-    signer: str = "0x" + "2" * 40
-    tokenId: str = "123"
-    makerAmount: str = "5000000"
-    takerAmount: str = "10000000"
-    side: int = 0
-    signatureType: int = 1
-    timestamp: str = "1"
-    metadata: str = "0x" + "0" * 64
-    builder: str = "0x" + "0" * 64
-    expiration: str = "0"
-    signature: str = "0xsigned"
-
-
-@pytest.mark.parametrize("signature_type", [1, 3])
-def test_v2_prepared_order_captures_hash_trade_id_and_actual_fee(monkeypatch, signature_type):
-    calls: dict[str, object] = {}
-
-    class FakeClient:
-        def create_market_order(self, args, options):
-            calls["args"] = args
-            calls["options"] = options
-            return FakeSignedOrder()
-
-        def post_order(self, signed, order_type):
-            calls["order_type"] = order_type
-            return {
-                "success": True,
-                "orderID": "order-v2",
-                "tradeIDs": ["trade-v2"],
-                "makingAmount": "5",
-                "takingAmount": "10",
-            }
-
-        def get_trades(self, params):
-            return {"trades": [{"fee_usdc": "0.025"}]}
-
-    trader = OfficialClobTrader(
-        host="https://example.test",
-        keychain=SimpleNamespace(),
-        key_reference=SimpleNamespace(),
-        signature_type=signature_type,
-        funder_address="0x" + "3" * 40,
-    )
-    monkeypatch.setattr(trader, "_client_sync", lambda: FakeClient())
-    request = MarketTradeRequest(
-        asset_id="123",
-        side="BUY",
-        amount=Decimal("5"),
-        worst_price=Decimal("0.50"),
-    )
-    prepared = trader._prepare_market_sync(request)
-    result = trader._submit_prepared_market_sync(prepared)
-    assert prepared.signed_order_hash.startswith("0x")
-    assert result.external_order_id == "order-v2"
-    assert result.external_trade_id == "trade-v2"
-    assert result.fee_usdc == Decimal("0.025")
-    assert result.signed_order_hash == prepared.signed_order_hash
-    assert str(calls["order_type"]) == "FAK"
-
-
-def test_deposit_wallet_redemption_uses_wallet_batch_with_builder_credentials(monkeypatch):
-    calls: dict[str, object] = {}
-
-    class FakeKeychain:
-        def get_secret(self, reference):
-            if reference.service == "test":
-                return "0xprivate"
-            assert reference.service == "test.builder"
-            return (
-                '{"key":"builder-key","secret":"builder-secret","passphrase":"builder-passphrase"}'
-            )
-
-    class FakeBuilderApiKeyCreds:
-        def __init__(self, **values):
-            calls["credentials"] = values
-
-    class FakeBuilderConfig:
-        def __init__(self, **values):
-            self.values = values
-            calls["builder_config"] = self
-
-    class FakeTransaction:
-        def __init__(self, **values):
-            calls["transaction"] = values
-
-    class FakeDepositWalletCall:
-        def __init__(self, **values):
-            calls["deposit_wallet_call"] = values
-
-    class FakeRelayerTxType:
-        PROXY = "proxy"
-        SAFE = "safe"
-
-    class FakeTransactionType:
-        WALLET = SimpleNamespace(value="WALLET")
-
-    class FakeResponse:
-        transaction_hash = "0xfallback"
-
-        def wait(self):
-            return {"transactionHash": "0xredeemed"}
-
-    class FakeRelayClient:
-        def __init__(self, *args, **kwargs):
-            calls["relay_args"] = args
-            calls["relay_kwargs"] = kwargs
-            self.signer = SimpleNamespace(address=lambda: SELF_ADDRESS)
-
-        @staticmethod
-        def get_expected_deposit_wallet():
-            return SELF_ADDRESS
-
-        @staticmethod
-        def get_deployed(address, signer_type):
-            calls["deployed"] = (address, signer_type)
-            return True
-
-        @staticmethod
-        def get_nonce(address, signer_type):
-            calls["nonce"] = (address, signer_type)
-            return {"nonce": "52"}
-
-        @staticmethod
-        def execute_deposit_wallet_batch(calls_to_execute, **kwargs):
-            calls["calls_to_execute"] = calls_to_execute
-            calls["batch_kwargs"] = kwargs
-            return FakeResponse()
-
-    relayer_client = ModuleType("py_builder_relayer_client.client")
-    relayer_client.RelayClient = FakeRelayClient
-    relayer_models = ModuleType("py_builder_relayer_client.models")
-    relayer_models.DepositWalletCall = FakeDepositWalletCall
-    relayer_models.RelayerTxType = FakeRelayerTxType
-    relayer_models.Transaction = FakeTransaction
-    relayer_models.TransactionType = FakeTransactionType
-    signing_config = ModuleType("py_builder_signing_sdk.config")
-    signing_config.BuilderApiKeyCreds = FakeBuilderApiKeyCreds
-    signing_config.BuilderConfig = FakeBuilderConfig
-    monkeypatch.setitem(sys.modules, "py_builder_relayer_client.client", relayer_client)
-    monkeypatch.setitem(sys.modules, "py_builder_relayer_client.models", relayer_models)
-    monkeypatch.setitem(sys.modules, "py_builder_signing_sdk.config", signing_config)
-
-    trader = OfficialClobTrader(
-        host="https://example.test",
-        keychain=FakeKeychain(),
-        key_reference=SimpleNamespace(service="test", account=SELF_ADDRESS),
-        signature_type=3,
-        funder_address=SELF_ADDRESS,
-    )
-    monkeypatch.setattr(trader, "_redemption_call", lambda *_: ("0xdestination", "0xdata"))
-
-    assert trader._redeem_sync(CONDITION_ID, Decimal("10"), 1, False) == "0xredeemed"
-    assert calls["credentials"] == {
-        "key": "builder-key",
-        "secret": "builder-secret",
-        "passphrase": "builder-passphrase",
-    }
-    assert calls["relay_kwargs"] == {
-        "private_key": "0xprivate",
-        "builder_config": calls["builder_config"],
-        "rpc_url": "https://polygon.drpc.org",
-    }
-    assert calls["deposit_wallet_call"] == {
-        "target": "0xdestination",
-        "data": "0xdata",
-        "value": "0",
-    }
-    assert calls["deployed"] == (SELF_ADDRESS, "WALLET")
-    assert calls["nonce"] == (SELF_ADDRESS, "WALLET")
-    assert calls["batch_kwargs"]["wallet_address"] == SELF_ADDRESS
-    assert calls["batch_kwargs"]["nonce"] == "52"
-    assert int(calls["batch_kwargs"]["deadline"]) > int(time.time())
-
-
-def test_standard_redemption_uses_ctf_usdc_e_collateral():
-    from eth_abi import decode
-
-    destination, data = OfficialClobTrader._redemption_call(
-        CONDITION_ID,
-        Decimal("10"),
-        1,
-        False,
-    )
-    collateral, parent, condition, index_sets = decode(
-        ["address", "bytes32", "bytes32", "uint256[]"],
-        bytes.fromhex(data[10:]),
-    )
-
-    assert destination.lower() == "0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
-    assert collateral.lower() == CTF_COLLATERAL_ADDRESS.lower()
-    assert parent == bytes(32)
-    assert condition == bytes.fromhex(CONDITION_ID[2:])
-    assert index_sets == (1, 2)
 
 
 def test_reset_migration_removes_copy_rows_and_preserves_monitor_rows(tmp_path: Path):

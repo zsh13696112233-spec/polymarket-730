@@ -77,6 +77,11 @@ def redemption_error_is_retryable(message: str | None) -> bool:
     )
 
 
+def is_confirmed_onchain_redemption(event: PositionEvent) -> bool:
+    """Return whether an execution-wallet event proves an on-chain redemption."""
+    return event.reconciliation_status == "onchain" and bool(event.transaction_hash)
+
+
 def event_payout_for_size(event: PositionEvent, size: Decimal) -> Decimal:
     """Scale a source or execution redemption payout to the copied share count."""
     if event.payout_amount is None or event.before_size <= ZERO:
@@ -459,7 +464,7 @@ class CopyTradingEngine:
                     if source_event_id is not None
                     else None
                 )
-            if execution_event is not None:
+            if execution_event is not None and is_confirmed_onchain_redemption(execution_event):
                 await self._record_reconciled_redemption(
                     position_id,
                     transaction_hash=execution_event.transaction_hash,
@@ -470,17 +475,24 @@ class CopyTradingEngine:
                     ),
                 )
                 continue
-            assert source_event is not None
+
+            # A settlement event only says that the resolved position disappeared
+            # from the public positions API.  It is not proof that the execution
+            # wallet submitted redeemPositions, so verify the token balance before
+            # changing the durable copy-trading state.
             trader = await self._trader()
             balance = await trader.onchain_outcome_balance(asset_id)
             if balance > ZERO:
-                await self._leader_redeemed(subscription_id, source_event.id)
+                if source_event is not None:
+                    await self._leader_redeemed(subscription_id, source_event.id)
                 continue
+            terminal_event = source_event or execution_event
+            assert terminal_event is not None
             await self._record_reconciled_redemption(
                 position_id,
                 transaction_hash=None,
-                detail="来源赎回与链上 outcome token 余额归零后的结算对账",
-                payout_usdc=event_payout_for_size(source_event, position.attributed_size),
+                detail="终态结算事件与链上 outcome token 余额归零后的结算对账",
+                payout_usdc=event_payout_for_size(terminal_event, position.attributed_size),
             )
         await self.reconcile_resolved_source_disappearances(subscription_id)
 
@@ -640,11 +652,14 @@ class CopyTradingEngine:
             resolved_transaction_hash = transaction_hash or (
                 existing.transaction_hash if existing is not None else None
             )
-            reconciliation_error = (
-                None
-                if resolved_transaction_hash
-                else "未找到执行钱包赎回交易哈希，按来源赎回与链上余额完成对账。"
-            )
+            reconciliation_note = "未找到执行钱包赎回交易哈希，按终态结算事件与链上余额完成对账。"
+            reconciliation_error = None
+            if not resolved_transaction_hash:
+                reconciliation_error = (
+                    f"{failed_redemption_error}\n对账说明：{reconciliation_note}"
+                    if failed_redemption_error
+                    else reconciliation_note
+                )
             if existing is None:
                 session.add(
                     CopyRedemption(

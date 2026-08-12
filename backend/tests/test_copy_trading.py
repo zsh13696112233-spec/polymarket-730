@@ -57,6 +57,7 @@ class FakeLiveTrader:
     def __init__(self, balance: str = "1000") -> None:
         self.balance = Decimal(balance)
         self.onchain_balance = Decimal("0")
+        self.onchain_balance_calls: list[str] = []
         self.calls = 0
 
     async def collateral_balance(self) -> Decimal:
@@ -91,6 +92,7 @@ class FakeLiveTrader:
         return "0xredeemed"
 
     async def onchain_outcome_balance(self, asset_id: str) -> Decimal:
+        self.onchain_balance_calls.append(asset_id)
         return self.onchain_balance
 
 
@@ -988,6 +990,167 @@ def test_synthetic_execution_redemption_reconciles_pending_position_by_size(
         "Yes",
         None,
     )
+
+
+def test_settlement_execution_event_with_positive_balance_stays_pending(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    redemption_error = "自动赎回提交失败：原始错误"
+
+    async def create_pending_redemption_and_settlement_event() -> None:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            account = await session.get(ExecutionAccount, 1)
+            assert position is not None and account is not None
+            now = utcnow()
+            session.add(
+                CopyRedemption(
+                    copy_position_id=position.id,
+                    status="pending",
+                    size=position.attributed_size,
+                    payout_usdc=position.attributed_size,
+                    transaction_hash=None,
+                    attempts=1,
+                    last_error=redemption_error,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                PositionEvent(
+                    wallet_id=account.wallet_id,
+                    asset_id=position.asset_id,
+                    condition_id=position.condition_id,
+                    type="redeemed",
+                    title=position.title,
+                    outcome=position.outcome,
+                    event_slug=position.event_slug,
+                    delta_size=-position.attributed_size,
+                    before_size=position.attributed_size,
+                    after_size=Decimal("0"),
+                    before_avg_price=Decimal("0"),
+                    after_avg_price=Decimal("0"),
+                    average_fill_price=None,
+                    current_value=Decimal("0"),
+                    reconciliation_status="settlement",
+                    first_detected_at=now,
+                    settled_at=now,
+                    payout_amount=position.attributed_size,
+                    redemption_cost_basis=None,
+                    transaction_hash=None,
+                )
+            )
+            position.status = "redeeming"
+            await session.commit()
+
+    client.portal.call(create_pending_redemption_and_settlement_event)
+    trader = client.portal.call(client.app.state.copy_engine._trader)
+    trader.onchain_balance = Decimal("100")
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+
+    async def state() -> tuple[str, Decimal, str, str | None]:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            assert position is not None and redemption is not None
+            return (
+                position.status,
+                position.attributed_size,
+                redemption.status,
+                redemption.last_error,
+            )
+
+    position_status, size, redemption_status, last_error = client.portal.call(state)
+    assert position_status == "redeeming"
+    assert size > Decimal("0")
+    assert redemption_status == "pending"
+    assert last_error == redemption_error
+    assert trader.onchain_balance_calls == ["asset-simple"]
+
+
+def test_settlement_execution_event_with_zero_balance_preserves_original_error(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+    redemption_error = "自动赎回提交失败：原始错误"
+
+    async def create_pending_redemption_and_settlement_event() -> None:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            account = await session.get(ExecutionAccount, 1)
+            assert position is not None and account is not None
+            now = utcnow()
+            session.add(
+                CopyRedemption(
+                    copy_position_id=position.id,
+                    status="pending",
+                    size=position.attributed_size,
+                    payout_usdc=position.attributed_size,
+                    transaction_hash=None,
+                    attempts=1,
+                    last_error=redemption_error,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                PositionEvent(
+                    wallet_id=account.wallet_id,
+                    asset_id=position.asset_id,
+                    condition_id=position.condition_id,
+                    type="redeemed",
+                    title=position.title,
+                    outcome=position.outcome,
+                    event_slug=position.event_slug,
+                    delta_size=-position.attributed_size,
+                    before_size=position.attributed_size,
+                    after_size=Decimal("0"),
+                    before_avg_price=Decimal("0"),
+                    after_avg_price=Decimal("0"),
+                    average_fill_price=None,
+                    current_value=Decimal("0"),
+                    reconciliation_status="settlement",
+                    first_detected_at=now,
+                    settled_at=now,
+                    payout_amount=position.attributed_size,
+                    redemption_cost_basis=None,
+                    transaction_hash=None,
+                )
+            )
+            position.status = "redeeming"
+            await session.commit()
+
+    client.portal.call(create_pending_redemption_and_settlement_event)
+    trader = client.portal.call(client.app.state.copy_engine._trader)
+    client.portal.call(
+        client.app.state.copy_engine.reconcile_terminal_positions,
+        subscription["id"],
+    )
+
+    async def state() -> tuple[str, str, str | None]:
+        async with client.app.state.database.sessions() as session:
+            position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            assert position is not None and redemption is not None
+            return position.status, redemption.status, redemption.last_error
+
+    position_status, redemption_status, last_error = client.portal.call(state)
+    assert position_status == "reconciled"
+    assert redemption_status == "reconciled"
+    assert last_error is not None
+    assert redemption_error in last_error
+    assert "对账说明" in last_error
+    assert trader.onchain_balance_calls == ["asset-simple"]
 
 
 def test_forced_balance_refresh_updates_execution_account(app_client_factory):

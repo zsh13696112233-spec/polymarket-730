@@ -52,6 +52,8 @@ from backend.purchase_history import (
     opened_date,
 )
 from backend.schemas import (
+    CopyActivitiesResponse,
+    CopyActivityRead,
     CopyDailyRealizedPnlRead,
     CopyDashboardRead,
     CopyOrderRead,
@@ -176,6 +178,27 @@ def decode_copy_order_cursor(raw_cursor: str) -> tuple[datetime, int]:
     return timestamp, order_id
 
 
+def encode_copy_activity_cursor(activity: CopyActivityRead) -> str:
+    timestamp = activity.activity_at.isoformat(timespec="microseconds")
+    return f"{timestamp}|{activity.activity_type}|{activity.source_id}"
+
+
+def decode_copy_activity_cursor(raw_cursor: str) -> tuple[datetime, str, int]:
+    try:
+        raw_timestamp, activity_type, raw_id = raw_cursor.rsplit("|", 2)
+        timestamp = datetime.fromisoformat(raw_timestamp)
+        source_id = int(raw_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("活动游标无效") from error
+    if (
+        timestamp.tzinfo is not None
+        or activity_type not in {"order", "redemption"}
+        or source_id <= 0
+    ):
+        raise ValueError("活动游标无效")
+    return timestamp, activity_type, source_id
+
+
 DEFAULT_COPY_RATIO = Decimal("10")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -186,6 +209,12 @@ def validate_copy_caps(payload: CopySubscriptionCreate | CopySubscriptionUpdate)
             status_code=422,
             detail="单仓最大投入不能高于总敞口上限",
         )
+    if payload.tier_two_threshold_usdc <= payload.tier_one_threshold_usdc:
+        raise HTTPException(status_code=422, detail="第二档加仓阈值必须高于第一档")
+
+
+def subscription_config_values(payload: Any) -> dict[str, Any]:
+    return payload.model_dump(exclude={"tracked_wallet_id", "strategy_mode"})
 
 
 async def copy_subscription_read(
@@ -593,6 +622,203 @@ async def workspace_order_reads(
             )
         )
     return result
+
+
+COPY_ORDER_STATUS_GROUPS = {
+    "filled": ["filled"],
+    "partial": ["partially_filled"],
+    "unfilled": ["unfilled"],
+    "skipped": ["skipped", "blocked"],
+    "processing": ["planned", "signed", "submitted"],
+    "attention": ["reconciliation_pending", "interrupted_before_submit", "manual_review"],
+}
+
+
+def copy_activity_sort_key(activity: CopyActivityRead) -> tuple[datetime, int, int]:
+    return (
+        activity.activity_at,
+        1 if activity.activity_type == "order" else 0,
+        activity.source_id,
+    )
+
+
+async def copy_activity_page(
+    session: Any,
+    *,
+    tracked_wallet_id: int | None = None,
+    operation: str | None = None,
+    status_group: str | None = None,
+    from_time: datetime | None = None,
+    to_time: datetime | None = None,
+    cursor: tuple[datetime, str, int] | None = None,
+    limit: int = 50,
+) -> tuple[list[CopyActivityRead], str | None]:
+    cursor_time = cursor[0] if cursor is not None else None
+    activities: list[CopyActivityRead] = []
+
+    include_orders = operation != "REDEEM" and status_group != "redeemed"
+    if include_orders:
+        order_query = select(CopyOrder).where(CopyOrder.source == "copy")
+        if tracked_wallet_id is not None:
+            subscription_ids = select(CopySubscription.id).where(
+                CopySubscription.tracked_wallet_id == tracked_wallet_id
+            )
+            order_query = order_query.where(CopyOrder.subscription_id.in_(subscription_ids))
+        if operation in {"BUY", "SELL"}:
+            order_query = order_query.where(CopyOrder.side == operation)
+        if status_group is not None:
+            order_query = order_query.where(
+                CopyOrder.status.in_(COPY_ORDER_STATUS_GROUPS[status_group])
+            )
+        if from_time is not None:
+            order_query = order_query.where(CopyOrder.created_at >= from_time)
+        if to_time is not None:
+            order_query = order_query.where(CopyOrder.created_at <= to_time)
+        if cursor_time is not None:
+            order_query = order_query.where(CopyOrder.created_at <= cursor_time)
+        orders = list(
+            (
+                await session.scalars(
+                    order_query.order_by(CopyOrder.created_at.desc(), CopyOrder.id.desc()).limit(
+                        limit + 1
+                    )
+                )
+            ).all()
+        )
+        for order in await workspace_order_reads(session, orders):
+            transaction_hash = next(
+                (fill.transaction_hash for fill in order.fills if fill.transaction_hash),
+                None,
+            )
+            activities.append(
+                CopyActivityRead(
+                    activity_id=f"order:{order.id}",
+                    activity_type="order",
+                    source_id=order.id,
+                    operation=order.side,
+                    asset_id=order.asset_id,
+                    tracked_wallet_id=order.tracked_wallet_id,
+                    tracked_wallet_label=order.tracked_wallet_label,
+                    tracked_wallet_address=order.tracked_wallet_address,
+                    title=order.title,
+                    outcome=order.outcome,
+                    event_slug=order.event_slug,
+                    requested_size=order.requested_size,
+                    requested_usdc=order.requested_usdc,
+                    leader_purchase_usdc=order.leader_purchase_usdc,
+                    proportional_target_usdc=order.proportional_target_usdc,
+                    executed_size=order.filled_size,
+                    executed_usdc=order.filled_usdc,
+                    fee_usdc=order.fee_usdc,
+                    execution_price=order.average_fill_price or order.reference_price,
+                    status=order.status,
+                    reason=order.reason,
+                    execution_provider=order.execution_provider,
+                    transaction_hash=transaction_hash,
+                    fills=order.fills,
+                    activity_at=order.created_at,
+                )
+            )
+
+    include_redemptions = operation not in {"BUY", "SELL"} and status_group in {
+        None,
+        "redeemed",
+    }
+    if include_redemptions:
+        redemption_query = (
+            select(
+                CopyRedemption,
+                CopyRedemptionExecution,
+                CopyPosition,
+                CopySubscription,
+                WatchedWallet,
+                CopyLedger,
+            )
+            .join(CopyPosition, CopyPosition.id == CopyRedemption.copy_position_id)
+            .join(CopySubscription, CopySubscription.id == CopyPosition.subscription_id)
+            .join(WatchedWallet, WatchedWallet.id == CopySubscription.tracked_wallet_id)
+            .join(
+                CopyLedger,
+                and_(
+                    CopyLedger.copy_position_id == CopyPosition.id,
+                    CopyLedger.type == "redeem",
+                ),
+            )
+            .outerjoin(
+                CopyRedemptionExecution,
+                CopyRedemptionExecution.id == CopyRedemption.execution_id,
+            )
+            .where(CopyRedemption.status == "completed")
+        )
+        if tracked_wallet_id is not None:
+            redemption_query = redemption_query.where(
+                CopySubscription.tracked_wallet_id == tracked_wallet_id
+            )
+        if from_time is not None:
+            redemption_query = redemption_query.where(CopyLedger.timestamp >= from_time)
+        if to_time is not None:
+            redemption_query = redemption_query.where(CopyLedger.timestamp <= to_time)
+        if cursor_time is not None:
+            redemption_query = redemption_query.where(CopyLedger.timestamp <= cursor_time)
+        redemption_rows = list(
+            (
+                await session.execute(
+                    redemption_query.order_by(
+                        CopyLedger.timestamp.desc(), CopyRedemption.id.desc()
+                    ).limit(limit + 1)
+                )
+            ).all()
+        )
+        for redemption, execution, position, _subscription, wallet, ledger in redemption_rows:
+            payout = ledger.amount_usdc
+            activities.append(
+                CopyActivityRead(
+                    activity_id=f"redemption:{redemption.id}",
+                    activity_type="redemption",
+                    source_id=redemption.id,
+                    operation="REDEEM",
+                    asset_id=position.asset_id,
+                    tracked_wallet_id=wallet.id,
+                    tracked_wallet_label=wallet.label,
+                    tracked_wallet_address=wallet.proxy_wallet or wallet.address,
+                    title=position.title,
+                    outcome=position.outcome,
+                    event_slug=position.event_slug,
+                    requested_size=redemption.size,
+                    requested_usdc=payout,
+                    executed_size=redemption.size,
+                    executed_usdc=payout,
+                    execution_price=(payout / redemption.size if redemption.size > 0 else None),
+                    realized_pnl=ledger.realized_pnl,
+                    status="completed",
+                    execution_provider=(
+                        redemption.execution_provider
+                        or (execution.execution_provider if execution is not None else None)
+                    ),
+                    transaction_id=(
+                        execution.relayer_transaction_id if execution is not None else None
+                    ),
+                    transaction_hash=(
+                        redemption.transaction_hash
+                        or (execution.transaction_hash if execution is not None else None)
+                    ),
+                    activity_at=ledger.timestamp,
+                )
+            )
+
+    activities.sort(key=copy_activity_sort_key, reverse=True)
+    if cursor is not None:
+        cursor_key = (
+            cursor[0],
+            1 if cursor[1] == "order" else 0,
+            cursor[2],
+        )
+        activities = [
+            activity for activity in activities if copy_activity_sort_key(activity) < cursor_key
+        ]
+    has_more = len(activities) > limit
+    page = activities[:limit]
+    return page, encode_copy_activity_cursor(page[-1]) if has_more and page else None
 
 
 def execution_account_read(account: ExecutionAccount | None) -> ExecutionAccountRead | None:
@@ -1487,10 +1713,11 @@ def create_app(
                 raise HTTPException(status_code=409, detail="该观察钱包已经有策略配置")
             baseline = await latest_event_id(session, payload.tracked_wallet_id)
             now = utcnow()
-            values = payload.model_dump(exclude={"tracked_wallet_id"})
+            values = subscription_config_values(payload)
             subscription = CopySubscription(
                 tracked_wallet_id=payload.tracked_wallet_id,
                 state="disabled",
+                strategy_mode=payload.strategy_mode,
                 baseline_event_id=baseline,
                 last_processed_event_id=baseline,
                 created_at=now,
@@ -1510,7 +1737,6 @@ def create_app(
         payload: CopySubscriptionUpdate,
         request: Request,
     ) -> CopySubscriptionRead:
-        validate_copy_caps(payload)
         database: Database = request.app.state.database
         toggle_lock: asyncio.Lock = request.app.state.copy_toggle_lock
         async with toggle_lock:
@@ -1518,6 +1744,34 @@ def create_app(
                 subscription = await session.get(CopySubscription, subscription_id)
                 if subscription is None:
                     raise HTTPException(status_code=404, detail="策略不存在")
+                submitted_fields = payload.model_fields_set
+                position_cap = (
+                    payload.position_cap_usdc
+                    if "position_cap_usdc" in submitted_fields
+                    else subscription.position_cap_usdc
+                )
+                total_cap = (
+                    payload.total_exposure_cap_usdc
+                    if "total_exposure_cap_usdc" in submitted_fields
+                    else subscription.total_exposure_cap_usdc
+                )
+                tier_one = (
+                    payload.tier_one_threshold_usdc
+                    if "tier_one_threshold_usdc" in submitted_fields
+                    else subscription.tier_one_threshold_usdc
+                )
+                tier_two = (
+                    payload.tier_two_threshold_usdc
+                    if "tier_two_threshold_usdc" in submitted_fields
+                    else subscription.tier_two_threshold_usdc
+                )
+                if position_cap > total_cap:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="单仓最大投入不能高于总敞口上限",
+                    )
+                if tier_two <= tier_one:
+                    raise HTTPException(status_code=422, detail="第二档加仓阈值必须高于第一档")
                 if subscription.state == "active":
                     account = await session.get(ExecutionAccount, 1)
                     if account is None or account.status != "ready":
@@ -1527,14 +1781,14 @@ def create_app(
                         exclude_subscription_id=subscription.id,
                     )
                     capacity = execution_account_capacity(account)
-                    required = reserved + payload.total_exposure_cap_usdc
+                    required = reserved + total_cap
                     if required > capacity:
                         shortage = required - capacity
                         raise HTTPException(
                             status_code=409,
                             detail=f"执行钱包固定额度不足，还差 ${shortage:.2f}",
                         )
-                for field, value in payload.model_dump().items():
+                for field, value in payload.model_dump(include=submitted_fields).items():
                     setattr(subscription, field, value)
                 subscription.updated_at = utcnow()
                 await session.commit()
@@ -1720,6 +1974,51 @@ def create_app(
             )
 
     @application.get(
+        "/api/copy-trading/activities",
+        response_model=CopyActivitiesResponse,
+    )
+    async def get_copy_workspace_activities(
+        request: Request,
+        tracked_wallet_id: Annotated[int | None, Query(gt=0)] = None,
+        operation: str | None = None,
+        status_group: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        cursor: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> CopyActivitiesResponse:
+        if operation is not None and operation not in {"BUY", "SELL", "REDEEM"}:
+            raise HTTPException(status_code=422, detail="活动操作必须是 BUY、SELL 或 REDEEM")
+        valid_status_groups = set(COPY_ORDER_STATUS_GROUPS) | {"redeemed"}
+        if status_group is not None and status_group not in valid_status_groups:
+            raise HTTPException(status_code=422, detail="活动状态筛选无效")
+
+        def naive_utc(value: datetime | None) -> datetime | None:
+            if value is None or value.tzinfo is None:
+                return value
+            return value.astimezone(UTC).replace(tzinfo=None)
+
+        decoded_cursor = None
+        if cursor:
+            try:
+                decoded_cursor = decode_copy_activity_cursor(cursor)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            items, next_cursor = await copy_activity_page(
+                session,
+                tracked_wallet_id=tracked_wallet_id,
+                operation=operation,
+                status_group=status_group,
+                from_time=naive_utc(from_time),
+                to_time=naive_utc(to_time),
+                cursor=decoded_cursor,
+                limit=limit,
+            )
+            return CopyActivitiesResponse(items=items, next_cursor=next_cursor)
+
+    @application.get(
         "/api/copy-trading/orders",
         response_model=CopyOrdersResponse,
     )
@@ -1735,15 +2034,7 @@ def create_app(
     ) -> CopyOrdersResponse:
         if side is not None and side not in {"BUY", "SELL"}:
             raise HTTPException(status_code=422, detail="买卖方向必须是 BUY 或 SELL")
-        status_groups = {
-            "filled": ["filled"],
-            "partial": ["partially_filled"],
-            "unfilled": ["unfilled"],
-            "skipped": ["skipped", "blocked"],
-            "processing": ["planned", "signed", "submitted"],
-            "attention": ["reconciliation_pending", "interrupted_before_submit", "manual_review"],
-        }
-        if status_group is not None and status_group not in status_groups:
+        if status_group is not None and status_group not in COPY_ORDER_STATUS_GROUPS:
             raise HTTPException(status_code=422, detail="记录状态筛选无效")
         database: Database = request.app.state.database
         async with database.sessions() as session:
@@ -1756,7 +2047,7 @@ def create_app(
             if side is not None:
                 query = query.where(CopyOrder.side == side)
             if status_group is not None:
-                query = query.where(CopyOrder.status.in_(status_groups[status_group]))
+                query = query.where(CopyOrder.status.in_(COPY_ORDER_STATUS_GROUPS[status_group]))
 
             def naive_utc(value: datetime) -> datetime:
                 if value.tzinfo is None:
@@ -1891,6 +2182,11 @@ def create_app(
                 ).all()
             )
             account = await session.get(ExecutionAccount, 1)
+            recent_activities, _ = await copy_activity_page(
+                session,
+                tracked_wallet_id=tracked_wallet_id,
+                limit=8,
+            )
             collateral_balance = account.collateral_balance if account else None
             available_capacity = execution_account_capacity(account) if account else Decimal("0")
             open_exposure = sum(
@@ -1924,6 +2220,7 @@ def create_app(
                 ),
                 strategies=strategies,
                 recent_orders=await workspace_order_reads(session, recent_orders),
+                recent_activities=recent_activities,
                 as_of=valued_at,
             )
 
@@ -2287,6 +2584,38 @@ def create_app(
                 wallet.enabled = True
                 wallet.next_sync_at = now
                 wallet.updated_at = now
+            if payload.copy_strategy is not None:
+                validate_copy_caps(payload.copy_strategy)
+                existing_strategy = await session.scalar(
+                    select(CopySubscription).where(CopySubscription.tracked_wallet_id == wallet.id)
+                )
+                requested_values = subscription_config_values(payload.copy_strategy)
+                if existing_strategy is not None:
+                    existing_values = {
+                        field: getattr(existing_strategy, field) for field in requested_values
+                    }
+                    if (
+                        existing_strategy.strategy_mode != payload.copy_strategy.strategy_mode
+                        or existing_values != requested_values
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="该观察钱包已有不可变的策略模式和参数，请使用原配置",
+                        )
+                else:
+                    baseline = await latest_event_id(session, wallet.id)
+                    session.add(
+                        CopySubscription(
+                            tracked_wallet_id=wallet.id,
+                            state="disabled",
+                            strategy_mode=payload.copy_strategy.strategy_mode,
+                            baseline_event_id=baseline,
+                            last_processed_event_id=baseline,
+                            created_at=now,
+                            updated_at=now,
+                            **requested_values,
+                        )
+                    )
             await session.commit()
             wallet_id = wallet.id
 

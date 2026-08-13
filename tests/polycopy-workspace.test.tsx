@@ -21,9 +21,16 @@ const subscription = {
   tracked_wallet_label: "策略一",
   enabled: true,
   state: "active",
+  strategy_mode: "normal",
   copy_ratio_percent: 10,
   position_cap_usdc: 20,
   large_increase_threshold_usdc: 100,
+  base_entry_threshold_usdc: 100,
+  base_entry_ratio_percent: 10,
+  tier_one_threshold_usdc: 50000,
+  tier_one_ratio_percent: 0.1,
+  tier_two_threshold_usdc: 100000,
+  tier_two_ratio_percent: 0.2,
   total_exposure_cap_usdc: 160,
   market_slippage_cents: 5,
   open_exposure_usdc: 25,
@@ -65,8 +72,40 @@ const filledOrder = {
   limit_price: 0.5,
   average_fill_price: 0.49,
   status: "filled",
+  execution_provider: "unified_sdk",
+  fills: [],
   reason: null,
   created_at: "2026-08-06T08:00:00Z",
+  tracked_wallet_id: 1,
+  tracked_wallet_label: "策略一",
+  tracked_wallet_address: wallet.proxy_wallet,
+  title: "Will Team A win?",
+  outcome: "Yes",
+  event_slug: "team-a-win",
+};
+
+const filledActivity = {
+  activity_id: "order:101",
+  activity_type: "order",
+  source_id: 101,
+  operation: "BUY",
+  asset_id: "asset-one",
+  requested_size: 20,
+  requested_usdc: 10,
+  leader_purchase_usdc: 100,
+  proportional_target_usdc: 10,
+  executed_size: 20,
+  executed_usdc: 9.8,
+  fee_usdc: 0.02,
+  execution_price: 0.49,
+  realized_pnl: null,
+  status: "filled",
+  reason: null,
+  execution_provider: "unified_sdk",
+  transaction_id: null,
+  transaction_hash: null,
+  fills: [],
+  activity_at: "2026-08-06T08:00:00Z",
   tracked_wallet_id: 1,
   tracked_wallet_label: "策略一",
   tracked_wallet_address: wallet.proxy_wallet,
@@ -113,6 +152,7 @@ const overview = {
     stale: false,
   }],
   recent_orders: [filledOrder],
+  recent_activities: [filledActivity],
   as_of: "2026-08-06T08:00:00Z",
 };
 
@@ -129,7 +169,7 @@ describe("PolyCopy workspace", () => {
     requests.length = 0;
     requestBodies.length = 0;
     recordsResponse = {
-      items: [{ ...filledOrder, status: "blocked", reason: "每日买入上限已用完" }],
+      items: [{ ...filledActivity, status: "blocked", reason: "每日买入上限已用完" }],
       next_cursor: null,
     };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -166,7 +206,7 @@ describe("PolyCopy workspace", () => {
         portfolio: { open_cost_usdc: 10, market_value_usdc: null, unrealized_pnl: null, realized_pnl: 0, total_pnl: null, valuation_complete: false, unpriced_positions: 1, valued_at: "2026-08-06T08:00:00Z" },
         as_of: "2026-08-06T08:00:00Z",
       });
-      if (url.includes("/api/copy-trading/orders")) return json(recordsResponse);
+      if (url.includes("/api/copy-trading/activities")) return json(recordsResponse);
       return json({ ...subscription, enabled: false, state: "exit_only" });
     }));
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -185,9 +225,136 @@ describe("PolyCopy workspace", () => {
     expect(screen.getAllByText("执行预算").length).toBeGreaterThan(0);
     expect(screen.getAllByText("实际执行金额").length).toBeGreaterThan(0);
     expect(screen.getAllByText("$100.00").length).toBeGreaterThan(0);
+    expect(screen.getByText("普通跟单")).toBeInTheDocument();
+    expect(screen.getByText("10% · $20.00")).toBeInTheDocument();
     const totalInvestment = screen.getByText("钱包总投入").closest("div");
     expect(totalInvestment).not.toBeNull();
     expect(within(totalInvestment!).getByText("$42.50")).toBeInTheDocument();
+  });
+
+  it("总览最近记录可按目标钱包筛选并切回全部钱包", async () => {
+    const user = userEvent.setup();
+    const secondWallet = {
+      ...wallet,
+      id: 2,
+      address: "0x2222222222222222222222222222222222222222",
+      proxy_wallet: "0x2222222222222222222222222222222222222222",
+      label: "策略二",
+    };
+    const secondStrategy = {
+      ...overview.strategies[0],
+      wallet: secondWallet,
+      subscription: { ...subscription, id: 20, tracked_wallet_id: 2, tracked_wallet_label: "策略二" },
+    };
+    const secondOrder = {
+      ...filledActivity,
+      activity_id: "order:202",
+      source_id: 202,
+      tracked_wallet_id: 2,
+      tracked_wallet_label: "策略二",
+      tracked_wallet_address: secondWallet.proxy_wallet,
+      title: "Will Team B win?",
+      event_slug: "team-b-win",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes("/api/copy-trading/overview")) return json({ ...overview, strategies: [...overview.strategies, secondStrategy] });
+      if (url.endsWith("/api/wallets")) return json([wallet, secondWallet]);
+      if (url.includes("/api/copy-trading/activities")) return json({ items: [secondOrder], next_cursor: null });
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+
+    render(<PolyCopyWorkspace view="overview" />);
+    const panel = (await screen.findByRole("heading", { name: "最近记录" })).closest("section");
+    expect(panel).not.toBeNull();
+    const walletFilter = within(panel!).getByLabelText("最近记录目标钱包");
+    expect(walletFilter).toHaveValue("all");
+    expect(within(walletFilter).getByRole("option", { name: "全部钱包" })).toBeInTheDocument();
+    expect(within(walletFilter).getByRole("option", { name: "策略二" })).toBeInTheDocument();
+    expect(within(panel!).getAllByText("Will Team A win?").length).toBeGreaterThan(0);
+
+    await user.selectOptions(walletFilter, "2");
+    await waitFor(() => expect(requests.some((url) => url.includes("/api/copy-trading/activities?limit=8&tracked_wallet_id=2"))).toBe(true));
+    await waitFor(() => expect(within(panel!).getAllByText("Will Team B win?").length).toBeGreaterThan(0));
+    expect(within(panel!).queryByText("Will Team A win?")).not.toBeInTheDocument();
+
+    await user.selectOptions(walletFilter, "all");
+    await waitFor(() => expect(within(panel!).getAllByText("Will Team A win?").length).toBeGreaterThan(0));
+    expect(within(panel!).queryByText("Will Team B win?")).not.toBeInTheDocument();
+  });
+
+  it("切换最近记录钱包时保留当前表格直到新数据返回", async () => {
+    const user = userEvent.setup();
+    let resolveOrders: ((response: Response) => void) | null = null;
+    const pendingOrders = new Promise<Response>((resolve) => { resolveOrders = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) return json(overview);
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      if (url.includes("/api/copy-trading/activities")) return pendingOrders;
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+
+    render(<PolyCopyWorkspace view="overview" />);
+    const panel = (await screen.findByRole("heading", { name: "最近记录" })).closest("section");
+    await user.selectOptions(within(panel!).getByLabelText("最近记录目标钱包"), "1");
+
+    expect(panel!.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(within(panel!).getAllByText("Will Team A win?").length).toBeGreaterThan(0);
+
+    resolveOrders!(json({ items: [{ ...filledActivity, activity_id: "order:303", source_id: 303, title: "筛选后的最新记录" }], next_cursor: null }));
+    await waitFor(() => expect(within(panel!).getAllByText("筛选后的最新记录").length).toBeGreaterThan(0));
+    expect(panel!.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
+  it("总览钱包最近记录支持空结果和读取失败状态", async () => {
+    const user = userEvent.setup();
+    let responseMode: "empty" | "error" = "empty";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) return json(overview);
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      if (url.includes("/api/copy-trading/activities")) {
+        return responseMode === "empty"
+          ? json({ items: [], next_cursor: null })
+          : json({ detail: "服务暂时不可用" }, 503);
+      }
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+
+    const { unmount } = render(<PolyCopyWorkspace view="overview" />);
+    let panel = (await screen.findByRole("heading", { name: "最近记录" })).closest("section");
+    await user.selectOptions(within(panel!).getByLabelText("最近记录目标钱包"), "1");
+    expect(await within(panel!).findByText("暂无记录")).toBeInTheDocument();
+
+    unmount();
+    responseMode = "error";
+    render(<PolyCopyWorkspace view="overview" />);
+    panel = (await screen.findByRole("heading", { name: "最近记录" })).closest("section");
+    await user.selectOptions(within(panel!).getByLabelText("最近记录目标钱包"), "1");
+    expect(await within(panel!).findByText("最近记录读取失败")).toBeInTheDocument();
+    expect(within(panel!).getByText("服务暂时不可用")).toBeInTheDocument();
+  });
+
+  it("策略列表展示大额加仓跟单模式", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) {
+        return json({
+          ...overview,
+          strategies: overview.strategies.map((strategy) => ({
+            ...strategy,
+            subscription: { ...strategy.subscription, strategy_mode: "large_increase" },
+          })),
+        });
+      }
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      return json({ ...subscription, enabled: false, state: "exit_only" });
+    }));
+    render(<PolyCopyWorkspace view="overview" />);
+    expect(await screen.findByText("大额加仓跟单")).toBeInTheDocument();
+    expect(screen.getByText("上限 $20.00")).toBeInTheDocument();
   });
 
   it("无成交钱包的总投入显示为零", async () => {
@@ -372,6 +539,30 @@ describe("PolyCopy workspace", () => {
     await waitFor(() => expect(requests.some((url) => url.includes("/subscriptions/10/enabled"))).toBe(true));
   });
 
+  it("新增目标时一次配置大额加仓模式和两档参数", async () => {
+    const user = userEvent.setup();
+    render(<PolyCopyWorkspace view="overview" />);
+    await user.click(await screen.findByRole("button", { name: /添加目标/ }));
+    const dialog = await screen.findByRole("dialog", { name: "添加目标" });
+    await user.type(within(dialog).getByPlaceholderText(/0x/), wallet.address);
+    await user.click(within(dialog).getByRole("radio", { name: "大额加仓跟单模式" }));
+    expect(within(dialog).getByRole("spinbutton", { name: "第一档加仓阈值" })).toHaveValue(50000);
+    expect(within(dialog).getByRole("spinbutton", { name: "第二档跟单比例" })).toHaveValue(0.2);
+    await user.click(within(dialog).getByRole("button", { name: "保存钱包" }));
+    await waitFor(() => expect(requestBodies).toContainEqual(expect.objectContaining({
+      address: wallet.address,
+      copy_strategy: expect.objectContaining({
+        strategy_mode: "large_increase",
+        base_entry_threshold_usdc: 100,
+        tier_one_threshold_usdc: 50000,
+        tier_one_ratio_percent: 0.1,
+        tier_two_threshold_usdc: 100000,
+        tier_two_ratio_percent: 0.2,
+        position_cap_usdc: 20,
+      }),
+    })));
+  });
+
   it("明确区分暂停策略与停止清仓", async () => {
     const user = userEvent.setup();
     render(<PolyCopyWorkspace view="overview" />);
@@ -408,22 +599,60 @@ describe("PolyCopy workspace", () => {
     expect(within(table).getByText("每日买入上限已用完")).toBeInTheDocument();
   });
 
+  it("记录页展示已完成赎回的到账、盈亏和结算哈希", async () => {
+    recordsResponse = {
+      items: [{
+        ...filledActivity,
+        activity_id: "redemption:12",
+        activity_type: "redemption",
+        source_id: 12,
+        operation: "REDEEM",
+        requested_size: 44.97959,
+        requested_usdc: 44.97959,
+        leader_purchase_usdc: null,
+        proportional_target_usdc: null,
+        executed_size: 44.97959,
+        executed_usdc: 44.97959,
+        fee_usdc: 0,
+        execution_price: 1,
+        realized_pnl: 22.3775809,
+        status: "completed",
+        transaction_id: "relay-redeem",
+        transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        title: "Milwaukee Brewers vs. San Diego Padres",
+        outcome: "San Diego Padres",
+      }],
+      next_cursor: null,
+    };
+    render(<PolyCopyWorkspace view="records" />);
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("赎回")).toBeInTheDocument();
+    expect(within(table).getByText("已赎回")).toBeInTheDocument();
+    expect(within(table).getAllByText("$44.98").length).toBeGreaterThan(0);
+    expect(within(table).getByText(/盈亏 \+\$22\.38/)).toBeInTheDocument();
+    expect(within(table).getByText(/结算 0x1234…cdef/)).toBeInTheDocument();
+  });
+
   it("记录页展示部分成交时取消的金额或份数", async () => {
     recordsResponse = {
       items: [
         {
-          ...filledOrder,
-          side: "SELL",
+          ...filledActivity,
+          activity_id: "order:201",
+          source_id: 201,
+          operation: "SELL",
           requested_size: 25,
-          filled_size: 20,
+          executed_size: 20,
           status: "partially_filled",
           reason: "FAK 部分成交，剩余已取消",
         },
         {
-          ...filledOrder,
-          side: "BUY",
+          ...filledActivity,
+          activity_id: "order:202",
+          source_id: 202,
+          operation: "BUY",
           requested_usdc: 10,
-          filled_usdc: 7.75,
+          executed_usdc: 7.75,
           status: "partially_filled",
           reason: "FAK 部分成交，剩余已取消",
         },

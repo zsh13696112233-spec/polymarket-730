@@ -15,6 +15,8 @@ from backend.models import (
     CopyLedger,
     CopyOrder,
     CopyPosition,
+    CopyRedemption,
+    CopyRedemptionExecution,
     PositionChangeCandidate,
     PositionEvent,
     PositionEventFill,
@@ -213,6 +215,77 @@ async def add_copy_position(database, subscription_id: int) -> None:
                 status="open",
                 created_at=now,
                 updated_at=now,
+            )
+        )
+        await session.commit()
+
+
+async def insert_completed_copy_redemption(database, subscription_id: int) -> None:
+    now = utcnow()
+    async with database.sessions() as session:
+        position = CopyPosition(
+            subscription_id=subscription_id,
+            asset_id="redeemed-asset",
+            condition_id="0x" + "d" * 64,
+            title="已完成赎回市场",
+            outcome="Yes",
+            outcome_index=0,
+            neg_risk=False,
+            event_slug="completed-redemption-market",
+            settlement_date=None,
+            cycle_no=1,
+            attributed_size=Decimal("0"),
+            attributed_cost=Decimal("0"),
+            reserved_buy_usdc=Decimal("0"),
+            realized_pnl=Decimal("6"),
+            status="redeemed",
+            created_at=now - timedelta(minutes=5),
+            updated_at=now,
+        )
+        session.add(position)
+        await session.flush()
+        execution = CopyRedemptionExecution(
+            wallet_address=MY_ADDRESS,
+            condition_id=position.condition_id,
+            method="redeem_positions",
+            execution_provider="unified_sdk",
+            status="completed",
+            estimated_payout_usdc=Decimal("10"),
+            actual_pusd_delta=Decimal("10"),
+            relayer_transaction_id="relay-completed",
+            transaction_hash="0xcompletedredeem",
+            attempts=1,
+            submitted_at=now - timedelta(seconds=2),
+            completed_at=now,
+            created_at=now - timedelta(minutes=1),
+            updated_at=now,
+        )
+        session.add(execution)
+        await session.flush()
+        session.add(
+            CopyRedemption(
+                copy_position_id=position.id,
+                execution_id=execution.id,
+                status="completed",
+                size=Decimal("10"),
+                payout_usdc=Decimal("10"),
+                transaction_hash="0xcompletedredeem",
+                execution_provider="unified_sdk",
+                attempts=1,
+                created_at=now - timedelta(minutes=1),
+                updated_at=now,
+            )
+        )
+        session.add(
+            CopyLedger(
+                subscription_id=subscription_id,
+                copy_position_id=position.id,
+                order_id=None,
+                type="redeem",
+                amount_usdc=Decimal("10"),
+                realized_pnl=Decimal("6"),
+                detail="统一 SDK condition 级自动赎回",
+                timestamp=now,
             )
         )
         await session.commit()
@@ -2145,6 +2218,47 @@ def test_copy_workspace_aggregates_multiple_strategies(app_client_factory):
     assert orders.json() == {"items": [], "next_cursor": None}
 
 
+def test_copy_workspace_activity_feed_includes_only_completed_redemptions(app_client_factory):
+    client, _ = app_client_factory([[]])
+    wallet = add_wallet(client)
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": wallet["id"]},
+    ).json()
+    assert client.portal is not None
+    client.portal.call(
+        insert_completed_copy_redemption,
+        client.app.state.database,
+        subscription["id"],
+    )
+
+    response = client.get(
+        "/api/copy-trading/activities",
+        params={
+            "tracked_wallet_id": wallet["id"],
+            "operation": "REDEEM",
+            "status_group": "redeemed",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["next_cursor"] is None
+    assert len(payload["items"]) == 1
+    activity = payload["items"][0]
+    assert activity["activity_type"] == "redemption"
+    assert activity["operation"] == "REDEEM"
+    assert activity["status"] == "completed"
+    assert activity["title"] == "已完成赎回市场"
+    assert activity["executed_size"] == 10
+    assert activity["executed_usdc"] == 10
+    assert activity["execution_price"] == 1
+    assert activity["realized_pnl"] == 6
+    assert activity["transaction_id"] == "relay-completed"
+    assert activity["transaction_hash"] == "0xcompletedredeem"
+    assert client.get("/api/copy-trading/overview").json()["recent_activities"][0] == activity
+
+
 def test_copy_workspace_aggregates_lifetime_bought_by_wallet(app_client_factory):
     client, _ = app_client_factory([[], []])
     first_wallet = add_wallet(client)
@@ -2405,5 +2519,12 @@ def test_copy_workspace_rejects_invalid_filters(app_client_factory):
     assert client.get("/api/copy-trading/orders", params={"side": "HOLD"}).status_code == 422
     assert (
         client.get("/api/copy-trading/orders", params={"status_group": "unknown"}).status_code
+        == 422
+    )
+    assert (
+        client.get("/api/copy-trading/activities", params={"operation": "HOLD"}).status_code == 422
+    )
+    assert (
+        client.get("/api/copy-trading/activities", params={"status_group": "unknown"}).status_code
         == 422
     )

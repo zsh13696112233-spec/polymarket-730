@@ -153,6 +153,25 @@ class CopySubscription(Base):
             name="ck_copy_subscriptions_large_increase_threshold",
         ),
         CheckConstraint(
+            "strategy_mode IN ('normal', 'large_increase')",
+            name="ck_copy_subscriptions_strategy_mode",
+        ),
+        CheckConstraint(
+            "base_entry_threshold_usdc > 0 AND base_entry_ratio_percent > 0 "
+            "AND base_entry_ratio_percent <= 100",
+            name="ck_copy_subscriptions_base_entry",
+        ),
+        CheckConstraint(
+            "tier_one_threshold_usdc > 0 AND tier_one_ratio_percent > 0 "
+            "AND tier_one_ratio_percent <= 100",
+            name="ck_copy_subscriptions_tier_one",
+        ),
+        CheckConstraint(
+            "tier_two_threshold_usdc > tier_one_threshold_usdc "
+            "AND tier_two_ratio_percent > 0 AND tier_two_ratio_percent <= 100",
+            name="ck_copy_subscriptions_tier_two",
+        ),
+        CheckConstraint(
             "market_slippage_cents >= 0 AND market_slippage_cents <= 50",
             name="ck_copy_subscriptions_market_slippage",
         ),
@@ -163,6 +182,7 @@ class CopySubscription(Base):
         ForeignKey("watched_wallets.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="disabled")
+    strategy_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="normal")
     copy_ratio_percent: Mapped[Decimal] = mapped_column(
         PERCENT_TYPE, nullable=False, default=Decimal("10")
     )
@@ -171,6 +191,24 @@ class CopySubscription(Base):
     )
     large_increase_threshold_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("100")
+    )
+    base_entry_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("100")
+    )
+    base_entry_ratio_percent: Mapped[Decimal] = mapped_column(
+        PERCENT_TYPE, nullable=False, default=Decimal("10")
+    )
+    tier_one_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("50000")
+    )
+    tier_one_ratio_percent: Mapped[Decimal] = mapped_column(
+        PERCENT_TYPE, nullable=False, default=Decimal("0.1")
+    )
+    tier_two_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("100000")
+    )
+    tier_two_ratio_percent: Mapped[Decimal] = mapped_column(
+        PERCENT_TYPE, nullable=False, default=Decimal("0.2")
     )
     total_exposure_cap_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("160")

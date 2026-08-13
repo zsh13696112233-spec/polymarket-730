@@ -12,7 +12,12 @@ from alembic.config import Config as AlembicConfig
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from backend.copy_trading import RiskUsage, allowed_buy_usdc, market_worst_price
+from backend.copy_trading import (
+    RiskUsage,
+    allowed_buy_usdc,
+    market_worst_price,
+    redemption_execution_was_never_submitted,
+)
 from backend.keychain import KeychainReference, MacOSKeychain
 from backend.models import (
     CopyLedger,
@@ -245,6 +250,40 @@ def configured_subscription(client, fake) -> dict:
     return {**subscription, "enabled": True, "state": "active"}
 
 
+def configured_large_subscription(client, fake, **overrides) -> dict:
+    install_book(fake)
+    wallet = client.post("/api/wallets", json={"address": TRACKED_ADDRESS, "label": "大额观察钱包"})
+    assert wallet.status_code == 201, wallet.text
+    payload = {
+        "tracked_wallet_id": wallet.json()["id"],
+        "strategy_mode": "large_increase",
+        "position_cap_usdc": 500,
+        "total_exposure_cap_usdc": 1000,
+        **overrides,
+    }
+    created = client.post("/api/copy-trading/subscriptions", json=payload)
+    assert created.status_code == 201, created.text
+    subscription = created.json()
+    install_execution_account(client)
+
+    async def activate() -> None:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            row.state = "active"
+            row.enabled_at = utcnow()
+            await session.commit()
+
+    client.portal.call(activate)
+    trader = FakeLiveTrader()
+
+    async def get_trader():
+        return trader
+
+    client.app.state.copy_engine._trader = get_trader
+    return {**subscription, "enabled": True, "state": "active"}
+
+
 def add_event(
     client,
     subscription: dict,
@@ -310,6 +349,13 @@ def test_subscription_defaults_include_large_increase_threshold(app_client_facto
     assert subscription["copy_ratio_percent"] == 10
     assert subscription["position_cap_usdc"] == 20
     assert subscription["large_increase_threshold_usdc"] == 100
+    assert subscription["strategy_mode"] == "normal"
+    assert subscription["base_entry_threshold_usdc"] == 100
+    assert subscription["base_entry_ratio_percent"] == 10
+    assert subscription["tier_one_threshold_usdc"] == 50000
+    assert subscription["tier_one_ratio_percent"] == 0.1
+    assert subscription["tier_two_threshold_usdc"] == 100000
+    assert subscription["tier_two_ratio_percent"] == 0.2
     assert subscription["total_exposure_cap_usdc"] == 160
     assert subscription["market_slippage_cents"] == 5
     removed = {
@@ -343,6 +389,147 @@ def test_subscription_defaults_include_large_increase_threshold(app_client_facto
         },
     )
     assert invalid.status_code == 422
+
+
+def test_wallet_creation_atomically_creates_immutable_large_strategy(app_client_factory):
+    client, _ = app_client_factory([[]])
+    copy_strategy = {
+        "strategy_mode": "large_increase",
+        "position_cap_usdc": 20,
+        "base_entry_threshold_usdc": 100,
+        "base_entry_ratio_percent": 10,
+        "tier_one_threshold_usdc": 50000,
+        "tier_one_ratio_percent": 0.1,
+        "tier_two_threshold_usdc": 100000,
+        "tier_two_ratio_percent": 0.2,
+    }
+    created = client.post(
+        "/api/wallets",
+        json={
+            "address": TRACKED_ADDRESS,
+            "label": "大额策略",
+            "copy_strategy": copy_strategy,
+        },
+    )
+    assert created.status_code == 201, created.text
+    subscriptions = client.get("/api/copy-trading/subscriptions").json()
+    assert len(subscriptions) == 1
+    assert subscriptions[0]["strategy_mode"] == "large_increase"
+    assert subscriptions[0]["state"] == "disabled"
+
+    incompatible = client.post(
+        "/api/wallets",
+        json={
+            "address": TRACKED_ADDRESS,
+            "label": "重新添加",
+            "copy_strategy": {**copy_strategy, "strategy_mode": "normal"},
+        },
+    )
+    assert incompatible.status_code == 409
+    assert "不可变" in incompatible.json()["detail"]
+
+    immutable_update = client.put(
+        f"/api/copy-trading/subscriptions/{subscriptions[0]['id']}",
+        json={**copy_strategy, "strategy_mode": "normal"},
+    )
+    assert immutable_update.status_code == 422
+
+    partial_update = client.put(
+        f"/api/copy-trading/subscriptions/{subscriptions[0]['id']}",
+        json={"position_cap_usdc": 25},
+    )
+    assert partial_update.status_code == 200, partial_update.text
+    assert partial_update.json()["position_cap_usdc"] == 25
+    assert partial_update.json()["tier_one_threshold_usdc"] == 50000
+    assert partial_update.json()["tier_two_ratio_percent"] == 0.2
+
+
+def test_large_mode_open_threshold_is_inclusive_and_uses_base_ratio(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_large_subscription(client, fake)
+    add_event(client, subscription, "opened", after="200")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    assert Decimal(str(data["orders"][0]["leader_purchase_usdc"])) == Decimal("100")
+    assert Decimal(str(data["orders"][0]["proportional_target_usdc"])) == Decimal("10")
+    assert Decimal(str(data["orders"][0]["filled_usdc"])) == Decimal("10")
+
+
+def test_large_mode_qualifying_increase_can_open_after_small_base(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_large_subscription(client, fake)
+    add_event(client, subscription, "opened", after="100")
+    tick(client)
+    first = dashboard(client, subscription)
+    assert first["positions"] == []
+    assert first["orders"][0]["reason"] == "底仓金额未达到建仓阈值"
+
+    event_id = add_event(client, subscription, "increased", before="100", after="100100")
+    tick(client)
+    tick(client)
+    data = dashboard(client, subscription)
+    order = next(item for item in data["orders"] if item["leader_event_id"] == event_id)
+    assert Decimal(str(order["leader_purchase_usdc"])) == Decimal("50000")
+    assert Decimal(str(order["proportional_target_usdc"])) == Decimal("50")
+    assert Decimal(str(order["filled_usdc"])) == Decimal("50")
+    assert len(data["positions"]) == 1
+
+
+def test_large_mode_uses_only_highest_matching_tier_on_existing_position(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_large_subscription(client, fake)
+    add_event(client, subscription, "opened", after="200")
+    tick(client)
+    event_id = add_event(client, subscription, "increased", before="200", after="200200")
+    tick(client)
+    tick(client)
+
+    order = next(
+        item
+        for item in dashboard(client, subscription)["orders"]
+        if item["leader_event_id"] == event_id
+    )
+    assert Decimal(str(order["leader_purchase_usdc"])) == Decimal("100000")
+    assert Decimal(str(order["proportional_target_usdc"])) == Decimal("200")
+    assert Decimal(str(order["filled_usdc"])) == Decimal("200")
+
+
+def test_large_mode_does_not_top_up_below_market_minimum(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_large_subscription(
+        client,
+        fake,
+        base_entry_threshold_usdc=100,
+        base_entry_ratio_percent=0.1,
+    )
+    add_event(client, subscription, "opened", after="200")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    assert data["positions"] == []
+    assert data["orders"][0]["reason"] == "按执行比例计算后低于市场最小下单份数"
+    assert Decimal(str(data["orders"][0]["proportional_target_usdc"])) == Decimal("0.1")
+
+
+def test_large_mode_increase_is_truncated_at_market_cap(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_large_subscription(
+        client,
+        fake,
+        position_cap_usdc=20,
+    )
+    add_event(client, subscription, "opened", after="200")
+    tick(client)
+    event_id = add_event(client, subscription, "increased", before="200", after="100200")
+    tick(client)
+    tick(client)
+
+    data = dashboard(client, subscription)
+    increase = next(item for item in data["orders"] if item["leader_event_id"] == event_id)
+    assert Decimal(str(increase["proportional_target_usdc"])) == Decimal("50")
+    assert Decimal(str(increase["filled_usdc"])) == Decimal("10")
+    assert Decimal(str(data["positions"][0]["attributed_cost"])) == Decimal("20")
 
 
 def test_one_cycle_opens_exactly_once_and_duplicate_ticks_do_nothing(app_client_factory):
@@ -1284,13 +1471,13 @@ def test_unified_redemption_persists_handle_and_condition_execution(app_client_f
             return copy_position.attributed_size
 
     size = client.portal.call(attributed_size)
-    trader.onchain_balance = size
+    trader.onchain_balance = size + Decimal("1")
     trader.chain_pusd = Decimal("100")
     fake.redeemable_positions = [
         position(
             asset_id="asset-simple",
             condition_id=CONDITION_ID,
-            size=str(size),
+            size=str(size - Decimal("0.00009")),
             current_price="1",
             current_value=str(size),
         )
@@ -1299,9 +1486,12 @@ def test_unified_redemption_persists_handle_and_condition_execution(app_client_f
     async def onchain_collateral_balance() -> Decimal:
         return trader.chain_pusd
 
+    starts: list[str] = []
+
     async def start_redemption(*, condition_id: str, neg_risk: bool) -> PreparedRedemption:
         assert condition_id == CONDITION_ID
         assert neg_risk is False
+        starts.append(condition_id)
         return PreparedRedemption(
             condition_id=condition_id,
             transaction_id="relay-unified",
@@ -1328,18 +1518,21 @@ def test_unified_redemption_persists_handle_and_condition_execution(app_client_f
     add_event(client, subscription, "decreased", before="100", after="0.1")
     tick(client)
 
-    async def pending_redemption_id() -> int:
+    async def assert_pre_submit_review() -> int:
         async with client.app.state.database.sessions() as session:
             redemption = await session.scalar(select(CopyRedemption))
-            assert redemption is not None
+            execution = await session.scalar(select(CopyRedemptionExecution))
+            assert redemption is not None and execution is not None
+            assert redemption.execution_id == execution.id
+            assert execution.status == "manual_review"
+            assert execution.attempts == 0
+            assert execution.relayer_transaction_id is None
+            assert execution.transaction_hash is None
             return redemption.id
 
-    redemption_id = client.portal.call(pending_redemption_id)
-    client.portal.call(
-        client.app.state.copy_engine._execute_redemption,
-        redemption_id,
-        None,
-    )
+    client.portal.call(assert_pre_submit_review)
+    trader.onchain_balance = size
+    tick(client)
 
     async def state() -> tuple[str, str, str | None, str | None, Decimal | None]:
         async with client.app.state.database.sessions() as session:
@@ -1361,6 +1554,36 @@ def test_unified_redemption_persists_handle_and_condition_execution(app_client_f
         "0xunifiedredeemed",
         size,
     )
+    assert starts == [CONDITION_ID]
+
+
+@pytest.mark.parametrize(
+    ("attempts", "transaction_id", "transaction_hash", "submitted_at"),
+    [
+        (1, None, None, None),
+        (0, "relay-existing", None, None),
+        (0, None, "0xexisting", None),
+        (0, None, None, datetime.now(UTC).replace(tzinfo=None)),
+    ],
+)
+def test_redemption_review_with_submission_evidence_cannot_auto_recover(
+    attempts,
+    transaction_id,
+    transaction_hash,
+    submitted_at,
+):
+    execution = CopyRedemptionExecution(
+        wallet_address=SELF_ADDRESS,
+        condition_id=CONDITION_ID,
+        status="manual_review",
+        attempts=attempts,
+        relayer_transaction_id=transaction_id,
+        transaction_hash=transaction_hash,
+        submitted_at=submitted_at,
+        created_at=utcnow(),
+        updated_at=utcnow(),
+    )
+    assert redemption_execution_was_never_submitted(execution) is False
 
 
 def test_confirmed_relayer_transaction_without_token_consumption_stays_pending(
@@ -1994,6 +2217,12 @@ def test_live_only_migration_deletes_paper_graph_and_preserves_live_orders(tmp_p
         assert connection.execute(
             "SELECT large_increase_threshold_usdc FROM copy_subscriptions WHERE id = 2"
         ).fetchone() == (100,)
+        assert connection.execute(
+            """SELECT strategy_mode,base_entry_threshold_usdc,base_entry_ratio_percent,
+                      tier_one_threshold_usdc,tier_one_ratio_percent,
+                      tier_two_threshold_usdc,tier_two_ratio_percent
+               FROM copy_subscriptions WHERE id = 2"""
+        ).fetchone() == ("normal", 100, 10, 50000, 0.1, 100000, 0.2)
         assert "mode" not in order_columns
         assert "leader_purchase_usdc" in order_columns
         assert "proportional_target_usdc" in order_columns

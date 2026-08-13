@@ -4286,6 +4286,15 @@ summary:focus-visible {
   text-decoration: none;
 }
 
+.pcRecentOrdersTools {
+  gap: 14px;
+}
+
+.pcRecentOrdersTools .pcSelect {
+  grid-template-columns: auto minmax(125px, 1fr);
+  align-items: center;
+}
+
 .pcStrategyList {
   display: grid;
 }
@@ -5038,6 +5047,32 @@ a.pcMarketIdentity:hover strong {
   font-weight: 650;
 }
 
+.pcStrategyMode {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: center;
+  gap: 9px 18px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--pc-line);
+}
+
+.pcStrategyMode legend,
+.pcStrategyMode small {
+  grid-column: 1 / -1;
+}
+
+.pcStrategyMode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pcStrategyMode input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+}
+
 .pcField > span small,
 .pcField > small {
   color: var(--pc-text-3);
@@ -5515,6 +5550,16 @@ a.pcMarketIdentity:hover strong {
     flex-direction: column;
   }
 
+  .pcRecentOrdersHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pcRecentOrdersTools {
+    justify-content: space-between;
+    width: 100%;
+  }
+
   .pcFilters {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5549,6 +5594,77 @@ a.pcMarketIdentity:hover strong {
   .pcAnalysisLegacy .walletSection {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+/* Keep the overview activity filter legible despite the compact terminal theme. */
+.pcPanelHeader.pcRecentOrdersHeader h2 {
+  font-size: 16px;
+}
+
+.pcRecentOrdersHeader .pcEyebrow {
+  font-size: 9px;
+}
+
+.pcRecentOrdersTools .pcSelect {
+  gap: 7px;
+  color: var(--pc-text-2);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.pcRecentOrdersTools .pcSelect select {
+  width: auto;
+  min-width: 168px;
+  height: 38px;
+  padding-inline: 11px 32px;
+  font-size: 13px;
+}
+
+.pcRecentOrdersTools .pcTextLink {
+  font-size: 11px;
+}
+
+.pcRecentOrdersBody {
+  position: relative;
+}
+
+.pcRecentOrdersBody.loading > .pcTableWrap,
+.pcRecentOrdersBody.loading > .pcMobileCards,
+.pcRecentOrdersBody.loading > .pcEmptyState {
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+.pcRecentOrdersLoading {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--pc-surface) 24%, transparent);
+}
+
+.pcRecentOrdersLoading .pcLoading {
+  min-height: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--pc-line);
+  background: var(--pc-surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.pcRecentOrdersError {
+  margin: 10px 12px 12px;
+}
+
+@media (max-width: 640px) {
+  .pcRecentOrdersTools .pcSelect {
+    flex: 1;
+  }
+
+  .pcRecentOrdersTools .pcSelect select {
+    width: 100%;
+    min-width: 0;
   }
 }
 
@@ -7268,6 +7384,28 @@ a.pcMarketIdentity:hover strong { color: #8a6d0d; }
 .pcWalletAvatar { border-color: #75682a; background: #1d1c0e; color: #ffe55c; }
 .pcStrategyMetrics dt { color: #8c8869; }
 .pcStrategyMetrics dd, .pcTable .numeric, .pcInlineSummary strong, .pcInlineSummary .pcPnl, .pcAccountSummary strong, .pcPnl { color: #f0edcf; }
+
+/* Keep strategy metadata inside its fixed grid column. Mode and numeric
+   parameters intentionally occupy separate rows to prevent metric overlap. */
+.pcStrategyStatus {
+  width: 100% !important;
+  min-width: 0;
+}
+
+.pcStrategyStatus .pcStrategyModeLabel,
+.pcStrategyStatus .pcStrategyParams {
+  display: block;
+  max-width: 100%;
+  margin-top: 0 !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pcStrategyStatus .pcStrategyModeLabel {
+  color: var(--pc-text-2);
+  font-weight: 750;
+}
 .pcPnl.profit { color: #31e49d; text-shadow: 0 0 7px rgba(49,228,157,.22); }
 .pcPnl.loss { color: #ff5e75; text-shadow: 0 0 7px rgba(255,94,117,.22); }
 
@@ -7429,5 +7567,141 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px !important;
     padding-left: 0;
+  }
+}
+
+/* Add-target form: larger type and card-based strategy selection. */
+.pcWalletCreateForm {
+  display: grid;
+  gap: 18px;
+}
+
+.pcWalletCreateForm .pcField {
+  align-self: start;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pcWalletCreateForm .pcField > span {
+  color: var(--pc-text-2);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.pcWalletCreateForm .pcField > span small,
+.pcWalletCreateForm .pcField > small,
+.pcWalletCreateForm .pcFormHint {
+  font-size: 11px !important;
+  line-height: 1.5;
+}
+
+.pcWalletCreateForm .pcField input:not([type="radio"]) {
+  height: 42px;
+  padding-inline: 12px;
+  font-size: 14px;
+}
+
+.pcWalletCreateForm .pcUnitInput b {
+  font-size: 11px;
+}
+
+.pcWalletCreateForm .pcStrategyTierGrid {
+  grid-template-columns: 1fr;
+}
+
+.pcWalletCreateForm .pcStrategyTierRow {
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pcWalletCreateForm .pcStrategyTotalCap {
+  width: calc((100% - 10px) / 2);
+}
+
+.pcWalletCreateForm .pcStrategyMode {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+  border: 0;
+}
+
+.pcWalletCreateForm .pcStrategyMode legend {
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+  color: var(--pc-text-2);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.pcWalletCreateForm .pcStrategyModeOption {
+  position: relative;
+  display: grid;
+  min-height: 78px;
+  align-items: center;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid #75682a;
+  background: #0c0d08;
+  color: #d5d0ad;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.pcWalletCreateForm .pcStrategyModeOption:hover {
+  border-color: #b59a25;
+  background: #12130b;
+}
+
+.pcWalletCreateForm .pcStrategyModeOption:has(input:checked) {
+  border-color: #f2c319;
+  background: #181609;
+  box-shadow: inset 3px 0 0 #f2c319, 0 0 0 1px rgba(242, 195, 25, 0.16);
+}
+
+.pcWalletCreateForm .pcStrategyModeOption input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #f2c319;
+}
+
+.pcWalletCreateForm .pcStrategyModeOption span {
+  display: grid;
+  gap: 5px;
+}
+
+.pcWalletCreateForm .pcStrategyModeOption strong {
+  color: #f0edcf;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.pcWalletCreateForm .pcStrategyModeOption small {
+  color: #9f9974;
+  font-size: 11px !important;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.pcWalletCreateForm .pcStrategyModeNotice {
+  grid-column: 1 / -1;
+  margin-top: 1px;
+  color: #aaa37c;
+}
+
+@media (max-width: 640px) {
+  .pcWalletCreateForm .pcStrategyMode {
+    grid-template-columns: 1fr;
+  }
+
+  .pcWalletCreateForm .pcStrategyTotalCap {
+    width: 100%;
+  }
+
+  .pcWalletCreateForm .pcStrategyTierRow {
+    grid-template-columns: 1fr;
   }
 }

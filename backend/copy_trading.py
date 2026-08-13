@@ -76,6 +76,20 @@ def redemption_sizes_match(actual: Decimal, expected: Decimal) -> bool:
     return abs(actual - expected) <= tolerance
 
 
+def chain_redemption_sizes_match(actual: Decimal, expected: Decimal) -> bool:
+    """Compare exact ERC-1155 balances without relying on Data API display precision."""
+    return abs(actual - expected) <= REDEMPTION_SIZE_TOLERANCE
+
+
+def redemption_execution_was_never_submitted(execution: CopyRedemptionExecution) -> bool:
+    return (
+        execution.attempts == 0
+        and execution.relayer_transaction_id is None
+        and execution.transaction_hash is None
+        and execution.submitted_at is None
+    )
+
+
 def redemption_error_is_retryable(message: str | None) -> bool:
     if not message:
         return False
@@ -792,7 +806,15 @@ class CopyTradingEngine:
             )
             await session.commit()
 
-    async def _leader_opened(self, subscription_id: int, event_id: int) -> None:
+    async def _leader_opened(
+        self,
+        subscription_id: int,
+        event_id: int,
+        *,
+        ratio_percent: Decimal | None = None,
+        strict_minimum: bool = False,
+        idempotency_scope: str = "open",
+    ) -> None:
         async with self.database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
             event = await session.get(PositionEvent, event_id)
@@ -838,6 +860,25 @@ class CopyTradingEngine:
             )
             account = await session.get(ExecutionAccount, 1)
 
+        leader_purchase_usdc = await self._leader_purchase_usdc(event)
+        if ratio_percent is None:
+            if subscription.strategy_mode == "large_increase":
+                ratio_percent = subscription.base_entry_ratio_percent
+                strict_minimum = True
+                if leader_purchase_usdc < subscription.base_entry_threshold_usdc:
+                    await self._record_skip(
+                        subscription_id,
+                        event,
+                        "底仓金额未达到建仓阈值",
+                        proportional_target_usdc=leader_purchase_usdc
+                        * ratio_percent
+                        / Decimal("100"),
+                    )
+                    return
+            else:
+                ratio_percent = subscription.copy_ratio_percent
+        requested = leader_purchase_usdc * ratio_percent / Decimal("100")
+
         if not self.settings.live_copy_enabled:
             await self._record_skip(subscription_id, event, "自动实盘已被系统紧急停用")
             return
@@ -865,15 +906,14 @@ class CopyTradingEngine:
         if book.best_ask is None:
             await self._record_skip(subscription_id, event, "市场当前没有可成交卖盘")
             return
-        leader_purchase_usdc = await self._leader_purchase_usdc(event)
-        requested = leader_purchase_usdc * subscription.copy_ratio_percent / Decimal("100")
         worst_price = market_worst_price(
             book.best_ask, book.tick_size, subscription.market_slippage_cents, side="BUY"
         )
         minimum_order_usdc = book.min_order_size * worst_price
         usage = await self._risk_usage(subscription_id, account)
+        requested_for_risk = requested if strict_minimum else max(requested, minimum_order_usdc)
         allowed, reason = allowed_buy_usdc(
-            max(requested, minimum_order_usdc),
+            requested_for_risk,
             subscription=subscription,
             usage=usage,
         )
@@ -881,7 +921,17 @@ class CopyTradingEngine:
             await self._record_skip(subscription_id, event, reason or "风险额度不足")
             return
         if allowed / worst_price < book.min_order_size:
-            await self._record_skip(subscription_id, event, "剩余风控额度低于市场最小下单金额")
+            minimum_reason = (
+                "按执行比例计算后低于市场最小下单份数"
+                if strict_minimum and requested < minimum_order_usdc
+                else "剩余风控额度低于市场最小下单金额"
+            )
+            await self._record_skip(
+                subscription_id,
+                event,
+                minimum_reason,
+                proportional_target_usdc=requested,
+            )
             return
 
         now = utcnow()
@@ -917,7 +967,7 @@ class CopyTradingEngine:
                 amount=allowed,
                 price=worst_price,
                 reference=book.best_ask,
-                key=f"copy:open:{event.id}",
+                key=f"copy:{idempotency_scope}:{event.id}",
                 leader_purchase_usdc=leader_purchase_usdc,
                 proportional_target_usdc=requested,
             )
@@ -953,8 +1003,23 @@ class CopyTradingEngine:
             if prior_order is not None:
                 return
             leader_purchase_usdc = await self._leader_purchase_usdc(event)
-            if leader_purchase_usdc < subscription.large_increase_threshold_usdc:
-                return
+            if subscription.strategy_mode == "large_increase":
+                if leader_purchase_usdc >= subscription.tier_two_threshold_usdc:
+                    ratio_percent = subscription.tier_two_ratio_percent
+                elif leader_purchase_usdc >= subscription.tier_one_threshold_usdc:
+                    ratio_percent = subscription.tier_one_ratio_percent
+                else:
+                    await self._record_skip(
+                        subscription_id,
+                        event,
+                        "单次净加仓未达到第一档阈值",
+                        proportional_target_usdc=ZERO,
+                    )
+                    return
+            else:
+                if leader_purchase_usdc < subscription.large_increase_threshold_usdc:
+                    return
+                ratio_percent = subscription.copy_ratio_percent
             position = await session.scalar(
                 select(CopyPosition)
                 .where(
@@ -967,6 +1032,15 @@ class CopyTradingEngine:
             )
             account = await session.get(ExecutionAccount, 1)
 
+        if position is None and subscription.strategy_mode == "large_increase":
+            await self._leader_opened(
+                subscription_id,
+                event_id,
+                ratio_percent=ratio_percent,
+                strict_minimum=True,
+                idempotency_scope="increase",
+            )
+            return
         if position is None:
             await self._record_skip(
                 subscription_id,
@@ -1004,7 +1078,7 @@ class CopyTradingEngine:
         if book.best_ask is None:
             await self._record_skip(subscription_id, event, "市场当前没有可成交卖盘")
             return
-        requested = leader_purchase_usdc * subscription.copy_ratio_percent / Decimal("100")
+        requested = leader_purchase_usdc * ratio_percent / Decimal("100")
         usage = await self._risk_usage(subscription_id, account, position_id=position.id)
         allowed, reason = allowed_buy_usdc(requested, subscription=subscription, usage=usage)
         if allowed <= ZERO:
@@ -1511,15 +1585,37 @@ class CopyTradingEngine:
                 position.updated_at = utcnow()
             await session.commit()
 
-    async def _record_skip(self, subscription_id: int, event: PositionEvent, reason: str) -> None:
+    async def _record_skip(
+        self,
+        subscription_id: int,
+        event: PositionEvent,
+        reason: str,
+        *,
+        proportional_target_usdc: Decimal | None = None,
+    ) -> None:
         async with self.database.sessions() as session:
             subscription = await session.get(CopySubscription, subscription_id)
         leader_purchase_usdc = await self._leader_purchase_usdc(event)
-        proportional_target_usdc = (
-            leader_purchase_usdc * subscription.copy_ratio_percent / Decimal("100")
-            if subscription is not None
-            else None
-        )
+        if proportional_target_usdc is None:
+            if subscription is None:
+                proportional_target_usdc = None
+            elif subscription.strategy_mode == "large_increase" and event.type == "opened":
+                proportional_target_usdc = (
+                    leader_purchase_usdc * subscription.base_entry_ratio_percent / Decimal("100")
+                )
+            elif subscription.strategy_mode == "large_increase" and event.type == "increased":
+                ratio = (
+                    subscription.tier_two_ratio_percent
+                    if leader_purchase_usdc >= subscription.tier_two_threshold_usdc
+                    else subscription.tier_one_ratio_percent
+                    if leader_purchase_usdc >= subscription.tier_one_threshold_usdc
+                    else ZERO
+                )
+                proportional_target_usdc = leader_purchase_usdc * ratio / Decimal("100")
+            else:
+                proportional_target_usdc = (
+                    leader_purchase_usdc * subscription.copy_ratio_percent / Decimal("100")
+                )
         order = self._new_order(
             subscription_id=subscription_id,
             position_id=None,
@@ -1737,6 +1833,7 @@ class CopyTradingEngine:
                 return
             if not account.auto_redeem or not account.funder_address:
                 return
+            funder_address = account.funder_address.lower()
             position = await session.get(CopyPosition, redemption.copy_position_id)
             if position is None or position.attributed_size <= ZERO:
                 return
@@ -1759,14 +1856,20 @@ class CopyTradingEngine:
             estimated_payout = position.attributed_size * effective_payout_rate
             execution = await session.scalar(
                 select(CopyRedemptionExecution).where(
-                    CopyRedemptionExecution.wallet_address == account.funder_address.lower(),
+                    CopyRedemptionExecution.wallet_address == funder_address,
                     CopyRedemptionExecution.condition_id == condition_id,
                 )
             )
             if execution is not None:
                 redemption.execution_id = execution.id
                 redemption.execution_provider = "unified_sdk"
-                if execution.status in {"submitting", "submitted", "manual_review", "completed"}:
+                recoverable_review = (
+                    execution.status == "manual_review"
+                    and redemption_execution_was_never_submitted(execution)
+                )
+                if execution.status in {"submitting", "submitted", "completed"} or (
+                    execution.status == "manual_review" and not recoverable_review
+                ):
                     if execution.status == "completed":
                         redemption.status = "manual_review"
                         redemption.last_error = (
@@ -1776,7 +1879,7 @@ class CopyTradingEngine:
                     return
             else:
                 execution = CopyRedemptionExecution(
-                    wallet_address=account.funder_address.lower(),
+                    wallet_address=funder_address,
                     condition_id=condition_id,
                     method="redeem_positions",
                     execution_provider="unified_sdk",
@@ -1833,28 +1936,44 @@ class CopyTradingEngine:
             execution.updated_at = utcnow()
             await session.commit()
 
-        redeemable_before = await self.client.fetch_redeemable_positions(account.funder_address)
-        for wallet_position in redeemable_before:
-            if wallet_position.condition_id != condition_id:
-                continue
-            attributed = attributed_by_asset.get(wallet_position.asset_id, ZERO)
-            if not redemption_sizes_match(wallet_position.size, attributed):
-                async with self.database.sessions() as session:
-                    execution = await session.get(CopyRedemptionExecution, execution_id)
-                    assert execution is not None
-                    execution.status = "manual_review"
-                    execution.last_error = "执行钱包含有无法归因的同 condition token"
-                    execution.updated_at = utcnow()
-                    await session.commit()
-                return
+        redeemable_before = await self.client.fetch_redeemable_positions(
+            funder_address,
+            condition_ids=[condition_id],
+        )
+        condition_positions = [
+            wallet_position
+            for wallet_position in redeemable_before
+            if wallet_position.condition_id == condition_id
+        ]
+        if not condition_positions:
+            raise TradingUnavailable("Data API 尚未将 condition 标记为可赎回")
+        observed_asset_ids = {wallet_position.asset_id for wallet_position in condition_positions}
+        chain_asset_ids = set(attributed_by_asset) | observed_asset_ids
         before_balances = {
             linked_asset_id: await trader.onchain_outcome_balance(linked_asset_id)
-            for linked_asset_id in attributed_by_asset
+            for linked_asset_id in chain_asset_ids
         }
         before_outcome = sum(before_balances.values(), ZERO)
         before_pusd = await trader.onchain_collateral_balance()
+        unattributed_assets = [
+            linked_asset_id
+            for linked_asset_id in observed_asset_ids - set(attributed_by_asset)
+            if before_balances.get(linked_asset_id, ZERO) > REDEMPTION_SIZE_TOLERANCE
+        ]
+        if unattributed_assets:
+            async with self.database.sessions() as session:
+                execution = await session.get(CopyRedemptionExecution, execution_id)
+                assert execution is not None
+                execution.status = "manual_review"
+                execution.last_error = "执行钱包包含有无法归因的同 condition token"
+                execution.before_outcome_balance = before_outcome
+                execution.updated_at = utcnow()
+                await session.commit()
+            return
         if any(
-            not redemption_sizes_match(before_balances.get(linked_asset_id, ZERO), attributed_size)
+            not chain_redemption_sizes_match(
+                before_balances.get(linked_asset_id, ZERO), attributed_size
+            )
             for linked_asset_id, attributed_size in attributed_by_asset.items()
         ):
             async with self.database.sessions() as session:
@@ -1866,6 +1985,17 @@ class CopyTradingEngine:
                 execution.updated_at = utcnow()
                 await session.commit()
             return
+
+        async with self.database.sessions() as session:
+            execution = await session.get(CopyRedemptionExecution, execution_id)
+            assert execution is not None
+            if execution.status == "manual_review":
+                if not redemption_execution_was_never_submitted(execution):
+                    return
+                execution.status = "pending"
+                execution.last_error = None
+                execution.updated_at = utcnow()
+                await session.commit()
 
         async with self.database.sessions() as session:
             execution = await session.get(CopyRedemptionExecution, execution_id)
@@ -1921,7 +2051,7 @@ class CopyTradingEngine:
             receipt_ok = await trader.transaction_receipt_success(transaction_hash)
             after_balances = {
                 linked_asset_id: await trader.onchain_outcome_balance(linked_asset_id)
-                for linked_asset_id in attributed_by_asset
+                for linked_asset_id in chain_asset_ids
             }
             after_outcome = sum(after_balances.values(), ZERO)
             after_pusd = await trader.onchain_collateral_balance()
@@ -1934,7 +2064,8 @@ class CopyTradingEngine:
             if abs(actual_delta - expected) > Decimal("0.000001"):
                 raise TradingUnavailable(f"赎回 pUSD 增量 {actual_delta} 与预期 {expected} 不一致")
             remaining = await self.client.fetch_redeemable_positions(
-                account.funder_address  # type: ignore[union-attr]
+                funder_address,
+                condition_ids=[condition_id],
             )
             if any(item.condition_id == condition_id for item in remaining):
                 raise TradingUnavailable("Data API 仍将 condition token 标记为可赎回")
@@ -2026,9 +2157,13 @@ class CopyTradingEngine:
                 return
             rows = list(
                 (
-                    await session.scalars(
-                        select(CopyRedemption)
+                    await session.execute(
+                        select(CopyRedemption, CopyRedemptionExecution)
                         .join(CopyPosition)
+                        .outerjoin(
+                            CopyRedemptionExecution,
+                            CopyRedemptionExecution.id == CopyRedemption.execution_id,
+                        )
                         .where(
                             CopyPosition.subscription_id == subscription_id,
                             CopyRedemption.status == "pending",
@@ -2038,9 +2173,14 @@ class CopyTradingEngine:
             )
         # Only errors known to occur before submission are retried. Unknown submission
         # results remain pending until their transaction or token balance is reconciled.
-        for redemption in rows:
-            if redemption.transaction_hash is None and redemption_error_is_retryable(
-                redemption.last_error
+        for redemption, execution in rows:
+            safe_pre_submit_review = (
+                execution is not None
+                and execution.status == "manual_review"
+                and redemption_execution_was_never_submitted(execution)
+            )
+            if redemption.transaction_hash is None and (
+                safe_pre_submit_review or redemption_error_is_retryable(redemption.last_error)
             ):
                 await self._execute_redemption(redemption.id, event_id=None)
 

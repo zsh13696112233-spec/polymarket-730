@@ -10,6 +10,7 @@ from pydantic import (
     Field,
     PlainSerializer,
     field_serializer,
+    model_validator,
 )
 
 DecimalNumber = Annotated[
@@ -81,18 +82,31 @@ class CopySubscriptionConfig(APIModel):
     copy_ratio_percent: Decimal = Field(default=Decimal("10"), gt=0, le=100)
     position_cap_usdc: Decimal = Field(default=Decimal("20"), gt=0)
     large_increase_threshold_usdc: Decimal = Field(default=Decimal("100"), gt=0)
+    base_entry_threshold_usdc: Decimal = Field(default=Decimal("100"), gt=0)
+    base_entry_ratio_percent: Decimal = Field(default=Decimal("10"), gt=0, le=100)
+    tier_one_threshold_usdc: Decimal = Field(default=Decimal("50000"), gt=0)
+    tier_one_ratio_percent: Decimal = Field(default=Decimal("0.1"), gt=0, le=100)
+    tier_two_threshold_usdc: Decimal = Field(default=Decimal("100000"), gt=0)
+    tier_two_ratio_percent: Decimal = Field(default=Decimal("0.2"), gt=0, le=100)
     total_exposure_cap_usdc: Decimal = Field(default=Decimal("160"), ge=0)
     market_slippage_cents: Decimal = Field(default=Decimal("5"), ge=0, le=50)
+
+    @model_validator(mode="after")
+    def validate_tiers(self) -> CopySubscriptionConfig:
+        if self.tier_two_threshold_usdc <= self.tier_one_threshold_usdc:
+            raise ValueError("第二档加仓阈值必须高于第一档")
+        return self
 
 
 class CopySubscriptionCreate(CopySubscriptionConfig):
     model_config = ConfigDict(extra="forbid")
 
     tracked_wallet_id: int = Field(gt=0)
+    strategy_mode: Literal["normal", "large_increase"] = "normal"
 
 
 class CopySubscriptionUpdate(CopySubscriptionConfig):
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class CopySubscriptionAction(APIModel):
@@ -110,9 +124,16 @@ class CopySubscriptionRead(APIModel):
     tracked_wallet_label: str | None = None
     enabled: bool = False
     state: Literal["active", "paused", "exit_only", "closing", "disabled", "error"]
+    strategy_mode: Literal["normal", "large_increase"]
     copy_ratio_percent: DecimalNumber
     position_cap_usdc: DecimalNumber
     large_increase_threshold_usdc: DecimalNumber
+    base_entry_threshold_usdc: DecimalNumber
+    base_entry_ratio_percent: DecimalNumber
+    tier_one_threshold_usdc: DecimalNumber
+    tier_one_ratio_percent: DecimalNumber
+    tier_two_threshold_usdc: DecimalNumber
+    tier_two_ratio_percent: DecimalNumber
     total_exposure_cap_usdc: DecimalNumber
     market_slippage_cents: DecimalNumber
     baseline_event_id: int
@@ -270,6 +291,45 @@ class CopyOrdersResponse(APIModel):
     next_cursor: str | None = None
 
 
+class CopyActivityRead(APIModel):
+    activity_id: str
+    activity_type: Literal["order", "redemption"]
+    source_id: int
+    operation: Literal["BUY", "SELL", "REDEEM"]
+    asset_id: str
+    tracked_wallet_id: int | None = None
+    tracked_wallet_label: str | None = None
+    tracked_wallet_address: str | None = None
+    title: str | None = None
+    outcome: str | None = None
+    event_slug: str | None = None
+    requested_size: DecimalNumber = Decimal("0")
+    requested_usdc: DecimalNumber = Decimal("0")
+    leader_purchase_usdc: DecimalNumber | None = None
+    proportional_target_usdc: DecimalNumber | None = None
+    executed_size: DecimalNumber = Decimal("0")
+    executed_usdc: DecimalNumber = Decimal("0")
+    fee_usdc: DecimalNumber = Decimal("0")
+    execution_price: DecimalNumber | None = None
+    realized_pnl: DecimalNumber | None = None
+    status: str
+    reason: str | None = None
+    execution_provider: str | None = None
+    transaction_id: str | None = None
+    transaction_hash: str | None = None
+    fills: list[CopyFillRead] = Field(default_factory=list)
+    activity_at: datetime
+
+    @field_serializer("activity_at", when_used="json")
+    def serialize_activity_date(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class CopyActivitiesResponse(APIModel):
+    items: list[CopyActivityRead]
+    next_cursor: str | None = None
+
+
 class CopyOverviewTotalsRead(APIModel):
     collateral_balance: DecimalNumber | None = None
     available_capacity_usdc: DecimalNumber = Decimal("0")
@@ -320,6 +380,7 @@ class CopyOverviewRead(APIModel):
     daily_realized_pnl: list[CopyDailyRealizedPnlRead]
     strategies: list[CopyStrategyOverviewRead]
     recent_orders: list[CopyWorkspaceOrderRead]
+    recent_activities: list[CopyActivityRead] = Field(default_factory=list)
     as_of: datetime
 
     @field_serializer("as_of", when_used="json")
@@ -366,6 +427,13 @@ class CopyRecommendation(APIModel):
 class WalletCreate(APIModel):
     address: str = Field(min_length=1, max_length=500)
     label: str | None = Field(default=None, min_length=1, max_length=100)
+    copy_strategy: WalletCopyStrategyCreate | None = None
+
+
+class WalletCopyStrategyCreate(CopySubscriptionConfig):
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_mode: Literal["normal", "large_increase"] = "normal"
 
 
 class WalletUpdate(APIModel):

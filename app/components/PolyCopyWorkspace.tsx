@@ -46,9 +46,16 @@ type Subscription = {
   tracked_wallet_label: string | null;
   enabled: boolean;
   state: "active" | "paused" | "exit_only" | "closing" | "disabled" | "error";
+  strategy_mode: "normal" | "large_increase";
   copy_ratio_percent: Numeric;
   position_cap_usdc: Numeric;
   large_increase_threshold_usdc: Numeric;
+  base_entry_threshold_usdc: Numeric;
+  base_entry_ratio_percent: Numeric;
+  tier_one_threshold_usdc: Numeric;
+  tier_one_ratio_percent: Numeric;
+  tier_two_threshold_usdc: Numeric;
+  tier_two_ratio_percent: Numeric;
   total_exposure_cap_usdc: Numeric;
   market_slippage_cents: Numeric;
   open_exposure_usdc: Numeric;
@@ -109,6 +116,36 @@ type CopyOrder = {
   event_slug: string | null;
 };
 
+type CopyActivity = {
+  activity_id: string;
+  activity_type: "order" | "redemption";
+  source_id: number;
+  operation: "BUY" | "SELL" | "REDEEM";
+  asset_id: string;
+  tracked_wallet_id: number | null;
+  tracked_wallet_label: string | null;
+  tracked_wallet_address: string | null;
+  title: string | null;
+  outcome: string | null;
+  event_slug: string | null;
+  requested_size: Numeric;
+  requested_usdc: Numeric;
+  leader_purchase_usdc: Numeric | null;
+  proportional_target_usdc: Numeric | null;
+  executed_size: Numeric;
+  executed_usdc: Numeric;
+  fee_usdc: Numeric;
+  execution_price: Numeric | null;
+  realized_pnl: Numeric | null;
+  status: string;
+  reason: string | null;
+  execution_provider: string | null;
+  transaction_id: string | null;
+  transaction_hash: string | null;
+  fills: CopyOrder["fills"];
+  activity_at: string;
+};
+
 type CopyPosition = {
   id: number;
   asset_id: string;
@@ -157,11 +194,12 @@ type Overview = {
   }>;
   strategies: Strategy[];
   recent_orders: CopyOrder[];
+  recent_activities: CopyActivity[];
   as_of: string;
 };
 
 type PositionResponse = { items: CopyPosition[]; portfolio: Portfolio; as_of: string };
-type OrderResponse = { items: CopyOrder[]; next_cursor: string | null };
+type ActivityResponse = { items: CopyActivity[]; next_cursor: string | null };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -314,13 +352,45 @@ const orderState: Record<string, { label: string; tone: string }> = {
   manual_review: { label: "人工检查", tone: "danger" },
 };
 
-function cancelledRemainder(order: CopyOrder) {
-  if (order.status !== "partially_filled") return null;
-  const remainder = order.side === "BUY"
-    ? number(order.requested_usdc) - number(order.filled_usdc)
-    : number(order.requested_size) - number(order.filled_size);
+function orderActivity(order: CopyOrder): CopyActivity {
+  return {
+    activity_id: `order:${order.id}`,
+    activity_type: "order",
+    source_id: order.id,
+    operation: order.side,
+    asset_id: order.asset_id,
+    tracked_wallet_id: order.tracked_wallet_id,
+    tracked_wallet_label: order.tracked_wallet_label,
+    tracked_wallet_address: order.tracked_wallet_address,
+    title: order.title,
+    outcome: order.outcome,
+    event_slug: order.event_slug,
+    requested_size: order.requested_size,
+    requested_usdc: order.requested_usdc,
+    leader_purchase_usdc: order.leader_purchase_usdc,
+    proportional_target_usdc: order.proportional_target_usdc,
+    executed_size: order.filled_size,
+    executed_usdc: order.filled_usdc,
+    fee_usdc: order.fee_usdc,
+    execution_price: order.average_fill_price ?? order.reference_price ?? order.limit_price,
+    realized_pnl: null,
+    status: order.status,
+    reason: order.reason,
+    execution_provider: order.execution_provider,
+    transaction_id: null,
+    transaction_hash: order.fills.find((fill) => fill.transaction_hash)?.transaction_hash ?? null,
+    fills: order.fills,
+    activity_at: order.created_at,
+  };
+}
+
+function cancelledRemainder(activity: CopyActivity) {
+  if (activity.activity_type !== "order" || activity.status !== "partially_filled") return null;
+  const remainder = activity.operation === "BUY"
+    ? number(activity.requested_usdc) - number(activity.executed_usdc)
+    : number(activity.requested_size) - number(activity.executed_size);
   if (remainder <= 0) return null;
-  return order.side === "BUY" ? `已取消 ${money(remainder)}` : `已取消 ${shares(remainder)} 份`;
+  return activity.operation === "BUY" ? `已取消 ${money(remainder)}` : `已取消 ${shares(remainder)} 份`;
 }
 
 const positionState: Record<string, { label: string; tone: string }> = {
@@ -343,18 +413,18 @@ function Pnl({ value, secondary }: { value: Numeric | null; secondary?: string }
   );
 }
 
-function MarketIdentity({ order }: { order: CopyOrder }) {
-  const title = order.title || `资产 ${shortAddress(order.asset_id)}`;
+function MarketIdentity({ activity }: { activity: CopyActivity }) {
+  const title = activity.title || `资产 ${shortAddress(activity.asset_id)}`;
   const content = (
     <>
       <strong>{title}</strong>
       <span>
-        {order.outcome || "未知 Outcome"} · {order.tracked_wallet_label || shortAddress(order.tracked_wallet_address)}
+        {activity.outcome || "未知 Outcome"} · {activity.tracked_wallet_label || shortAddress(activity.tracked_wallet_address)}
       </span>
     </>
   );
-  return order.event_slug ? (
-    <a className="pcMarketIdentity" href={`https://polymarket.com/event/${order.event_slug}`} target="_blank" rel="noreferrer">
+  return activity.event_slug ? (
+    <a className="pcMarketIdentity" href={`https://polymarket.com/event/${activity.event_slug}`} target="_blank" rel="noreferrer">
       {content}
     </a>
   ) : (
@@ -428,6 +498,16 @@ function WalletModal({
 }) {
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
+  const [strategyMode, setStrategyMode] = useState<"normal" | "large_increase">("normal");
+  const [ratio, setRatio] = useState("10");
+  const [positionCap, setPositionCap] = useState("20");
+  const [largeIncreaseThreshold, setLargeIncreaseThreshold] = useState("100");
+  const [baseEntryThreshold, setBaseEntryThreshold] = useState("100");
+  const [baseEntryRatio, setBaseEntryRatio] = useState("10");
+  const [tierOneThreshold, setTierOneThreshold] = useState("50000");
+  const [tierOneRatio, setTierOneRatio] = useState("0.1");
+  const [tierTwoThreshold, setTierTwoThreshold] = useState("100000");
+  const [tierTwoRatio, setTierTwoRatio] = useState("0.2");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -437,9 +517,23 @@ function WalletModal({
     setBusy(true);
     setError(null);
     try {
+      const copyStrategy = mode === "tracked" ? {
+        strategy_mode: strategyMode,
+        copy_ratio_percent: Number(ratio),
+        position_cap_usdc: Number(positionCap),
+        large_increase_threshold_usdc: Number(largeIncreaseThreshold),
+        base_entry_threshold_usdc: Number(baseEntryThreshold),
+        base_entry_ratio_percent: Number(baseEntryRatio),
+        tier_one_threshold_usdc: Number(tierOneThreshold),
+        tier_one_ratio_percent: Number(tierOneRatio),
+        tier_two_threshold_usdc: Number(tierTwoThreshold),
+        tier_two_ratio_percent: Number(tierTwoRatio),
+        total_exposure_cap_usdc: 160,
+        market_slippage_cents: 5,
+      } : null;
       await api(mode === "self" ? "/api/my-wallet" : "/api/wallets", {
         method: mode === "self" ? "PUT" : "POST",
-        body: JSON.stringify({ address: address.trim(), ...(label.trim() ? { label: label.trim() } : {}) }),
+        body: JSON.stringify({ address: address.trim(), ...(label.trim() ? { label: label.trim() } : {}), ...(copyStrategy ? { copy_strategy: copyStrategy } : {}) }),
       });
       onSaved();
     } catch (submitError) {
@@ -455,11 +549,45 @@ function WalletModal({
       eyebrow={mode === "self" ? "执行账户" : "公开钱包"}
       onClose={onClose}
     >
-      <form className="pcForm" onSubmit={submit}>
+      <form className={`pcForm ${mode === "tracked" ? "pcWalletCreateForm" : ""}`} onSubmit={submit}>
         <label className="pcField">
           <span>钱包地址或个人页链接</span>
           <input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="0x… 或 polymarket.com/profile/0x…" disabled={busy} />
         </label>
+        {mode === "tracked" && <>
+          <fieldset className="pcField pcStrategyMode">
+            <legend>选择跟单模式</legend>
+            <label className="pcStrategyModeOption">
+              <input aria-label="普通跟单模式" type="radio" name="strategy-mode" value="normal" checked={strategyMode === "normal"} onChange={() => setStrategyMode("normal")} />
+              <span><strong>普通跟单</strong><small>按统一比例跟随建仓与达标加仓</small></span>
+            </label>
+            <label className="pcStrategyModeOption">
+              <input aria-label="大额加仓跟单模式" type="radio" name="strategy-mode" value="large_increase" checked={strategyMode === "large_increase"} onChange={() => setStrategyMode("large_increase")} />
+              <span><strong>大额加仓</strong><small>底仓门槛与两档加仓比例独立控制</small></span>
+            </label>
+            <small className="pcStrategyModeNotice">模式在策略创建后不可修改</small>
+          </fieldset>
+          <div className={`pcFormGrid three ${strategyMode === "large_increase" ? "pcStrategyTierGrid" : ""}`}>
+            {strategyMode === "normal" ? <>
+              <label className="pcField"><span>跟单比例</span><div className="pcUnitInput"><input aria-label="跟单比例" type="number" min="0.01" max="100" step="0.01" value={ratio} onChange={(event) => setRatio(event.target.value)} /><b>%</b></div></label>
+              <label className="pcField"><span>加仓触发金额</span><div className="pcUnitInput"><input aria-label="加仓触发金额" type="number" min="0.01" step="0.01" value={largeIncreaseThreshold} onChange={(event) => setLargeIncreaseThreshold(event.target.value)} /><b>USDC</b></div></label>
+            </> : <>
+              <div className="pcStrategyTierRow">
+                <label className="pcField"><span>底仓金额</span><div className="pcUnitInput"><input aria-label="底仓金额" type="number" min="0.01" step="0.01" value={baseEntryThreshold} onChange={(event) => setBaseEntryThreshold(event.target.value)} /><b>USDC</b></div></label>
+                <label className="pcField"><span>底仓跟单比例</span><div className="pcUnitInput"><input aria-label="底仓跟单比例" type="number" min="0.01" max="100" step="0.01" value={baseEntryRatio} onChange={(event) => setBaseEntryRatio(event.target.value)} /><b>%</b></div></label>
+              </div>
+              <div className="pcStrategyTierRow">
+                <label className="pcField"><span>第一档加仓阈值</span><div className="pcUnitInput"><input aria-label="第一档加仓阈值" type="number" min="0.01" step="0.01" value={tierOneThreshold} onChange={(event) => setTierOneThreshold(event.target.value)} /><b>USDC</b></div></label>
+                <label className="pcField"><span>第一档跟单比例</span><div className="pcUnitInput"><input aria-label="第一档跟单比例" type="number" min="0.01" max="100" step="0.01" value={tierOneRatio} onChange={(event) => setTierOneRatio(event.target.value)} /><b>%</b></div></label>
+              </div>
+              <div className="pcStrategyTierRow">
+                <label className="pcField"><span>第二档加仓阈值</span><div className="pcUnitInput"><input aria-label="第二档加仓阈值" type="number" min="0.01" step="0.01" value={tierTwoThreshold} onChange={(event) => setTierTwoThreshold(event.target.value)} /><b>USDC</b></div></label>
+                <label className="pcField"><span>第二档跟单比例</span><div className="pcUnitInput"><input aria-label="第二档跟单比例" type="number" min="0.01" max="100" step="0.01" value={tierTwoRatio} onChange={(event) => setTierTwoRatio(event.target.value)} /><b>%</b></div></label>
+              </div>
+            </>}
+            <label className={`pcField ${strategyMode === "large_increase" ? "pcStrategyTotalCap" : ""}`}><span>市场总跟单金额上限</span><div className="pcUnitInput"><input aria-label="市场总跟单金额上限" type="number" min="0.01" max="160" step="0.01" value={positionCap} onChange={(event) => setPositionCap(event.target.value)} /><b>USDC</b></div><small>不得高于默认的策略总敞口 $160。</small></label>
+          </div>
+        </>}
         <label className="pcField">
           <span>钱包备注 <small>可选</small></span>
           <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={mode === "self" ? "例如：我的执行钱包" : "例如：高胜率体育账户"} disabled={busy} />
@@ -492,6 +620,12 @@ function QuickSettingsModal({
   const [ratio, setRatio] = useState(String(subscription?.copy_ratio_percent ?? 10));
   const [positionCap, setPositionCap] = useState(String(subscription?.position_cap_usdc ?? 20));
   const [largeIncreaseThreshold, setLargeIncreaseThreshold] = useState(String(subscription?.large_increase_threshold_usdc ?? 100));
+  const [baseEntryThreshold, setBaseEntryThreshold] = useState(String(subscription?.base_entry_threshold_usdc ?? 100));
+  const [baseEntryRatio, setBaseEntryRatio] = useState(String(subscription?.base_entry_ratio_percent ?? 10));
+  const [tierOneThreshold, setTierOneThreshold] = useState(String(subscription?.tier_one_threshold_usdc ?? 50000));
+  const [tierOneRatio, setTierOneRatio] = useState(String(subscription?.tier_one_ratio_percent ?? 0.1));
+  const [tierTwoThreshold, setTierTwoThreshold] = useState(String(subscription?.tier_two_threshold_usdc ?? 100000));
+  const [tierTwoRatio, setTierTwoRatio] = useState(String(subscription?.tier_two_ratio_percent ?? 0.2));
   const [dailyLimit, setDailyLimit] = useState(String(account?.daily_buy_limit_usdc ?? 80));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -505,6 +639,12 @@ function QuickSettingsModal({
         copy_ratio_percent: Number(ratio),
         position_cap_usdc: Number(positionCap),
         large_increase_threshold_usdc: Number(largeIncreaseThreshold),
+        base_entry_threshold_usdc: Number(baseEntryThreshold),
+        base_entry_ratio_percent: Number(baseEntryRatio),
+        tier_one_threshold_usdc: Number(tierOneThreshold),
+        tier_one_ratio_percent: Number(tierOneRatio),
+        tier_two_threshold_usdc: Number(tierTwoThreshold),
+        tier_two_ratio_percent: Number(tierTwoRatio),
         total_exposure_cap_usdc: Number(subscription?.total_exposure_cap_usdc ?? 160),
         market_slippage_cents: Number(subscription?.market_slippage_cents ?? 5),
       };
@@ -544,21 +684,31 @@ function QuickSettingsModal({
     <Modal title={`钱包策略设置 · ${wallet.label || shortAddress(wallet.proxy_wallet)}`} eyebrow="跟单与资金边界" onClose={onClose}>
       <form className="pcForm pcQuickSettings" onSubmit={submit}>
         <p className="pcQuickSettingsIntro">这些设置决定该目标钱包如何跟单；保存后仅影响之后的新订单。</p>
+        <p className="pcFormHint">策略模式：{subscription?.strategy_mode === "large_increase" ? "大额加仓跟单模式" : "普通跟单模式"}（创建后不可修改）</p>
         <div className="pcFormGrid three">
+          {subscription?.strategy_mode === "large_increase" ? <>
+            <label className="pcField"><span>底仓金额</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={baseEntryThreshold} onChange={(event) => setBaseEntryThreshold(event.target.value)} /><b>USDC</b></div></label>
+            <label className="pcField"><span>底仓跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={baseEntryRatio} onChange={(event) => setBaseEntryRatio(event.target.value)} /><b>%</b></div></label>
+            <label className="pcField"><span>第一档加仓阈值</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={tierOneThreshold} onChange={(event) => setTierOneThreshold(event.target.value)} /><b>USDC</b></div></label>
+            <label className="pcField"><span>第一档跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={tierOneRatio} onChange={(event) => setTierOneRatio(event.target.value)} /><b>%</b></div></label>
+            <label className="pcField"><span>第二档加仓阈值</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={tierTwoThreshold} onChange={(event) => setTierTwoThreshold(event.target.value)} /><b>USDC</b></div></label>
+            <label className="pcField"><span>第二档跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={tierTwoRatio} onChange={(event) => setTierTwoRatio(event.target.value)} /><b>%</b></div></label>
+          </> : <>
+            <label className="pcField">
+              <span>跟单比例</span>
+              <div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={ratio} onChange={(event) => setRatio(event.target.value)} /><b>%</b></div>
+              <small>目标钱包每买入 $100，本策略按此比例买入；例如 10% 约买 $10。</small>
+            </label>
+            <label className="pcField">
+              <span>加仓触发金额</span>
+              <div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={largeIncreaseThreshold} onChange={(event) => setLargeIncreaseThreshold(event.target.value)} /><b>USDC</b></div>
+              <small>目标钱包单次净加仓达到此金额才跟随；低于该值只记录、不下单。</small>
+            </label>
+          </>}
           <label className="pcField">
-            <span>跟单比例</span>
-            <div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={ratio} onChange={(event) => setRatio(event.target.value)} /><b>%</b></div>
-            <small>目标钱包每买入 $100，本策略按此比例买入；例如 10% 约买 $10。</small>
-          </label>
-          <label className="pcField">
-            <span>单个市场最多投入</span>
-            <div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={positionCap} onChange={(event) => setPositionCap(event.target.value)} /><b>USDC</b></div>
-            <small>同一市场累计买入的最高金额；达到后不再继续加仓。</small>
-          </label>
-          <label className="pcField">
-            <span>加仓触发金额</span>
-            <div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={largeIncreaseThreshold} onChange={(event) => setLargeIncreaseThreshold(event.target.value)} /><b>USDC</b></div>
-            <small>目标钱包单次净加仓达到此金额才跟随；低于该值只记录、不下单。</small>
+            <span>市场总跟单金额上限</span>
+            <div className="pcUnitInput"><input type="number" min="0.01" max={number(subscription?.total_exposure_cap_usdc ?? 160)} step="0.01" value={positionCap} onChange={(event) => setPositionCap(event.target.value)} /><b>USDC</b></div>
+            <small>同一市场方向累计买入的最高金额，超出时按剩余额度截断。</small>
           </label>
           <label className="pcField">
             <span>今日最多买入</span>
@@ -577,8 +727,8 @@ function QuickSettingsModal({
   );
 }
 
-function OrderTable({ orders }: { orders: CopyOrder[] }) {
-  if (orders.length === 0) {
+function ActivityTable({ activities }: { activities: CopyActivity[] }) {
+  if (activities.length === 0) {
     return <EmptyState title="暂无记录" message="策略产生信号后，成功、跳过和异常记录都会显示在这里。" />;
   }
   return (
@@ -596,22 +746,26 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
             <col className="pcOrderPriceColumn" />
             <col className="pcOrderStatusColumn" />
           </colgroup>
-          <thead><tr><th>时间</th><th>市场 / 来源</th><th>方向</th><th className="numeric">源钱包交易金额</th><th className="numeric">按比例目标金额</th><th className="numeric">执行预算</th><th className="numeric">实际执行金额</th><th className="numeric">成交价</th><th>状态 / 原因</th></tr></thead>
+          <thead><tr><th>时间</th><th>市场 / 来源</th><th>操作</th><th className="numeric">源钱包交易金额</th><th className="numeric">按比例目标金额</th><th className="numeric">执行预算</th><th className="numeric">实际执行金额</th><th className="numeric">执行价格</th><th>状态 / 原因</th></tr></thead>
           <tbody>
-            {orders.map((order) => {
-              const state = orderState[order.status] || { label: order.status, tone: "neutral" };
-              const cancelled = cancelledRemainder(order);
+            {activities.map((activity) => {
+              const state = activity.activity_type === "redemption"
+                ? { label: "已赎回", tone: "success" }
+                : orderState[activity.status] || { label: activity.status, tone: "neutral" };
+              const cancelled = cancelledRemainder(activity);
+              const operationLabel = activity.operation === "BUY" ? "买入" : activity.operation === "SELL" ? "卖出" : "赎回";
+              const operationTone = activity.operation === "BUY" ? "buy" : activity.operation === "SELL" ? "sell" : "success";
               return (
-                <tr key={order.id}>
-                  <td className="pcTimeCell"><time>{dateTime(order.created_at)}</time><small>#{order.id}</small></td>
-                  <td><MarketIdentity order={order} /></td>
-                  <td><Badge label={order.side === "BUY" ? "买入" : "卖出"} tone={order.side === "BUY" ? "buy" : "sell"} /></td>
-                  <td className="numeric">{money(order.side === "BUY" ? order.leader_purchase_usdc : null)}</td>
-                  <td className="numeric">{money(order.side === "BUY" ? order.proportional_target_usdc : null)}</td>
-                  <td className="numeric">{money(order.requested_usdc)}</td>
-                  <td className="numeric"><strong>{money(order.filled_usdc)}</strong><small>{number(order.fee_usdc) > 0 ? `费用 ${money(order.fee_usdc)}` : ""}</small></td>
-                  <td className="numeric">{price(order.average_fill_price ?? order.reference_price ?? order.limit_price)}</td>
-                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{order.execution_provider && <small>{order.execution_provider === "unified_sdk" ? "官方 SDK" : "历史执行"} · {order.fills.length} fills</small>}{cancelled && <small>{cancelled}</small>}{order.reason && <small title={order.reason}>{order.reason}</small>}</td>
+                <tr key={activity.activity_id}>
+                  <td className="pcTimeCell"><time>{dateTime(activity.activity_at)}</time><small>#{activity.source_id}</small></td>
+                  <td><MarketIdentity activity={activity} /></td>
+                  <td><Badge label={operationLabel} tone={operationTone} /></td>
+                  <td className="numeric">{activity.operation === "BUY" ? money(activity.leader_purchase_usdc) : "—"}</td>
+                  <td className="numeric">{activity.operation === "BUY" ? money(activity.proportional_target_usdc) : "—"}</td>
+                  <td className="numeric">{money(activity.requested_usdc)}</td>
+                  <td className="numeric"><strong>{money(activity.executed_usdc)}</strong><small>{activity.activity_type === "redemption" ? `赎回 ${shares(activity.executed_size)} 份` : number(activity.fee_usdc) > 0 ? `费用 ${money(activity.fee_usdc)}` : ""}</small>{activity.realized_pnl !== null && <small>盈亏 {signedMoney(activity.realized_pnl)}</small>}</td>
+                  <td className="numeric">{price(activity.execution_price)}</td>
+                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{activity.execution_provider && <small>{activity.execution_provider === "unified_sdk" ? "官方 SDK" : "历史执行"}{activity.activity_type === "order" ? ` · ${activity.fills.length} fills` : ""}</small>}{activity.transaction_hash && <small title={activity.transaction_hash}>结算 {shortAddress(activity.transaction_hash)}</small>}{cancelled && <small>{cancelled}</small>}{activity.reason && <small title={activity.reason}>{activity.reason}</small>}</td>
                 </tr>
               );
             })}
@@ -619,14 +773,16 @@ function OrderTable({ orders }: { orders: CopyOrder[] }) {
         </table>
       </div>
       <div className="pcMobileCards">
-        {orders.map((order) => {
-          const state = orderState[order.status] || { label: order.status, tone: "neutral" };
-          const cancelled = cancelledRemainder(order);
+        {activities.map((activity) => {
+          const state = activity.activity_type === "redemption" ? { label: "已赎回", tone: "success" } : orderState[activity.status] || { label: activity.status, tone: "neutral" };
+          const cancelled = cancelledRemainder(activity);
+          const operationLabel = activity.operation === "BUY" ? "买入" : activity.operation === "SELL" ? "卖出" : "赎回";
           return (
-            <article className="pcMobileCard" key={order.id}>
-              <div className="pcMobileCardHeader"><MarketIdentity order={order} /><Badge label={state.label} tone={state.tone} /></div>
-              <dl><div><dt>方向</dt><dd>{order.side === "BUY" ? "买入" : "卖出"}</dd></div><div><dt>源钱包交易金额</dt><dd>{money(order.side === "BUY" ? order.leader_purchase_usdc : null)}</dd></div><div><dt>按比例目标金额</dt><dd>{money(order.side === "BUY" ? order.proportional_target_usdc : null)}</dd></div><div><dt>执行预算</dt><dd>{money(order.requested_usdc)}</dd></div><div><dt>实际执行金额</dt><dd>{money(order.filled_usdc)}</dd></div><div><dt>成交价</dt><dd>{price(order.average_fill_price)}</dd></div><div><dt>时间</dt><dd>{dateTime(order.created_at)}</dd></div></dl>
-              {(cancelled || order.reason) && <p>{[cancelled, order.reason].filter(Boolean).join(" · ")}</p>}
+            <article className="pcMobileCard" key={activity.activity_id}>
+              <div className="pcMobileCardHeader"><MarketIdentity activity={activity} /><Badge label={state.label} tone={state.tone} /></div>
+              <dl><div><dt>操作</dt><dd>{operationLabel}</dd></div><div><dt>源钱包交易金额</dt><dd>{activity.operation === "BUY" ? money(activity.leader_purchase_usdc) : "—"}</dd></div><div><dt>按比例目标金额</dt><dd>{activity.operation === "BUY" ? money(activity.proportional_target_usdc) : "—"}</dd></div><div><dt>执行预算</dt><dd>{money(activity.requested_usdc)}</dd></div><div><dt>实际执行金额</dt><dd>{money(activity.executed_usdc)}</dd></div><div><dt>{activity.activity_type === "redemption" ? "赎回价" : "成交价"}</dt><dd>{price(activity.execution_price)}</dd></div><div><dt>时间</dt><dd>{dateTime(activity.activity_at)}</dd></div></dl>
+              {activity.activity_type === "redemption" && <p>赎回 {shares(activity.executed_size)} 份 · 盈亏 {signedMoney(activity.realized_pnl)}</p>}
+              {(activity.transaction_hash || cancelled || activity.reason) && <p>{[activity.transaction_hash ? `结算 ${shortAddress(activity.transaction_hash)}` : null, cancelled, activity.reason].filter(Boolean).join(" · ")}</p>}
             </article>
           );
         })}
@@ -828,6 +984,63 @@ function DailyRealizedPnlChart({
   );
 }
 
+function RecentOrdersPanel({ overview }: { overview: Overview }) {
+  const [walletId, setWalletId] = useState("all");
+  const [filteredActivities, setFilteredActivities] = useState<CopyActivity[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const effectiveWalletId = walletId === "all" || overview.strategies.some((strategy) => String(strategy.wallet.id) === walletId)
+    ? walletId
+    : "all";
+
+  useEffect(() => {
+    if (effectiveWalletId === "all") return;
+
+    let cancelled = false;
+    const params = new URLSearchParams({ limit: "8", tracked_wallet_id: effectiveWalletId });
+    void api<ActivityResponse>(`/api/copy-trading/activities?${params}`)
+      .then((result) => {
+        if (!cancelled) setFilteredActivities(result.items);
+      })
+      .catch((loadError) => {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "无法读取最近记录");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [effectiveWalletId, overview.as_of]);
+
+  const overviewActivities = overview.recent_activities?.length
+    ? overview.recent_activities
+    : overview.recent_orders.map(orderActivity);
+  const activities = effectiveWalletId === "all" ? overviewActivities : filteredActivities;
+  const visibleError = effectiveWalletId === "all" ? null : error;
+  function selectWallet(nextWalletId: string) {
+    if (nextWalletId !== "all") setFilteredActivities(activities ?? []);
+    setLoading(nextWalletId !== "all");
+    setError(null);
+    setWalletId(nextWalletId);
+  }
+
+  return (
+    <section className="pcPanel">
+      <header className="pcPanelHeader compact pcRecentOrdersHeader">
+        <div><span className="pcEyebrow">ACTIVITY</span><h2>最近记录</h2></div>
+        <div className="pcRecentOrdersTools">
+          <label className="pcSelect"><span>目标钱包</span><select aria-label="最近记录目标钱包" value={effectiveWalletId} onChange={(event) => selectWallet(event.target.value)}><option value="all">全部钱包</option>{overview.strategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
+          <Link className="pcTextLink" href="/records">查看全部 →</Link>
+        </div>
+      </header>
+      <div className={`pcRecentOrdersBody ${loading ? "loading" : ""}`} aria-busy={loading}>
+        <ActivityTable activities={activities ?? []} />
+        {loading && <div className="pcRecentOrdersLoading"><LoadingState /></div>}
+      </div>
+      {visibleError && <div className="pcAlert danger pcRecentOrdersError" role="alert"><span>!</span><p><strong>最近记录读取失败</strong>{visibleError}</p></div>}
+    </section>
+  );
+}
+
 function OverviewPage({
   overview,
   wallets,
@@ -874,10 +1087,18 @@ function OverviewPage({
               const strategy = strategyByWallet.get(wallet.id) || null;
               const subscription = strategy?.subscription;
               const state = subscription ? strategyState[subscription.state] || { label: subscription.state, tone: "neutral" } : { label: "未配置", tone: "neutral" };
+              const modeLabel = subscription?.strategy_mode === "large_increase"
+                ? "大额加仓跟单"
+                : subscription ? "普通跟单" : null;
+              const strategySummary = subscription?.strategy_mode === "large_increase"
+                ? `上限 ${money(subscription.position_cap_usdc)}`
+                : subscription
+                  ? `${number(subscription.copy_ratio_percent)}% · ${money(subscription.position_cap_usdc)}`
+                  : null;
               return (
                 <article className="pcStrategyRow" key={wallet.id}>
                   <a className="pcStrategyIdentity" href={profileUrl(wallet.proxy_wallet)} target="_blank" rel="noreferrer" aria-label={`查看 ${wallet.label || shortAddress(wallet.proxy_wallet)} 的 Polymarket 主页`}><span className="pcWalletAvatar">{(wallet.label || "0x").slice(0, 2).toUpperCase()}</span><span><strong>{wallet.label || shortAddress(wallet.proxy_wallet)}</strong><small>{shortAddress(wallet.proxy_wallet)}{strategy?.stale ? " · 数据延迟" : ""}</small></span></a>
-                  <div className="pcStrategyStatus"><Badge label={state.label} tone={state.tone} />{subscription && <small>{number(subscription.copy_ratio_percent)}% · {money(subscription.position_cap_usdc)}</small>}</div>
+                  <div className="pcStrategyStatus"><Badge label={state.label} tone={state.tone} />{modeLabel && <small className="pcStrategyModeLabel">{modeLabel}</small>}{strategySummary && <small className="pcStrategyParams" title={strategySummary}>{strategySummary}</small>}</div>
                   <dl className="pcStrategyMetrics"><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div><div><dt>持仓成本</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日投入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>今日已实现盈亏</dt><dd><Pnl value={subscription?.daily_realized_pnl ?? 0} /></dd></div><div><dt>钱包总投入</dt><dd>{money(strategy?.lifetime_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div></dl>
                   <div className="pcStrategyActions">
                     <button className="pcButton ghost" type="button" onClick={() => onConfigure(wallet)}>{subscription ? "参数" : "配置"}</button>
@@ -891,10 +1112,7 @@ function OverviewPage({
         )}
       </section>
 
-      <section className="pcPanel">
-        <header className="pcPanelHeader compact"><div><span className="pcEyebrow">ACTIVITY</span><h2>最近记录</h2></div><Link className="pcTextLink" href="/records">查看全部 →</Link></header>
-        <OrderTable orders={overview.recent_orders} />
-      </section>
+      <RecentOrdersPanel overview={overview} />
     </>
   );
 }
@@ -939,10 +1157,10 @@ function PositionsPage({ overview }: { overview: Overview }) {
 
 function RecordsPage({ overview }: { overview: Overview }) {
   const [walletId, setWalletId] = useState("all");
-  const [side, setSide] = useState("all");
+  const [operation, setOperation] = useState("all");
   const [status, setStatus] = useState("all");
   const [range, setRange] = useState("7d");
-  const [items, setItems] = useState<CopyOrder[]>([]);
+  const [items, setItems] = useState<CopyActivity[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -951,7 +1169,7 @@ function RecordsPage({ overview }: { overview: Overview }) {
   const buildPath = useCallback((nextCursor?: string) => {
     const params = new URLSearchParams({ limit: "50" });
     if (walletId !== "all") params.set("tracked_wallet_id", walletId);
-    if (side !== "all") params.set("side", side);
+    if (operation !== "all") params.set("operation", operation);
     if (status !== "all") params.set("status_group", status);
     if (range !== "all") {
       const days = range === "today" ? 0 : Number(range.replace("d", ""));
@@ -961,14 +1179,14 @@ function RecordsPage({ overview }: { overview: Overview }) {
       params.set("from_time", from.toISOString());
     }
     if (nextCursor) params.set("cursor", nextCursor);
-    return `/api/copy-trading/orders?${params}`;
-  }, [range, side, status, walletId]);
+    return `/api/copy-trading/activities?${params}`;
+  }, [operation, range, status, walletId]);
 
   useEffect(() => {
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setLoading(true);
-      void api<OrderResponse>(buildPath())
+      void api<ActivityResponse>(buildPath())
         .then((result) => { if (!cancelled) { setItems(result.items); setCursor(result.next_cursor); setError(null); } })
         .catch((loadError) => { if (!cancelled) setError(loadError instanceof Error ? loadError.message : "无法读取记录"); })
         .finally(() => { if (!cancelled) setLoading(false); });
@@ -980,7 +1198,7 @@ function RecordsPage({ overview }: { overview: Overview }) {
     if (!cursor) return;
     setLoadingMore(true);
     try {
-      const result = await api<OrderResponse>(buildPath(cursor));
+      const result = await api<ActivityResponse>(buildPath(cursor));
       setItems((current) => [...current, ...result.items]);
       setCursor(result.next_cursor);
     } catch (loadError) {
@@ -995,13 +1213,13 @@ function RecordsPage({ overview }: { overview: Overview }) {
       <header className="pcRecordsHeader">
         <div className="pcFilters">
           <label className="pcSelect"><span>目标钱包</span><select value={walletId} onChange={(event) => setWalletId(event.target.value)}><option value="all">全部钱包</option>{overview.strategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
-          <label className="pcSelect"><span>方向</span><select value={side} onChange={(event) => setSide(event.target.value)}><option value="all">全部方向</option><option value="BUY">买入</option><option value="SELL">卖出</option></select></label>
-          <label className="pcSelect"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="filled">已成交</option><option value="partial">部分成交</option><option value="unfilled">未成交</option><option value="skipped">跳过 / 风控</option><option value="processing">处理中</option><option value="attention">需要关注</option></select></label>
+          <label className="pcSelect"><span>操作</span><select value={operation} onChange={(event) => setOperation(event.target.value)}><option value="all">全部操作</option><option value="BUY">买入</option><option value="SELL">卖出</option><option value="REDEEM">赎回</option></select></label>
+          <label className="pcSelect"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="filled">已成交</option><option value="redeemed">已赎回</option><option value="partial">部分成交</option><option value="unfilled">未成交</option><option value="skipped">跳过 / 风控</option><option value="processing">处理中</option><option value="attention">需要关注</option></select></label>
           <label className="pcSelect"><span>时间</span><select value={range} onChange={(event) => setRange(event.target.value)}><option value="today">今天</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="all">全部时间</option></select></label>
         </div>
         <span className="pcRecordCount">{items.length} 条记录</span>
       </header>
-      {loading ? <LoadingState /> : error && items.length === 0 ? <div className="pcAlert danger"><span>!</span><p><strong>记录读取失败</strong>{error}</p></div> : <OrderTable orders={items} />}
+      {loading ? <LoadingState /> : error && items.length === 0 ? <div className="pcAlert danger"><span>!</span><p><strong>记录读取失败</strong>{error}</p></div> : <ActivityTable activities={items} />}
       {error && items.length > 0 && <p className="pcInlineError">{error}</p>}
       {cursor && <div className="pcLoadMore"><button className="pcButton ghost" type="button" disabled={loadingMore} onClick={loadMore}>{loadingMore ? "正在加载…" : "加载更早记录"}</button></div>}
     </section>
@@ -1047,7 +1265,7 @@ function AdvancedStrategyForm({ strategy, onSaved }: { strategy: Strategy; onSav
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage(null);
     try {
-      await api(`/api/copy-trading/subscriptions/${subscription.id}`, { method: "PUT", body: JSON.stringify({ copy_ratio_percent: Number(subscription.copy_ratio_percent), position_cap_usdc: Number(subscription.position_cap_usdc), large_increase_threshold_usdc: Number(subscription.large_increase_threshold_usdc), total_exposure_cap_usdc: Number(totalCap), market_slippage_cents: Number(slippage) }) });
+      await api(`/api/copy-trading/subscriptions/${subscription.id}`, { method: "PUT", body: JSON.stringify({ copy_ratio_percent: Number(subscription.copy_ratio_percent), position_cap_usdc: Number(subscription.position_cap_usdc), large_increase_threshold_usdc: Number(subscription.large_increase_threshold_usdc), base_entry_threshold_usdc: Number(subscription.base_entry_threshold_usdc), base_entry_ratio_percent: Number(subscription.base_entry_ratio_percent), tier_one_threshold_usdc: Number(subscription.tier_one_threshold_usdc), tier_one_ratio_percent: Number(subscription.tier_one_ratio_percent), tier_two_threshold_usdc: Number(subscription.tier_two_threshold_usdc), tier_two_ratio_percent: Number(subscription.tier_two_ratio_percent), total_exposure_cap_usdc: Number(totalCap), market_slippage_cents: Number(slippage) }) });
       setMessage("高级参数已保存。"); onSaved();
     } catch (submitError) { setMessage(submitError instanceof Error ? submitError.message : "保存失败"); }
     finally { setBusy(false); }

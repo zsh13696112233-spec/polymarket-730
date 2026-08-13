@@ -495,6 +495,49 @@ def test_large_mode_uses_only_highest_matching_tier_on_existing_position(app_cli
     assert Decimal(str(order["filled_usdc"])) == Decimal("200")
 
 
+def test_large_mode_preserves_below_tier_audit_but_hides_activity(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_large_subscription(client, fake)
+    event_id = add_event(client, subscription, "increased", before="100", after="102")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    assert len(data["orders"]) == 1
+    assert data["orders"][0]["status"] == "skipped"
+    assert data["orders"][0]["reason"] == "单次净加仓未达到第一档阈值"
+    assert data["subscription"]["last_processed_event_id"] == event_id
+    activities = client.get("/api/copy-trading/activities").json()
+    assert activities["items"] == []
+    overview = client.get("/api/copy-trading/overview").json()
+    assert overview["recent_orders"] == []
+    assert overview["recent_activities"] == []
+
+
+def test_normal_mode_preserves_skipped_audit_but_hides_activity(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "increased", before="100", after="500")
+    tick(client)
+
+    data = dashboard(client, subscription)
+    assert len(data["orders"]) == 1
+    assert data["orders"][0]["status"] == "skipped"
+    assert data["orders"][0]["reason"] == "首次建仓未成功，不追随后续加仓"
+    assert client.get("/api/copy-trading/activities").json()["items"] == []
+
+    async def mark_as_blocked() -> None:
+        async with client.app.state.database.sessions() as session:
+            order = await session.get(CopyOrder, data["orders"][0]["id"])
+            assert order is not None
+            order.status = "blocked"
+            await session.commit()
+
+    client.portal.call(mark_as_blocked)
+    visible = client.get("/api/copy-trading/activities").json()["items"]
+    assert len(visible) == 1
+    assert visible[0]["status"] == "blocked"
+
+
 def test_large_mode_does_not_top_up_below_market_minimum(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_large_subscription(

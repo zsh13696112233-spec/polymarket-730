@@ -539,6 +539,50 @@ describe("PolyCopy workspace", () => {
     await waitFor(() => expect(requests.some((url) => url.includes("/subscriptions/10/enabled"))).toBe(true));
   });
 
+  it("策略开启失败时在策略栏上方展示错误，并在重试成功后清除", async () => {
+    const user = userEvent.setup();
+    let toggleAttempts = 0;
+    let currentOverview = {
+      ...overview,
+      strategies: [{
+        ...overview.strategies[0],
+        subscription: { ...subscription, enabled: false, state: "exit_only" },
+      }],
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) return json(currentOverview);
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      if (url.includes("/subscriptions/10/enabled")) {
+        toggleAttempts += 1;
+        if (toggleAttempts === 1) return json({ detail: "执行钱包余额不足" }, 422);
+        currentOverview = {
+          ...currentOverview,
+          strategies: [{
+            ...currentOverview.strategies[0],
+            subscription: { ...subscription, enabled: true, state: "active" },
+          }],
+        };
+        return json(subscription);
+      }
+      return json({});
+    }));
+
+    render(<PolyCopyWorkspace view="overview" />);
+    await user.click(await screen.findByRole("switch", { name: "策略一恢复策略" }));
+
+    const alert = await screen.findByRole("alert");
+    const strategyPanel = screen.getByRole("heading", { name: "策略" }).closest("section");
+    expect(alert).toHaveTextContent("策略开启失败");
+    expect(alert).toHaveTextContent("执行钱包余额不足");
+    expect(screen.queryByText("部分数据可能不是最新")).not.toBeInTheDocument();
+    expect(alert.compareDocumentPosition(strategyPanel!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    await user.click(screen.getByRole("switch", { name: "策略一恢复策略" }));
+    await waitFor(() => expect(screen.queryByText("策略开启失败")).not.toBeInTheDocument());
+    expect(await screen.findByRole("switch", { name: "策略一暂停策略" })).toBeInTheDocument();
+  });
+
   it("新增目标时一次配置大额加仓模式和两档参数", async () => {
     const user = userEvent.setup();
     render(<PolyCopyWorkspace view="overview" />);

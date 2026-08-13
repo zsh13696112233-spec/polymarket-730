@@ -7692,6 +7692,33 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   color: #aaa37c;
 }
 
+.pcSystemSettings .pcExecutionAccountPanel .pcPanelHeader h2 {
+  font-size: 22px !important;
+}
+
+/* Use one readable size for supporting controls and copy on the settings page. */
+.pcSystemSettings .pcEyebrow,
+.pcSystemSettings .pcPanelHeader p,
+.pcSystemSettings .pcSelect,
+.pcSystemSettings .pcSelect select,
+.pcSystemSettings .pcBadge,
+.pcSystemSettings .pcButton,
+.pcSystemSettings .pcUnitInput b,
+.pcSystemSettings .pcField > small,
+.pcSystemSettings .pcSettingsIntro,
+.pcSystemSettings .pcFormHint,
+.pcSystemSettings .pcFormError,
+.pcSystemSettings .pcFormSuccess,
+.pcSystemSettings .pcAccountSummary span,
+.pcSystemSettings .pcAccountSummary small,
+.pcSystemSettings .pcCommandHint,
+.pcSystemSettings .pcCommandHint code,
+.pcSystemSettings .pcRehearsalPreview small,
+.pcSystemSettings .pcEmptyState p {
+  font-size: 13px !important;
+  line-height: 1.55;
+}
+
 @media (max-width: 640px) {
   .pcWalletCreateForm .pcStrategyMode {
     grid-template-columns: 1fr;

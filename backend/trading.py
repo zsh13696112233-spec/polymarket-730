@@ -18,7 +18,6 @@ BASE_UNITS = Decimal("1000000")
 FAK_IGNORABLE_REMAINDER_USDC = Decimal("0.50")
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 COLLATERAL_ADAPTER = "0xAdA100Db00Ca00073811820692005400218FcE1f"
 NEG_RISK_COLLATERAL_ADAPTER = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 V2_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
@@ -429,9 +428,8 @@ class UnifiedPolymarketTrader:
                     metadata="Approve pUSD for Polymarket V2 order",
                 )
             else:
-                token = NEG_RISK_ADAPTER if request.neg_risk else CTF_ADDRESS
                 handle = await client.approve_erc1155_for_all(
-                    token_address=token,
+                    token_address=CTF_ADDRESS,
                     operator_address=spender,
                     metadata="Approve outcome tokens for Polymarket V2 order",
                 )
@@ -506,10 +504,7 @@ class UnifiedPolymarketTrader:
         """Grant only the V2 exchange approvals required by this product."""
         client = await self._client_async()
         collateral = await client.get_balance_allowance(asset_type="COLLATERAL")
-        for exchange, token in (
-            (V2_EXCHANGE_ADDRESS, CTF_ADDRESS),
-            (V2_NEG_RISK_EXCHANGE_ADDRESS, NEG_RISK_ADAPTER),
-        ):
+        for exchange in (V2_EXCHANGE_ADDRESS, V2_NEG_RISK_EXCHANGE_ADDRESS):
             allowance = next(
                 (
                     value
@@ -526,9 +521,9 @@ class UnifiedPolymarketTrader:
                     metadata="Approve pUSD for Polymarket V2 exchange",
                 )
                 await handle.wait()
-            if not await self._is_approved_for_all(token, exchange):
+            if not await self._is_approved_for_all(CTF_ADDRESS, exchange):
                 handle = await client.approve_erc1155_for_all(
-                    token_address=token,
+                    token_address=CTF_ADDRESS,
                     operator_address=exchange,
                     metadata="Approve outcome tokens for Polymarket V2 exchange",
                 )
@@ -574,19 +569,18 @@ class UnifiedPolymarketTrader:
         neg_risk: bool,
     ) -> PreparedRedemption:
         client = await self._client_async()
-        token = NEG_RISK_ADAPTER if neg_risk else CTF_ADDRESS
         adapter = NEG_RISK_COLLATERAL_ADAPTER if neg_risk else COLLATERAL_ADAPTER
-        if not await self._is_approved_for_all(token, adapter):
+        if not await self._is_approved_for_all(CTF_ADDRESS, adapter):
             try:
                 approval = await client.approve_erc1155_for_all(
-                    token_address=token,
+                    token_address=CTF_ADDRESS,
                     operator_address=adapter,
                     metadata="Approve attributable outcome tokens for redemption",
                 )
                 await approval.wait()
             except Exception as error:
                 raise TradingUnavailable(f"赎回 Adapter 授权失败：{error}") from error
-            if not await self._is_approved_for_all(token, adapter):
+            if not await self._is_approved_for_all(CTF_ADDRESS, adapter):
                 raise TradingUnavailable("赎回 Adapter 授权确认后仍未生效")
         try:
             handle = await client.redeem_positions(condition_id=condition_id)

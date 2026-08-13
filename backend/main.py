@@ -658,7 +658,10 @@ async def copy_activity_page(
 
     include_orders = operation != "REDEEM" and status_group != "redeemed"
     if include_orders:
-        order_query = select(CopyOrder).where(CopyOrder.source == "copy")
+        order_query = select(CopyOrder).where(
+            CopyOrder.source == "copy",
+            CopyOrder.status != "skipped",
+        )
         if tracked_wallet_id is not None:
             subscription_ids = select(CopySubscription.id).where(
                 CopySubscription.tracked_wallet_id == tracked_wallet_id
@@ -2038,7 +2041,10 @@ def create_app(
             raise HTTPException(status_code=422, detail="记录状态筛选无效")
         database: Database = request.app.state.database
         async with database.sessions() as session:
-            query = select(CopyOrder).where(CopyOrder.source == "copy")
+            query = select(CopyOrder).where(
+                CopyOrder.source == "copy",
+                CopyOrder.status != "skipped",
+            )
             if tracked_wallet_id is not None:
                 subscription_ids = select(CopySubscription.id).where(
                     CopySubscription.tracked_wallet_id == tracked_wallet_id
@@ -2175,7 +2181,10 @@ def create_app(
                 (
                     await session.scalars(
                         select(CopyOrder)
-                        .where(CopyOrder.source == "copy")
+                        .where(
+                            CopyOrder.source == "copy",
+                            CopyOrder.status != "skipped",
+                        )
                         .order_by(CopyOrder.created_at.desc(), CopyOrder.id.desc())
                         .limit(8)
                     )

@@ -14,6 +14,10 @@ from polymarket.models.clob.orders import SignedOrder
 
 from backend.keychain import KeychainReference
 from backend.trading import (
+    CTF_ADDRESS,
+    NEG_RISK_COLLATERAL_ADAPTER,
+    V2_EXCHANGE_ADDRESS,
+    V2_NEG_RISK_EXCHANGE_ADDRESS,
     MarketTradeRequest,
     TradeFillResult,
     UnifiedPolymarketTrader,
@@ -284,6 +288,90 @@ async def test_redemption_returns_handle_before_wait(monkeypatch):
     assert prepared.transaction_id == "relay-1"
     assert prepared.transaction_hash is None
     assert await adapter.wait_redemption(prepared) == "0xredeemed"
+
+
+async def test_neg_risk_redemption_checks_ctf_approval():
+    client = FakeClient()
+
+    async def redeem_positions(*, condition_id):
+        return SimpleNamespace(transaction_id="relay-1", transaction_hash=None)
+
+    client.redeem_positions = redeem_positions
+    adapter = trader(client)
+    checked: list[tuple[str, str]] = []
+
+    async def approved(token, operator):
+        checked.append((token, operator))
+        return True
+
+    adapter._is_approved_for_all = approved
+    await adapter.start_redemption(condition_id=CONDITION, neg_risk=True)
+
+    assert checked == [(CTF_ADDRESS, NEG_RISK_COLLATERAL_ADAPTER)]
+
+
+async def test_ready_approvals_check_ctf_for_both_exchanges():
+    client = FakeClient()
+
+    async def get_balance_allowance(*, asset_type):
+        assert asset_type == "COLLATERAL"
+        return SimpleNamespace(
+            allowances={
+                V2_EXCHANGE_ADDRESS: 1,
+                V2_NEG_RISK_EXCHANGE_ADDRESS: 1,
+            }
+        )
+
+    client.get_balance_allowance = get_balance_allowance
+    adapter = trader(client)
+    checked: list[tuple[str, str]] = []
+
+    async def approved(token, operator):
+        checked.append((token, operator))
+        return True
+
+    adapter._is_approved_for_all = approved
+    await adapter.ensure_ready_approvals()
+
+    assert checked == [
+        (CTF_ADDRESS, V2_EXCHANGE_ADDRESS),
+        (CTF_ADDRESS, V2_NEG_RISK_EXCHANGE_ADDRESS),
+    ]
+
+
+async def test_neg_risk_sell_repairs_ctf_approval():
+    client = FakeClient()
+    calls = 0
+    approvals: list[tuple[str, str]] = []
+
+    async def get_balance_allowance(*, asset_type, token_id):
+        nonlocal calls
+        assert asset_type == "CONDITIONAL"
+        assert token_id == "99"
+        calls += 1
+        return SimpleNamespace(
+            balance=2_000_000,
+            allowances={V2_NEG_RISK_EXCHANGE_ADDRESS: 0 if calls == 1 else 2_000_000},
+        )
+
+    class Approval:
+        async def wait(self):
+            return None
+
+    async def approve_erc1155_for_all(*, token_address, operator_address, metadata):
+        approvals.append((token_address, operator_address))
+        return Approval()
+
+    client.get_balance_allowance = get_balance_allowance
+    client.approve_erc1155_for_all = approve_erc1155_for_all
+    adapter = trader(client)
+
+    repaired = await adapter._repair_missing_order_approval(
+        MarketTradeRequest("99", "SELL", Decimal("1"), Decimal("0.50"), neg_risk=True)
+    )
+
+    assert repaired is True
+    assert approvals == [(CTF_ADDRESS, V2_NEG_RISK_EXCHANGE_ADDRESS)]
 
 
 async def test_cached_client_is_closed_explicitly():

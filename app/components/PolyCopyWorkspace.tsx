@@ -1045,6 +1045,7 @@ function OverviewPage({
   overview,
   wallets,
   busyId,
+  toggleError,
   onToggle,
   onConfigure,
   onCloseStrategy,
@@ -1052,6 +1053,7 @@ function OverviewPage({
   overview: Overview;
   wallets: Wallet[];
   busyId: number | null;
+  toggleError: { title: string; message: string } | null;
   onToggle: (strategy: Strategy) => void;
   onConfigure: (wallet: Wallet) => void;
   onCloseStrategy: (strategy: Strategy) => void;
@@ -1073,6 +1075,8 @@ function OverviewPage({
       </section>
 
       <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} strategies={overview.strategies} />
+
+      {toggleError && <div className="pcAlert danger" role="alert"><span>!</span><p><strong>{toggleError.title}</strong>{toggleError.message}</p></div>}
 
       <section className="pcPanel">
         <header className="pcPanelHeader">
@@ -1337,7 +1341,7 @@ function SettingsPage({
   }
 
   return <div className="pcSettingsStack pcSystemSettings">
-    <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION ACCOUNT</span><h2>执行钱包</h2><p>唯一资金账户，为全部策略提供共享余额与风险边界。</p></div>{account && <Badge label={account.status === "ready" ? "已验证" : account.status === "insufficient_balance" ? "余额不足" : "待验证"} tone={account.status === "ready" ? "success" : "warning"} />}</header>{account ? <div className="pcAccountSummary"><div><span>签名地址</span><strong>{shortAddress(account.signer_address)}</strong></div><div><span>资金地址</span><strong>{shortAddress(account.funder_address)}</strong></div><div><span>当前余额</span><strong>{money(account.collateral_balance)}</strong><small>{account.last_balance_at ? `更新于 ${dateTime(account.last_balance_at)}` : "尚未刷新"}</small></div><div><span>密钥状态</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><button className="pcButton ghost" type="button" disabled={busy} onClick={refreshBalance}>{busy ? "正在刷新…" : "刷新余额"}</button><button className="pcButton ghost" type="button" disabled={busy} onClick={verify}>验证密钥与余额</button></div> : <EmptyState title="尚未绑定执行钱包" message="先设置“我的钱包”，再将其绑定为唯一执行账户。" action={<button className="pcButton primary" type="button" disabled={busy} onClick={bindAccount}>{selfWallet ? "绑定执行钱包" : "设置我的钱包"}</button>} />}{message && <p className={message.includes("完成") || message.includes("已绑定") || message.includes("已刷新") ? "pcFormSuccess pcPanelMessage" : "pcFormError pcPanelMessage"}>{message}</p>}</section>
+    <section className="pcPanel pcExecutionAccountPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION ACCOUNT</span><h2>执行钱包</h2><p>唯一资金账户，为全部策略提供共享余额与风险边界。</p></div>{account && <Badge label={account.status === "ready" ? "已验证" : account.status === "insufficient_balance" ? "余额不足" : "待验证"} tone={account.status === "ready" ? "success" : "warning"} />}</header>{account ? <div className="pcAccountSummary"><div><span>签名地址</span><strong>{shortAddress(account.signer_address)}</strong></div><div><span>资金地址</span><strong>{shortAddress(account.funder_address)}</strong></div><div><span>当前余额</span><strong>{money(account.collateral_balance)}</strong><small>{account.last_balance_at ? `更新于 ${dateTime(account.last_balance_at)}` : "尚未刷新"}</small></div><div><span>密钥状态</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><button className="pcButton ghost" type="button" disabled={busy} onClick={refreshBalance}>{busy ? "正在刷新…" : "刷新余额"}</button><button className="pcButton ghost" type="button" disabled={busy} onClick={verify}>验证密钥与余额</button></div> : <EmptyState title="尚未绑定执行钱包" message="先设置“我的钱包”，再将其绑定为唯一执行账户。" action={<button className="pcButton primary" type="button" disabled={busy} onClick={bindAccount}>{selfWallet ? "绑定执行钱包" : "设置我的钱包"}</button>} />}{message && <p className={message.includes("完成") || message.includes("已绑定") || message.includes("已刷新") ? "pcFormSuccess pcPanelMessage" : "pcFormError pcPanelMessage"}>{message}</p>}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">CAPITAL RISK</span><h2>资金风控</h2><p>这些限制由所有目标钱包共享，修改后需要重新验证执行账户。</p></div></header>{account ? <AccountRiskForm account={account} onSaved={onReload} /> : <EmptyState title="等待执行钱包" message="绑定执行钱包后可配置预算、现金保留和每日风控。" />}</section>
     <section className="pcPanel"><header className="pcPanelHeader pcFilterHeader"><div><span className="pcEyebrow">ADVANCED STRATEGY</span><h2>策略高级参数</h2><p>常用的执行比例和单市场上限请在总览页快速调整。</p></div>{overview.strategies.length > 0 && <label className="pcSelect"><span>目标钱包</span><select value={strategyId} onChange={(event) => setStrategyId(event.target.value)}>{overview.strategies.map((item) => <option value={item.subscription.id} key={item.subscription.id}>{item.wallet.label}</option>)}</select></label>}</header>{strategy ? <AdvancedStrategyForm key={strategy.subscription.id} strategy={strategy} onSaved={onReload} /> : <EmptyState title="暂无已配置策略" message="从总览页为目标钱包创建策略后，可在这里调整高级参数。" />}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">DIAGNOSTICS</span><h2>账户诊断与下单演练</h2><p>低频维护工具集中在这里，不影响日常策略工作台。</p></div></header>{account?.signer_address && !account.credentials_configured && <div className="pcCommandHint"><span>导入执行密钥</span><code>uv run python -m backend.copy_cli set-key --account {account.signer_address}</code></div>}<RehearsalForm enabled={Boolean(overview.live_copy_enabled && account?.status === "ready")} /></section>
@@ -1356,6 +1360,7 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [strategyToggleError, setStrategyToggleError] = useState<{ title: string; message: string } | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [quickWallet, setQuickWallet] = useState<Wallet | null>(null);
   const [walletModal, setWalletModal] = useState<"tracked" | "self" | null>(null);
@@ -1395,11 +1400,16 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
     const subscription = strategy.subscription;
     const enabled = !subscription.enabled;
     if (enabled && !window.confirm(`确认恢复 ${strategy.wallet.label} 的真实资金自动策略？`)) return;
-    setBusyId(subscription.id); setError(null);
+    setBusyId(subscription.id); setStrategyToggleError(null);
     try {
       await api(`/api/copy-trading/subscriptions/${subscription.id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled, confirm_live: enabled }) });
       await load(true);
-    } catch (toggleError) { setError(toggleError instanceof Error ? toggleError.message : "策略开关操作失败"); }
+    } catch (toggleError) {
+      setStrategyToggleError({
+        title: enabled ? "策略开启失败" : "策略暂停失败",
+        message: toggleError instanceof Error ? toggleError.message : "策略开关操作失败",
+      });
+    }
     finally { setBusyId(null); }
   }
 
@@ -1421,7 +1431,7 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
       {loading && !overview ? <LoadingState /> : !overview ? <EmptyState title="无法读取策略工作台" message={error || "请确认本机 API 服务正在运行。"} action={<button className="pcButton primary" type="button" onClick={() => void load()}>重新连接</button>} /> : (
         <>
           {error && <div className="pcAlert danger pcGlobalError"><span>!</span><p><strong>部分数据可能不是最新</strong>{error}</p><button className="pcButton ghost" type="button" onClick={() => void load()}>重试</button></div>}
-          {view === "overview" && <OverviewPage overview={overview} wallets={wallets} busyId={busyId} onToggle={(strategy) => void toggleStrategy(strategy)} onConfigure={setQuickWallet} onCloseStrategy={(strategy) => void closeStrategy(strategy)} />}
+          {view === "overview" && <OverviewPage overview={overview} wallets={wallets} busyId={busyId} toggleError={strategyToggleError} onToggle={(strategy) => void toggleStrategy(strategy)} onConfigure={setQuickWallet} onCloseStrategy={(strategy) => void closeStrategy(strategy)} />}
           {view === "positions" && <PositionsPage overview={overview} />}
           {view === "records" && <RecordsPage overview={overview} />}
           {view === "settings" && <SettingsPage overview={overview} wallets={wallets} onReload={() => void load(true)} onAddSelf={() => setWalletModal("self")} />}

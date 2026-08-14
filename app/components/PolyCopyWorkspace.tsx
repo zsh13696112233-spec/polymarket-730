@@ -687,12 +687,20 @@ function QuickSettingsModal({
         <p className="pcFormHint">策略模式：{subscription?.strategy_mode === "large_increase" ? "大额加仓跟单模式" : "普通跟单模式"}（创建后不可修改）</p>
         <div className="pcFormGrid three">
           {subscription?.strategy_mode === "large_increase" ? <>
-            <label className="pcField"><span>底仓金额</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={baseEntryThreshold} onChange={(event) => setBaseEntryThreshold(event.target.value)} /><b>USDC</b></div></label>
-            <label className="pcField"><span>底仓跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={baseEntryRatio} onChange={(event) => setBaseEntryRatio(event.target.value)} /><b>%</b></div></label>
-            <label className="pcField"><span>第一档加仓阈值</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={tierOneThreshold} onChange={(event) => setTierOneThreshold(event.target.value)} /><b>USDC</b></div></label>
-            <label className="pcField"><span>第一档跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={tierOneRatio} onChange={(event) => setTierOneRatio(event.target.value)} /><b>%</b></div></label>
-            <label className="pcField"><span>第二档加仓阈值</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={tierTwoThreshold} onChange={(event) => setTierTwoThreshold(event.target.value)} /><b>USDC</b></div></label>
-            <label className="pcField"><span>第二档跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={tierTwoRatio} onChange={(event) => setTierTwoRatio(event.target.value)} /><b>%</b></div></label>
+            <div className="pcStrategyTierGrid">
+              <div className="pcStrategyTierRow">
+                <label className="pcField"><span>底仓金额</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={baseEntryThreshold} onChange={(event) => setBaseEntryThreshold(event.target.value)} /><b>USDC</b></div></label>
+                <label className="pcField"><span>底仓跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={baseEntryRatio} onChange={(event) => setBaseEntryRatio(event.target.value)} /><b>%</b></div></label>
+              </div>
+              <div className="pcStrategyTierRow">
+                <label className="pcField"><span>第一档加仓阈值</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={tierOneThreshold} onChange={(event) => setTierOneThreshold(event.target.value)} /><b>USDC</b></div></label>
+                <label className="pcField"><span>第一档跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={tierOneRatio} onChange={(event) => setTierOneRatio(event.target.value)} /><b>%</b></div></label>
+              </div>
+              <div className="pcStrategyTierRow">
+                <label className="pcField"><span>第二档加仓阈值</span><div className="pcUnitInput"><input type="number" min="0.01" step="0.01" value={tierTwoThreshold} onChange={(event) => setTierTwoThreshold(event.target.value)} /><b>USDC</b></div></label>
+                <label className="pcField"><span>第二档跟单比例</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={tierTwoRatio} onChange={(event) => setTierTwoRatio(event.target.value)} /><b>%</b></div></label>
+              </div>
+            </div>
           </> : <>
             <label className="pcField">
               <span>跟单比例</span>
@@ -984,12 +992,12 @@ function DailyRealizedPnlChart({
   );
 }
 
-function RecentOrdersPanel({ overview }: { overview: Overview }) {
+function RecentOrdersPanel({ overview, strategies }: { overview: Overview; strategies: Strategy[] }) {
   const [walletId, setWalletId] = useState("all");
   const [filteredActivities, setFilteredActivities] = useState<CopyActivity[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const effectiveWalletId = walletId === "all" || overview.strategies.some((strategy) => String(strategy.wallet.id) === walletId)
+  const effectiveWalletId = walletId === "all" || strategies.some((strategy) => String(strategy.wallet.id) === walletId)
     ? walletId
     : "all";
 
@@ -1028,7 +1036,7 @@ function RecentOrdersPanel({ overview }: { overview: Overview }) {
       <header className="pcPanelHeader compact pcRecentOrdersHeader">
         <div><span className="pcEyebrow">ACTIVITY</span><h2>最近记录</h2></div>
         <div className="pcRecentOrdersTools">
-          <label className="pcSelect"><span>目标钱包</span><select aria-label="最近记录目标钱包" value={effectiveWalletId} onChange={(event) => selectWallet(event.target.value)}><option value="all">全部钱包</option>{overview.strategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
+          <label className="pcSelect"><span>目标钱包</span><select aria-label="最近记录目标钱包" value={effectiveWalletId} onChange={(event) => selectWallet(event.target.value)}><option value="all">全部钱包</option>{strategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
           <Link className="pcTextLink" href="/records">查看全部 →</Link>
         </div>
       </header>
@@ -1044,6 +1052,7 @@ function RecentOrdersPanel({ overview }: { overview: Overview }) {
 function OverviewPage({
   overview,
   wallets,
+  activeStrategies,
   busyId,
   toggleError,
   onToggle,
@@ -1052,6 +1061,7 @@ function OverviewPage({
 }: {
   overview: Overview;
   wallets: Wallet[];
+  activeStrategies: Strategy[];
   busyId: number | null;
   toggleError: { title: string; message: string } | null;
   onToggle: (strategy: Strategy) => void;
@@ -1074,7 +1084,7 @@ function OverviewPage({
         {metrics.map((metric) => <article className="pcMetricCard" key={metric.label}><span>{metric.label}</span><strong className={metric.tone}><PixelAmount value={metric.value} /></strong><small>{metric.meta}</small></article>)}
       </section>
 
-      <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} strategies={overview.strategies} />
+      <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} strategies={activeStrategies} />
 
       {toggleError && <div className="pcAlert danger" role="alert"><span>!</span><p><strong>{toggleError.title}</strong>{toggleError.message}</p></div>}
 
@@ -1116,12 +1126,12 @@ function OverviewPage({
         )}
       </section>
 
-      <RecentOrdersPanel overview={overview} />
+      <RecentOrdersPanel overview={overview} strategies={activeStrategies} />
     </>
   );
 }
 
-function PositionsPage({ overview }: { overview: Overview }) {
+function PositionsPage({ activeStrategies }: { activeStrategies: Strategy[] }) {
   const [scope, setScope] = useState<"open" | "history">("open");
   const [walletId, setWalletId] = useState("all");
   const [data, setData] = useState<PositionResponse | null>(null);
@@ -1146,7 +1156,7 @@ function PositionsPage({ overview }: { overview: Overview }) {
     <section className="pcPanel pcPagePanel">
       <header className="pcPanelHeader pcFilterHeader">
         <div className="pcSegmented"><button className={scope === "open" ? "active" : ""} onClick={() => setScope("open")} type="button">当前持仓</button><button className={scope === "history" ? "active" : ""} onClick={() => setScope("history")} type="button">历史仓位</button></div>
-        <label className="pcSelect"><span>目标钱包</span><select value={walletId} onChange={(event) => setWalletId(event.target.value)}><option value="all">全部钱包</option>{overview.strategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
+        <label className="pcSelect"><span>目标钱包</span><select value={walletId} onChange={(event) => setWalletId(event.target.value)}><option value="all">全部钱包</option>{activeStrategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
       </header>
       {data && scope === "open" && <div className="pcInlineSummary"><div><span>持仓成本</span><strong>{money(data.portfolio.open_cost_usdc)}</strong></div><div><span>当前市值</span><strong>{money(data.portfolio.market_value_usdc)}</strong></div><div><span>浮动盈亏</span><Pnl value={data.portfolio.unrealized_pnl} /></div><div><span>已实现盈亏</span><Pnl value={data.portfolio.realized_pnl} /></div>{!data.portfolio.valuation_complete && <p>{data.portfolio.unpriced_positions} 个仓位未定价，汇总盈亏暂不显示。</p>}</div>}
       {loading ? <LoadingState /> : error ? <div className="pcAlert danger"><span>!</span><p><strong>持仓读取失败</strong>{error}</p></div> : !data?.items.length ? <EmptyState title={scope === "open" ? "暂无自动策略持仓" : "暂无历史仓位"} message={scope === "open" ? "策略完成首次买入后，仓位会出现在这里。" : "已完成清仓或赎回的仓位会保留在这里。"} /> : (
@@ -1159,7 +1169,7 @@ function PositionsPage({ overview }: { overview: Overview }) {
   );
 }
 
-function RecordsPage({ overview }: { overview: Overview }) {
+function RecordsPage({ activeStrategies }: { activeStrategies: Strategy[] }) {
   const [walletId, setWalletId] = useState("all");
   const [operation, setOperation] = useState("all");
   const [status, setStatus] = useState("all");
@@ -1216,7 +1226,7 @@ function RecordsPage({ overview }: { overview: Overview }) {
     <section className="pcPanel pcPagePanel">
       <header className="pcRecordsHeader">
         <div className="pcFilters">
-          <label className="pcSelect"><span>目标钱包</span><select value={walletId} onChange={(event) => setWalletId(event.target.value)}><option value="all">全部钱包</option>{overview.strategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
+          <label className="pcSelect"><span>目标钱包</span><select value={walletId} onChange={(event) => setWalletId(event.target.value)}><option value="all">全部钱包</option>{activeStrategies.map((strategy) => <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>)}</select></label>
           <label className="pcSelect"><span>操作</span><select value={operation} onChange={(event) => setOperation(event.target.value)}><option value="all">全部操作</option><option value="BUY">买入</option><option value="SELL">卖出</option><option value="REDEEM">赎回</option></select></label>
           <label className="pcSelect"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="filled">已成交</option><option value="redeemed">已赎回</option><option value="partial">部分成交</option><option value="unfilled">未成交</option><option value="skipped">跳过 / 风控</option><option value="processing">处理中</option><option value="attention">需要关注</option></select></label>
           <label className="pcSelect"><span>时间</span><select value={range} onChange={(event) => setRange(event.target.value)}><option value="today">今天</option><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="all">全部时间</option></select></label>
@@ -1316,7 +1326,16 @@ function SettingsPage({
   const [message, setMessage] = useState<string | null>(null);
   const account = overview.account;
   const selfWallet = wallets.find((wallet) => wallet.wallet_role === "self") || null;
-  const strategy = overview.strategies.find((item) => String(item.subscription.id) === strategyId) || overview.strategies[0] || null;
+  const activeTrackedWalletIds = useMemo(
+    () => new Set(wallets.filter((wallet) => wallet.wallet_role === "tracked" && wallet.enabled).map((wallet) => wallet.id)),
+    [wallets],
+  );
+  const activeStrategies = useMemo(
+    () => overview.strategies.filter((item) => activeTrackedWalletIds.has(item.wallet.id)),
+    [activeTrackedWalletIds, overview.strategies],
+  );
+  const strategy = activeStrategies.find((item) => String(item.subscription.id) === strategyId) || activeStrategies[0] || null;
+  const selectedStrategyId = strategy ? String(strategy.subscription.id) : "";
 
   async function bindAccount() {
     if (!selfWallet) return onAddSelf();
@@ -1343,7 +1362,7 @@ function SettingsPage({
   return <div className="pcSettingsStack pcSystemSettings">
     <section className="pcPanel pcExecutionAccountPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION ACCOUNT</span><h2>执行钱包</h2><p>唯一资金账户，为全部策略提供共享余额与风险边界。</p></div>{account && <Badge label={account.status === "ready" ? "已验证" : account.status === "insufficient_balance" ? "余额不足" : "待验证"} tone={account.status === "ready" ? "success" : "warning"} />}</header>{account ? <div className="pcAccountSummary"><div><span>签名地址</span><strong>{shortAddress(account.signer_address)}</strong></div><div><span>资金地址</span><strong>{shortAddress(account.funder_address)}</strong></div><div><span>当前余额</span><strong>{money(account.collateral_balance)}</strong><small>{account.last_balance_at ? `更新于 ${dateTime(account.last_balance_at)}` : "尚未刷新"}</small></div><div><span>密钥状态</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><button className="pcButton ghost" type="button" disabled={busy} onClick={refreshBalance}>{busy ? "正在刷新…" : "刷新余额"}</button><button className="pcButton ghost" type="button" disabled={busy} onClick={verify}>验证密钥与余额</button></div> : <EmptyState title="尚未绑定执行钱包" message="先设置“我的钱包”，再将其绑定为唯一执行账户。" action={<button className="pcButton primary" type="button" disabled={busy} onClick={bindAccount}>{selfWallet ? "绑定执行钱包" : "设置我的钱包"}</button>} />}{message && <p className={message.includes("完成") || message.includes("已绑定") || message.includes("已刷新") ? "pcFormSuccess pcPanelMessage" : "pcFormError pcPanelMessage"}>{message}</p>}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">CAPITAL RISK</span><h2>资金风控</h2><p>这些限制由所有目标钱包共享，修改后需要重新验证执行账户。</p></div></header>{account ? <AccountRiskForm account={account} onSaved={onReload} /> : <EmptyState title="等待执行钱包" message="绑定执行钱包后可配置预算、现金保留和每日风控。" />}</section>
-    <section className="pcPanel"><header className="pcPanelHeader pcFilterHeader"><div><span className="pcEyebrow">ADVANCED STRATEGY</span><h2>策略高级参数</h2><p>常用的执行比例和单市场上限请在总览页快速调整。</p></div>{overview.strategies.length > 0 && <label className="pcSelect"><span>目标钱包</span><select value={strategyId} onChange={(event) => setStrategyId(event.target.value)}>{overview.strategies.map((item) => <option value={item.subscription.id} key={item.subscription.id}>{item.wallet.label}</option>)}</select></label>}</header>{strategy ? <AdvancedStrategyForm key={strategy.subscription.id} strategy={strategy} onSaved={onReload} /> : <EmptyState title="暂无已配置策略" message="从总览页为目标钱包创建策略后，可在这里调整高级参数。" />}</section>
+    <section className="pcPanel"><header className="pcPanelHeader pcFilterHeader"><div><span className="pcEyebrow">ADVANCED STRATEGY</span><h2>策略高级参数</h2><p>常用的执行比例和单市场上限请在总览页快速调整。</p></div>{activeStrategies.length > 0 && <label className="pcSelect"><span>目标钱包</span><select value={selectedStrategyId} onChange={(event) => setStrategyId(event.target.value)}>{activeStrategies.map((item) => <option value={item.subscription.id} key={item.subscription.id}>{item.wallet.label}</option>)}</select></label>}</header>{strategy ? <AdvancedStrategyForm key={strategy.subscription.id} strategy={strategy} onSaved={onReload} /> : <EmptyState title="暂无已配置策略" message="从总览页为目标钱包创建策略后，可在这里调整高级参数。" />}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">DIAGNOSTICS</span><h2>账户诊断与下单演练</h2><p>低频维护工具集中在这里，不影响日常策略工作台。</p></div></header>{account?.signer_address && !account.credentials_configured && <div className="pcCommandHint"><span>导入执行密钥</span><code>uv run python -m backend.copy_cli set-key --account {account.signer_address}</code></div>}<RehearsalForm enabled={Boolean(overview.live_copy_enabled && account?.status === "ready")} /></section>
   </div>;
 }
@@ -1395,6 +1414,14 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
     () => quickWallet && overview ? overview.strategies.find((strategy) => strategy.wallet.id === quickWallet.id) || null : null,
     [overview, quickWallet],
   );
+  const activeTrackedWalletIds = useMemo(
+    () => new Set(wallets.filter((wallet) => wallet.wallet_role === "tracked" && wallet.enabled).map((wallet) => wallet.id)),
+    [wallets],
+  );
+  const activeStrategies = useMemo(
+    () => overview?.strategies.filter((strategy) => activeTrackedWalletIds.has(strategy.wallet.id)) ?? [],
+    [activeTrackedWalletIds, overview],
+  );
 
   async function toggleStrategy(strategy: Strategy) {
     const subscription = strategy.subscription;
@@ -1431,9 +1458,9 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
       {loading && !overview ? <LoadingState /> : !overview ? <EmptyState title="无法读取策略工作台" message={error || "请确认本机 API 服务正在运行。"} action={<button className="pcButton primary" type="button" onClick={() => void load()}>重新连接</button>} /> : (
         <>
           {error && <div className="pcAlert danger pcGlobalError"><span>!</span><p><strong>部分数据可能不是最新</strong>{error}</p><button className="pcButton ghost" type="button" onClick={() => void load()}>重试</button></div>}
-          {view === "overview" && <OverviewPage overview={overview} wallets={wallets} busyId={busyId} toggleError={strategyToggleError} onToggle={(strategy) => void toggleStrategy(strategy)} onConfigure={setQuickWallet} onCloseStrategy={(strategy) => void closeStrategy(strategy)} />}
-          {view === "positions" && <PositionsPage overview={overview} />}
-          {view === "records" && <RecordsPage overview={overview} />}
+          {view === "overview" && <OverviewPage overview={overview} wallets={wallets} activeStrategies={activeStrategies} busyId={busyId} toggleError={strategyToggleError} onToggle={(strategy) => void toggleStrategy(strategy)} onConfigure={setQuickWallet} onCloseStrategy={(strategy) => void closeStrategy(strategy)} />}
+          {view === "positions" && <PositionsPage activeStrategies={activeStrategies} />}
+          {view === "records" && <RecordsPage activeStrategies={activeStrategies} />}
           {view === "settings" && <SettingsPage overview={overview} wallets={wallets} onReload={() => void load(true)} onAddSelf={() => setWalletModal("self")} />}
         </>
       )}

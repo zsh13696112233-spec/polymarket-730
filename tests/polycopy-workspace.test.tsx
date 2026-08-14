@@ -718,4 +718,102 @@ describe("PolyCopy workspace", () => {
       auto_redeem: false,
     })));
   });
+
+  it("策略高级参数不再显示已删除的观测钱包", async () => {
+    const deletedWallet = { ...wallet, enabled: false };
+    const activeWallet = {
+      ...wallet,
+      id: 2,
+      address: "0x2222222222222222222222222222222222222222",
+      proxy_wallet: "0x2222222222222222222222222222222222222222",
+      label: "保留策略",
+    };
+    const activeStrategy = {
+      ...overview.strategies[0],
+      wallet: activeWallet,
+      subscription: {
+        ...subscription,
+        id: 20,
+        tracked_wallet_id: 2,
+        tracked_wallet_label: "保留策略",
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) {
+        return json({
+          ...overview,
+          strategies: [
+            { ...overview.strategies[0], wallet: deletedWallet },
+            activeStrategy,
+          ],
+        });
+      }
+      if (url.endsWith("/api/wallets")) return json([deletedWallet, activeWallet]);
+      return json(activeStrategy.subscription);
+    }));
+
+    render(<PolyCopyWorkspace view="settings" />);
+    const panel = (await screen.findByRole("heading", { name: "策略高级参数" })).closest("section");
+    const walletSelect = within(panel!).getByRole("combobox", { name: "目标钱包" });
+    expect(within(walletSelect).queryByRole("option", { name: "策略一" })).not.toBeInTheDocument();
+    expect(within(walletSelect).getByRole("option", { name: "保留策略" })).toBeInTheDocument();
+    expect(walletSelect).toHaveValue("20");
+  });
+
+  it("所有钱包筛选下拉框都排除已删除的钱包", async () => {
+    const deletedWallet = { ...wallet, enabled: false };
+    const activeWallet = {
+      ...wallet,
+      id: 2,
+      address: "0x2222222222222222222222222222222222222222",
+      proxy_wallet: "0x2222222222222222222222222222222222222222",
+      label: "保留策略",
+    };
+    const activeStrategy = {
+      ...overview.strategies[0],
+      wallet: activeWallet,
+      subscription: {
+        ...subscription,
+        id: 20,
+        tracked_wallet_id: 2,
+        tracked_wallet_label: "保留策略",
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/copy-trading/overview")) {
+        return json({
+          ...overview,
+          strategies: [
+            { ...overview.strategies[0], wallet: deletedWallet },
+            activeStrategy,
+          ],
+        });
+      }
+      if (url.endsWith("/api/wallets")) return json([deletedWallet, activeWallet]);
+      if (url.includes("/api/copy-trading/positions")) {
+        return json({ items: [], portfolio: overview.strategies[0].portfolio, as_of: overview.as_of });
+      }
+      if (url.includes("/api/copy-trading/activities")) return json({ items: [], next_cursor: null });
+      return json(activeStrategy.subscription);
+    }));
+
+    const assertWalletOptions = (select: HTMLElement) => {
+      expect(within(select).queryByRole("option", { name: "策略一" })).not.toBeInTheDocument();
+      expect(within(select).getByRole("option", { name: "保留策略" })).toBeInTheDocument();
+    };
+
+    const overviewView = render(<PolyCopyWorkspace view="overview" />);
+    assertWalletOptions(await screen.findByRole("combobox", { name: "目标钱包" }));
+    assertWalletOptions(screen.getByRole("combobox", { name: "最近记录目标钱包" }));
+    overviewView.unmount();
+
+    const positionsView = render(<PolyCopyWorkspace view="positions" />);
+    assertWalletOptions(await screen.findByRole("combobox", { name: "目标钱包" }));
+    positionsView.unmount();
+
+    render(<PolyCopyWorkspace view="records" />);
+    assertWalletOptions(await screen.findByRole("combobox", { name: "目标钱包" }));
+  });
 });

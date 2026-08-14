@@ -7609,7 +7609,14 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   grid-template-columns: 1fr;
 }
 
-.pcWalletCreateForm .pcStrategyTierRow {
+.pcQuickSettings .pcStrategyTierGrid {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 13px;
+}
+
+.pcWalletCreateForm .pcStrategyTierRow,
+.pcQuickSettings .pcStrategyTierRow {
   display: grid;
   align-content: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -7728,7 +7735,8 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
     width: 100%;
   }
 
-  .pcWalletCreateForm .pcStrategyTierRow {
+  .pcWalletCreateForm .pcStrategyTierRow,
+  .pcQuickSettings .pcStrategyTierRow {
     grid-template-columns: 1fr;
   }
 }

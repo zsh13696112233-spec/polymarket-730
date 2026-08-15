@@ -14,6 +14,7 @@ from polymarket.models.clob.orders import SignedOrder
 
 from backend.keychain import KeychainReference
 from backend.trading import (
+    COLLATERAL_ADAPTER,
     CTF_ADDRESS,
     NEG_RISK_COLLATERAL_ADAPTER,
     V2_EXCHANGE_ADDRESS,
@@ -308,6 +309,40 @@ async def test_neg_risk_redemption_checks_ctf_approval():
     await adapter.start_redemption(condition_id=CONDITION, neg_risk=True)
 
     assert checked == [(CTF_ADDRESS, NEG_RISK_COLLATERAL_ADAPTER)]
+
+
+async def test_redemption_falls_back_to_direct_sdk_call_when_closed_market_lookup_misses():
+    class Handle:
+        transaction_id = "relay-fallback"
+        transaction_hash = None
+
+    client = FakeClient()
+    executed = []
+
+    async def redeem_positions(*, condition_id):
+        raise ValueError(f"No market found for condition {condition_id}")
+
+    async def execute_transaction(*, calls, metadata):
+        executed.append((calls, metadata))
+        return Handle()
+
+    client.redeem_positions = redeem_positions
+    client.execute_transaction = execute_transaction
+    adapter = trader(client)
+
+    async def approved(token, operator):
+        return True
+
+    adapter._is_approved_for_all = approved
+    prepared = await adapter.start_redemption(condition_id=CONDITION, neg_risk=False)
+
+    assert prepared.transaction_id == "relay-fallback"
+    assert len(executed) == 1
+    calls, metadata = executed[0]
+    assert len(calls) == 1
+    assert calls[0].to.lower() == COLLATERAL_ADAPTER.lower()
+    assert CONDITION.removeprefix("0x") in calls[0].data
+    assert CONDITION in metadata
 
 
 async def test_ready_approvals_check_ctf_for_both_exchanges():

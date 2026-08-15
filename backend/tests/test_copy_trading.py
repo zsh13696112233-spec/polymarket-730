@@ -26,6 +26,7 @@ from backend.models import (
     CopyRedemption,
     CopyRedemptionExecution,
     CopySubscription,
+    CurrentPosition,
     ExecutionAccount,
     PositionEvent,
     PositionEventFill,
@@ -343,6 +344,125 @@ def dashboard(client, subscription: dict) -> dict:
     return response.json()
 
 
+def prepare_daily_loss_force_buy(client, subscription: dict, *, after: str = "100") -> int:
+    async def prepare() -> None:
+        async with client.app.state.database.sessions() as session:
+            now = utcnow()
+            account = await session.get(ExecutionAccount, 1)
+            assert account is not None
+            account.daily_loss_limit_usdc = Decimal("1")
+            session.add(
+                CopyLedger(
+                    subscription_id=subscription["id"],
+                    copy_position_id=None,
+                    order_id=None,
+                    type="settle_loss",
+                    amount_usdc=Decimal("0"),
+                    realized_pnl=Decimal("-2"),
+                    detail="触发测试熔断",
+                    timestamp=now,
+                )
+            )
+            size = Decimal(after)
+            session.add(
+                CurrentPosition(
+                    wallet_id=subscription["tracked_wallet_id"],
+                    asset_id="asset-simple",
+                    condition_id=CONDITION_ID,
+                    title="开赛前市场",
+                    outcome="Yes",
+                    outcome_index=0,
+                    icon_url=None,
+                    event_slug="event-asset-simple",
+                    market_slug="market-asset-simple",
+                    size=size,
+                    avg_price=Decimal("0.50"),
+                    current_price=Decimal("0.50"),
+                    initial_value=size * Decimal("0.50"),
+                    current_value=size * Decimal("0.50"),
+                    cash_pnl=Decimal("0"),
+                    percent_pnl=Decimal("0"),
+                    total_bought=size,
+                    realized_pnl=Decimal("0"),
+                    end_date=None,
+                    missing_count=0,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+    client.portal.call(prepare)
+    event_id = add_event(client, subscription, "opened", after=after)
+    tick(client)
+    data = dashboard(client, subscription)
+    return next(item["id"] for item in data["orders"] if item["leader_event_id"] == event_id)
+
+
+def test_daily_loss_skip_can_be_force_bought_once(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    source_order_id = prepare_daily_loss_force_buy(client, subscription)
+
+    activity = client.get("/api/copy-trading/activities").json()["items"][0]
+    assert activity["source_id"] == source_order_id
+    assert activity["force_buy_eligible"] is True
+
+    preview_response = client.post(f"/api/copy-trading/orders/{source_order_id}/force-buy/preview")
+    assert preview_response.status_code == 200, preview_response.text
+    preview = preview_response.json()
+    assert preview["proportional_target_usdc"] == 5
+    assert preview["executable_usdc"] == 5
+    assert preview["minimum_adjusted"] is False
+
+    execute = client.post(
+        f"/api/copy-trading/orders/{source_order_id}/force-buy/execute",
+        json={
+            "confirmation_id": preview["confirmation_id"],
+            "confirmation_text": "确认强制真实买入",
+        },
+    )
+    assert execute.status_code == 200, execute.text
+    assert execute.json()["override_of_order_id"] == source_order_id
+    assert execute.json()["status"] == "filled"
+    assert (
+        client.post(f"/api/copy-trading/orders/{source_order_id}/force-buy/preview").status_code
+        == 409
+    )
+    updated = next(
+        item
+        for item in client.get("/api/copy-trading/activities").json()["items"]
+        if item["source_id"] == source_order_id
+    )
+    assert updated["force_buy_eligible"] is False
+    assert updated["force_buy_unavailable_reason"] == "已强制处理"
+    assert updated["force_buy_status"] == "filled"
+
+
+def test_force_buy_uses_market_minimum_but_keeps_position_cap(app_client_factory):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    source_order_id = prepare_daily_loss_force_buy(client, subscription, after="1")
+
+    preview = client.post(f"/api/copy-trading/orders/{source_order_id}/force-buy/preview").json()
+    assert preview["proportional_target_usdc"] == pytest.approx(0.05)
+    assert preview["minimum_adjusted"] is True
+    assert preview["executable_usdc"] == preview["minimum_order_usdc"]
+
+    async def cap_below_minimum() -> None:
+        async with client.app.state.database.sessions() as session:
+            row = await session.get(CopySubscription, subscription["id"])
+            assert row is not None
+            row.position_cap_usdc = Decimal("2")
+            await session.commit()
+
+    client.portal.call(cap_below_minimum)
+    blocked = client.post(f"/api/copy-trading/orders/{source_order_id}/force-buy/preview")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == "剩余风控额度低于市场最小下单金额"
+
+
 def test_subscription_defaults_include_large_increase_threshold(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
@@ -495,7 +615,7 @@ def test_large_mode_uses_only_highest_matching_tier_on_existing_position(app_cli
     assert Decimal(str(order["filled_usdc"])) == Decimal("200")
 
 
-def test_large_mode_preserves_below_tier_audit_but_hides_activity(app_client_factory):
+def test_large_mode_shows_below_tier_skip_in_activity(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_large_subscription(client, fake)
     event_id = add_event(client, subscription, "increased", before="100", after="102")
@@ -507,13 +627,15 @@ def test_large_mode_preserves_below_tier_audit_but_hides_activity(app_client_fac
     assert data["orders"][0]["reason"] == "单次净加仓未达到第一档阈值"
     assert data["subscription"]["last_processed_event_id"] == event_id
     activities = client.get("/api/copy-trading/activities").json()
-    assert activities["items"] == []
+    assert len(activities["items"]) == 1
+    assert activities["items"][0]["status"] == "skipped"
+    assert activities["items"][0]["reason"] == "单次净加仓未达到第一档阈值"
     overview = client.get("/api/copy-trading/overview").json()
-    assert overview["recent_orders"] == []
-    assert overview["recent_activities"] == []
+    assert overview["recent_orders"][0]["status"] == "skipped"
+    assert overview["recent_activities"][0]["status"] == "skipped"
 
 
-def test_normal_mode_preserves_skipped_audit_but_hides_activity(app_client_factory):
+def test_normal_mode_shows_skipped_audit_and_status_filter(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
     add_event(client, subscription, "increased", before="100", after="500")
@@ -523,7 +645,14 @@ def test_normal_mode_preserves_skipped_audit_but_hides_activity(app_client_facto
     assert len(data["orders"]) == 1
     assert data["orders"][0]["status"] == "skipped"
     assert data["orders"][0]["reason"] == "首次建仓未成功，不追随后续加仓"
-    assert client.get("/api/copy-trading/activities").json()["items"] == []
+    visible = client.get("/api/copy-trading/activities").json()["items"]
+    assert len(visible) == 1
+    assert visible[0]["status"] == "skipped"
+    assert visible[0]["reason"] == "首次建仓未成功，不追随后续加仓"
+    filtered = client.get(
+        "/api/copy-trading/activities", params={"status_group": "skipped"}
+    ).json()["items"]
+    assert [item["status"] for item in filtered] == ["skipped"]
 
     async def mark_as_blocked() -> None:
         async with client.app.state.database.sessions() as session:
@@ -1500,6 +1629,73 @@ def test_execution_wallet_redeemable_position_triggers_before_gamma_finalizes(
     assert fake.redeemable_position_calls[-1] == (SELF_ADDRESS, [CONDITION_ID])
 
 
+def test_execution_wallet_zero_payout_reconciles_stuck_redemption_as_loss(
+    app_client_factory,
+):
+    client, fake = app_client_factory([[]])
+    subscription = configured_subscription(client, fake)
+    add_event(client, subscription, "opened")
+    tick(client)
+
+    async def create_stuck_redemption() -> None:
+        async with client.app.state.database.sessions() as session:
+            copy_position = await session.scalar(select(CopyPosition))
+            assert copy_position is not None
+            session.add(
+                CopyRedemption(
+                    copy_position_id=copy_position.id,
+                    status="pending",
+                    size=copy_position.attributed_size,
+                    payout_usdc=Decimal("0.0029"),
+                    attempts=1,
+                    last_error="链上结算结果没有可赎回金额",
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+            )
+            copy_position.status = "redeeming"
+            await session.commit()
+
+    client.portal.call(create_stuck_redemption)
+    trader = client.portal.call(client.app.state.copy_engine._trader)
+    trader.onchain_payout_rate = Decimal("0")
+    fake.redeemable_positions = [
+        position(
+            asset_id="asset-simple",
+            condition_id=CONDITION_ID,
+            size="20.2432",
+            current_price="0.0005",
+            current_value="0.0029",
+        )
+    ]
+
+    client.portal.call(
+        client.app.state.copy_engine.process_execution_redeemable_positions,
+        subscription["id"],
+    )
+
+    async def state() -> tuple[str, Decimal, str, Decimal, str | None]:
+        async with client.app.state.database.sessions() as session:
+            copy_position = await session.scalar(select(CopyPosition))
+            redemption = await session.scalar(select(CopyRedemption))
+            assert copy_position is not None and redemption is not None
+            return (
+                copy_position.status,
+                copy_position.attributed_size,
+                redemption.status,
+                redemption.payout_usdc or Decimal("0"),
+                redemption.last_error,
+            )
+
+    position_status, size, redemption_status, payout, last_error = client.portal.call(state)
+    assert position_status == "settled_loss"
+    assert size == Decimal("0")
+    assert redemption_status == "reconciled"
+    assert payout == Decimal("0")
+    assert last_error is not None and "兑付为 0" in last_error
+    assert trader.redemption_calls == []
+
+
 def test_unified_redemption_persists_handle_and_condition_execution(app_client_factory):
     client, fake = app_client_factory([[]])
     subscription = configured_subscription(client, fake)
@@ -1571,6 +1767,16 @@ def test_unified_redemption_persists_handle_and_condition_execution(app_client_f
             assert execution.attempts == 0
             assert execution.relayer_transaction_id is None
             assert execution.transaction_hash is None
+            # Match the production failure shape: an attempted SDK call that
+            # produced no submission identifiers and left both rows in review.
+            execution.attempts = 1
+            execution.last_error = (
+                f"自动赎回提交结果不明：No market found for condition {CONDITION_ID}"
+            )
+            redemption.status = "manual_review"
+            redemption.attempts = 1
+            redemption.last_error = execution.last_error
+            await session.commit()
             return redemption.id
 
     client.portal.call(assert_pre_submit_review)
@@ -1603,7 +1809,6 @@ def test_unified_redemption_persists_handle_and_condition_execution(app_client_f
 @pytest.mark.parametrize(
     ("attempts", "transaction_id", "transaction_hash", "submitted_at"),
     [
-        (1, None, None, None),
         (0, "relay-existing", None, None),
         (0, None, "0xexisting", None),
         (0, None, None, datetime.now(UTC).replace(tzinfo=None)),
@@ -1627,6 +1832,21 @@ def test_redemption_review_with_submission_evidence_cannot_auto_recover(
         updated_at=utcnow(),
     )
     assert redemption_execution_was_never_submitted(execution) is False
+
+
+def test_redemption_attempt_without_submission_identifiers_can_auto_recover():
+    execution = CopyRedemptionExecution(
+        wallet_address=SELF_ADDRESS,
+        condition_id=CONDITION_ID,
+        status="manual_review",
+        attempts=1,
+        relayer_transaction_id=None,
+        transaction_hash=None,
+        submitted_at=None,
+        created_at=utcnow(),
+        updated_at=utcnow(),
+    )
+    assert redemption_execution_was_never_submitted(execution) is True
 
 
 def test_confirmed_relayer_transaction_without_token_consumption_stays_pending(

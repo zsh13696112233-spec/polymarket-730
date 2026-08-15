@@ -210,6 +210,7 @@ class CopyOrderRead(APIModel):
     id: int
     subscription_id: int | None
     leader_event_id: int | None
+    override_of_order_id: int | None = None
     asset_id: str
     side: Literal["BUY", "SELL"]
     source: Literal["copy", "rehearsal"]
@@ -274,6 +275,10 @@ class CopyWorkspaceOrderRead(CopyOrderRead):
     outcome: str | None = None
     event_slug: str | None = None
     average_fill_price: DecimalNumber | None = None
+    force_buy_eligible: bool = False
+    force_buy_unavailable_reason: str | None = None
+    force_buy_order_id: int | None = None
+    force_buy_status: str | None = None
 
 
 class CopyPositionsResponse(APIModel):
@@ -318,6 +323,10 @@ class CopyActivityRead(APIModel):
     transaction_id: str | None = None
     transaction_hash: str | None = None
     fills: list[CopyFillRead] = Field(default_factory=list)
+    force_buy_eligible: bool = False
+    force_buy_unavailable_reason: str | None = None
+    force_buy_order_id: int | None = None
+    force_buy_status: str | None = None
     activity_at: datetime
 
     @field_serializer("activity_at", when_used="json")
@@ -369,6 +378,7 @@ class CopyStrategyOverviewRead(APIModel):
     wallet: CopyWalletSummaryRead
     portfolio: CopyPortfolioSummaryRead
     lifetime_bought_usdc: DecimalNumber = Decimal("0")
+    lifetime_copy_order_count: int = 0
     open_positions: int
     stale: bool
 
@@ -415,6 +425,29 @@ class RehearsalPreviewRead(APIModel):
 class RehearsalExecuteRequest(APIModel):
     confirmation_id: str = Field(min_length=20, max_length=200)
     confirmation_text: Literal["确认执行真实买入"]
+
+
+class ForceBuyPreviewRead(APIModel):
+    confirmation_id: str
+    source_order_id: int
+    title: str
+    outcome: str
+    proportional_target_usdc: DecimalNumber
+    minimum_order_usdc: DecimalNumber
+    minimum_adjusted: bool
+    executable_usdc: DecimalNumber
+    best_ask: DecimalNumber
+    worst_price: DecimalNumber
+    expires_at: datetime
+
+    @field_serializer("expires_at", when_used="json")
+    def serialize_expires_at(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class ForceBuyExecuteRequest(APIModel):
+    confirmation_id: str = Field(min_length=20, max_length=200)
+    confirmation_text: Literal["确认强制真实买入"]
 
 
 class CopyRecommendation(APIModel):

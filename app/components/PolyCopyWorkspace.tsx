@@ -80,6 +80,7 @@ type Strategy = {
   wallet: Wallet;
   portfolio: Portfolio;
   lifetime_bought_usdc: Numeric;
+  lifetime_copy_order_count: number;
   open_positions: number;
   stale: boolean;
 };
@@ -114,6 +115,10 @@ type CopyOrder = {
   title: string | null;
   outcome: string | null;
   event_slug: string | null;
+  force_buy_eligible?: boolean;
+  force_buy_unavailable_reason?: string | null;
+  force_buy_order_id?: number | null;
+  force_buy_status?: string | null;
 };
 
 type CopyActivity = {
@@ -143,7 +148,25 @@ type CopyActivity = {
   transaction_id: string | null;
   transaction_hash: string | null;
   fills: CopyOrder["fills"];
+  force_buy_eligible: boolean;
+  force_buy_unavailable_reason: string | null;
+  force_buy_order_id: number | null;
+  force_buy_status: string | null;
   activity_at: string;
+};
+
+type ForceBuyPreview = {
+  confirmation_id: string;
+  source_order_id: number;
+  title: string;
+  outcome: string;
+  proportional_target_usdc: Numeric;
+  minimum_order_usdc: Numeric;
+  minimum_adjusted: boolean;
+  executable_usdc: Numeric;
+  best_ask: Numeric;
+  worst_price: Numeric;
+  expires_at: string;
 };
 
 type CopyPosition = {
@@ -380,6 +403,10 @@ function orderActivity(order: CopyOrder): CopyActivity {
     transaction_id: null,
     transaction_hash: order.fills.find((fill) => fill.transaction_hash)?.transaction_hash ?? null,
     fills: order.fills,
+    force_buy_eligible: order.force_buy_eligible ?? false,
+    force_buy_unavailable_reason: order.force_buy_unavailable_reason ?? null,
+    force_buy_order_id: order.force_buy_order_id ?? null,
+    force_buy_status: order.force_buy_status ?? null,
     activity_at: order.created_at,
   };
 }
@@ -465,15 +492,17 @@ function Modal({
   eyebrow,
   onClose,
   children,
+  className = "",
 }: {
   title: string;
   eyebrow: string;
   onClose: () => void;
   children: ReactNode;
+  className?: string;
 }) {
   return (
     <div className="pcModalBackdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="pcModal" role="dialog" aria-modal="true" aria-label={title}>
+      <section className={`pcModal ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title}>
         <header>
           <div>
             <span className="pcEyebrow">{eyebrow}</span>
@@ -735,7 +764,54 @@ function QuickSettingsModal({
   );
 }
 
-function ActivityTable({ activities }: { activities: CopyActivity[] }) {
+function ActivityTable({ activities, onChanged }: { activities: CopyActivity[]; onChanged?: () => void }) {
+  const [preview, setPreview] = useState<ForceBuyPreview | null>(null);
+  const [previewingId, setPreviewingId] = useState<number | null>(null);
+  const [executing, setExecuting] = useState(false);
+  const [forceError, setForceError] = useState<string | null>(null);
+
+  async function previewForceBuy(activity: CopyActivity) {
+    setPreviewingId(activity.source_id);
+    setForceError(null);
+    try {
+      const result = await api<ForceBuyPreview>(`/api/copy-trading/orders/${activity.source_id}/force-buy/preview`, { method: "POST" });
+      setPreview(result);
+    } catch (previewError) {
+      setForceError(previewError instanceof Error ? previewError.message : "无法预览强制买入");
+    } finally {
+      setPreviewingId(null);
+    }
+  }
+
+  async function executeForceBuy() {
+    if (!preview) return;
+    setExecuting(true);
+    setForceError(null);
+    try {
+      await api(`/api/copy-trading/orders/${preview.source_order_id}/force-buy/execute`, {
+        method: "POST",
+        body: JSON.stringify({ confirmation_id: preview.confirmation_id, confirmation_text: "确认强制真实买入" }),
+      });
+      setPreview(null);
+      onChanged?.();
+    } catch (executeError) {
+      setForceError(executeError instanceof Error ? executeError.message : "强制买入失败");
+    } finally {
+      setExecuting(false);
+    }
+  }
+
+  function forceBuyAction(activity: CopyActivity) {
+    if (activity.activity_type !== "order") return null;
+    if (activity.force_buy_order_id) {
+      return <small>已强制处理 · 订单 #{activity.force_buy_order_id}</small>;
+    }
+    if (activity.force_buy_eligible) {
+      return <button className="pcButton ghost pcForceBuyButton" type="button" disabled={previewingId === activity.source_id} onClick={() => void previewForceBuy(activity)}>{previewingId === activity.source_id ? "计算中…" : "强制买入"}</button>;
+    }
+    return activity.force_buy_unavailable_reason ? <small>{activity.force_buy_unavailable_reason}</small> : null;
+  }
+
   if (activities.length === 0) {
     return <EmptyState title="暂无记录" message="策略产生信号后，成功、跳过和异常记录都会显示在这里。" />;
   }
@@ -773,7 +849,7 @@ function ActivityTable({ activities }: { activities: CopyActivity[] }) {
                   <td className="numeric">{money(activity.requested_usdc)}</td>
                   <td className="numeric"><strong>{money(activity.executed_usdc)}</strong><small>{activity.activity_type === "redemption" ? `赎回 ${shares(activity.executed_size)} 份` : number(activity.fee_usdc) > 0 ? `费用 ${money(activity.fee_usdc)}` : ""}</small>{activity.realized_pnl !== null && <small>盈亏 {signedMoney(activity.realized_pnl)}</small>}</td>
                   <td className="numeric">{price(activity.execution_price)}</td>
-                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{activity.execution_provider && <small>{activity.execution_provider === "unified_sdk" ? "官方 SDK" : "历史执行"}{activity.activity_type === "order" ? ` · ${activity.fills.length} fills` : ""}</small>}{activity.transaction_hash && <small title={activity.transaction_hash}>结算 {shortAddress(activity.transaction_hash)}</small>}{cancelled && <small>{cancelled}</small>}{activity.reason && <small title={activity.reason}>{activity.reason}</small>}</td>
+                  <td className="pcStatusCell"><Badge label={state.label} tone={state.tone} />{activity.execution_provider && <small>{activity.execution_provider === "unified_sdk" ? "官方 SDK" : "历史执行"}{activity.activity_type === "order" ? ` · ${activity.fills.length} fills` : ""}</small>}{activity.transaction_hash && <small title={activity.transaction_hash}>结算 {shortAddress(activity.transaction_hash)}</small>}{cancelled && <small>{cancelled}</small>}{activity.reason && <small title={activity.reason}>{activity.reason}</small>}{forceBuyAction(activity)}</td>
                 </tr>
               );
             })}
@@ -791,10 +867,35 @@ function ActivityTable({ activities }: { activities: CopyActivity[] }) {
               <dl><div><dt>操作</dt><dd>{operationLabel}</dd></div><div><dt>源钱包交易金额</dt><dd>{activity.operation === "BUY" ? money(activity.leader_purchase_usdc) : "—"}</dd></div><div><dt>按比例目标金额</dt><dd>{activity.operation === "BUY" ? money(activity.proportional_target_usdc) : "—"}</dd></div><div><dt>执行预算</dt><dd>{money(activity.requested_usdc)}</dd></div><div><dt>实际执行金额</dt><dd>{money(activity.executed_usdc)}</dd></div><div><dt>{activity.activity_type === "redemption" ? "赎回价" : "成交价"}</dt><dd>{price(activity.execution_price)}</dd></div><div><dt>时间</dt><dd>{dateTime(activity.activity_at)}</dd></div></dl>
               {activity.activity_type === "redemption" && <p>赎回 {shares(activity.executed_size)} 份 · 盈亏 {signedMoney(activity.realized_pnl)}</p>}
               {(activity.transaction_hash || cancelled || activity.reason) && <p>{[activity.transaction_hash ? `结算 ${shortAddress(activity.transaction_hash)}` : null, cancelled, activity.reason].filter(Boolean).join(" · ")}</p>}
+              {forceBuyAction(activity)}
             </article>
           );
         })}
       </div>
+      {forceError && !preview && <div className="pcAlert danger" role="alert"><span>!</span><p><strong>强制买入失败</strong>{forceError}</p></div>}
+      {preview && <Modal title="确认强制买入" eyebrow="FORCE BUY" className="pcForceBuyModal" onClose={() => !executing && setPreview(null)}>
+        <div className="pcForceBuyPreview">
+          <div className="pcForceBuyMarket"><strong>{preview.title}</strong><span>{preview.outcome}</span></div>
+          <div className="pcForceBuyHero">
+            <span>实际执行预算</span>
+            <strong>{money(preview.executable_usdc)}</strong>
+            <small>比例目标 {money(preview.proportional_target_usdc)} · 仅绕过亏损熔断</small>
+          </div>
+          <dl>
+            <div><dt>按比例目标</dt><dd>{money(preview.proportional_target_usdc)}</dd></div>
+            <div><dt>市场最小金额</dt><dd>{money(preview.minimum_order_usdc)}</dd></div>
+            <div><dt>当前卖一价</dt><dd>{price(preview.best_ask)}</dd></div>
+            <div><dt>最差成交价</dt><dd>{price(preview.worst_price)}</dd></div>
+          </dl>
+          {preview.minimum_adjusted && <p className="pcForceBuyNotice accent">已按市场最小份数提高执行预算。</p>}
+          <p className="pcForceBuyNotice">单仓、总敞口、每日买入额度、预算和现金保留仍然生效；本记录仅可强制处理一次。</p>
+          {forceError && <p className="pcFormError">{forceError}</p>}
+        </div>
+        <div className="pcModalActions">
+          <button className="pcButton ghost" type="button" disabled={executing} onClick={() => setPreview(null)}>取消</button>
+          <button className="pcButton danger" type="button" disabled={executing} onClick={() => void executeForceBuy()}>{executing ? "正在提交…" : `确认买入 ${money(preview.executable_usdc)}`}</button>
+        </div>
+      </Modal>}
     </>
   );
 }
@@ -992,7 +1093,7 @@ function DailyRealizedPnlChart({
   );
 }
 
-function RecentOrdersPanel({ overview, strategies }: { overview: Overview; strategies: Strategy[] }) {
+function RecentOrdersPanel({ overview, strategies, onReload }: { overview: Overview; strategies: Strategy[]; onReload: () => void }) {
   const [walletId, setWalletId] = useState("all");
   const [filteredActivities, setFilteredActivities] = useState<CopyActivity[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1041,7 +1142,7 @@ function RecentOrdersPanel({ overview, strategies }: { overview: Overview; strat
         </div>
       </header>
       <div className={`pcRecentOrdersBody ${loading ? "loading" : ""}`} aria-busy={loading}>
-        <ActivityTable activities={activities ?? []} />
+        <ActivityTable activities={activities ?? []} onChanged={onReload} />
         {loading && <div className="pcRecentOrdersLoading"><LoadingState /></div>}
       </div>
       {visibleError && <div className="pcAlert danger pcRecentOrdersError" role="alert"><span>!</span><p><strong>最近记录读取失败</strong>{visibleError}</p></div>}
@@ -1058,6 +1159,7 @@ function OverviewPage({
   onToggle,
   onConfigure,
   onCloseStrategy,
+  onReload,
 }: {
   overview: Overview;
   wallets: Wallet[];
@@ -1067,6 +1169,7 @@ function OverviewPage({
   onToggle: (strategy: Strategy) => void;
   onConfigure: (wallet: Wallet) => void;
   onCloseStrategy: (strategy: Strategy) => void;
+  onReload: () => void;
 }) {
   const trackedWallets = wallets.filter((wallet) => wallet.wallet_role === "tracked" && wallet.enabled !== false);
   const strategyByWallet = new Map(overview.strategies.map((strategy) => [strategy.wallet.id, strategy]));
@@ -1113,7 +1216,7 @@ function OverviewPage({
                 <article className="pcStrategyRow" key={wallet.id}>
                   <a className="pcStrategyIdentity" href={profileUrl(wallet.proxy_wallet)} target="_blank" rel="noreferrer" aria-label={`查看 ${wallet.label || shortAddress(wallet.proxy_wallet)} 的 Polymarket 主页`}><span className="pcWalletAvatar">{(wallet.label || "0x").slice(0, 2).toUpperCase()}</span><span><strong>{wallet.label || shortAddress(wallet.proxy_wallet)}</strong><small>{shortAddress(wallet.proxy_wallet)}{strategy?.stale ? " · 数据延迟" : ""}</small></span></a>
                   <div className="pcStrategyStatus"><Badge label={state.label} tone={state.tone} />{modeLabel && <small className="pcStrategyModeLabel">{modeLabel}</small>}{strategySummary && <small className="pcStrategyParams" title={strategySummary}>{strategySummary}</small>}</div>
-                  <dl className="pcStrategyMetrics"><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div><div><dt>持仓成本</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日投入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>今日已实现盈亏</dt><dd><Pnl value={subscription?.daily_realized_pnl ?? 0} /></dd></div><div><dt>钱包总投入</dt><dd>{money(strategy?.lifetime_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div></dl>
+                  <dl className="pcStrategyMetrics"><div><dt>持仓</dt><dd>{strategy?.open_positions ?? 0}</dd></div><div><dt>累计跟单</dt><dd>{strategy?.lifetime_copy_order_count ?? 0} 笔</dd></div><div><dt>持仓成本</dt><dd>{money(subscription?.open_exposure_usdc ?? 0)}</dd></div><div><dt>今日投入</dt><dd>{money(subscription?.daily_bought_usdc ?? 0)}</dd></div><div><dt>今日已实现盈亏</dt><dd><Pnl value={subscription?.daily_realized_pnl ?? 0} /></dd></div><div><dt>钱包总投入</dt><dd>{money(strategy?.lifetime_bought_usdc ?? 0)}</dd></div><div><dt>总盈亏</dt><dd><Pnl value={strategy?.portfolio.total_pnl ?? 0} /></dd></div></dl>
                   <div className="pcStrategyActions">
                     <button className="pcButton ghost" type="button" onClick={() => onConfigure(wallet)}>{subscription ? "参数" : "配置"}</button>
                     {strategy && <button className={`pcSwitch ${subscription?.enabled ? "on" : ""}`} type="button" role="switch" aria-checked={subscription?.enabled} aria-label={`${wallet.label}${subscription?.enabled ? "暂停策略" : "恢复策略"}`} disabled={busyId === subscription?.id || subscription?.state === "closing"} onClick={() => onToggle(strategy)}><span /></button>}
@@ -1126,7 +1229,7 @@ function OverviewPage({
         )}
       </section>
 
-      <RecentOrdersPanel overview={overview} strategies={activeStrategies} />
+      <RecentOrdersPanel overview={overview} strategies={activeStrategies} onReload={onReload} />
     </>
   );
 }
@@ -1179,6 +1282,7 @@ function RecordsPage({ activeStrategies }: { activeStrategies: Strategy[] }) {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const buildPath = useCallback((nextCursor?: string) => {
     const params = new URLSearchParams({ limit: "50" });
@@ -1206,7 +1310,7 @@ function RecordsPage({ activeStrategies }: { activeStrategies: Strategy[] }) {
         .finally(() => { if (!cancelled) setLoading(false); });
     }, 0);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [buildPath]);
+  }, [buildPath, reloadKey]);
 
   async function loadMore() {
     if (!cursor) return;
@@ -1233,7 +1337,7 @@ function RecordsPage({ activeStrategies }: { activeStrategies: Strategy[] }) {
         </div>
         <span className="pcRecordCount">{items.length} 条记录</span>
       </header>
-      {loading ? <LoadingState /> : error && items.length === 0 ? <div className="pcAlert danger"><span>!</span><p><strong>记录读取失败</strong>{error}</p></div> : <ActivityTable activities={items} />}
+      {loading ? <LoadingState /> : error && items.length === 0 ? <div className="pcAlert danger"><span>!</span><p><strong>记录读取失败</strong>{error}</p></div> : <ActivityTable activities={items} onChanged={() => setReloadKey((value) => value + 1)} />}
       {error && items.length > 0 && <p className="pcInlineError">{error}</p>}
       {cursor && <div className="pcLoadMore"><button className="pcButton ghost" type="button" disabled={loadingMore} onClick={loadMore}>{loadingMore ? "正在加载…" : "加载更早记录"}</button></div>}
     </section>
@@ -1458,7 +1562,7 @@ export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceVie
       {loading && !overview ? <LoadingState /> : !overview ? <EmptyState title="无法读取策略工作台" message={error || "请确认本机 API 服务正在运行。"} action={<button className="pcButton primary" type="button" onClick={() => void load()}>重新连接</button>} /> : (
         <>
           {error && <div className="pcAlert danger pcGlobalError"><span>!</span><p><strong>部分数据可能不是最新</strong>{error}</p><button className="pcButton ghost" type="button" onClick={() => void load()}>重试</button></div>}
-          {view === "overview" && <OverviewPage overview={overview} wallets={wallets} activeStrategies={activeStrategies} busyId={busyId} toggleError={strategyToggleError} onToggle={(strategy) => void toggleStrategy(strategy)} onConfigure={setQuickWallet} onCloseStrategy={(strategy) => void closeStrategy(strategy)} />}
+          {view === "overview" && <OverviewPage overview={overview} wallets={wallets} activeStrategies={activeStrategies} busyId={busyId} toggleError={strategyToggleError} onToggle={(strategy) => void toggleStrategy(strategy)} onConfigure={setQuickWallet} onCloseStrategy={(strategy) => void closeStrategy(strategy)} onReload={() => void load(true)} />}
           {view === "positions" && <PositionsPage activeStrategies={activeStrategies} />}
           {view === "records" && <RecordsPage activeStrategies={activeStrategies} />}
           {view === "settings" && <SettingsPage overview={overview} wallets={wallets} onReload={() => void load(true)} onAddSelf={() => setWalletModal("self")} />}

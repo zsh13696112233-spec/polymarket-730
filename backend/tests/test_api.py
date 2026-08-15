@@ -365,6 +365,47 @@ async def insert_copy_buy_fill_fixture(
         await session.commit()
 
 
+async def insert_excluded_copy_order_count_fixtures(database, subscription_id: int) -> None:
+    now = utcnow()
+    fixtures = [
+        ("copy", "SELL", Decimal("5"), "filled"),
+        ("rehearsal", "BUY", Decimal("5"), "filled"),
+        ("copy", "BUY", Decimal("0"), "skipped"),
+        ("copy", "BUY", Decimal("0"), "failed"),
+    ]
+    async with database.sessions() as session:
+        for index, (source, side, filled_size, status) in enumerate(fixtures):
+            session.add(
+                CopyOrder(
+                    subscription_id=subscription_id,
+                    copy_position_id=None,
+                    leader_event_id=None,
+                    idempotency_key=f"excluded-copy-count-{subscription_id}-{index}",
+                    source=source,
+                    signed_order_hash=None,
+                    asset_id=f"excluded-asset-{index}",
+                    condition_id="0x" + f"{index + 100:064x}",
+                    side=side,
+                    requested_size=Decimal("10"),
+                    requested_usdc=Decimal("5"),
+                    leader_purchase_usdc=None,
+                    proportional_target_usdc=None,
+                    limit_price=Decimal("0.50"),
+                    reference_price=Decimal("0.50"),
+                    filled_size=filled_size,
+                    filled_usdc=filled_size * Decimal("0.50"),
+                    fee_usdc=Decimal("0"),
+                    status=status,
+                    reason=None,
+                    external_order_id=None,
+                    external_trade_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        await session.commit()
+
+
 async def insert_grouped_event_fixture(database, wallet_id: int, asset_id: str) -> None:
     started_at = datetime(2026, 8, 1, 0, 0)
     async with database.sessions() as session:
@@ -2306,6 +2347,8 @@ def test_copy_workspace_aggregates_lifetime_bought_by_wallet(app_client_factory)
     strategies = {item["wallet"]["id"]: item for item in response.json()["strategies"]}
     assert strategies[first_wallet["id"]]["lifetime_bought_usdc"] == pytest.approx(9)
     assert strategies[second_wallet["id"]]["lifetime_bought_usdc"] == pytest.approx(50)
+    assert strategies[first_wallet["id"]]["lifetime_copy_order_count"] == 2
+    assert strategies[second_wallet["id"]]["lifetime_copy_order_count"] == 1
     assert strategies[first_wallet["id"]]["subscription"]["open_exposure_usdc"] == 0
 
 
@@ -2321,6 +2364,27 @@ def test_copy_workspace_returns_zero_lifetime_bought_for_new_wallet(app_client_f
 
     assert response.status_code == 200, response.text
     assert response.json()["strategies"][0]["lifetime_bought_usdc"] == 0
+    assert response.json()["strategies"][0]["lifetime_copy_order_count"] == 0
+
+
+def test_copy_workspace_excludes_non_copy_buys_and_unfilled_orders(app_client_factory):
+    client, _ = app_client_factory([[]])
+    wallet = add_wallet(client)
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": wallet["id"]},
+    ).json()
+    assert client.portal is not None
+    client.portal.call(
+        insert_excluded_copy_order_count_fixtures,
+        client.app.state.database,
+        subscription["id"],
+    )
+
+    response = client.get("/api/copy-trading/overview")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["strategies"][0]["lifetime_copy_order_count"] == 0
 
 
 def test_copy_workspace_returns_complete_shanghai_daily_realized_pnl_points(

@@ -24,6 +24,16 @@ V2_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
 V2_NEG_RISK_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
 
 
+def error_detail(error: Exception) -> str:
+    message = str(error).strip() or type(error).__name__
+    cause = error.__cause__
+    if cause is None:
+        return message
+    cause_message = str(cause).strip()
+    cause_detail = f"{type(cause).__name__}: {cause_message}" if cause_message else repr(cause)
+    return f"{message} ({cause_detail})"
+
+
 class TradingUnavailable(RuntimeError):
     pass
 
@@ -237,7 +247,7 @@ class UnifiedPolymarketTrader:
                 api_key=api_key,
             )
         except Exception as error:
-            raise TradingUnavailable(f"统一 SDK 客户端创建失败：{error}") from error
+            raise TradingUnavailable(f"统一 SDK 客户端创建失败：{error_detail(error)}") from error
         expected_type = {1: "POLY_PROXY", 3: "DEPOSIT_WALLET"}[self.signature_type]
         if str(client.wallet).lower() != self.funder_address.lower():
             await client.close()
@@ -585,7 +595,33 @@ class UnifiedPolymarketTrader:
         try:
             handle = await client.redeem_positions(condition_id=condition_id)
         except Exception as error:
-            raise RedemptionSubmissionUnknown(f"自动赎回提交结果不明：{error}") from error
+            # polymarket-client 0.5.0 resolves market metadata with
+            # `closed=true` before it builds the CTF redemption call. Gamma can
+            # already omit a resolved sports market from that filtered result
+            # while Data API and the chain still correctly report the outcome as
+            # redeemable. In that specific pre-dispatch failure, build the same
+            # public SDK call directly from the condition data we have already
+            # verified on-chain.
+            if "No market found for condition" not in str(error):
+                raise RedemptionSubmissionUnknown(
+                    f"自动赎回提交结果不明：{error_detail(error)}"
+                ) from error
+            try:
+                from polymarket.calls import ctf_redeem_positions_call
+
+                call = ctf_redeem_positions_call(
+                    ctf=adapter,
+                    collateral=PUSD_ADDRESS,
+                    condition_id=condition_id,
+                )
+                handle = await client.execute_transaction(
+                    calls=[call],
+                    metadata=f"Redeem positions for condition {condition_id}",
+                )
+            except Exception as fallback_error:
+                raise RedemptionSubmissionUnknown(
+                    f"自动赎回提交结果不明：{error_detail(fallback_error)}"
+                ) from fallback_error
         return PreparedRedemption(
             condition_id=condition_id,
             transaction_id=getattr(handle, "transaction_id", None),

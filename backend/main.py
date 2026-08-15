@@ -19,7 +19,12 @@ from sqlalchemy.orm import selectinload
 from backend.broker import EventBroker
 from backend.config import Settings
 from backend.copy_cli import DEFAULT_SERVICE
-from backend.copy_trading import CopyTradingEngine, latest_event_id
+from backend.copy_trading import (
+    DAILY_LOSS_CIRCUIT_REASON,
+    CopyTradingEngine,
+    ForceBuyQuote,
+    latest_event_id,
+)
 from backend.db import Database
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
@@ -77,6 +82,8 @@ from backend.schemas import (
     EventsResponse,
     ExecutionAccountRead,
     ExecutionAccountUpdate,
+    ForceBuyExecuteRequest,
+    ForceBuyPreviewRead,
     GlobalSettingsRead,
     GlobalSettingsUpdate,
     HealthRead,
@@ -537,6 +544,9 @@ async def workspace_order_reads(
     position_ids = {
         order.copy_position_id for order in orders if order.copy_position_id is not None
     }
+    leader_event_ids = {
+        order.leader_event_id for order in orders if order.leader_event_id is not None
+    }
     order_ids = [order.id for order in orders]
     subscriptions = {
         item.id: item
@@ -581,6 +591,53 @@ async def workspace_order_reads(
             else []
         )
     }
+    leader_events = {
+        item.id: item
+        for item in (
+            list(
+                (
+                    await session.scalars(
+                        select(PositionEvent).where(PositionEvent.id.in_(leader_event_ids))
+                    )
+                ).all()
+            )
+            if leader_event_ids
+            else []
+        )
+    }
+    overrides = {
+        item.override_of_order_id: item
+        for item in (
+            list(
+                (
+                    await session.scalars(
+                        select(CopyOrder).where(CopyOrder.override_of_order_id.in_(order_ids))
+                    )
+                ).all()
+            )
+            if order_ids
+            else []
+        )
+        if item.override_of_order_id is not None
+    }
+    current_position_keys = {
+        (item.wallet_id, item.asset_id)
+        for item in (
+            list(
+                (
+                    await session.scalars(
+                        select(CurrentPosition).where(
+                            CurrentPosition.wallet_id.in_(wallet_ids),
+                            CurrentPosition.size > Decimal("0"),
+                        )
+                    )
+                ).all()
+            )
+            if wallet_ids
+            else []
+        )
+    }
+    account = await session.get(ExecutionAccount, 1)
     fill_totals: dict[int, tuple[Decimal, Decimal]] = {}
     if order_ids:
         rows = (
@@ -604,6 +661,24 @@ async def workspace_order_reads(
         subscription = subscriptions.get(order.subscription_id)
         wallet = wallets.get(subscription.tracked_wallet_id) if subscription is not None else None
         position = positions.get(order.copy_position_id)
+        leader_event = leader_events.get(order.leader_event_id)
+        override = overrides.get(order.id)
+        force_candidate = (
+            order.source == "copy"
+            and order.side == "BUY"
+            and order.status == "skipped"
+            and order.reason == DAILY_LOSS_CIRCUIT_REASON
+        )
+        force_unavailable_reason = None
+        if force_candidate:
+            if override is not None:
+                force_unavailable_reason = "已强制处理"
+            elif subscription is None or subscription.state != "active":
+                force_unavailable_reason = "策略当前不是运行状态"
+            elif account is None or account.status != "ready":
+                force_unavailable_reason = "执行账户当前不可用"
+            elif wallet is None or (wallet.id, order.asset_id) not in current_position_keys:
+                force_unavailable_reason = "目标钱包已经退出该持仓"
         fill_size, fill_amount = fill_totals.get(order.id, (order.filled_size, order.filled_usdc))
         average_fill_price = fill_amount / fill_size if fill_size > 0 else None
         result.append(
@@ -614,10 +689,28 @@ async def workspace_order_reads(
                     "tracked_wallet_address": (
                         wallet.proxy_wallet or wallet.address if wallet else None
                     ),
-                    "title": position.title if position else None,
-                    "outcome": position.outcome if position else None,
-                    "event_slug": position.event_slug if position else None,
+                    "title": (
+                        position.title if position else leader_event.title if leader_event else None
+                    ),
+                    "outcome": (
+                        position.outcome
+                        if position
+                        else leader_event.outcome
+                        if leader_event
+                        else None
+                    ),
+                    "event_slug": (
+                        position.event_slug
+                        if position
+                        else leader_event.event_slug
+                        if leader_event
+                        else None
+                    ),
                     "average_fill_price": average_fill_price,
+                    "force_buy_eligible": force_candidate and force_unavailable_reason is None,
+                    "force_buy_unavailable_reason": force_unavailable_reason,
+                    "force_buy_order_id": override.id if override else None,
+                    "force_buy_status": override.status if override else None,
                 }
             )
         )
@@ -658,10 +751,7 @@ async def copy_activity_page(
 
     include_orders = operation != "REDEEM" and status_group != "redeemed"
     if include_orders:
-        order_query = select(CopyOrder).where(
-            CopyOrder.source == "copy",
-            CopyOrder.status != "skipped",
-        )
+        order_query = select(CopyOrder).where(CopyOrder.source == "copy")
         if tracked_wallet_id is not None:
             subscription_ids = select(CopySubscription.id).where(
                 CopySubscription.tracked_wallet_id == tracked_wallet_id
@@ -719,6 +809,10 @@ async def copy_activity_page(
                     execution_provider=order.execution_provider,
                     transaction_hash=transaction_hash,
                     fills=order.fills,
+                    force_buy_eligible=order.force_buy_eligible,
+                    force_buy_unavailable_reason=order.force_buy_unavailable_reason,
+                    force_buy_order_id=order.force_buy_order_id,
+                    force_buy_status=order.force_buy_status,
                     activity_at=order.created_at,
                 )
             )
@@ -1223,6 +1317,7 @@ def create_app(
         application.state.copy_engine = copy_engine
         application.state.copy_toggle_lock = asyncio.Lock()
         application.state.rehearsal_previews = {}
+        application.state.force_buy_previews = {}
         if resolved_settings.start_monitor:
             monitor.start()
             copy_engine.start()
@@ -1673,6 +1768,69 @@ def create_app(
             await trader.close()
             return response
 
+    @application.post(
+        "/api/copy-trading/orders/{order_id}/force-buy/preview",
+        response_model=ForceBuyPreviewRead,
+    )
+    async def preview_force_buy(order_id: int, request: Request) -> ForceBuyPreviewRead:
+        if order_id <= 0:
+            raise HTTPException(status_code=422, detail="订单编号无效")
+        await request.app.state.copy_engine.refresh_execution_balance(force=True)
+        try:
+            quote: ForceBuyQuote = await request.app.state.copy_engine.quote_force_buy(order_id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except PolymarketAPIError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        confirmation_id = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=5)
+        request.app.state.force_buy_previews[confirmation_id] = {
+            "quote": quote,
+            "expires_at": expires_at,
+        }
+        return ForceBuyPreviewRead(
+            confirmation_id=confirmation_id,
+            source_order_id=order_id,
+            title=quote.title,
+            outcome=quote.outcome,
+            proportional_target_usdc=quote.proportional_target_usdc,
+            minimum_order_usdc=quote.minimum_order_usdc,
+            minimum_adjusted=quote.minimum_adjusted,
+            executable_usdc=quote.executable_usdc,
+            best_ask=quote.best_ask,
+            worst_price=quote.worst_price,
+            expires_at=expires_at,
+        )
+
+    @application.post(
+        "/api/copy-trading/orders/{order_id}/force-buy/execute",
+        response_model=CopyOrderRead,
+    )
+    async def execute_force_buy(
+        order_id: int,
+        payload: ForceBuyExecuteRequest,
+        request: Request,
+    ) -> CopyOrderRead:
+        stored = request.app.state.force_buy_previews.pop(payload.confirmation_id, None)
+        if stored is None:
+            raise HTTPException(status_code=409, detail="强制买入确认已失效，请重新预览")
+        quote: ForceBuyQuote = stored["quote"]
+        if quote.source_order_id != order_id:
+            raise HTTPException(status_code=409, detail="强制买入确认与记录不匹配")
+        if stored["expires_at"] < utcnow():
+            raise HTTPException(status_code=409, detail="强制买入确认已过期，请重新预览")
+        try:
+            forced_order_id = await request.app.state.copy_engine.execute_force_buy(quote)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except PolymarketAPIError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            order = await session.get(CopyOrder, forced_order_id)
+            assert order is not None
+            return CopyOrderRead.model_validate(order)
+
     @application.get(
         "/api/copy-trading/subscriptions",
         response_model=list[CopySubscriptionRead],
@@ -2041,10 +2199,7 @@ def create_app(
             raise HTTPException(status_code=422, detail="记录状态筛选无效")
         database: Database = request.app.state.database
         async with database.sessions() as session:
-            query = select(CopyOrder).where(
-                CopyOrder.source == "copy",
-                CopyOrder.status != "skipped",
-            )
+            query = select(CopyOrder).where(CopyOrder.source == "copy")
             if tracked_wallet_id is not None:
                 subscription_ids = select(CopySubscription.id).where(
                     CopySubscription.tracked_wallet_id == tracked_wallet_id
@@ -2156,6 +2311,25 @@ def create_app(
             items_by_subscription: dict[int, list[CopyWorkspacePositionRead]] = {}
             for item in position_items:
                 items_by_subscription.setdefault(item.subscription_id, []).append(item)
+            lifetime_copy_order_counts = (
+                {
+                    subscription_id: count
+                    for subscription_id, count in (
+                        await session.execute(
+                            select(CopyOrder.subscription_id, func.count(CopyOrder.id))
+                            .where(
+                                CopyOrder.subscription_id.in_(subscription_ids),
+                                CopyOrder.source == "copy",
+                                CopyOrder.side == "BUY",
+                                CopyOrder.filled_size > Decimal("0"),
+                            )
+                            .group_by(CopyOrder.subscription_id)
+                        )
+                    ).all()
+                }
+                if subscription_ids
+                else {}
+            )
             strategies: list[CopyStrategyOverviewRead] = []
             for subscription in subscriptions:
                 wallet = wallet_by_subscription.get(subscription.id)
@@ -2171,6 +2345,9 @@ def create_app(
                             (item.lifetime_bought_usdc for item in strategy_positions),
                             start=Decimal("0"),
                         ),
+                        lifetime_copy_order_count=lifetime_copy_order_counts.get(
+                            subscription.id, 0
+                        ),
                         open_positions=sum(
                             1 for item in strategy_positions if item.attributed_size > 0
                         ),
@@ -2181,10 +2358,7 @@ def create_app(
                 (
                     await session.scalars(
                         select(CopyOrder)
-                        .where(
-                            CopyOrder.source == "copy",
-                            CopyOrder.status != "skipped",
-                        )
+                        .where(CopyOrder.source == "copy")
                         .order_by(CopyOrder.created_at.desc(), CopyOrder.id.desc())
                         .limit(8)
                     )

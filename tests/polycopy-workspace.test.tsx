@@ -105,6 +105,10 @@ const filledActivity = {
   transaction_id: null,
   transaction_hash: null,
   fills: [],
+  force_buy_eligible: false,
+  force_buy_unavailable_reason: null,
+  force_buy_order_id: null,
+  force_buy_status: null,
   activity_at: "2026-08-06T08:00:00Z",
   tracked_wallet_id: 1,
   tracked_wallet_label: "策略一",
@@ -148,6 +152,7 @@ const overview = {
       valued_at: "2026-08-06T08:00:00Z",
     },
     lifetime_bought_usdc: 42.5,
+    lifetime_copy_order_count: 12,
     open_positions: 1,
     stale: false,
   }],
@@ -220,6 +225,8 @@ describe("PolyCopy workspace", () => {
     expect(screen.getAllByText("策略一").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Will Team A win?").length).toBeGreaterThan(0);
     expect(screen.getAllByText("+$7.50").length).toBeGreaterThan(0);
+    expect(screen.getByText("累计跟单")).toBeInTheDocument();
+    expect(screen.getByText("12 笔")).toBeInTheDocument();
     expect(screen.getAllByText("源钱包交易金额").length).toBeGreaterThan(0);
     expect(screen.getAllByText("按比例目标金额").length).toBeGreaterThan(0);
     expect(screen.getAllByText("执行预算").length).toBeGreaterThan(0);
@@ -230,6 +237,58 @@ describe("PolyCopy workspace", () => {
     const totalInvestment = screen.getByText("钱包总投入").closest("div");
     expect(totalInvestment).not.toBeNull();
     expect(within(totalInvestment!).getByText("$42.50")).toBeInTheDocument();
+  });
+
+  it("熔断跳过记录可预览并确认一次性强制买入", async () => {
+    const user = userEvent.setup();
+    const skippedActivity = {
+      ...filledActivity,
+      activity_id: "order:190",
+      source_id: 190,
+      requested_size: 0,
+      requested_usdc: 0,
+      executed_size: 0,
+      executed_usdc: 0,
+      status: "skipped",
+      reason: "已触发执行钱包当日亏损熔断",
+      force_buy_eligible: true,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(url);
+      if (init?.body) requestBodies.push(JSON.parse(String(init.body)));
+      if (url.endsWith("/force-buy/preview")) return json({
+        confirmation_id: "force-confirmation-id-1234567890",
+        source_order_id: 190,
+        title: "Will Team A win?",
+        outcome: "Yes",
+        proportional_target_usdc: 0.5,
+        minimum_order_usdc: 5,
+        minimum_adjusted: true,
+        executable_usdc: 5,
+        best_ask: 0.48,
+        worst_price: 0.53,
+        expires_at: "2026-08-06T08:05:00Z",
+      });
+      if (url.endsWith("/force-buy/execute")) return json({ id: 191, status: "filled" });
+      if (url.includes("/api/copy-trading/overview")) return json({ ...overview, recent_activities: [skippedActivity] });
+      if (url.endsWith("/api/wallets")) return json([wallet]);
+      return json({ items: [], next_cursor: null });
+    }));
+
+    render(<PolyCopyWorkspace view="overview" />);
+    const forceButtons = await screen.findAllByRole("button", { name: "强制买入" });
+    await user.click(forceButtons[0]);
+    expect(await screen.findByRole("dialog", { name: "确认强制买入" })).toBeInTheDocument();
+    expect(screen.getByText("已按市场最小份数提高执行预算。")).toBeInTheDocument();
+    expect(screen.getByText(/单仓、总敞口、每日买入额度/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认买入 $5.00" }));
+
+    await waitFor(() => expect(requests.some((url) => url.endsWith("/orders/190/force-buy/execute"))).toBe(true));
+    expect(requestBodies).toContainEqual({
+      confirmation_id: "force-confirmation-id-1234567890",
+      confirmation_text: "确认强制真实买入",
+    });
   });
 
   it("总览最近记录可按目标钱包筛选并切回全部钱包", async () => {
@@ -366,6 +425,7 @@ describe("PolyCopy workspace", () => {
           strategies: overview.strategies.map((strategy) => ({
             ...strategy,
             lifetime_bought_usdc: 0,
+            lifetime_copy_order_count: 0,
           })),
         });
       }
@@ -376,6 +436,9 @@ describe("PolyCopy workspace", () => {
     const totalInvestment = (await screen.findByText("钱包总投入")).closest("div");
     expect(totalInvestment).not.toBeNull();
     expect(within(totalInvestment!).getByText("$0.00")).toBeInTheDocument();
+    const copyCount = screen.getByText("累计跟单").closest("div");
+    expect(copyCount).not.toBeNull();
+    expect(within(copyCount!).getByText("0 笔")).toBeInTheDocument();
   });
 
   it("展示最近 30 日的已实现盈亏柱状图", async () => {

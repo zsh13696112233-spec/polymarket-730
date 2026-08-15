@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from zoneinfo import ZoneInfo
 
@@ -47,7 +47,9 @@ ONE = Decimal("1")
 UNTRADEABLE_DUST_SIZE = Decimal("0.01")
 REDEMPTION_SIZE_TOLERANCE = Decimal("0.000001")
 REDEMPTION_SIZE_RELATIVE_TOLERANCE = Decimal("0.000001")
+REDEMPTION_RETRY_DELAY = timedelta(minutes=5)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+DAILY_LOSS_CIRCUIT_REASON = "已触发执行钱包当日亏损熔断"
 RETRYABLE_REDEMPTION_CREDENTIAL_ERRORS = frozenset(
     {
         "Deposit Wallet 自动赎回需要 Relayer API 凭证",
@@ -83,8 +85,7 @@ def chain_redemption_sizes_match(actual: Decimal, expected: Decimal) -> bool:
 
 def redemption_execution_was_never_submitted(execution: CopyRedemptionExecution) -> bool:
     return (
-        execution.attempts == 0
-        and execution.relayer_transaction_id is None
+        execution.relayer_transaction_id is None
         and execution.transaction_hash is None
         and execution.submitted_at is None
     )
@@ -119,7 +120,11 @@ def redeemable_position_payout_rate(position: PositionSnapshot) -> Decimal:
         rate = position.current_value / position.size
     rate = max(ZERO, min(ONE, rate))
     # Data API marks resolved winners near 1 (for example 0.9995) rather than
-    # returning the exact CTF payout. Preserve genuine partial resolutions.
+    # returning the exact CTF payout. It can likewise leave a resolved loser at
+    # a tiny non-zero display value. Normalize both edges; callers still verify
+    # a zero payout on-chain before writing off the position.
+    if rate <= Decimal("0.01"):
+        return ZERO
     return ONE if rate >= Decimal("0.99") else rate
 
 
@@ -149,14 +154,36 @@ class RiskUsage:
     account_daily_loss_limit: Decimal = Decimal("999999999")
 
 
+@dataclass(frozen=True, slots=True)
+class ForceBuyQuote:
+    source_order_id: int
+    subscription_id: int
+    event_id: int
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    event_slug: str | None
+    outcome_index: int | None
+    neg_risk: bool
+    position_id: int | None
+    proportional_target_usdc: Decimal
+    minimum_order_usdc: Decimal
+    minimum_adjusted: bool
+    executable_usdc: Decimal
+    best_ask: Decimal
+    worst_price: Decimal
+
+
 def allowed_buy_usdc(
     requested: Decimal,
     *,
     subscription: CopySubscription,
     usage: RiskUsage,
+    ignore_daily_loss: bool = False,
 ) -> tuple[Decimal, str | None]:
-    if usage.realized_loss_today >= usage.account_daily_loss_limit:
-        return ZERO, "已触发执行钱包当日亏损熔断"
+    if not ignore_daily_loss and usage.realized_loss_today >= usage.account_daily_loss_limit:
+        return ZERO, DAILY_LOSS_CIRCUIT_REASON
     limits = {
         "单仓最大投入已满": subscription.position_cap_usdc - usage.position,
         "策略总敞口已满": subscription.total_exposure_cap_usdc - usage.total,
@@ -200,6 +227,7 @@ class CopyTradingEngine:
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
+        self._force_buy_lock = asyncio.Lock()
         self._trader_cache_key: tuple[object, ...] | None = None
         self._trader_cache: UnifiedPolymarketTrader | None = None
 
@@ -323,6 +351,198 @@ class CopyTradingEngine:
             account.updated_at = utcnow()
             await session.commit()
         return balance
+
+    async def quote_force_buy(self, source_order_id: int) -> ForceBuyQuote:
+        async with self.database.sessions() as session:
+            order = await session.get(CopyOrder, source_order_id)
+            if (
+                order is None
+                or order.source != "copy"
+                or order.side != "BUY"
+                or order.status != "skipped"
+                or order.reason != DAILY_LOSS_CIRCUIT_REASON
+                or order.subscription_id is None
+                or order.leader_event_id is None
+                or order.proportional_target_usdc is None
+                or order.proportional_target_usdc <= ZERO
+            ):
+                raise ValueError("该记录不是可强制补买的熔断记录")
+            if await session.scalar(
+                select(CopyOrder.id).where(CopyOrder.override_of_order_id == source_order_id)
+            ):
+                raise ValueError("该记录已经强制处理")
+            subscription = await session.get(CopySubscription, order.subscription_id)
+            event = await session.get(PositionEvent, order.leader_event_id)
+            account = await session.get(ExecutionAccount, 1)
+            if subscription is None or event is None:
+                raise ValueError("原始跟单信号已不存在")
+            if subscription.state != "active":
+                raise ValueError("策略当前不是运行状态")
+            if account is None or account.status != "ready":
+                raise ValueError("执行账户当前不可用")
+            monitored_position = await session.scalar(
+                select(CurrentPosition).where(
+                    CurrentPosition.wallet_id == event.wallet_id,
+                    CurrentPosition.asset_id == event.asset_id,
+                    CurrentPosition.size > ZERO,
+                )
+            )
+            if monitored_position is None:
+                raise ValueError("目标钱包已经退出该持仓")
+            position = await session.scalar(
+                select(CopyPosition)
+                .where(
+                    CopyPosition.subscription_id == subscription.id,
+                    CopyPosition.asset_id == event.asset_id,
+                    CopyPosition.attributed_size > ZERO,
+                )
+                .order_by(CopyPosition.cycle_no.desc())
+                .limit(1)
+            )
+            if position is not None and position.reserved_buy_usdc > ZERO:
+                raise ValueError("该仓位已有未决买单")
+            target = order.proportional_target_usdc
+            subscription_id = subscription.id
+            event_id = event.id
+            position_id = position.id if position is not None else None
+            outcome_index = monitored_position.outcome_index
+
+        if not self.settings.live_copy_enabled:
+            raise ValueError("自动实盘已被系统紧急停用")
+        book = await self.client.fetch_order_book(event.asset_id)
+        if book.best_ask is None:
+            raise ValueError("市场当前没有可成交卖盘")
+        worst_price = market_worst_price(
+            book.best_ask,
+            book.tick_size,
+            subscription.market_slippage_cents,
+            side="BUY",
+        )
+        minimum_order_usdc = book.min_order_size * worst_price
+        requested = max(target, minimum_order_usdc)
+        usage = await self._risk_usage(subscription_id, account, position_id=position_id)
+        allowed, reason = allowed_buy_usdc(
+            requested,
+            subscription=subscription,
+            usage=usage,
+            ignore_daily_loss=True,
+        )
+        if allowed <= ZERO:
+            raise ValueError(reason or "风险额度不足")
+        if allowed / worst_price < book.min_order_size:
+            raise ValueError("剩余风控额度低于市场最小下单金额")
+        return ForceBuyQuote(
+            source_order_id=source_order_id,
+            subscription_id=subscription_id,
+            event_id=event_id,
+            asset_id=event.asset_id,
+            condition_id=event.condition_id,
+            title=event.title,
+            outcome=event.outcome,
+            event_slug=event.event_slug,
+            outcome_index=outcome_index,
+            neg_risk=book.neg_risk,
+            position_id=position_id,
+            proportional_target_usdc=target,
+            minimum_order_usdc=minimum_order_usdc,
+            minimum_adjusted=target < minimum_order_usdc,
+            executable_usdc=allowed,
+            best_ask=book.best_ask,
+            worst_price=worst_price,
+        )
+
+    async def execute_force_buy(self, preview: ForceBuyQuote) -> int:
+        async with self._force_buy_lock:
+            current = await self.quote_force_buy(preview.source_order_id)
+            if current.worst_price > preview.worst_price:
+                raise ValueError("市场价格已超过确认价格，请重新预览")
+            if current.executable_usdc < preview.executable_usdc:
+                raise ValueError("可用风控额度已经变化，请重新预览")
+            if preview.executable_usdc < current.minimum_order_usdc:
+                raise ValueError("市场最小订单已经变化，请重新预览")
+            async with self.database.sessions() as session:
+                event = await session.get(PositionEvent, preview.event_id)
+                source_order = await session.get(CopyOrder, preview.source_order_id)
+                if event is None or source_order is None:
+                    raise ValueError("原始跟单信号已不存在")
+                position = (
+                    await session.get(CopyPosition, current.position_id)
+                    if current.position_id is not None
+                    else None
+                )
+                now = utcnow()
+                if position is None:
+                    cycle_no = (
+                        int(
+                            (
+                                await session.scalar(
+                                    select(func.max(CopyPosition.cycle_no)).where(
+                                        CopyPosition.subscription_id == current.subscription_id,
+                                        CopyPosition.asset_id == current.asset_id,
+                                    )
+                                )
+                            )
+                            or 0
+                        )
+                        + 1
+                    )
+                    position = CopyPosition(
+                        subscription_id=current.subscription_id,
+                        asset_id=current.asset_id,
+                        condition_id=current.condition_id,
+                        title=current.title,
+                        outcome=current.outcome,
+                        outcome_index=current.outcome_index,
+                        neg_risk=current.neg_risk,
+                        event_slug=current.event_slug,
+                        settlement_date=None,
+                        cycle_no=cycle_no,
+                        attributed_size=ZERO,
+                        attributed_cost=ZERO,
+                        reserved_buy_usdc=preview.executable_usdc,
+                        realized_pnl=ZERO,
+                        status="opening",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(position)
+                    await session.flush()
+                else:
+                    position.reserved_buy_usdc = preview.executable_usdc
+                    position.updated_at = now
+                order = self._new_order(
+                    subscription_id=current.subscription_id,
+                    position_id=position.id,
+                    event=event,
+                    side="BUY",
+                    amount=preview.executable_usdc,
+                    price=preview.worst_price,
+                    reference=current.best_ask,
+                    key=f"copy:force:{preview.source_order_id}",
+                    leader_purchase_usdc=source_order.leader_purchase_usdc,
+                    proportional_target_usdc=source_order.proportional_target_usdc,
+                )
+                order.override_of_order_id = preview.source_order_id
+                session.add(order)
+                try:
+                    await session.commit()
+                except IntegrityError as error:
+                    await session.rollback()
+                    raise ValueError("该记录已经强制处理") from error
+                order_id = order.id
+            book = await self.client.fetch_order_book(current.asset_id)
+            await self._execute_order(
+                order_id,
+                MarketTradeRequest(
+                    asset_id=current.asset_id,
+                    side="BUY",
+                    amount=preview.executable_usdc,
+                    worst_price=preview.worst_price,
+                    neg_risk=current.neg_risk,
+                ),
+                book,
+            )
+            return order_id
 
     async def prime_subscription(self, subscription_id: int) -> None:
         async with self.database.sessions() as session:
@@ -639,7 +859,17 @@ class CopyTradingEngine:
         for position, redeemable_position in candidates:
             payout_rate = redeemable_position_payout_rate(redeemable_position)
             if payout_rate <= ZERO:
-                continue
+                onchain_payout_rate = await trader.onchain_redemption_payout_rate(
+                    position.condition_id,
+                    position.outcome_index,
+                    bool(position.neg_risk),
+                )
+                if onchain_payout_rate is None:
+                    continue
+                if onchain_payout_rate <= ZERO:
+                    await self._record_resolved_loss(position.id, utcnow())
+                    continue
+                payout_rate = onchain_payout_rate
             balance = await trader.onchain_outcome_balance(position.asset_id)
             if balance <= ZERO:
                 await self._record_reconciled_redemption(
@@ -1271,6 +1501,18 @@ class CopyTradingEngine:
             position = await session.get(CopyPosition, position_id)
             if position is None or position.attributed_size <= ZERO:
                 return
+            redemption = await session.scalar(
+                select(CopyRedemption).where(CopyRedemption.copy_position_id == position_id)
+            )
+            if (
+                redemption is not None
+                and redemption.status == "pending"
+                and redemption.transaction_hash is None
+            ):
+                redemption.status = "reconciled"
+                redemption.payout_usdc = ZERO
+                redemption.last_error = "链上确认该 outcome 兑付为 0，已按结算亏损对账"
+                redemption.updated_at = utcnow()
             cost = position.attributed_cost
             position.attributed_size = ZERO
             position.attributed_cost = ZERO
@@ -2021,6 +2263,12 @@ class CopyTradingEngine:
                     execution.last_error = str(error)[:1000]
                     execution.relayer_transaction_id = getattr(error, "transaction_id", None)
                     execution.transaction_hash = getattr(error, "transaction_hash", None)
+                    execution.next_retry_at = (
+                        utcnow() + REDEMPTION_RETRY_DELAY
+                        if execution.relayer_transaction_id is None
+                        and execution.transaction_hash is None
+                        else None
+                    )
                     execution.updated_at = utcnow()
                 if redemption is not None:
                     redemption.status = "manual_review"
@@ -2036,6 +2284,7 @@ class CopyTradingEngine:
             redemption = await session.get(CopyRedemption, redemption_id)
             assert execution is not None and redemption is not None
             execution.status = "submitted"
+            execution.next_retry_at = None
             execution.relayer_transaction_id = prepared.transaction_id
             execution.transaction_hash = prepared.transaction_hash
             execution.submitted_at = utcnow()
@@ -2166,7 +2415,7 @@ class CopyTradingEngine:
                         )
                         .where(
                             CopyPosition.subscription_id == subscription_id,
-                            CopyRedemption.status == "pending",
+                            CopyRedemption.status.in_(["pending", "manual_review"]),
                         )
                     )
                 ).all()
@@ -2174,14 +2423,39 @@ class CopyTradingEngine:
         # Only errors known to occur before submission are retried. Unknown submission
         # results remain pending until their transaction or token balance is reconciled.
         for redemption, execution in rows:
+            execution_error = execution.last_error if execution is not None else None
+            known_legacy_pre_submit_error = bool(
+                execution_error
+                and (
+                    "No market found for condition" in execution_error
+                    or "Request failed" in execution_error
+                )
+            )
+            retry_is_due = bool(
+                execution is not None
+                and (
+                    execution.attempts == 0
+                    or (execution.next_retry_at is not None and execution.next_retry_at <= utcnow())
+                    or (execution.next_retry_at is None and known_legacy_pre_submit_error)
+                )
+            )
             safe_pre_submit_review = (
                 execution is not None
                 and execution.status == "manual_review"
                 and redemption_execution_was_never_submitted(execution)
+                and retry_is_due
             )
             if redemption.transaction_hash is None and (
                 safe_pre_submit_review or redemption_error_is_retryable(redemption.last_error)
             ):
+                if redemption.status == "manual_review":
+                    async with self.database.sessions() as session:
+                        stored = await session.get(CopyRedemption, redemption.id)
+                        if stored is None or stored.status != "manual_review":
+                            continue
+                        stored.status = "pending"
+                        stored.updated_at = utcnow()
+                        await session.commit()
                 await self._execute_redemption(redemption.id, event_id=None)
 
     async def reconcile_pending_orders(self, subscription_id: int) -> None:

@@ -268,6 +268,7 @@ class CopyOrder(Base):
     __tablename__ = "copy_orders"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_copy_orders_idempotency"),
+        UniqueConstraint("override_of_order_id", name="uq_copy_orders_override_of_order"),
         Index("ix_copy_orders_subscription_created", "subscription_id", "created_at"),
         Index("ix_copy_orders_status_updated", "status", "updated_at"),
     )
@@ -281,6 +282,9 @@ class CopyOrder(Base):
     )
     leader_event_id: Mapped[int | None] = mapped_column(
         ForeignKey("position_events.id", ondelete="SET NULL"), nullable=True
+    )
+    override_of_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("copy_orders.id", ondelete="RESTRICT"), nullable=True
     )
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="copy")

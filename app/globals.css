@@ -8097,3 +8097,469 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
     font-size: 21px;
   }
 }
+
+/* Whale discovery and manual-follow workspace */
+.whaleHealthBanner,
+.whaleHealthBanner > div,
+.whaleFilterMeta,
+.whaleMarketHeadline,
+.whaleMarketBadges,
+.whaleDuelNotice,
+.whaleDuelNotice > div:first-child,
+.whaleSide > header,
+.whaleSide > header > div,
+.whaleEntryActions,
+.whaleFollowMarket,
+.whaleDateFilters,
+.whaleDateFilters label,
+.whaleModalFooter,
+.whaleSellAll {
+  display: flex;
+  align-items: center;
+}
+
+.whaleHealthBanner {
+  min-height: 64px;
+  gap: 12px;
+  padding: 11px 15px;
+  border: 1px solid #8b751b;
+  background: rgba(242, 195, 25, 0.08);
+  color: #e2d9a8;
+}
+
+.whaleHealthBanner > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #a78914;
+  color: #ffe052;
+  font-weight: 900;
+}
+
+.whaleHealthBanner > div {
+  min-width: 0;
+  align-items: flex-start;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.whaleHealthBanner strong { color: #fff2a0; font-size: 16px; }
+.whaleHealthBanner p { margin: 0; color: #aaa37c; font-size: 15px; }
+.whaleHealthBanner button,
+.whalePageError button,
+.whaleClearDates {
+  border: 0;
+  background: transparent;
+  color: #ffe052;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.whaleHealthBanner.danger { border-color: #a92e46; background: rgba(255, 76, 108, 0.09); }
+.whaleHealthBanner.danger > span { border-color: #a92e46; color: #ff7186; }
+.whaleHealthBanner.danger strong { color: #ff91a0; }
+
+.whaleFilterPanel { overflow: hidden; }
+
+.whaleCategoryBar {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  overflow-x: auto;
+  border-bottom: 1px solid #625820;
+  background: linear-gradient(90deg, #151609, #0a0b07);
+  scrollbar-width: thin;
+}
+
+.whaleCategoryBar button {
+  display: inline-flex;
+  min-height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid #4b461f;
+  background: #0c0d08;
+  color: #aaa47f;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 720;
+}
+
+.whaleCategoryBar button:hover { border-color: #8d7920; color: #eee7ba; }
+.whaleCategoryBar button.active { border-color: #f2c319; background: rgba(242, 195, 25, 0.14); color: #ffe052; box-shadow: inset 2px 0 #f2c319; }
+.whaleCategoryBar button span { min-width: 19px; padding: 2px 5px; background: #1a1a0f; color: #8f8969; font-size: 13px; text-align: center; }
+.whaleCategoryBar button.active span { background: #2a270e; color: #ffe052; }
+
+.whaleFilterGrid {
+  display: grid;
+  align-items: end;
+  grid-template-columns: minmax(210px, 1.25fr) repeat(3, minmax(145px, 0.8fr)) auto auto;
+  gap: 12px;
+  padding: 15px 16px 14px;
+}
+
+.whaleFilterField,
+.whaleAmountInput,
+.whaleConfirmation {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: #c9c3a2;
+  font-size: 15px;
+  font-weight: 720;
+}
+
+.whaleFilterField > div,
+.whaleAmountInput > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border: 1px solid #75682a;
+  background: #050604;
+}
+
+.whaleFilterField input,
+.whaleFilterField select,
+.whaleAmountInput input,
+.whaleConfirmation input,
+.whaleDateFilters input {
+  width: 100%;
+  height: 42px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid #75682a;
+  border-radius: 0;
+  background: #050604;
+  color: #f0edcf;
+  font: inherit;
+  outline: none;
+}
+
+.whaleFilterField > div input,
+.whaleAmountInput > div input { border: 0; }
+.whaleFilterField input:focus,
+.whaleFilterField select:focus,
+.whaleAmountInput input:focus,
+.whaleConfirmation input:focus,
+.whaleDateFilters input:focus { border-color: #f2c319; box-shadow: 0 0 0 2px rgba(242, 195, 25, 0.12); }
+.whaleFilterField b,
+.whaleAmountInput b { padding-right: 9px; color: #878163; font-size: 13px; white-space: nowrap; }
+.whaleAmountFilter > div button { align-self: stretch; padding: 0 12px; border: 0; border-left: 1px solid #75682a; background: #f2c319; color: #111204; cursor: pointer; font-size: 14px; font-weight: 850; }
+.whaleAmountFilter > div button:disabled { cursor: wait; opacity: 0.55; }
+
+.whaleToggleField {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid #625820;
+  background: #101108;
+  color: #bdb795;
+  cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.whaleToggleField input,
+.whaleSellAll input { width: 15px; height: 15px; margin: 0; accent-color: #f2c319; }
+
+.whaleFilterMeta {
+  min-height: 38px;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 16px;
+  border-top: 1px solid #34321d;
+  background: #0d0e09;
+  color: #8c8869;
+  font-size: 14px;
+}
+
+.whalePageError { align-items: center; }
+.whalePageError strong { flex: 0 0 auto; }
+.whalePageError p { flex: 1; margin: 0; }
+.whalePageError button { color: #ff8b9a; }
+.whaleLoading { min-height: 180px; }
+.whaleEmptyState { min-height: 360px; }
+.whaleEmptyState .pcButton,
+.whaleCompactEmpty .pcButton { margin-top: 12px; }
+
+.whaleMarketList { display: grid; gap: 16px; transition: opacity 140ms ease; }
+.whaleMarketList.refreshing { opacity: 0.62; }
+.whaleMarketCard { overflow: hidden; }
+
+.whaleMarketHeader {
+  display: flex;
+  min-height: 104px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 17px 19px;
+  border-bottom: 1px solid #625820;
+  background: linear-gradient(110deg, #151609, #090a07 72%);
+}
+
+.whaleMarketHeadline { min-width: 0; gap: 13px; }
+.whaleMarketHeadline > div { min-width: 0; }
+.whaleMarketIcon { width: 50px; height: 50px; flex: 0 0 auto; border: 1px solid #75682a; background: #111208; object-fit: cover; }
+.whaleMarketIcon.fallback { display: grid; place-items: center; color: #ffe052; font-size: 26px; }
+.whaleMarketHeadline > div > a { display: block; max-width: 820px; margin-top: 7px; overflow: hidden; color: #f2efd1; font-size: 20px; font-weight: 780; line-height: 1.35; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.whaleMarketHeadline > div > a:hover { color: #ffe052; }
+.whaleMarketHeadline > div > a span { color: #8f8969; font-size: 15px; }
+.whaleMarketHeadline p { margin: 7px 0 0; color: #8d896a; font-size: 14px; }
+.whaleMarketBadges { flex-wrap: wrap; gap: 5px; }
+.whaleMarketBadges > span { padding: 3px 7px; border: 1px solid #514b22; background: #111208; color: #aaa47d; font-size: 12px; font-weight: 750; }
+.whaleMarketBadges .duel { border-color: #a92e46; background: rgba(255, 76, 108, 0.11); color: #ff7186; }
+.whaleMarketBadges .ending { border-color: #a7830e; background: rgba(242, 195, 25, 0.11); color: #ffe052; }
+
+.whaleMarketTotals { display: grid; flex: 0 0 auto; justify-items: end; gap: 3px; padding-left: 24px; border-left: 1px solid #403b1c; }
+.whaleMarketTotals span,
+.whaleMarketTotals small { color: #8d896a; font-size: 13px; }
+.whaleMarketTotals strong { color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 28px; font-variant-numeric: tabular-nums; text-shadow: 0 0 9px rgba(242, 195, 25, 0.22); }
+
+.whaleDuelNotice {
+  min-height: 55px;
+  gap: 15px;
+  padding: 9px 18px;
+  border-bottom: 1px solid #51202d;
+  background: rgba(255, 76, 108, 0.055);
+}
+.whaleDuelNotice > div:first-child { min-width: 270px; align-items: flex-start; flex-direction: column; gap: 2px; }
+.whaleDuelNotice strong { color: #ff8092; font-size: 14px; }
+.whaleDuelNotice span { color: #9d7b80; font-size: 13px; }
+.whaleDuelNotice b { color: #c79ca1; font-size: 13px; white-space: nowrap; }
+.whaleImbalance { position: relative; height: 8px; flex: 1; overflow: hidden; border: 1px solid #6e3340; background: #281019; }
+.whaleImbalance::after { position: absolute; top: 0; right: 0; width: 50%; height: 100%; background: #8a263b; content: ""; opacity: 0.45; }
+.whaleImbalance > span { position: relative; z-index: 1; display: block; height: 100%; background: #f2c319; box-shadow: 0 0 7px rgba(242, 195, 25, 0.3); }
+
+.whaleSides { display: grid; }
+.whaleSides.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.whaleSides.two .whaleSide + .whaleSide { border-left: 1px solid #625820; }
+.whaleSide { min-width: 0; }
+.whaleSide > header { min-height: 69px; justify-content: space-between; gap: 15px; padding: 11px 14px; border-bottom: 1px solid #403b1f; background: #101108; }
+.whaleSide > header > div { gap: 8px; }
+.whaleSide > header > div:last-child { align-items: flex-end; flex-direction: column; gap: 3px; }
+.whaleSide > header strong { color: #f0edcf; font-family: "Courier New", Consolas, monospace; font-size: 26px; }
+.whaleSide > header span:not(.whaleOutcomeMark) { color: #ddd6a9; font-size: 15px; font-weight: 750; }
+.whaleSide > header small { color: #8d896a; font-size: 12px; }
+.whaleOutcomeMark { display: inline-flex; min-height: 28px; align-items: center; padding: 0 9px; border: 1px solid; font-size: 14px; font-weight: 850; }
+.whaleOutcomeMark.positive { border-color: #16845f; background: rgba(40, 230, 158, 0.1); color: #3be6a1; }
+.whaleOutcomeMark.negative { border-color: #a92e46; background: rgba(255, 76, 108, 0.1); color: #ff7186; }
+
+.whaleEntryHeader,
+.whaleEntryRow {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(120px, 1.35fr) minmax(72px, 0.65fr) minmax(78px, 0.7fr) minmax(92px, 0.82fr) minmax(92px, 0.86fr) minmax(116px, 0.9fr);
+  gap: 8px;
+}
+.whaleEntryHeader { min-height: 38px; padding: 0 12px; border-bottom: 1px solid #2d2b19; background: #0b0c08; color: #777358; font-size: 12px; font-weight: 750; letter-spacing: 0.04em; }
+.whaleEntry { border-bottom: 1px solid #2d2b19; }
+.whaleEntry:last-child { border-bottom: 0; }
+.whaleEntry.hedged { background: rgba(242, 195, 25, 0.025); }
+.whaleEntryRow { min-height: 106px; padding: 12px; }
+.whaleEntryRow:hover { background: rgba(242, 195, 25, 0.035); }
+.whaleWallet { display: grid; min-width: 0; color: inherit; text-decoration: none; }
+.whaleWallet strong { overflow: hidden; color: #f0edcf; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.whaleWallet span { margin-top: 3px; color: #8d896a; font-family: "Courier New", Consolas, monospace; font-size: 12px; }
+.whaleWallet small { margin-top: 5px; color: #aaa37b; font-size: 13px !important; }
+.whaleWallet:hover strong { color: #ffe052; }
+.whaleEntryMetric { display: grid; min-width: 0; gap: 5px; }
+.whaleEntryMetric strong { color: #e8e3bd; font-family: "Courier New", Consolas, monospace; font-size: 15px; font-variant-numeric: tabular-nums; }
+.whaleEntryMetric small { overflow: hidden; color: #817c5f; font-size: 13px !important; line-height: 1.35 !important; text-overflow: ellipsis; }
+.whaleEntryMetric small.warning { color: #ff7186; }
+.whaleEntryMetric small.profit { color: #3be6a1; }
+.whaleEntryTime strong { font-family: inherit; font-size: 13px; font-weight: 650; }
+.whaleEntryActions { align-items: stretch; flex-direction: column; gap: 5px; }
+.whaleEntryActions .pcBadge { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.whaleEntryActions .pcButton { width: 100%; min-height: 36px !important; padding: 0 8px !important; font-size: 13px !important; }
+.whaleDetailToggle,
+.whalePositionToggle { padding: 0; border: 0; background: transparent; color: #d9c45f; cursor: pointer; font-size: 12px; font-weight: 720; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
+
+.whaleTradeLoading { padding: 16px; background: #070805; color: #8d896a; font-size: 14px; text-align: center; }
+.whaleTradeDetail { border-top: 1px solid #514a21; background: #070805; }
+.whaleTradeHeader,
+.whaleTradeRow { display: grid; align-items: center; grid-template-columns: 1.2fr 0.55fr 0.65fr 0.75fr 1fr; gap: 10px; padding: 0 12px; }
+.whaleTradeHeader { min-height: 28px; border-bottom: 1px solid #2b2918; color: #777358; font-size: 12px; }
+.whaleTradeRow { min-height: 40px; border-bottom: 1px solid #202014; color: #aaa581; font-family: "Courier New", Consolas, monospace; font-size: 13px; font-variant-numeric: tabular-nums; }
+.whaleTradeRow:last-child { border-bottom: 0; }
+.whaleTradeRow strong { color: #e1dcba; }
+.whaleTradeRow .pcBadge { justify-self: start; font-family: inherit; }
+
+.whaleModalBackdrop { z-index: 100; }
+.pcModal.whaleModal { width: min(660px, calc(100vw - 28px)); max-height: calc(100vh - 28px); overflow-y: auto; border-radius: 12px; }
+.pcModal.whaleModal > header { position: sticky; z-index: 2; top: 0; display: flex; min-height: 64px; align-items: center; justify-content: space-between; padding: 12px 16px; }
+.pcModal.whaleModal > header > div { display: grid; gap: 3px; }
+.pcModal.whaleModal > header h2 { margin: 0; font-size: 20px; }
+.whaleModalBody { display: grid; gap: 14px; padding: 17px 18px; }
+.whaleModalFooter { position: sticky; z-index: 2; bottom: 0; justify-content: flex-end; gap: 9px; padding: 13px 18px 17px; border-top: 1px solid #625820; background: #0b0c08; }
+.whaleFollowMarket { min-width: 0; gap: 11px; padding: 11px 12px; border: 1px solid #514a22; background: #101108; }
+.whaleFollowMarket > div { display: grid; min-width: 0; gap: 4px; }
+.whaleFollowMarket strong { overflow: hidden; color: #f0edcf; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.whaleFollowMarket span:not(.whaleOutcomeMark) { color: #aaa37c; font-size: 14px; }
+.whaleAmountInput > span,
+.whaleConfirmation > span { display: flex; justify-content: space-between; }
+.whaleAmountInput > span small { color: #8f8969; font-size: 13px !important; }
+.whaleQuickAmounts { display: flex; gap: 7px; }
+.whaleQuickAmounts button { min-height: 34px; padding: 0 12px; border: 1px solid #625820; background: #101108; color: #d0cba8; cursor: pointer; font-size: 13px; }
+.whaleQuickAmounts button:hover { border-color: #f2c319; color: #ffe052; }
+.whalePreviewLoading { min-height: 82px; display: grid; place-items: center; border: 1px dashed #514b23; color: #918b69; font-size: 14px; }
+.whaleFollowModal .pcFormError,
+.whaleSellModal .pcFormError { margin: 0; padding: 9px 11px; font-size: 14px !important; }
+.whaleFollowPreview { display: grid; gap: 11px; }
+.whalePreviewHero { display: grid; gap: 5px; padding: 14px; border: 1px solid #76621c; border-left: 3px solid #f2c319; background: linear-gradient(105deg, #19190d, #101108); }
+.whalePreviewHero > span { color: #aaa47d; font-size: 14px; }
+.whalePreviewHero > strong { color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 32px; }
+.whalePreviewHero > strong.profit { color: #3be6a1; }
+.whalePreviewHero > strong.loss { color: #ff7186; }
+.whalePreviewHero > small { color: #8a8565; font-size: 13px !important; }
+.whalePreviewGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 0; }
+.whalePreviewGrid > div { display: grid; gap: 5px; padding: 10px; border: 1px solid #34331f; background: #101108; }
+.whalePreviewGrid dt { color: #858064; font-size: 13px; }
+.whalePreviewGrid dd { margin: 0; color: #ddd8b6; font-family: "Courier New", Consolas, monospace; font-size: 16px; font-weight: 800; }
+.whalePreviewGrid dd.loss { color: #ff7186; }
+.whalePriceComparison,
+.whalePreviewWarning,
+.whaleReserveWarning { margin: 0; padding: 9px 11px; border: 1px solid #3f3c23; background: #101108; color: #aaa47d; font-size: 14px; line-height: 1.55; }
+.whalePreviewWarning { border-color: #8b751b; background: rgba(242, 195, 25, 0.08); color: #dbc869; }
+.whaleReserveWarning { border-color: #24597c; background: rgba(38, 174, 235, 0.08); color: #78bde7; }
+.whaleConfirmation { padding-top: 4px; }
+.whaleExecutionResult { display: grid; justify-items: start; gap: 11px; padding: 20px; border: 1px solid #176d50; background: rgba(40, 230, 158, 0.055); }
+.whaleExecutionResult h3 { margin: 0; color: #dff8e9; font-size: 21px; }
+.whaleExecutionResult dl { display: grid; width: 100%; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.whaleExecutionResult dl > div { padding: 9px; border: 1px solid #245840; background: #08110c; }
+.whaleExecutionResult dt { color: #729a83; font-size: 12px; }
+.whaleExecutionResult dd { margin: 5px 0 0; color: #cfe9d8; font-family: "Courier New", Consolas, monospace; font-size: 16px; }
+.whaleExecutionResult p { margin: 0; color: #92a99a; font-size: 14px; }
+
+/* Whale records */
+.whaleRecordMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
+.whaleRecordMetrics .pcMetricCard > strong { margin: 10px 0 8px !important; padding: 6px 8px !important; font-size: clamp(26px, 2.8vw, 38px) !important; }
+.whalePositionTable { min-width: 1360px; }
+.whaleLedgerTable { min-width: 1200px; }
+.whalePositionTable td:first-child { min-width: 260px; }
+.whalePositionToggle { display: block; margin-top: 7px; }
+.whaleSellButton { display: block !important; min-height: 34px !important; margin-top: 7px; padding: 0 10px !important; font-size: 13px !important; }
+.whalePositionDetailRow > td { height: auto !important; padding: 0 !important; background: #060704 !important; }
+.whalePositionDetailRow:hover > td { background: #060704 !important; }
+.whaleCompactEmpty { min-height: 240px; }
+.whaleRecordsHeader { flex-wrap: wrap; }
+.whaleDateFilters { flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.whaleDateFilters label { gap: 5px; color: #8d896a; font-size: 13px; }
+.whaleDateFilters input { width: 148px; height: 38px; padding-inline: 8px; color-scheme: dark; font-size: 13px; }
+.whaleClearDates { color: #aaa37c; }
+.whalePositionTimeline { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; padding: 16px 18px; }
+.whaleTimelineList { display: grid; }
+.whaleTimelineItem { display: grid; align-items: start; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 11px; padding: 10px 0; border-bottom: 1px solid #272618; }
+.whaleTimelineItem:last-child { border-bottom: 0; }
+.whaleTimelineDot { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid #625820; color: #bcb587; font-size: 12px; }
+.whaleTimelineDot.buy { border-color: #197da9; color: #53cfff; }
+.whaleTimelineDot.sell,
+.whaleTimelineDot.danger { border-color: #a92e46; color: #ff7186; }
+.whaleTimelineDot.success { border-color: #16845f; color: #3be6a1; }
+.whaleTimelineItem > div { min-width: 0; }
+.whaleTimelineItem strong { color: #ddd8b6; font-size: 14px; }
+.whaleTimelineItem p { margin: 5px 0 0; color: #8d896a; font-size: 13px; }
+.whaleTimelineItem small { display: block; margin-top: 5px; color: #777358; font-size: 13px !important; }
+.whaleTimelineItem > b { color: #aaa581; font-family: "Courier New", Consolas, monospace; font-size: 14px; }
+.whaleTimelineItem > b.profit { color: #3be6a1; }
+.whaleTimelineItem > b.loss { color: #ff7186; }
+.whalePositionConclusion { display: grid; align-content: center; gap: 8px; padding: 15px; border: 1px solid #625820; background: #101108; }
+.whalePositionConclusion span { color: #8d896a; font-size: 12px; }
+.whalePositionConclusion strong { color: #ddd8b6; font-size: 15px; line-height: 1.45; }
+.whalePositionConclusion b { font-family: "Courier New", Consolas, monospace; font-size: 18px; }
+.whalePositionConclusion b.profit { color: #3be6a1; }
+.whalePositionConclusion b.loss { color: #ff7186; }
+.whaleSellAll { min-height: 42px; gap: 9px; padding: 0 12px; border: 1px solid #625820; background: #101108; color: #c9c3a2; cursor: pointer; font-size: 15px; font-weight: 720; }
+.whaleAmountInput input:disabled { cursor: not-allowed; opacity: 0.48; }
+
+@media (max-width: 1280px) {
+  .whaleFilterGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .whaleToggleField { justify-content: center; }
+  .whaleSides.two { grid-template-columns: 1fr; }
+  .whaleSides.two .whaleSide + .whaleSide { border-top: 1px solid #625820; border-left: 0; }
+  .whaleEntryHeader,
+  .whaleEntryRow { grid-template-columns: minmax(160px, 1.3fr) repeat(4, minmax(95px, 0.75fr)) minmax(125px, 0.8fr); }
+  .whaleRecordMetrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .whaleFilterGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleFilterMeta { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .whaleMarketHeader { align-items: flex-start; }
+  .whaleMarketHeadline > div > a { white-space: normal; }
+  .whaleDuelNotice { align-items: flex-start; flex-wrap: wrap; }
+  .whaleDuelNotice > div:first-child { min-width: 0; width: 100%; }
+  .whaleImbalance { flex-basis: 70%; }
+  .whaleEntryHeader { display: none; }
+  .whaleEntryRow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .whaleWallet { grid-column: span 2; }
+  .whaleEntryActions { grid-row: span 2; align-self: stretch; }
+  .whaleRecordMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whalePositionTimeline { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .whaleHealthBanner { align-items: flex-start; flex-wrap: wrap; }
+  .whaleHealthBanner button { margin-left: 40px; }
+  .whaleCategoryBar { padding-inline: 9px; }
+  .whaleFilterGrid { grid-template-columns: 1fr; padding: 11px; }
+  .whaleFilterField,
+  .whaleToggleField { font-size: 16px; }
+  .whaleMarketHeader { flex-direction: column; padding: 13px; }
+  .whaleMarketHeadline { align-items: flex-start; }
+  .whaleMarketIcon { width: 40px; height: 40px; }
+  .whaleMarketHeadline > div > a { font-size: 17px; }
+  .whaleMarketTotals { width: 100%; align-items: center; grid-template-columns: 1fr auto auto; padding: 10px 0 0; border-top: 1px solid #403b1c; border-left: 0; }
+  .whaleMarketTotals strong { font-size: 20px; }
+  .whaleDuelNotice { padding-inline: 12px; }
+  .whaleEntryRow { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
+  .whaleWallet { grid-column: 1 / -1; }
+  .whaleEntryActions { grid-row: auto; grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; }
+  .whaleEntryActions .pcButton { width: auto; flex: 1; }
+  .whaleDetailToggle { min-height: 30px; }
+  .whaleTradeHeader,
+  .whaleTradeRow { grid-template-columns: 1.2fr 0.55fr 0.65fr 0.8fr; }
+  .whaleTradeHeader > :nth-child(4),
+  .whaleTradeRow > :nth-child(4) { display: none; }
+  .pcModal.whaleModal { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .whaleModalBody { padding: 13px; }
+  .whalePreviewGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleExecutionResult dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleRecordMetrics { grid-template-columns: 1fr 1fr; gap: 7px; }
+  .whaleRecordMetrics .pcMetricCard > strong { font-size: 21px !important; }
+  .whaleRecordsHeader { align-items: flex-start; }
+  .whaleDateFilters { width: 100%; justify-content: flex-start; }
+  .whaleDateFilters label { flex: 1; align-items: flex-start; flex-direction: column; }
+  .whaleDateFilters input { width: 100%; }
+  .whaleDateFilters .pcButton { align-self: flex-end; }
+}
+
+.whaleWorkspace .pcTitleGroup h1 { font-size: 26px !important; }
+.whaleWorkspace .pcTitleGroup p { font-size: 14px !important; }
+.whaleWorkspace .pcButton { min-height: 40px; font-size: 14px !important; }
+.whaleWorkspace .pcBadge { min-height: 26px; padding: 0 9px; font-size: 13px !important; }
+.whaleWorkspace .pcEyebrow { font-size: 12px !important; }
+.whaleWorkspace .pcPanelHeader h2 { font-size: 20px !important; }
+.whaleWorkspace .pcPanelCount,
+.whaleWorkspace .pcRecordCount { font-size: 13px !important; }
+.whaleWorkspace .pcTextLink { font-size: 14px !important; }
+.whaleWorkspace .pcAlert strong { font-size: 15px !important; }
+.whaleWorkspace .pcEmptyState h2 { font-size: 18px !important; }
+.whaleWorkspace .pcTable th { height: 46px; font-size: 13px !important; }
+.whaleWorkspace .pcTable td { font-size: 14px !important; }
+.whaleWorkspace .pcTable td > strong,
+.whaleWorkspace .pcMarketIdentity strong { font-size: 14px !important; }
+.whaleWorkspace .pcTable td > small,
+.whaleWorkspace .pcMarketIdentity span { font-size: 13px !important; }
+.whaleWorkspace .pcMetricCard > span { font-size: 14px !important; }
+.whaleWorkspace .pcMetricCard > small { font-size: 13px !important; }

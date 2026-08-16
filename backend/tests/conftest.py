@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -12,13 +13,17 @@ from backend.config import Settings
 from backend.main import create_app
 from backend.polymarket import (
     ClosedPositionSnapshot,
+    LargeTradeSnapshot,
     MarketResolution,
+    OfficialTag,
     PolymarketAPIError,
     PositionSnapshot,
     PublicProfile,
     RedemptionSnapshot,
     SettlementEvidence,
     TradeSnapshot,
+    WhaleMarketSnapshot,
+    WhalePublicProfile,
     parse_wallet_input,
 )
 
@@ -84,6 +89,18 @@ class FakePolymarketClient:
         self.market_resolution_calls: list[list[str]] = []
         self.redeemable_positions: list[PositionSnapshot] = []
         self.redeemable_position_calls: list[tuple[str, list[str]]] = []
+        self.large_trades: list[LargeTradeSnapshot] = []
+        self.large_trade_error: Exception | None = None
+        self.large_trade_calls: list[dict[str, Any]] = []
+        self.whale_markets: list[WhaleMarketSnapshot] = []
+        self.whale_market_error: Exception | None = None
+        self.whale_market_calls: list[list[str]] = []
+        self.public_profiles: dict[str, WhalePublicProfile | None] = {}
+        self.public_profile_error: Exception | None = None
+        self.public_profile_calls: list[str] = []
+        self.official_tags: list[OfficialTag] = []
+        self.tag_error: Exception | None = None
+        self.tag_calls: list[int] = []
 
     async def resolve_profile(self, raw_input: str, requested_label: str | None) -> PublicProfile:
         address = parse_wallet_input(raw_input)
@@ -100,6 +117,56 @@ class FakePolymarketClient:
                 raise value
             self.last_snapshot = value
         return list(self.last_snapshot)
+
+    async def fetch_large_trades(
+        self,
+        *,
+        filter_amount_usdc: Decimal,
+        start: datetime,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[LargeTradeSnapshot]:
+        self.large_trade_calls.append(
+            {
+                "filter_amount_usdc": filter_amount_usdc,
+                "start": start,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+        if self.large_trade_error is not None:
+            raise self.large_trade_error
+        eligible = [
+            trade
+            for trade in self.large_trades
+            if trade.amount >= filter_amount_usdc and trade.timestamp >= start
+        ]
+        eligible.sort(key=lambda trade: trade.timestamp, reverse=True)
+        return eligible[offset : offset + limit]
+
+    async def fetch_markets_with_tags(
+        self,
+        condition_ids: Iterable[str],
+    ) -> list[WhaleMarketSnapshot]:
+        conditions = list(condition_ids)
+        self.whale_market_calls.append(conditions)
+        if self.whale_market_error is not None:
+            raise self.whale_market_error
+        wanted = set(conditions)
+        return [market for market in self.whale_markets if market.condition_id in wanted]
+
+    async def fetch_public_profile(self, address: str) -> WhalePublicProfile | None:
+        normalized_address = address.strip().lower()
+        self.public_profile_calls.append(normalized_address)
+        if self.public_profile_error is not None:
+            raise self.public_profile_error
+        return self.public_profiles.get(normalized_address)
+
+    async def fetch_tags(self, *, limit: int = 200) -> list[OfficialTag]:
+        self.tag_calls.append(limit)
+        if self.tag_error is not None:
+            raise self.tag_error
+        return list(self.official_tags[:limit])
 
     async def fetch_redeemable_positions(
         self,

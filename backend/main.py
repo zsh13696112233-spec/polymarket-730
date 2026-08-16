@@ -4,7 +4,7 @@ import asyncio
 import json
 import secrets
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
@@ -43,6 +43,9 @@ from backend.models import (
     PositionOverlapPeriod,
     WalletTrade,
     WatchedWallet,
+    WhaleOrder,
+    WhaleSettings,
+    WhaleTag,
 )
 from backend.monitor import WalletMonitor, fills_reconcile, utcnow
 from backend.polymarket import (
@@ -107,6 +110,22 @@ from backend.schemas import (
     WalletRead,
     WalletRecordedPnlRead,
     WalletUpdate,
+    WhaleFollowExecuteRequest,
+    WhaleFollowPreviewRead,
+    WhaleFollowPreviewRequest,
+    WhaleMarketDetailRead,
+    WhaleMarketListRead,
+    WhaleOrderRead,
+    WhalePositionDetailRead,
+    WhalePositionListRead,
+    WhaleRecordListRead,
+    WhaleScanRead,
+    WhaleSellExecuteRequest,
+    WhaleSellPreviewRead,
+    WhaleSellPreviewRequest,
+    WhaleSettingsRead,
+    WhaleSettingsUpdate,
+    WhaleTagRead,
 )
 from backend.trading import (
     V2_EXCHANGE_ADDRESS,
@@ -114,6 +133,16 @@ from backend.trading import (
     MarketTradeRequest,
     TradingUnavailable,
     UnifiedPolymarketTrader,
+)
+from backend.whale import (
+    WhaleDiscoveryScanner,
+    WhaleFollowExecutor,
+    list_whale_markets,
+    list_whale_positions,
+    list_whale_records,
+    whale_order_payload,
+    whale_position_detail,
+    whale_settings_read,
 )
 
 
@@ -1308,6 +1337,18 @@ def create_app(
             settings=resolved_settings,
             keychain=keychain,
         )
+        whale_executor = WhaleFollowExecutor(
+            database=database,
+            client=polymarket_client,
+            settings=resolved_settings,
+            keychain=keychain,
+        )
+        whale_scanner = WhaleDiscoveryScanner(
+            database=database,
+            client=polymarket_client,
+            settings=resolved_settings,
+            executor=whale_executor,
+        )
         application.state.settings = resolved_settings
         application.state.database = database
         application.state.polymarket_client = polymarket_client
@@ -1315,15 +1356,23 @@ def create_app(
         application.state.monitor = monitor
         application.state.keychain = keychain
         application.state.copy_engine = copy_engine
+        application.state.whale_executor = whale_executor
+        application.state.whale_scanner = whale_scanner
         application.state.copy_toggle_lock = asyncio.Lock()
         application.state.rehearsal_previews = {}
         application.state.force_buy_previews = {}
+        application.state.whale_follow_previews = {}
+        application.state.whale_sell_previews = {}
         if resolved_settings.start_monitor:
             monitor.start()
             copy_engine.start()
+            if resolved_settings.whale_enabled:
+                whale_scanner.start()
         try:
             yield
         finally:
+            await whale_scanner.stop()
+            await whale_executor.close()
             await copy_engine.stop()
             await monitor.stop()
             if owns_client:
@@ -1349,6 +1398,323 @@ def create_app(
         async with database.sessions() as session:
             await session.execute(text("SELECT 1"))
         return HealthRead(status="ok", database="ok")
+
+    def require_whale_module(request: Request) -> None:
+        if not request.app.state.settings.whale_enabled:
+            raise HTTPException(status_code=503, detail="巨鲸模块已通过环境配置关闭")
+
+    def whale_value_error(error: ValueError, *, preview: bool = False) -> HTTPException:
+        message = str(error)
+        validation_markers = (
+            "金额必须",
+            "金额不能",
+            "卖出份额必须",
+            "不能超过",
+            "不能低于",
+            "投入记录与",
+        )
+        return HTTPException(
+            status_code=(
+                422 if preview and any(marker in message for marker in validation_markers) else 409
+            ),
+            detail=message,
+        )
+
+    @application.get("/api/whales/settings", response_model=WhaleSettingsRead)
+    async def get_whale_settings(request: Request) -> WhaleSettingsRead:
+        require_whale_module(request)
+        try:
+            return WhaleSettingsRead.model_validate(
+                await whale_settings_read(request.app.state.database)
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @application.put("/api/whales/settings", response_model=WhaleSettingsRead)
+    async def update_whale_settings(
+        payload: WhaleSettingsUpdate,
+        request: Request,
+    ) -> WhaleSettingsRead:
+        require_whale_module(request)
+        database: Database = request.app.state.database
+        values = payload.model_dump(exclude_none=True)
+        # The page exposes one “重仓阈值”.  Keep single and cumulative gates in
+        # lockstep when only the cumulative value is supplied, otherwise raising
+        # the visible threshold would not necessarily narrow results.
+        if "cumulative_threshold_usdc" in values and "single_trade_threshold_usdc" not in values:
+            values["single_trade_threshold_usdc"] = values["cumulative_threshold_usdc"]
+        async with database.sessions() as session:
+            row = await session.get(WhaleSettings, 1)
+            if row is None:
+                raise HTTPException(status_code=503, detail="巨鲸模块尚未初始化")
+            merged = {
+                column.name: values.get(column.name, getattr(row, column.name))
+                for column in WhaleSettings.__table__.columns
+            }
+            if merged["single_trade_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
+                raise HTTPException(status_code=422, detail="单笔重仓阈值不能低于采集金额阈值")
+            if merged["cumulative_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
+                raise HTTPException(status_code=422, detail="累计重仓阈值不能低于采集金额阈值")
+            if merged["exited_ratio_threshold"] >= merged["holding_ratio_threshold"]:
+                raise HTTPException(status_code=422, detail="退出比例阈值必须低于持有比例阈值")
+            for key, value in values.items():
+                setattr(row, key, value)
+            row.updated_at = utcnow()
+            await session.commit()
+        request.app.state.whale_scanner.wake()
+        return WhaleSettingsRead.model_validate(await whale_settings_read(database))
+
+    @application.post("/api/whales/scan", response_model=WhaleScanRead)
+    async def scan_whales(request: Request) -> WhaleScanRead:
+        require_whale_module(request)
+        await request.app.state.whale_scanner.tick()
+        return WhaleScanRead(status="ok")
+
+    @application.get("/api/whales/tags", response_model=list[WhaleTagRead])
+    async def get_whale_tags(request: Request) -> list[WhaleTagRead]:
+        require_whale_module(request)
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            tags = list(
+                (
+                    await session.scalars(
+                        select(WhaleTag)
+                        .where(WhaleTag.market_count > 0)
+                        .order_by(WhaleTag.market_count.desc(), WhaleTag.label.asc())
+                    )
+                ).all()
+            )
+        return [WhaleTagRead.model_validate(tag) for tag in tags]
+
+    @application.get("/api/whales/markets", response_model=WhaleMarketListRead)
+    async def get_whale_markets(
+        request: Request,
+        tag_slug: Annotated[str | None, Query(max_length=200)] = None,
+        min_amount_usdc: Annotated[Decimal | None, Query(ge=0)] = None,
+        min_remaining_minutes: Annotated[int | None, Query(ge=0)] = None,
+        max_price_delta_cents: Annotated[Decimal | None, Query(ge=0)] = None,
+        include_exited: bool = False,
+        include_hedged: bool = True,
+        sort: str = Query(default="default"),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> WhaleMarketListRead:
+        require_whale_module(request)
+        if sort not in {"default", "ending_soon", "max_entry", "least_delta"}:
+            raise HTTPException(status_code=422, detail="巨鲸市场排序参数无效")
+        payload = await list_whale_markets(
+            request.app.state.database,
+            tag_slug=tag_slug,
+            min_amount_usdc=min_amount_usdc,
+            min_remaining_minutes=min_remaining_minutes,
+            max_price_delta_cents=max_price_delta_cents,
+            include_exited=include_exited,
+            include_hedged=include_hedged,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+        return WhaleMarketListRead.model_validate(payload)
+
+    @application.get("/api/whales/markets/{condition_id}", response_model=WhaleMarketDetailRead)
+    async def get_whale_market_detail(
+        condition_id: str,
+        request: Request,
+    ) -> WhaleMarketDetailRead:
+        require_whale_module(request)
+        payload = await list_whale_markets(
+            request.app.state.database,
+            include_exited=True,
+            condition_id=condition_id,
+            include_trades=True,
+            limit=1,
+        )
+        if not payload["items"]:
+            raise HTTPException(status_code=404, detail="巨鲸市场不存在")
+        return WhaleMarketDetailRead.model_validate(payload["items"][0])
+
+    @application.post("/api/whales/follow/preview", response_model=WhaleFollowPreviewRead)
+    async def preview_whale_follow(
+        payload: WhaleFollowPreviewRequest,
+        request: Request,
+    ) -> WhaleFollowPreviewRead:
+        require_whale_module(request)
+        try:
+            quote = await request.app.state.whale_executor.quote_follow(
+                asset_id=payload.asset_id,
+                amount_usdc=payload.amount_usdc,
+                entry_id=payload.entry_id,
+            )
+        except ValueError as error:
+            raise whale_value_error(error, preview=True) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        confirmation_id = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=5)
+        request.app.state.whale_follow_previews[confirmation_id] = {
+            "quote": quote,
+            "expires_at": expires_at,
+        }
+        return WhaleFollowPreviewRead.model_validate(
+            {"confirmation_id": confirmation_id, "expires_at": expires_at, **asdict(quote)}
+        )
+
+    @application.post("/api/whales/follow/execute", response_model=WhaleOrderRead)
+    async def execute_whale_follow(
+        payload: WhaleFollowExecuteRequest,
+        request: Request,
+    ) -> WhaleOrderRead:
+        require_whale_module(request)
+        stored = request.app.state.whale_follow_previews.pop(payload.confirmation_id, None)
+        if stored is None:
+            raise HTTPException(status_code=409, detail="跟单确认已失效，请重新预览")
+        if stored["expires_at"] < utcnow():
+            raise HTTPException(status_code=409, detail="跟单确认已过期，请重新预览")
+        try:
+            order_id = await request.app.state.whale_executor.execute_follow(
+                stored["quote"], payload.confirmation_id
+            )
+        except ValueError as error:
+            raise whale_value_error(error) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            order = await session.scalar(
+                select(WhaleOrder)
+                .options(selectinload(WhaleOrder.fills))
+                .where(WhaleOrder.id == order_id)
+            )
+            assert order is not None
+            return WhaleOrderRead.model_validate(whale_order_payload(order))
+
+    @application.post(
+        "/api/whales/positions/{position_id}/sell/preview",
+        response_model=WhaleSellPreviewRead,
+    )
+    async def preview_whale_sell(
+        position_id: int,
+        payload: WhaleSellPreviewRequest,
+        request: Request,
+    ) -> WhaleSellPreviewRead:
+        require_whale_module(request)
+        try:
+            quote = await request.app.state.whale_executor.quote_sell(
+                position_id=position_id,
+                size=payload.size,
+                sell_all=payload.sell_all,
+            )
+        except ValueError as error:
+            raise whale_value_error(error, preview=True) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        confirmation_id = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=5)
+        request.app.state.whale_sell_previews[confirmation_id] = {
+            "quote": quote,
+            "expires_at": expires_at,
+        }
+        return WhaleSellPreviewRead.model_validate(
+            {"confirmation_id": confirmation_id, "expires_at": expires_at, **asdict(quote)}
+        )
+
+    @application.post(
+        "/api/whales/positions/{position_id}/sell/execute",
+        response_model=WhaleOrderRead,
+    )
+    async def execute_whale_sell(
+        position_id: int,
+        payload: WhaleSellExecuteRequest,
+        request: Request,
+    ) -> WhaleOrderRead:
+        require_whale_module(request)
+        stored = request.app.state.whale_sell_previews.pop(payload.confirmation_id, None)
+        if stored is None:
+            raise HTTPException(status_code=409, detail="卖出确认已失效，请重新预览")
+        quote = stored["quote"]
+        if quote.position_id != position_id:
+            raise HTTPException(status_code=409, detail="卖出确认与持仓不匹配")
+        if stored["expires_at"] < utcnow():
+            raise HTTPException(status_code=409, detail="卖出确认已过期，请重新预览")
+        try:
+            order_id = await request.app.state.whale_executor.execute_sell(
+                quote, payload.confirmation_id
+            )
+        except ValueError as error:
+            raise whale_value_error(error) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            order = await session.scalar(
+                select(WhaleOrder)
+                .options(selectinload(WhaleOrder.fills))
+                .where(WhaleOrder.id == order_id)
+            )
+            assert order is not None
+            return WhaleOrderRead.model_validate(whale_order_payload(order))
+
+    @application.get("/api/whales/positions", response_model=WhalePositionListRead)
+    async def get_whale_positions(
+        request: Request,
+        status: str = Query(default="all"),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> WhalePositionListRead:
+        require_whale_module(request)
+        if status not in {"open", "closed", "all"}:
+            raise HTTPException(status_code=422, detail="巨鲸持仓状态参数无效")
+        return WhalePositionListRead.model_validate(
+            await list_whale_positions(
+                request.app.state.database,
+                request.app.state.polymarket_client,
+                status=status,
+                limit=limit,
+                offset=offset,
+            )
+        )
+
+    @application.get("/api/whales/positions/{position_id}", response_model=WhalePositionDetailRead)
+    async def get_whale_position_detail(
+        position_id: int,
+        request: Request,
+    ) -> WhalePositionDetailRead:
+        require_whale_module(request)
+        payload = await whale_position_detail(
+            request.app.state.database,
+            request.app.state.polymarket_client,
+            position_id,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="巨鲸持仓不存在")
+        return WhalePositionDetailRead.model_validate(payload)
+
+    @application.get("/api/whales/records", response_model=WhaleRecordListRead)
+    async def get_whale_records(
+        request: Request,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> WhaleRecordListRead:
+        require_whale_module(request)
+        start = datetime.combine(start_date, datetime.min.time()) if start_date else None
+        end = (
+            datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+            - timedelta(microseconds=1)
+            if end_date
+            else None
+        )
+        return WhaleRecordListRead.model_validate(
+            await list_whale_records(
+                request.app.state.database,
+                request.app.state.polymarket_client,
+                start_date=start,
+                end_date=end,
+                limit=limit,
+                offset=offset,
+            )
+        )
 
     @application.get("/api/settings", response_model=GlobalSettingsRead)
     async def get_global_settings(request: Request) -> GlobalSettingsRead:

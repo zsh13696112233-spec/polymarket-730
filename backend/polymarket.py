@@ -90,6 +90,73 @@ class TradeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class LargeTradeSnapshot:
+    proxy_wallet: str
+    asset_id: str
+    condition_id: str
+    side: str
+    size: Decimal
+    price: Decimal
+    amount: Decimal
+    timestamp: datetime
+    title: str
+    outcome: str
+    outcome_index: int | None
+    market_slug: str | None
+    event_slug: str | None
+    icon_url: str | None
+    display_name: str | None
+    transaction_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class OfficialTag:
+    id: str
+    slug: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class WhaleMarketSnapshot:
+    condition_id: str
+    title: str
+    market_slug: str | None
+    event_slug: str | None
+    icon_url: str | None
+    tags: tuple[OfficialTag, ...]
+    closed: bool
+    active: bool
+    accepting_orders: bool
+    neg_risk: bool
+    end_date: datetime | None
+    end_date_is_date_only: bool
+    outcomes: tuple[str, ...]
+    outcome_prices: tuple[Decimal, ...]
+    clob_token_ids: tuple[str, ...]
+    liquidity: Decimal
+    volume_24h: Decimal
+    best_bid: Decimal | None
+    best_ask: Decimal | None
+    order_min_size: Decimal
+    tick_size: Decimal
+    fee_rate: Decimal
+    fee_exponent: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class WhalePublicProfile:
+    proxy_wallet: str
+    display_name: str | None
+    name: str | None
+    pseudonym: str | None
+    created_at: datetime | None
+    verified_badge: bool
+    taker_tier: int | None
+    taker_tier_name: str | None
+    weighted_volume: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
 class RedemptionSnapshot:
     asset_id: str
     condition_id: str
@@ -277,6 +344,7 @@ class PolymarketClient:
         url: str,
         *,
         params: dict[str, Any],
+        not_found_none: bool = False,
     ) -> Any:
         try:
             response = await self._http.get(url, params=params)
@@ -285,6 +353,8 @@ class PolymarketClient:
         if response.status_code == 429:
             retry_after = self._parse_retry_after(response.headers.get("Retry-After"))
             raise PolymarketAPIError("Polymarket 接口请求过于频繁", retry_after=retry_after)
+        if response.status_code == 404 and not_found_none:
+            return None
         if response.status_code >= 400:
             detail = response.text[:300].strip()
             raise PolymarketAPIError(
@@ -294,6 +364,157 @@ class PolymarketClient:
             return response.json()
         except ValueError as error:
             raise PolymarketAPIError("Polymarket 接口返回了无效 JSON") from error
+
+    async def fetch_large_trades(
+        self,
+        *,
+        filter_amount_usdc: Decimal,
+        start: datetime,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[LargeTradeSnapshot]:
+        """Fetch one descending Data API page for the whale scanner."""
+
+        if filter_amount_usdc <= ZERO:
+            raise ValueError("大额成交采集金额必须大于 0")
+        if not 1 <= limit <= 500:
+            raise ValueError("大额成交单页数量必须在 1 到 500 之间")
+        if offset < 0:
+            raise ValueError("大额成交分页偏移不能为负数")
+        normalized_start = (
+            start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)
+        )
+        payload = await self._get_json(
+            f"{self.data_api_url}/trades",
+            params={
+                "filterType": "CASH",
+                "filterAmount": str(filter_amount_usdc),
+                "start": int(normalized_start.timestamp()),
+                "limit": limit,
+                "offset": offset,
+                "takerOnly": "false",
+            },
+        )
+        if not isinstance(payload, list):
+            raise PolymarketAPIError("大额成交接口返回格式无效")
+
+        trades: list[LargeTradeSnapshot] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            side = str(item.get("side") or "").upper()
+            proxy_wallet = str(item.get("proxyWallet") or "").lower()
+            asset_id = str(item.get("asset") or "")
+            condition_id = str(item.get("conditionId") or "")
+            size = to_decimal(item.get("size"))
+            price = to_decimal(item.get("price"))
+            timestamp = self._trade_datetime(item.get("timestamp"))
+            if (
+                side not in {"BUY", "SELL"}
+                or not proxy_wallet
+                or not asset_id
+                or not condition_id
+                or size <= ZERO
+                or price <= ZERO
+                or price > Decimal("1")
+                or timestamp is None
+            ):
+                continue
+            outcome_index = self._optional_int(item.get("outcomeIndex"))
+            display_name = self._optional_text(item.get("name")) or self._optional_text(
+                item.get("pseudonym")
+            )
+            trades.append(
+                LargeTradeSnapshot(
+                    proxy_wallet=proxy_wallet,
+                    asset_id=asset_id,
+                    condition_id=condition_id,
+                    side=side,
+                    size=size,
+                    price=price,
+                    amount=size * price,
+                    timestamp=timestamp,
+                    title=str(item.get("title") or "未命名市场"),
+                    outcome=str(item.get("outcome") or ""),
+                    outcome_index=outcome_index,
+                    market_slug=self._optional_text(item.get("slug")),
+                    event_slug=self._optional_text(item.get("eventSlug")),
+                    icon_url=self._optional_text(item.get("icon")),
+                    display_name=display_name,
+                    transaction_hash=self._optional_text(item.get("transactionHash")),
+                )
+            )
+        return trades
+
+    async def fetch_markets_with_tags(
+        self,
+        condition_ids: Iterable[str],
+    ) -> list[WhaleMarketSnapshot]:
+        conditions = list(
+            dict.fromkeys(str(condition_id) for condition_id in condition_ids if condition_id)
+        )
+        markets: list[WhaleMarketSnapshot] = []
+        for offset in range(0, len(conditions), self.MARKET_RESOLUTION_BATCH_SIZE):
+            batch = conditions[offset : offset + self.MARKET_RESOLUTION_BATCH_SIZE]
+            payload = await self._get_json(
+                f"{self.gamma_api_url}/markets",
+                params={
+                    "condition_ids": batch,
+                    "include_tag": "true",
+                    "limit": len(batch),
+                },
+            )
+            if not isinstance(payload, list):
+                raise PolymarketAPIError("市场元数据接口返回格式无效")
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                condition_id = str(item.get("conditionId") or "")
+                if not condition_id or condition_id not in batch:
+                    continue
+                markets.append(self._parse_whale_market(item))
+        return markets
+
+    async def fetch_public_profile(self, address: str) -> WhalePublicProfile | None:
+        normalized_address = address.strip().lower()
+        payload = await self._get_json(
+            f"{self.gamma_api_url}/public-profile",
+            params={"address": normalized_address},
+            not_found_none=True,
+        )
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            raise PolymarketAPIError("钱包公开资料接口返回格式无效")
+        name = self._optional_text(payload.get("name"))
+        pseudonym = self._optional_text(payload.get("pseudonym"))
+        return WhalePublicProfile(
+            proxy_wallet=str(payload.get("proxyWallet") or normalized_address).lower(),
+            display_name=name or pseudonym,
+            name=name,
+            pseudonym=pseudonym,
+            created_at=parse_datetime(payload.get("createdAt")),
+            verified_badge=self._as_bool(payload.get("verifiedBadge")),
+            taker_tier=self._optional_int(payload.get("takerTier")),
+            taker_tier_name=self._optional_text(payload.get("takerTierName")),
+            weighted_volume=self._optional_decimal(payload.get("weightedVolume")),
+        )
+
+    async def fetch_tags(self, *, limit: int = 200) -> list[OfficialTag]:
+        if limit <= 0:
+            raise ValueError("标签数量上限必须大于 0")
+        payload = await self._get_json(
+            f"{self.gamma_api_url}/tags",
+            params={"limit": limit, "order": "id", "ascending": "true"},
+        )
+        if not isinstance(payload, list):
+            raise PolymarketAPIError("标签字典接口返回格式无效")
+        tags: list[OfficialTag] = []
+        for item in payload:
+            tag = self._parse_official_tag(item)
+            if tag is not None:
+                tags.append(tag)
+        return tags
 
     async def fetch_order_book(self, asset_id: str) -> OrderBookSnapshot:
         payload = await self._get_json(
@@ -489,6 +710,116 @@ class PolymarketClient:
                 )
         return resolutions
 
+    @classmethod
+    def _parse_whale_market(cls, item: dict[str, Any]) -> WhaleMarketSnapshot:
+        raw_end_date = item.get("endDate")
+        end_date_is_date_only = bool(
+            isinstance(raw_end_date, str)
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_end_date.strip())
+        )
+        outcomes = tuple(str(value) for value in cls._json_list(item.get("outcomes")))
+        outcome_prices = tuple(
+            to_decimal(value) for value in cls._json_list(item.get("outcomePrices"))
+        )
+        clob_token_ids = tuple(
+            str(value) for value in cls._json_list(item.get("clobTokenIds")) if value is not None
+        )
+        tags = tuple(
+            tag
+            for raw_tag in cls._json_list(item.get("tags"))
+            if (tag := cls._parse_official_tag(raw_tag)) is not None
+        )
+        events = cls._json_list(item.get("events"))
+        first_event = next((event for event in events if isinstance(event, dict)), None)
+        event_slug = cls._optional_text(item.get("eventSlug"))
+        if event_slug is None and first_event is not None:
+            event_slug = cls._optional_text(first_event.get("slug"))
+        fee_schedule = cls._json_dict(item.get("feeSchedule"))
+        return WhaleMarketSnapshot(
+            condition_id=str(item.get("conditionId") or ""),
+            title=str(item.get("question") or item.get("title") or "未命名市场"),
+            market_slug=cls._optional_text(item.get("slug")),
+            event_slug=event_slug,
+            icon_url=cls._optional_text(item.get("icon")) or cls._optional_text(item.get("image")),
+            tags=tags,
+            closed=cls._as_bool(item.get("closed")),
+            active=cls._as_bool(item.get("active")),
+            accepting_orders=cls._as_bool(item.get("acceptingOrders")),
+            neg_risk=cls._as_bool(item.get("negRisk")),
+            end_date=None if end_date_is_date_only else parse_datetime(raw_end_date),
+            end_date_is_date_only=end_date_is_date_only,
+            outcomes=outcomes,
+            outcome_prices=outcome_prices,
+            clob_token_ids=clob_token_ids,
+            liquidity=to_decimal(item.get("liquidity")),
+            volume_24h=to_decimal(item.get("volume24hr") or item.get("volume24Hr")),
+            best_bid=cls._optional_decimal(item.get("bestBid")),
+            best_ask=cls._optional_decimal(item.get("bestAsk")),
+            order_min_size=to_decimal(item.get("orderMinSize")),
+            tick_size=to_decimal(item.get("orderPriceMinTickSize"), default=Decimal("0.01")),
+            fee_rate=to_decimal(fee_schedule.get("rate")),
+            fee_exponent=to_decimal(fee_schedule.get("exponent"), default=Decimal("1")),
+        )
+
+    @staticmethod
+    def _parse_official_tag(value: Any) -> OfficialTag | None:
+        if not isinstance(value, dict):
+            return None
+        tag_id = str(value.get("id") or "").strip()
+        slug = str(value.get("slug") or "").strip()
+        if not tag_id or not slug:
+            return None
+        return OfficialTag(
+            id=tag_id,
+            slug=slug,
+            label=str(value.get("label") or slug).strip() or slug,
+        )
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float, Decimal)):
+            return value != 0
+        return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+    @staticmethod
+    def _optional_decimal(value: Any) -> Decimal | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        return parsed if parsed.is_finite() else None
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _optional_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        parsed = str(value).strip()
+        return parsed or None
+
+    @staticmethod
+    def _trade_datetime(value: Any) -> datetime | None:
+        if isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value.strip()):
+            value = float(value)
+        if isinstance(value, Decimal):
+            value = float(value)
+        try:
+            return parse_datetime(value)
+        except (OSError, OverflowError, ValueError):
+            return None
+
     @staticmethod
     def _json_list(value: Any) -> list[Any]:
         if isinstance(value, list):
@@ -500,6 +831,18 @@ class PolymarketClient:
         except (TypeError, ValueError):
             return []
         return parsed if isinstance(parsed, list) else []
+
+    @staticmethod
+    def _json_dict(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if not isinstance(value, str):
+            return {}
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     @staticmethod
     def _parse_retry_after(raw: str | None) -> float | None:

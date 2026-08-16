@@ -1471,14 +1471,16 @@ function SettingsPage({
   </div>;
 }
 
-const viewCopy: Record<Exclude<WorkspaceView, "analysis">, { title: string; subtitle: string }> = {
+type CoreWorkspaceView = Exclude<WorkspaceView, "analysis" | "whales">;
+
+const viewCopy: Record<CoreWorkspaceView, { title: string; subtitle: string }> = {
   overview: { title: "总览", subtitle: "资金策略面板" },
   positions: { title: "持仓", subtitle: "查看全部目标钱包产生的实盘归因仓位" },
   records: { title: "记录", subtitle: "从信号到成交，保留每一次执行结果与原因" },
   settings: { title: "设置", subtitle: "管理执行钱包、风险边界与低频高级工具" },
 };
 
-export default function PolyCopyWorkspace({ view }: { view: Exclude<WorkspaceView, "analysis"> }) {
+export default function PolyCopyWorkspace({ view }: { view: CoreWorkspaceView }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [loading, setLoading] = useState(true);

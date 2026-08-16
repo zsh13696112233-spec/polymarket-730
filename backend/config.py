@@ -27,6 +27,10 @@ class Settings:
     max_backoff_seconds: float = 300.0
     start_monitor: bool = True
     live_copy_enabled: bool = True
+    whale_enabled: bool = True
+    whale_scan_interval_seconds: float = 60.0
+    whale_max_scan_pages: int = 20
+    whale_profile_batch_limit: int = 50
     cors_origins: tuple[str, ...] = field(
         default=(
             "http://127.0.0.1:3000",
@@ -66,6 +70,13 @@ class Settings:
             not in {"0", "false", "no"},
             live_copy_enabled=os.getenv("POLYMARKET_LIVE_COPY_ENABLED", "1").lower()
             in {"1", "true", "yes"},
+            whale_enabled=os.getenv("POLYMARKET_WHALE_ENABLED", "1").lower()
+            in {"1", "true", "yes"},
+            whale_scan_interval_seconds=float(
+                os.getenv("POLYMARKET_WHALE_SCAN_INTERVAL_SECONDS", "60")
+            ),
+            whale_max_scan_pages=int(os.getenv("POLYMARKET_WHALE_MAX_SCAN_PAGES", "20")),
+            whale_profile_batch_limit=int(os.getenv("POLYMARKET_WHALE_PROFILE_BATCH_LIMIT", "50")),
         )
 
     def ensure_sqlite_directory(self) -> None:

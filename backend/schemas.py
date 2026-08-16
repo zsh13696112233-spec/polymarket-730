@@ -764,3 +764,475 @@ class PositionEventGroupsResponse(APIModel):
 class HealthRead(APIModel):
     status: Literal["ok"]
     database: Literal["ok"]
+
+
+class WhaleSettingsRead(APIModel):
+    id: int = 1
+    enabled: bool
+    window_hours: int
+    collect_filter_amount_usdc: DecimalNumber
+    single_trade_threshold_usdc: DecimalNumber
+    cumulative_threshold_usdc: DecimalNumber
+    min_liquidity_usdc: DecimalNumber
+    min_remaining_minutes: int
+    max_price_delta_cents: DecimalNumber
+    holding_ratio_threshold: DecimalNumber
+    exited_ratio_threshold: DecimalNumber
+    scan_interval_seconds: int
+    profile_cache_hours: int
+    trade_retention_hours: int
+    max_follow_amount_usdc: DecimalNumber
+    follow_slippage_cents: DecimalNumber
+    sell_slippage_cents: DecimalNumber
+    auto_redeem: bool
+    last_scan_at: datetime | None
+    last_scan_error: str | None
+    consecutive_failures: int
+    created_at: datetime
+    updated_at: datetime
+    tracked_trade_count: int = 0
+    entry_count: int = 0
+    market_count: int = 0
+
+    @field_serializer("last_scan_at", "created_at", "updated_at", when_used="json")
+    def serialize_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class WhaleSettingsUpdate(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    window_hours: int | None = Field(default=None, gt=0)
+    collect_filter_amount_usdc: Decimal | None = Field(default=None, gt=0)
+    single_trade_threshold_usdc: Decimal | None = Field(default=None, gt=0)
+    cumulative_threshold_usdc: Decimal | None = Field(default=None, gt=0)
+    min_liquidity_usdc: Decimal | None = Field(default=None, ge=0)
+    min_remaining_minutes: int | None = Field(default=None, ge=0)
+    max_price_delta_cents: Decimal | None = Field(default=None, ge=0)
+    holding_ratio_threshold: Decimal | None = Field(default=None, gt=0, le=100)
+    exited_ratio_threshold: Decimal | None = Field(default=None, ge=0, lt=100)
+    scan_interval_seconds: int | None = Field(default=None, gt=0)
+    profile_cache_hours: int | None = Field(default=None, gt=0)
+    trade_retention_hours: int | None = Field(default=None, gt=0)
+    max_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
+    follow_slippage_cents: Decimal | None = Field(default=None, ge=0, le=50)
+    sell_slippage_cents: Decimal | None = Field(default=None, ge=0, le=50)
+    auto_redeem: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> WhaleSettingsUpdate:
+        collect = self.collect_filter_amount_usdc
+        if (
+            collect is not None
+            and self.single_trade_threshold_usdc is not None
+            and self.single_trade_threshold_usdc < collect
+        ):
+            raise ValueError("单笔重仓阈值不能低于采集金额阈值")
+        if (
+            collect is not None
+            and self.cumulative_threshold_usdc is not None
+            and self.cumulative_threshold_usdc < collect
+        ):
+            raise ValueError("累计重仓阈值不能低于采集金额阈值")
+        if (
+            self.exited_ratio_threshold is not None
+            and self.holding_ratio_threshold is not None
+            and self.exited_ratio_threshold >= self.holding_ratio_threshold
+        ):
+            raise ValueError("退出比例阈值必须低于持有比例阈值")
+        return self
+
+
+class WhaleScanRead(APIModel):
+    status: Literal["ok"]
+
+
+class WhaleTagRead(APIModel):
+    id: str
+    slug: str
+    label: str
+    market_count: int = 0
+
+
+class WhaleTradeRead(APIModel):
+    id: int
+    proxy_wallet: str
+    asset_id: str
+    condition_id: str
+    side: Literal["BUY", "SELL"]
+    size: DecimalNumber
+    price: DecimalNumber
+    amount: DecimalNumber
+    outcome: str
+    outcome_index: int
+    title: str
+    market_slug: str
+    event_slug: str
+    icon_url: str | None
+    display_name: str | None
+    transaction_hash: str | None
+    timestamp: datetime
+
+    @field_serializer("timestamp", when_used="json")
+    def serialize_timestamp(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleEntryRead(APIModel):
+    entry_id: int
+    proxy_wallet: str
+    display_name: str | None
+    profile_url: str
+    wallet_created_at: datetime | None
+    wallet_age_days: int | None
+    verified_badge: bool
+    taker_tier_name: str | None
+    gross_buy_usdc: DecimalNumber
+    gross_buy_size: DecimalNumber
+    avg_buy_price: DecimalNumber
+    max_single_usdc: DecimalNumber
+    trade_count: int
+    first_buy_at: datetime
+    last_buy_at: datetime
+    status: Literal["holding", "reduced", "exited"]
+    net_ratio: DecimalNumber
+    hedged: bool
+    price_delta_cents: DecimalNumber | None
+    price_delta_percent: DecimalNumber | None
+
+    @field_serializer(
+        "wallet_created_at",
+        "first_buy_at",
+        "last_buy_at",
+        when_used="json",
+    )
+    def serialize_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class WhaleEntryDetailRead(WhaleEntryRead):
+    trades: list[WhaleTradeRead] = Field(default_factory=list)
+
+
+class WhaleMarketSideRead(APIModel):
+    outcome_index: int
+    outcome: str
+    asset_id: str
+    current_price: DecimalNumber | None
+    best_bid: DecimalNumber | None
+    best_ask: DecimalNumber | None
+    side_total_usdc: DecimalNumber
+    side_wallet_count: int
+    entries: list[WhaleEntryRead] = Field(default_factory=list)
+
+
+class WhaleMarketSideDetailRead(WhaleMarketSideRead):
+    entries: list[WhaleEntryDetailRead] = Field(default_factory=list)
+
+
+class WhaleMarketRead(APIModel):
+    condition_id: str
+    title: str
+    icon_url: str | None
+    market_slug: str | None
+    event_slug: str | None
+    polymarket_url: str
+    tags: list[WhaleTagRead] = Field(default_factory=list)
+    end_date: datetime | None
+    remaining_seconds: int | None
+    end_date_is_date_only: bool
+    liquidity: DecimalNumber
+    volume_24h: DecimalNumber
+    total_whale_usdc: DecimalNumber
+    whale_wallet_count: int
+    both_sides: bool
+    dominant_outcome_index: int | None
+    side_imbalance_ratio: DecimalNumber | None
+    sides: list[WhaleMarketSideRead] = Field(default_factory=list)
+
+    @field_serializer("end_date", when_used="json")
+    def serialize_end_date(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class WhaleMarketDetailRead(WhaleMarketRead):
+    sides: list[WhaleMarketSideDetailRead] = Field(default_factory=list)
+
+
+class WhaleMarketListRead(APIModel):
+    generated_at: datetime
+    window_start: datetime
+    stale: bool
+    total: int
+    items: list[WhaleMarketRead] = Field(default_factory=list)
+
+    @field_serializer("generated_at", "window_start", when_used="json")
+    def serialize_dates(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleFollowPreviewRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str = Field(min_length=1, max_length=100)
+    amount_usdc: Decimal = Field(gt=0)
+    entry_id: int | None = Field(default=None, gt=0)
+
+
+class WhaleFollowPreviewRead(APIModel):
+    confirmation_id: str
+    expires_at: datetime
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    outcome_index: int | None
+    neg_risk: bool
+    amount_usdc: DecimalNumber
+    best_ask: DecimalNumber
+    worst_price: DecimalNumber
+    tick_size: DecimalNumber
+    minimum_order_usdc: DecimalNumber
+    estimated_shares: DecimalNumber
+    estimated_fee_usdc: DecimalNumber
+    total_cost_usdc: DecimalNumber
+    profit_ratio_percent: DecimalNumber
+    max_loss_usdc: DecimalNumber
+    whale_avg_price: DecimalNumber | None = None
+    whale_profit_ratio_percent: DecimalNumber | None = None
+    profit_ratio_gap_percent: DecimalNumber | None = None
+    price_delta_cents: DecimalNumber | None = None
+    price_delta_warning: bool = False
+    reserve_warning: bool = False
+    available_balance_usdc: DecimalNumber
+
+    @field_serializer("expires_at", when_used="json")
+    def serialize_expires_at(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleFollowExecuteRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation_id: str = Field(min_length=1, max_length=200)
+    confirmation_text: Literal["确认真实买入"]
+
+
+class WhaleSellPreviewRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    size: Decimal | None = Field(default=None, gt=0)
+    sell_all: bool = False
+
+    @model_validator(mode="after")
+    def validate_sell_amount(self) -> WhaleSellPreviewRequest:
+        if self.sell_all and self.size is not None:
+            raise ValueError("全部卖出时不能同时指定卖出份额")
+        if not self.sell_all and self.size is None:
+            raise ValueError("必须指定卖出份额或选择全部卖出")
+        return self
+
+
+class WhaleSellPreviewRead(APIModel):
+    confirmation_id: str
+    expires_at: datetime
+    position_id: int
+    size: DecimalNumber
+    best_bid: DecimalNumber
+    worst_price: DecimalNumber
+    minimum_order_size: DecimalNumber
+    estimated_proceeds_usdc: DecimalNumber
+    estimated_fee_usdc: DecimalNumber
+    cost_basis_usdc: DecimalNumber
+    estimated_pnl_usdc: DecimalNumber
+    estimated_pnl_percent: DecimalNumber | None
+
+    @field_serializer("expires_at", when_used="json")
+    def serialize_expires_at(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleSellExecuteRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation_id: str = Field(min_length=1, max_length=200)
+    confirmation_text: Literal["确认真实卖出"]
+
+
+class WhaleFillRead(APIModel):
+    id: int
+    external_trade_id: str | None
+    transaction_hash: str | None
+    bucket_index: int | None
+    settlement_status: str | None
+    size: DecimalNumber
+    price: DecimalNumber
+    amount: DecimalNumber
+    fee_usdc: DecimalNumber
+    timestamp: datetime
+
+    @field_serializer("timestamp", when_used="json")
+    def serialize_timestamp(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleOrderRead(APIModel):
+    id: int
+    position_id: int | None
+    entry_id: int | None
+    source_wallet: str | None
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    outcome_index: int | None
+    neg_risk: bool
+    side: Literal["BUY", "SELL"]
+    requested_size: DecimalNumber
+    requested_usdc: DecimalNumber
+    limit_price: DecimalNumber
+    reference_price: DecimalNumber | None
+    whale_avg_price: DecimalNumber | None
+    filled_size: DecimalNumber
+    filled_usdc: DecimalNumber
+    fee_usdc: DecimalNumber
+    average_fill_price: DecimalNumber | None = None
+    status: str
+    reason: str | None
+    signed_order_hash: str | None
+    execution_provider: str
+    external_order_id: str | None
+    external_trade_id: str | None
+    fills: list[WhaleFillRead] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("created_at", "updated_at", when_used="json")
+    def serialize_dates(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleRedemptionRead(APIModel):
+    id: int
+    position_id: int
+    status: Literal["pending", "submitted", "completed", "failed", "manual_review"]
+    size: DecimalNumber
+    payout_usdc: DecimalNumber | None
+    transaction_hash: str | None
+    attempts: int
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("created_at", "updated_at", when_used="json")
+    def serialize_dates(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhalePositionRead(APIModel):
+    id: int
+    asset_id: str
+    condition_id: str
+    title: str
+    outcome: str
+    outcome_index: int | None
+    neg_risk: bool | None
+    market_slug: str | None
+    event_slug: str | None
+    icon_url: str | None
+    source_wallet: str | None
+    source_whale_avg_price: DecimalNumber | None
+    cycle_no: int
+    size: DecimalNumber
+    avg_cost_price: DecimalNumber | None
+    cost_usdc: DecimalNumber
+    current_price: DecimalNumber | None
+    market_value_usdc: DecimalNumber | None
+    unrealized_pnl: DecimalNumber | None
+    realized_pnl: DecimalNumber
+    total_pnl: DecimalNumber | None
+    lifetime_bought_size: DecimalNumber
+    lifetime_bought_usdc: DecimalNumber
+    lifetime_sold_size: DecimalNumber
+    lifetime_sold_usdc: DecimalNumber
+    lifetime_fee_usdc: DecimalNumber
+    status: str
+    valuation_status: Literal["ok", "unavailable", "not_applicable"]
+    opened_at: datetime | None
+    closed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer(
+        "opened_at",
+        "closed_at",
+        "created_at",
+        "updated_at",
+        when_used="json",
+    )
+    def serialize_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class WhaleLedgerRead(APIModel):
+    id: int
+    position_id: int
+    order_id: int | None
+    type: Literal["buy", "sell", "redeem", "resolved_loss", "dust_writeoff"]
+    size: DecimalNumber
+    price: DecimalNumber | None
+    amount_usdc: DecimalNumber
+    fee_usdc: DecimalNumber
+    realized_pnl: DecimalNumber
+    transaction_hash: str | None
+    detail: str | None
+    timestamp: datetime
+
+    @field_serializer("timestamp", when_used="json")
+    def serialize_timestamp(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhalePositionListRead(APIModel):
+    items: list[WhalePositionRead] = Field(default_factory=list)
+    total: int
+
+
+class WhalePositionDetailRead(WhalePositionRead):
+    orders: list[WhaleOrderRead] = Field(default_factory=list)
+    ledger: list[WhaleLedgerRead] = Field(default_factory=list)
+    redemption: WhaleRedemptionRead | None = None
+
+
+class WhaleRecordRead(WhaleLedgerRead):
+    title: str
+    outcome: str
+    asset_id: str
+    condition_id: str
+    market_slug: str | None
+    event_slug: str | None
+    source_wallet: str | None
+    order_side: Literal["BUY", "SELL"] | None = None
+    order_status: str | None = None
+
+
+class WhaleRecordSummaryRead(APIModel):
+    total_invested_usdc: DecimalNumber
+    total_proceeds_usdc: DecimalNumber
+    total_fee_usdc: DecimalNumber
+    realized_pnl: DecimalNumber
+    unrealized_pnl: DecimalNumber | None
+    total_pnl: DecimalNumber | None
+    open_position_count: int
+    closed_position_count: int
+    win_count: int
+    loss_count: int
+    win_rate_percent: DecimalNumber | None
+    average_profit_ratio_percent: DecimalNumber | None
+
+
+class WhaleRecordListRead(APIModel):
+    items: list[WhaleRecordRead] = Field(default_factory=list)
+    summary: WhaleRecordSummaryRead
+    total: int

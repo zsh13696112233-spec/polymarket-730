@@ -12,6 +12,248 @@ from backend.tests.conftest import TEST_ADDRESS
 
 
 @pytest.mark.asyncio
+async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
+    start = datetime(2026, 8, 16, 1, 2, 3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "data.test"
+        assert request.url.path == "/trades"
+        assert request.url.params["filterType"] == "CASH"
+        assert request.url.params["filterAmount"] == "1000.00"
+        assert request.url.params["start"] == str(int(start.replace(tzinfo=UTC).timestamp()))
+        assert request.url.params["limit"] == "123"
+        assert request.url.params["offset"] == "456"
+        assert request.url.params["takerOnly"] == "false"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "proxyWallet": TEST_ADDRESS.upper(),
+                    "side": "buy",
+                    "asset": "asset-1",
+                    "conditionId": "0x" + "1" * 64,
+                    "size": "20000",
+                    "price": "0.56",
+                    "timestamp": "1786886550",
+                    "title": "LoL match",
+                    "slug": "lol-market",
+                    "eventSlug": "lol-event",
+                    "icon": "https://example.test/icon.png",
+                    "outcome": "Home",
+                    "outcomeIndex": "0",
+                    "name": "SineNooneEI",
+                    "pseudonym": "Any-Keystone",
+                    "transactionHash": "0xtrade",
+                },
+                {
+                    "proxyWallet": TEST_ADDRESS,
+                    "side": "MINT",
+                    "asset": "ignored",
+                    "conditionId": "0x" + "2" * 64,
+                    "size": 1,
+                    "price": 0.5,
+                    "timestamp": 1786886550,
+                },
+            ],
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        trades = await client.fetch_large_trades(
+            filter_amount_usdc=Decimal("1000.00"),
+            start=start,
+            limit=123,
+            offset=456,
+        )
+    finally:
+        await client.close()
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.proxy_wallet == TEST_ADDRESS
+    assert trade.side == "BUY"
+    assert trade.size == Decimal("20000")
+    assert trade.price == Decimal("0.56")
+    assert trade.amount == Decimal("11200.00")
+    assert trade.timestamp == datetime.fromtimestamp(1786886550, tz=UTC).replace(tzinfo=None)
+    assert trade.display_name == "SineNooneEI"
+    assert trade.outcome_index == 0
+
+
+@pytest.mark.asyncio
+async def test_whale_markets_batch_include_tags_and_parse_json_fields_and_dates():
+    conditions = [f"0x{index:064x}" for index in range(101)]
+    requested_batches: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        batch = request.url.params.get_list("condition_ids")
+        requested_batches.append(batch)
+        assert request.url.path == "/markets"
+        assert request.url.params["include_tag"] == "true"
+        assert int(request.url.params["limit"]) == len(batch)
+        if len(requested_batches) == 1:
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "conditionId": conditions[0],
+                        "question": "Will Home win?",
+                        "slug": "home-win",
+                        "events": [{"slug": "match-event"}],
+                        "image": "https://example.test/market.png",
+                        "tags": '[{"id":64,"label":"Esports","slug":"esports"}]',
+                        "closed": False,
+                        "active": "true",
+                        "acceptingOrders": True,
+                        "negRisk": False,
+                        "endDate": "2026-08-16",
+                        "outcomes": '["Home","Away"]',
+                        "outcomePrices": '["0.56","0.44"]',
+                        "clobTokenIds": '["asset-home","asset-away"]',
+                        "liquidity": "12345.67",
+                        "volume24hr": "7654.32",
+                        "bestBid": "0.55",
+                        "bestAsk": "0.57",
+                        "orderMinSize": "5",
+                        "orderPriceMinTickSize": "0.01",
+                        "feeSchedule": '{"rate":"0.05","exponent":1}',
+                    }
+                ],
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "conditionId": conditions[100],
+                    "question": "Precise market",
+                    "slug": "precise-market",
+                    "eventSlug": "precise-event",
+                    "tags": [],
+                    "closed": False,
+                    "active": True,
+                    "acceptingOrders": True,
+                    "endDate": "2026-08-16T12:34:56Z",
+                    "outcomes": ["Yes", "No"],
+                    "outcomePrices": [0.2, 0.8],
+                    "clobTokenIds": ["yes", "no"],
+                }
+            ],
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        markets = await client.fetch_markets_with_tags(conditions)
+    finally:
+        await client.close()
+
+    assert [len(batch) for batch in requested_batches] == [100, 1]
+    assert [condition for batch in requested_batches for condition in batch] == conditions
+    assert len(markets) == 2
+    first = markets[0]
+    assert first.event_slug == "match-event"
+    assert first.tags[0].id == "64"
+    assert first.tags[0].slug == "esports"
+    assert first.outcomes == ("Home", "Away")
+    assert first.outcome_prices == (Decimal("0.56"), Decimal("0.44"))
+    assert first.clob_token_ids == ("asset-home", "asset-away")
+    assert first.end_date is None
+    assert first.end_date_is_date_only is True
+    assert first.fee_rate == Decimal("0.05")
+    assert first.fee_exponent == Decimal("1")
+    assert markets[1].end_date == datetime(2026, 8, 16, 12, 34, 56)
+    assert markets[1].end_date_is_date_only is False
+
+
+@pytest.mark.asyncio
+async def test_whale_public_profile_parses_fields_and_returns_none_for_404():
+    missing_address = "0x" + "2" * 40
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/public-profile"
+        address = request.url.params["address"]
+        if address == missing_address:
+            return httpx.Response(404, text="not found")
+        assert address == TEST_ADDRESS
+        return httpx.Response(
+            200,
+            json={
+                "createdAt": "2026-03-27T00:18:03.788884Z",
+                "proxyWallet": TEST_ADDRESS.upper(),
+                "pseudonym": "Whirlwind-Catalogue",
+                "name": "Named Whale",
+                "verifiedBadge": True,
+                "takerTier": "3",
+                "takerTierName": "Tier 3",
+                "weightedVolume": "123456.78",
+            },
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        profile = await client.fetch_public_profile(TEST_ADDRESS.upper())
+        missing = await client.fetch_public_profile(missing_address)
+    finally:
+        await client.close()
+
+    assert profile is not None
+    assert profile.proxy_wallet == TEST_ADDRESS
+    assert profile.display_name == "Named Whale"
+    assert profile.created_at == datetime(2026, 3, 27, 0, 18, 3, 788884)
+    assert profile.verified_badge is True
+    assert profile.taker_tier == 3
+    assert profile.weighted_volume == Decimal("123456.78")
+    assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_official_tags_uses_stable_order_and_skips_invalid_rows():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/tags"
+        assert request.url.params["limit"] == "200"
+        assert request.url.params["order"] == "id"
+        assert request.url.params["ascending"] == "true"
+        return httpx.Response(
+            200,
+            json=[
+                {"id": 1, "slug": "sports", "label": "Sports"},
+                {"id": 64, "slug": "esports", "label": "Esports"},
+                {"id": 65, "label": "missing slug"},
+            ],
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        tags = await client.fetch_tags()
+    finally:
+        await client.close()
+
+    assert [(tag.id, tag.slug, tag.label) for tag in tags] == [
+        ("1", "sports", "Sports"),
+        ("64", "esports", "Esports"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_market_end_date_uses_precise_gamma_timestamp_and_cache():
     calls = 0
 

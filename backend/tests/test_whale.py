@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -246,6 +247,7 @@ def whale_market(
     liquidity: str = "5000",
     end_date: datetime | None = None,
     end_date_is_date_only: bool = False,
+    outcome_prices: list[str] | None = None,
 ) -> WhaleMarket:
     return WhaleMarket(
         condition_id="0x" + "1" * 64,
@@ -256,6 +258,7 @@ def whale_market(
         liquidity=Decimal(liquidity),
         end_date=end_date,
         end_date_is_date_only=end_date_is_date_only,
+        outcome_prices_json=json.dumps(outcome_prices if outcome_prices is not None else []),
         refreshed_at=now,
     )
 
@@ -278,6 +281,34 @@ def test_market_eligibility_rejects_closed_inactive_non_trading_or_illiquid(over
         now=now,
         min_liquidity_usdc=Decimal("5000"),
         min_remaining_minutes=30,
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome_prices", "eligible"),
+    [
+        (None, True),
+        ([], True),
+        (["0.97", "0.03"], True),
+        (["0.9885", "0.0115"], True),
+        (["0.9995", "0.0005"], False),
+        (["0.0005", "0.9995"], False),
+        (["0.999", "0.001"], False),
+        (["1", "0"], False),
+    ],
+)
+def test_market_eligibility_rejects_settled_outcome_prices(outcome_prices, eligible):
+    now = BASE_TIME
+    market = whale_market(now=now, outcome_prices=outcome_prices)
+
+    assert (
+        market_is_eligible(
+            market,
+            now=now,
+            min_liquidity_usdc=Decimal("5000"),
+            min_remaining_minutes=30,
+        )
+        is eligible
     )
 
 

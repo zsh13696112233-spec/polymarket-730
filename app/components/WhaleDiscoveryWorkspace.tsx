@@ -129,8 +129,9 @@ export default function WhaleDiscoveryWorkspace() {
     setRefreshing(true);
     setError(null);
     try {
-      await whaleApi<{ status: string }>("/api/whales/scan", { method: "POST" });
+      const scan = await whaleApi<{ status: string }>("/api/whales/scan", { method: "POST" });
       await Promise.all([loadSettingsAndTags(), loadMarkets()]);
+      if (scan.status !== "ok") setError("本轮扫描没有完成，列表可能仍是上一轮的结果。");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "手动扫描失败");
     } finally {
@@ -152,8 +153,9 @@ export default function WhaleDiscoveryWorkspace() {
         body: JSON.stringify({ cumulative_threshold_usdc: value }),
       });
       setSettings(next);
-      await whaleApi<{ status: string }>("/api/whales/scan", { method: "POST" });
+      const scan = await whaleApi<{ status: string }>("/api/whales/scan", { method: "POST" });
       await loadMarkets();
+      if (scan.status !== "ok") setError("新阈值已保存，但本轮扫描没有完成，列表稍后才会更新。");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "阈值保存失败");
     } finally {
@@ -282,7 +284,7 @@ export default function WhaleDiscoveryWorkspace() {
               />
               <b>USDC</b>
               <button type="button" onClick={saveThreshold} disabled={savingThreshold}>
-                {savingThreshold ? "保存中" : "保存"}
+                {savingThreshold ? "扫描中" : "保存"}
               </button>
             </div>
           </label>

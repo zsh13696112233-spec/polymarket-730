@@ -307,7 +307,8 @@ export function formatCompactUsdc(value: Numeric | null | undefined): string {
 
 export function formatPrice(value: Numeric | null | undefined): string {
   if (value === null || value === undefined) return "—";
-  return numeric(value).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  // 保留 4 位：0.9995 这类贴顶报价四舍五入到 3 位会显示成 1，看上去像已结算。
+  return numeric(value).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 export function formatPercent(value: Numeric | null | undefined): string {

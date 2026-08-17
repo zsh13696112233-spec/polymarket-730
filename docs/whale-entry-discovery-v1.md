@@ -386,10 +386,15 @@ trade_count     = len(buy_trades)
 closed == false
 AND active == true
 AND acceptingOrders == true
+AND max(outcomePrices) < 0.999
 AND (endDate 为空 OR endDate > now + min_remaining_minutes)
 ```
 
-`min_remaining_minutes` 默认 30。注意 `endDate` 可能返回纯日期字符串 `YYYY-MM-DD`（现有 `fetch_market_end_date` 已经处理过这个坑），遇到纯日期时按「结束时间未知」处理，不参与剩余时间过滤，但要在界面标注。
+`min_remaining_minutes` 默认 30。
+
+胜负已分过滤：任一 `outcomePrices` 达到 `SETTLED_PRICE_THRESHOLD`（0.999）时市场排除。赛果已定的市场接口上往往仍是 `closed=false`、`acceptingOrders=true`，报价只是停在 0.9995 这类「买一 0.999 / 卖一 1.000」的中间价上——剩余空间已小于最小报价单位，跟进只会亏手续费，所以判定用阈值而不是严格等于 1。0.9885 这种真实高概率但仍有交易空间的市场保留。除了发现列表的准入判定，跟单买入报价 `quote_follow` 也会以同样规则拒绝，避免用户从缓存卡片打进已定局的市场；卖出与赎回路径不受影响。`outcomePrices` 缺失或为空时不做该过滤。
+
+前端 `formatPrice` 保留 4 位小数：按 3 位四舍五入会把 0.9995 显示成 `1`、0.0005 显示成 `0.001`，让未结算的贴顶报价看起来像已经结算。注意 `endDate` 可能返回纯日期字符串 `YYYY-MM-DD`（现有 `fetch_market_end_date` 已经处理过这个坑），遇到纯日期时按「结束时间未知」处理，不参与剩余时间过滤，但要在界面标注。
 
 流动性过滤：`liquidity < min_liquidity_usdc`（默认 5000）的市场排除，这类市场即使有巨鲸也无法跟进。
 
@@ -984,8 +989,10 @@ profit_ratio   = (gross_payout − total_cost) / total_cost × 100%
 ```
 GET  /api/whales/settings         -> WhaleSettingsRead
 PUT  /api/whales/settings         <- WhaleSettingsUpdate  -> WhaleSettingsRead
-POST /api/whales/scan             -> {"status":"ok"}      手动触发一轮扫描
+POST /api/whales/scan             -> {"status":"ok"|"skipped"}  手动触发一轮扫描
 ```
+
+手动扫描是同步等待的：一轮扫描要几十秒，而后台循环大半时间都在跑，若发现有轮次在跑就直接返回，界面上会表现为「点了没反应、过一会儿才刷新」。所以 `scan_now()` 会比对 `WhaleSettings.updated_at` 与运行中轮次读到的配置版本——运行中的轮次已经读到最新配置就等它收尾，否则排队再补一轮，返回时保证列表能读到基于最新配置的结果。巨鲸模块被关闭或本轮扫描失败时返回 `skipped`，前端据此提示列表可能仍是上一轮结果。
 
 `WhaleSettingsRead` 在 7.1 全部字段基础上追加：`last_scan_at`、`last_scan_error`、`consecutive_failures`、`tracked_trade_count`、`entry_count`、`market_count`。
 
@@ -1288,6 +1295,7 @@ summary
 - 同钱包在同市场两侧都有仓 → `hedged = true`；
 - 两个不同钱包分别在两侧 → `both_sides = true`、`hedged = false`；
 - 市场 `closed=true` / `acceptingOrders=false` / `endDate` 剩余不足 → 被过滤；
+- 市场 `outcomePrices` 任一 ≥ 0.999（含 0.9995 贴顶中间价）→ 被过滤，0.9885 与空 `outcomePrices` 不误杀；
 - `endDate` 为纯日期 → `end_date_is_date_only = true` 且不被剩余时间过滤误杀；
 - `price_delta_cents` 正负号方向正确。
 

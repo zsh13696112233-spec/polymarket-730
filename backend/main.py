@@ -1467,8 +1467,8 @@ def create_app(
     @application.post("/api/whales/scan", response_model=WhaleScanRead)
     async def scan_whales(request: Request) -> WhaleScanRead:
         require_whale_module(request)
-        await request.app.state.whale_scanner.tick()
-        return WhaleScanRead(status="ok")
+        completed = await request.app.state.whale_scanner.scan_now()
+        return WhaleScanRead(status="ok" if completed else "skipped")
 
     @application.get("/api/whales/tags", response_model=list[WhaleTagRead])
     async def get_whale_tags(request: Request) -> list[WhaleTagRead]:

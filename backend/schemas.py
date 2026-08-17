@@ -845,7 +845,7 @@ class WhaleSettingsUpdate(APIModel):
 
 
 class WhaleScanRead(APIModel):
-    status: Literal["ok"]
+    status: Literal["ok", "skipped"]
 
 
 class WhaleTagRead(APIModel):

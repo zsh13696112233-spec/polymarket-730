@@ -52,6 +52,7 @@ from backend.trading import (
 ZERO = Decimal("0")
 ONE = Decimal("1")
 HUNDRED = Decimal("100")
+SETTLED_PRICE_THRESHOLD = Decimal("0.999")
 PROFILE_MISSING_CACHE = timedelta(days=7)
 TAG_CACHE = timedelta(hours=24)
 MARKET_CACHE = timedelta(seconds=60)
@@ -277,6 +278,18 @@ def aggregate_whale_trades(
     ]
 
 
+def market_price_is_settled(market: WhaleMarket) -> bool:
+    """任一结果报价已经贴到 1 说明胜负已分。
+
+    赛果已定的市场在接口上往往仍是 `closed=false`，只是报价停在 0.9995 这类
+    「买一 0.999 / 卖一 1.000」的中间价上。剩余空间已经小于最小报价单位，跟进
+    只会亏手续费，所以按 `SETTLED_PRICE_THRESHOLD` 而不是严格等于 1 来判定。
+    """
+
+    prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
+    return any(price >= SETTLED_PRICE_THRESHOLD for price in prices)
+
+
 def market_is_eligible(
     market: WhaleMarket,
     *,
@@ -285,6 +298,8 @@ def market_is_eligible(
     min_remaining_minutes: int,
 ) -> bool:
     if market.closed or not market.active or not market.accepting_orders:
+        return False
+    if market_price_is_settled(market):
         return False
     if market.liquidity < min_liquidity_usdc:
         return False
@@ -316,6 +331,7 @@ class WhaleDiscoveryScanner:
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
         self._last_trade_timestamp: datetime | None = None
+        self._running_config_at: datetime | None = None
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -361,8 +377,27 @@ class WhaleDiscoveryScanner:
             except TimeoutError:
                 pass
 
-    async def tick(self) -> bool:
-        if self._lock.locked():
+    async def scan_now(self) -> bool:
+        """手动扫描：返回时保证已经有一轮读到最新配置的扫描跑完。
+
+        一轮扫描要几十秒，而后台循环大半时间都在跑，直接跳过会让「立即扫描」看上去
+        毫无反应；无条件排队又会让刚改完设置的用户白等两轮。所以正在跑的那轮只要已经
+        读到当前配置就等它收尾，否则再补一轮。
+        """
+
+        async with self.database.sessions() as session:
+            row = await session.get(WhaleSettings, 1)
+            if row is None or not row.enabled:
+                return False
+            config_at = row.updated_at
+        running_config_at = self._running_config_at
+        if self._lock.locked() and running_config_at is not None and running_config_at >= config_at:
+            async with self._lock:
+                return True
+        return await self.tick(wait=True)
+
+    async def tick(self, *, wait: bool = False) -> bool:
+        if self._lock.locked() and not wait:
             return False
         async with self._lock:
             async with self.database.sessions() as session:
@@ -373,6 +408,7 @@ class WhaleDiscoveryScanner:
                     column.name: getattr(whale_settings, column.name)
                     for column in WhaleSettings.__table__.columns
                 }
+                self._running_config_at = whale_settings.updated_at
             try:
                 warning = await self._scan(values)
                 if self.executor is not None:
@@ -400,6 +436,8 @@ class WhaleDiscoveryScanner:
                         row.updated_at = utcnow()
                         await session.commit()
                 return False
+            finally:
+                self._running_config_at = None
 
     async def _scan(self, config: dict[str, Any]) -> str | None:
         now = utcnow()
@@ -1017,6 +1055,8 @@ class WhaleFollowExecutor:
             whale_avg_price = entry.avg_buy_price if entry is not None else None
         market, outcome_index, outcome = await self._market_for_asset(asset_id)
         self._ensure_market_open(market)
+        if market_price_is_settled(market):
+            raise ValueError("市场结果已经确定，不再接受跟单")
         book = await self.client.fetch_order_book(asset_id)
         if book.best_ask is None:
             raise ValueError("市场当前没有可成交卖盘")
@@ -2008,7 +2048,7 @@ async def list_whale_markets(
     )
     for linked_condition_id, market_entries in by_condition.items():
         market = markets.get(linked_condition_id)
-        if market is None:
+        if market is None or market_price_is_settled(market):
             continue
         tags = [tag for tag in _json_list(market.tags_json) if isinstance(tag, dict)]
         if tag_slug and not any(str(tag.get("slug")) == tag_slug for tag in tags):

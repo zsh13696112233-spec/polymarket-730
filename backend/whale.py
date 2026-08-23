@@ -6,11 +6,13 @@ import json
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.config import Settings
@@ -26,6 +28,7 @@ from backend.models import (
     CopyRedemptionExecution,
     ExecutionAccount,
     WhaleEntry,
+    WhaleEntryRuleState,
     WhaleFill,
     WhaleFollowLedger,
     WhaleFollowPosition,
@@ -38,7 +41,11 @@ from backend.models import (
     WhaleWallet,
 )
 from backend.monitor import utcnow
-from backend.polymarket import PolymarketAPIError, PolymarketClient
+from backend.polymarket import (
+    PolymarketAPIError,
+    PolymarketClient,
+    WhaleMarketPositionSnapshot,
+)
 from backend.trading import (
     MarketTradeRequest,
     RedemptionSubmissionUnknown,
@@ -48,6 +55,7 @@ from backend.trading import (
     UnifiedPolymarketTrader,
     normalize_fak_result,
 )
+from backend.whale_requests import WhaleRequestMonitor, capture_whale_requests
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -56,6 +64,24 @@ SETTLED_PRICE_THRESHOLD = Decimal("0.999")
 PROFILE_MISSING_CACHE = timedelta(days=7)
 TAG_CACHE = timedelta(hours=24)
 MARKET_CACHE = timedelta(seconds=60)
+WHALE_TRADE_WINDOW = timedelta(hours=24)
+WHALE_HISTORY_REFRESH = timedelta(hours=1)
+NEW_ACCOUNT_RULE = "new_account"
+LARGE_AMOUNT_RULE = "large_amount"
+WHALE_RULES = (NEW_ACCOUNT_RULE, LARGE_AMOUNT_RULE)
+WHALE_STATISTICS_RANGES = {
+    "all": None,
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+    "90d": timedelta(days=90),
+}
+WHALE_STATISTICS_AMOUNT_BANDS = (
+    ("lt_100k", "< 10万", ZERO, Decimal("100000")),
+    ("100k_500k", "10万–50万", Decimal("100000"), Decimal("500000")),
+    ("500k_1m", "50万–100万", Decimal("500000"), Decimal("1000000")),
+    ("gte_1m", "≥ 100万", Decimal("1000000"), None),
+)
+BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _decimal(value: Any, default: Decimal = ZERO) -> Decimal:
@@ -166,6 +192,7 @@ class WhaleAggregate:
     last_buy_at: datetime
     status: str
     hedged: bool = False
+    source: str = "trades"
 
 
 def aggregate_whale_trades(
@@ -278,7 +305,71 @@ def aggregate_whale_trades(
     ]
 
 
-def market_price_is_settled(market: WhaleMarket) -> bool:
+def aggregate_whale_positions(
+    positions: Iterable[WhaleMarketPositionSnapshot],
+    *,
+    position_threshold_usdc: Decimal,
+    observed_at: datetime,
+) -> list[WhaleAggregate]:
+    """Convert official current-position snapshots into the existing entry shape."""
+
+    aggregates: list[WhaleAggregate] = []
+    for position in positions:
+        # Data API can expose large legacy/redeemable token balances with a
+        # synthetic avgPrice even though the address never bought the outcome.
+        # They have totalBought=0 and no trader profile/activity, so treating
+        # size*avgPrice as invested capital creates enormous ghost whales.
+        if position.total_bought <= ZERO:
+            continue
+        remaining_cost = position.size * position.avg_price
+        if remaining_cost < position_threshold_usdc:
+            continue
+        aggregates.append(
+            WhaleAggregate(
+                proxy_wallet=position.proxy_wallet,
+                asset_id=position.asset_id,
+                condition_id=position.condition_id,
+                outcome=position.outcome,
+                outcome_index=position.outcome_index,
+                # These fields now describe the current open position. Historical
+                # fills remain available separately when the trade feed has them.
+                gross_buy_usdc=(
+                    remaining_cost if remaining_cost > ZERO else position.current_value
+                ),
+                gross_buy_size=position.size,
+                sold_size=ZERO,
+                sold_usdc=ZERO,
+                net_size=position.size,
+                net_ratio_percent=HUNDRED,
+                avg_buy_price=position.avg_price,
+                max_single_usdc=(
+                    remaining_cost if remaining_cost > ZERO else position.current_value
+                ),
+                trade_count=0,
+                first_buy_at=observed_at,
+                last_buy_at=observed_at,
+                status="holding",
+                source="positions",
+            )
+        )
+
+    assets_by_wallet_market: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for aggregate in aggregates:
+        assets_by_wallet_market[(aggregate.proxy_wallet, aggregate.condition_id)].add(
+            aggregate.asset_id
+        )
+    return [
+        replace(
+            aggregate,
+            hedged=(
+                len(assets_by_wallet_market[(aggregate.proxy_wallet, aggregate.condition_id)]) >= 2
+            ),
+        )
+        for aggregate in aggregates
+    ]
+
+
+def market_price_is_settled(market: Any) -> bool:
     """任一结果报价已经贴到 1 说明胜负已分。
 
     赛果已定的市场在接口上往往仍是 `closed=false`，只是报价停在 0.9995 这类
@@ -286,7 +377,12 @@ def market_price_is_settled(market: WhaleMarket) -> bool:
     只会亏手续费，所以按 `SETTLED_PRICE_THRESHOLD` 而不是严格等于 1 来判定。
     """
 
-    prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
+    prices = [
+        _decimal(value)
+        for value in _json_list(
+            _attribute(market, "outcome_prices_json", "outcome_prices", default=[])
+        )
+    ]
     return any(price >= SETTLED_PRICE_THRESHOLD for price in prices)
 
 
@@ -303,12 +399,11 @@ def market_is_eligible(
         return False
     if market.liquidity < min_liquidity_usdc:
         return False
-    if (
-        market.end_date is not None
-        and not market.end_date_is_date_only
-        and market.end_date <= now + timedelta(minutes=min_remaining_minutes)
-    ):
-        return False
+    # Gamma uses endDate as gameStartTime for sports markets.  Treating it as
+    # the market close time incorrectly blocks otherwise-open pre-match books.
+    # Keep these arguments for API compatibility; actual tradability is
+    # determined by active/closed/acceptingOrders and the settled-price guard.
+    _ = now, min_remaining_minutes
     return True
 
 
@@ -322,15 +417,18 @@ class WhaleDiscoveryScanner:
         client: PolymarketClient,
         settings: Settings,
         executor: WhaleFollowExecutor | None = None,
+        request_monitor: WhaleRequestMonitor | None = None,
     ) -> None:
         self.database = database
         self.client = client
         self.settings = settings
         self.executor = executor
+        self.request_monitor = request_monitor
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
         self._last_trade_timestamp: datetime | None = None
+        self._last_history_refresh_at: datetime | None = None
         self._running_config_at: datetime | None = None
 
     def start(self) -> None:
@@ -410,7 +508,8 @@ class WhaleDiscoveryScanner:
                 }
                 self._running_config_at = whale_settings.updated_at
             try:
-                warning = await self._scan(values)
+                with capture_whale_requests(self.request_monitor, uuid4().hex):
+                    warning = await self._scan(values)
                 if self.executor is not None:
                     try:
                         await self.executor.process_redeemable_positions()
@@ -441,54 +540,140 @@ class WhaleDiscoveryScanner:
 
     async def _scan(self, config: dict[str, Any]) -> str | None:
         now = utcnow()
-        window_start = now - timedelta(hours=int(config["window_hours"]))
+        window_start = now - WHALE_TRADE_WINDOW
         incremental_start = window_start
         if self._last_trade_timestamp is not None:
             incremental_start = max(
-                window_start, self._last_trade_timestamp - timedelta(seconds=120)
+                window_start,
+                self._last_trade_timestamp - timedelta(seconds=120),
             )
         trades, hit_page_limit = await self._collect_trades(
             start=incremental_start,
             amount=_decimal(config["collect_filter_amount_usdc"]),
         )
         await self._persist_trades(trades)
-        if trades:
-            self._last_trade_timestamp = max(_attribute(item, "timestamp") for item in trades)
+        timestamps = [
+            _attribute(item, "timestamp")
+            for item in trades
+            if isinstance(_attribute(item, "timestamp"), datetime)
+        ]
+        if timestamps:
+            self._last_trade_timestamp = max(timestamps)
 
         async with self.database.sessions() as session:
             window_trades = list(
                 (
                     await session.scalars(
                         select(WhaleTrade)
-                        .where(WhaleTrade.timestamp >= window_start)
+                        .where(
+                            WhaleTrade.timestamp >= window_start,
+                            WhaleTrade.side == "BUY",
+                        )
                         .order_by(WhaleTrade.timestamp.asc(), WhaleTrade.id.asc())
                     )
                 ).all()
             )
+        new_threshold = _decimal(config["new_account_threshold_usdc"])
+        large_threshold = _decimal(config["large_amount_threshold_usdc"])
+        collection_threshold = min(new_threshold, large_threshold)
         aggregates = aggregate_whale_trades(
             window_trades,
-            single_trade_threshold_usdc=_decimal(config["single_trade_threshold_usdc"]),
-            cumulative_threshold_usdc=_decimal(config["cumulative_threshold_usdc"]),
+            single_trade_threshold_usdc=collection_threshold,
+            cumulative_threshold_usdc=collection_threshold,
             holding_ratio_threshold=_decimal(config["holding_ratio_threshold"]),
             exited_ratio_threshold=_decimal(config["exited_ratio_threshold"]),
         )
-        condition_ids = list(
-            dict.fromkeys(item.condition_id for item in aggregates if item.condition_id)
+        unresolved_conditions: list[str] = []
+        if (
+            self._last_history_refresh_at is None
+            or self._last_history_refresh_at <= now - WHALE_HISTORY_REFRESH
+        ):
+            async with self.database.sessions() as session:
+                unresolved_conditions = list(
+                    (
+                        await session.scalars(
+                            select(WhaleEntry.condition_id)
+                            .where(WhaleEntry.settlement_price.is_(None))
+                            .distinct()
+                        )
+                    ).all()
+                )
+            self._last_history_refresh_at = now
+        await self._refresh_markets(
+            list(
+                dict.fromkeys(
+                    [item.condition_id for item in aggregates if item.condition_id]
+                    + unresolved_conditions
+                )
+            ),
+            now=now,
         )
-        await self._refresh_markets(condition_ids, now=now)
         await self._refresh_wallets(
             list(dict.fromkeys(item.proxy_wallet for item in aggregates)),
             now=now,
             cache_hours=int(config["profile_cache_hours"]),
         )
-        await self._refresh_tags(now=now)
-        await self._replace_entries(
-            aggregates,
+        registration_days = int(config["registration_window_days"])
+        registration_cutoff = now - timedelta(days=registration_days)
+        async with self.database.sessions() as session:
+            profiles = {
+                row.proxy_wallet: row
+                for row in (
+                    await session.scalars(
+                        select(WhaleWallet).where(
+                            WhaleWallet.proxy_wallet.in_(
+                                list(dict.fromkeys(item.proxy_wallet for item in aggregates))
+                            )
+                        )
+                    )
+                ).all()
+            }
+        rule_matches: dict[tuple[str, str], set[str]] = {}
+        qualified: list[WhaleAggregate] = []
+        for aggregate in aggregates:
+            matches: set[str] = set()
+            profile = profiles.get(aggregate.proxy_wallet)
+            if (
+                aggregate.gross_buy_usdc >= new_threshold
+                and profile is not None
+                and profile.profile_created_at is not None
+                and registration_cutoff <= profile.profile_created_at <= now
+            ):
+                matches.add(NEW_ACCOUNT_RULE)
+            if aggregate.gross_buy_usdc >= large_threshold:
+                matches.add(LARGE_AMOUNT_RULE)
+            if matches:
+                key = (aggregate.proxy_wallet, aggregate.asset_id)
+                rule_matches[key] = matches
+                qualified.append(aggregate)
+        async with self.database.sessions() as session:
+            active_wallets = list(
+                (
+                    await session.scalars(
+                        select(WhaleEntry.proxy_wallet)
+                        .join(
+                            WhaleEntryRuleState,
+                            WhaleEntryRuleState.entry_id == WhaleEntry.id,
+                        )
+                        .where(WhaleEntryRuleState.active.is_(True))
+                        .distinct()
+                    )
+                ).all()
+            )
+        positions_by_wallet, failed_wallets = await self._fetch_current_positions(
+            qualified,
+            additional_wallets=active_wallets,
+        )
+        await self._persist_entries(
+            qualified,
+            rule_matches=rule_matches,
+            positions_by_wallet=positions_by_wallet,
+            failed_wallets=failed_wallets,
             config=config,
             now=now,
             window_start=window_start,
         )
-        await self._update_tag_counts(now=now)
+        await self._update_entry_settlements(now=now)
         async with self.database.sessions() as session:
             await session.execute(
                 delete(WhaleTrade).where(
@@ -497,7 +682,91 @@ class WhaleDiscoveryScanner:
                 )
             )
             await session.commit()
-        return "扫描达到分页上限，结果可能不完整" if hit_page_limit else None
+        warnings: list[str] = []
+        if hit_page_limit:
+            warnings.append("成交回溯达到官方分页上限，冷启动的24小时窗口可能尚未完整")
+        if failed_wallets:
+            warnings.append(f"{len(failed_wallets)} 个候选钱包的当前持仓核验失败，已保留上次状态")
+        return "；".join(warnings) or None
+
+    async def _update_entry_settlements(self, *, now: datetime) -> None:
+        async with self.database.sessions() as session:
+            entries = list(
+                (
+                    await session.scalars(
+                        select(WhaleEntry).where(WhaleEntry.settlement_price.is_(None))
+                    )
+                ).all()
+            )
+            if not entries:
+                return
+            market_ids = list(dict.fromkeys(row.condition_id for row in entries))
+            markets = {
+                row.condition_id: row
+                for row in (
+                    await session.scalars(
+                        select(WhaleMarket).where(WhaleMarket.condition_id.in_(market_ids))
+                    )
+                ).all()
+            }
+            entry_ids: list[int] = []
+            for row in entries:
+                market = markets.get(row.condition_id)
+                if market is None or not market_price_is_settled(market):
+                    continue
+                prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
+                if not (0 <= row.outcome_index < len(prices)):
+                    continue
+                row.settlement_price = prices[row.outcome_index]
+                row.settled_at = now
+                row.status = "exited"
+                row.follow_eligible = False
+                row.follow_ineligible_reason = "market_closed"
+                entry_ids.append(row.id)
+            if entry_ids:
+                states = list(
+                    (
+                        await session.scalars(
+                            select(WhaleEntryRuleState).where(
+                                WhaleEntryRuleState.entry_id.in_(entry_ids),
+                                WhaleEntryRuleState.active.is_(True),
+                            )
+                        )
+                    ).all()
+                )
+                for state in states:
+                    state.active = False
+                    state.inactive_at = now
+                    state.inactive_reason = "market_closed"
+            await session.commit()
+
+    async def _fetch_current_positions(
+        self,
+        aggregates: list[WhaleAggregate],
+        *,
+        additional_wallets: Iterable[str] = (),
+    ) -> tuple[dict[str, dict[str, Any]], set[str]]:
+        """Fetch complete current positions without turning provider failures into exits."""
+
+        wallets = list(
+            dict.fromkeys([item.proxy_wallet for item in aggregates] + list(additional_wallets))
+        )
+        positions_by_wallet: dict[str, dict[str, Any]] = {}
+        failed_wallets: set[str] = set()
+        for offset in range(0, len(wallets), 10):
+            batch = wallets[offset : offset + 10]
+            results = await asyncio.gather(
+                *(self._retry(self.client.fetch_active_positions, user=wallet) for wallet in batch),
+                return_exceptions=True,
+            )
+            for wallet, result in zip(batch, results, strict=True):
+                if isinstance(result, Exception):
+                    failed_wallets.add(wallet)
+                    continue
+                positions_by_wallet[wallet] = {
+                    position.asset_id: position for position in result if position.size > ZERO
+                }
+        return positions_by_wallet, failed_wallets
 
     async def _collect_trades(
         self,
@@ -603,12 +872,24 @@ class WhaleDiscoveryScanner:
         if not wanted:
             return
         markets = await self._retry(self.client.fetch_markets_with_tags, condition_ids=wanted)
+        returned = {str(_attribute(item, "condition_id") or "") for item in markets}
+        missing = [condition_id for condition_id in wanted if condition_id not in returned]
+        closed_fetch = getattr(self.client, "fetch_closed_markets_with_tags", None)
+        if missing and closed_fetch is not None:
+            markets.extend(await self._retry(closed_fetch, condition_ids=missing))
+        await self._persist_markets(markets, now=now)
+
+    async def _persist_markets(self, markets: Iterable[Any], *, now: datetime) -> None:
+        markets = list(markets)
+        if not markets:
+            return
+        condition_ids = [str(_attribute(item, "condition_id") or "") for item in markets]
         async with self.database.sessions() as session:
             existing = {
                 item.condition_id: item
                 for item in (
                     await session.scalars(
-                        select(WhaleMarket).where(WhaleMarket.condition_id.in_(wanted))
+                        select(WhaleMarket).where(WhaleMarket.condition_id.in_(condition_ids))
                     )
                 ).all()
             }
@@ -661,6 +942,51 @@ class WhaleDiscoveryScanner:
                 row.refreshed_at = now
             await session.commit()
 
+    async def _persist_position_wallet_hints(
+        self,
+        positions: Iterable[WhaleMarketPositionSnapshot],
+        *,
+        now: datetime,
+    ) -> None:
+        hints: dict[str, WhaleMarketPositionSnapshot] = {}
+        for position in positions:
+            hints.setdefault(position.proxy_wallet, position)
+        if not hints:
+            return
+        stale_at = now - PROFILE_MISSING_CACHE - timedelta(seconds=1)
+        async with self.database.sessions() as session:
+            existing = {
+                row.proxy_wallet: row
+                for row in (
+                    await session.scalars(
+                        select(WhaleWallet).where(WhaleWallet.proxy_wallet.in_(hints))
+                    )
+                ).all()
+            }
+            for wallet, hint in hints.items():
+                row = existing.get(wallet)
+                if row is None:
+                    row = WhaleWallet(
+                        proxy_wallet=wallet,
+                        display_name=hint.display_name or f"{wallet[:6]}…{wallet[-4:]}",
+                        profile_missing=True,
+                        refreshed_at=stale_at,
+                    )
+                    session.add(row)
+                elif hint.display_name and (not row.display_name or row.profile_missing):
+                    row.display_name = hint.display_name
+                if hint.profile_image_url and not row.profile_image_url:
+                    row.profile_image_url = hint.profile_image_url
+                row.verified_badge = row.verified_badge or hint.verified_badge
+                if (
+                    row.profile_created_at is None
+                    and row.pseudonym is None
+                    and row.taker_tier is None
+                ):
+                    row.profile_missing = True
+                    row.refreshed_at = min(row.refreshed_at, stale_at)
+            await session.commit()
+
     async def _refresh_wallets(
         self,
         wallets: list[str],
@@ -692,30 +1018,45 @@ class WhaleDiscoveryScanner:
                     else timedelta(hours=cache_hours)
                 )
             )
-        ][: self.settings.whale_profile_batch_limit]
-        for wallet in wanted:
-            profile = await self._retry(self.client.fetch_public_profile, address=wallet)
+        ]
+        for offset in range(0, len(wanted), 10):
+            batch = wanted[offset : offset + 10]
+            profiles = await asyncio.gather(
+                *(
+                    self._retry(self.client.fetch_public_profile, address=wallet)
+                    for wallet in batch
+                ),
+                return_exceptions=True,
+            )
             async with self.database.sessions() as session:
-                row = await session.get(WhaleWallet, wallet)
-                if row is None:
-                    row = WhaleWallet(proxy_wallet=wallet)
-                    session.add(row)
-                if profile is None:
-                    row.display_name = row.display_name or f"{wallet[:6]}…{wallet[-4:]}"
-                    row.profile_missing = True
-                else:
-                    row.display_name = str(
-                        _attribute(profile, "display_name", "name", "pseudonym", default="")
-                        or f"{wallet[:6]}…{wallet[-4:]}"
-                    )[:200]
-                    row.pseudonym = str(_attribute(profile, "pseudonym", default="") or "")
-                    row.profile_created_at = _attribute(profile, "created_at", "profile_created_at")
-                    row.verified_badge = bool(_attribute(profile, "verified_badge", default=False))
-                    row.taker_tier = _attribute(profile, "taker_tier")
-                    row.taker_tier_name = _attribute(profile, "taker_tier_name")
-                    row.weighted_volume = _attribute(profile, "weighted_volume")
-                    row.profile_missing = False
-                row.refreshed_at = now
+                for wallet, profile in zip(batch, profiles, strict=True):
+                    if isinstance(profile, Exception):
+                        continue
+                    row = await session.get(WhaleWallet, wallet)
+                    if row is None:
+                        row = WhaleWallet(proxy_wallet=wallet)
+                        session.add(row)
+                    if profile is None:
+                        row.display_name = row.display_name or f"{wallet[:6]}…{wallet[-4:]}"
+                        row.profile_missing = True
+                    else:
+                        row.display_name = str(
+                            _attribute(profile, "display_name", "name", "pseudonym", default="")
+                            or f"{wallet[:6]}…{wallet[-4:]}"
+                        )[:200]
+                        row.pseudonym = str(_attribute(profile, "pseudonym", default="") or "")
+                        row.profile_image_url = _attribute(profile, "profile_image_url")
+                        row.profile_created_at = _attribute(
+                            profile, "created_at", "profile_created_at"
+                        )
+                        row.verified_badge = bool(
+                            _attribute(profile, "verified_badge", default=False)
+                        )
+                        row.taker_tier = _attribute(profile, "taker_tier")
+                        row.taker_tier_name = _attribute(profile, "taker_tier_name")
+                        row.weighted_volume = _attribute(profile, "weighted_volume")
+                        row.profile_missing = False
+                    row.refreshed_at = now
                 await session.commit()
 
     async def _refresh_tags(self, *, now: datetime) -> None:
@@ -740,47 +1081,79 @@ class WhaleDiscoveryScanner:
                 row.refreshed_at = now
             await session.commit()
 
-    async def _replace_entries(
+    @staticmethod
+    def _follow_ineligible_reason(
+        market: WhaleMarket | None,
+        *,
+        position_present: bool,
+        config: dict[str, Any],
+    ) -> str | None:
+        if market is None:
+            return "market_metadata_unavailable"
+        if market.closed or not market.active or market_price_is_settled(market):
+            return "market_closed"
+        if not position_present:
+            return "position_exited"
+        if not market.accepting_orders:
+            return "orders_not_accepted"
+        if market.liquidity < _decimal(config["min_liquidity_usdc"]):
+            return "low_liquidity"
+        return None
+
+    async def _persist_entries(
         self,
         aggregates: list[WhaleAggregate],
         *,
+        rule_matches: dict[tuple[str, str], set[str]],
+        positions_by_wallet: dict[str, dict[str, Any]],
+        failed_wallets: set[str],
         config: dict[str, Any],
         now: datetime,
         window_start: datetime,
     ) -> None:
-        condition_ids = list(dict.fromkeys(item.condition_id for item in aggregates))
         async with self.database.sessions() as session:
             markets = {
-                row.condition_id: row
-                for row in (
-                    await session.scalars(
-                        select(WhaleMarket).where(WhaleMarket.condition_id.in_(condition_ids))
-                    )
-                ).all()
+                row.condition_id: row for row in (await session.scalars(select(WhaleMarket))).all()
             }
             existing = {
                 (row.proxy_wallet, row.asset_id): row
                 for row in (await session.scalars(select(WhaleEntry))).all()
             }
-            seen: set[tuple[str, str]] = set()
+            states = {
+                (row.entry_id, row.rule_type): row
+                for row in (await session.scalars(select(WhaleEntryRuleState))).all()
+            }
             for aggregate in aggregates:
                 market = markets.get(aggregate.condition_id)
-                if market is None or not market_is_eligible(
-                    market,
-                    now=now,
-                    min_liquidity_usdc=_decimal(config["min_liquidity_usdc"]),
-                    min_remaining_minutes=int(config["min_remaining_minutes"]),
-                ):
-                    continue
                 key = (aggregate.proxy_wallet, aggregate.asset_id)
-                seen.add(key)
                 row = existing.get(key)
                 if row is None:
                     row = WhaleEntry(
                         proxy_wallet=aggregate.proxy_wallet,
                         asset_id=aggregate.asset_id,
+                        condition_id=aggregate.condition_id,
+                        outcome=aggregate.outcome,
+                        outcome_index=aggregate.outcome_index,
+                        gross_buy_usdc=aggregate.gross_buy_usdc,
+                        gross_buy_size=aggregate.gross_buy_size,
+                        sold_size=aggregate.sold_size,
+                        sold_usdc=aggregate.sold_usdc,
+                        net_size=ZERO,
+                        net_ratio=ZERO,
+                        avg_buy_price=aggregate.avg_buy_price,
+                        max_single_usdc=aggregate.max_single_usdc,
+                        trade_count=aggregate.trade_count,
+                        first_buy_at=aggregate.first_buy_at,
+                        last_buy_at=aggregate.last_buy_at,
+                        status="exited",
+                        hedged=aggregate.hedged,
+                        window_start=window_start,
+                        computed_at=now,
+                        follow_eligible=False,
                     )
                     session.add(row)
+                    await session.flush()
+                    existing[key] = row
                 row.condition_id = aggregate.condition_id
                 row.outcome = aggregate.outcome
                 row.outcome_index = aggregate.outcome_index
@@ -788,20 +1161,178 @@ class WhaleDiscoveryScanner:
                 row.gross_buy_size = aggregate.gross_buy_size
                 row.sold_size = aggregate.sold_size
                 row.sold_usdc = aggregate.sold_usdc
-                row.net_size = aggregate.net_size
-                row.net_ratio = aggregate.net_ratio_percent
                 row.avg_buy_price = aggregate.avg_buy_price
                 row.max_single_usdc = aggregate.max_single_usdc
-                row.trade_count = aggregate.trade_count
-                row.first_buy_at = aggregate.first_buy_at
-                row.last_buy_at = aggregate.last_buy_at
-                row.status = aggregate.status
+                if aggregate.source != "positions":
+                    row.trade_count = aggregate.trade_count
+                    # `first_buy_at` is the durable monitored build time.  Do not
+                    # let the rolling 24-hour window move it forward after older
+                    # fills age out; subsequent buys only advance `last_buy_at`.
+                    row.first_buy_at = min(row.first_buy_at, aggregate.first_buy_at)
+                    row.last_buy_at = aggregate.last_buy_at
                 row.hedged = aggregate.hedged
                 row.window_start = window_start
                 row.computed_at = now
-            stale_ids = [row.id for key, row in existing.items() if key not in seen]
-            if stale_ids:
-                await session.execute(delete(WhaleEntry).where(WhaleEntry.id.in_(stale_ids)))
+
+                market_terminal = bool(
+                    market is not None
+                    and (market.closed or not market.active or market_price_is_settled(market))
+                )
+                position_failed = aggregate.proxy_wallet in failed_wallets
+                position = positions_by_wallet.get(aggregate.proxy_wallet, {}).get(
+                    aggregate.asset_id
+                )
+                position_present = position is not None and position.size > ZERO
+                if not position_failed:
+                    row.position_checked_at = now
+                    if position_present:
+                        row.net_size = position.size
+                        row.net_ratio = max(
+                            ZERO,
+                            min(
+                                HUNDRED,
+                                position.size / aggregate.gross_buy_size * HUNDRED
+                                if aggregate.gross_buy_size > ZERO
+                                else HUNDRED,
+                            ),
+                        )
+                        row.status = "holding"
+                    else:
+                        row.net_size = ZERO
+                        row.net_ratio = ZERO
+                        row.status = "exited"
+
+                if market_terminal and market is not None and market_price_is_settled(market):
+                    prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
+                    if 0 <= row.outcome_index < len(prices):
+                        row.settlement_price = prices[row.outcome_index]
+                        row.settled_at = now
+                    row.status = "exited"
+
+                reason = self._follow_ineligible_reason(
+                    market,
+                    position_present=(row.net_size > ZERO if position_failed else position_present),
+                    config=config,
+                )
+                if position_failed:
+                    row.follow_eligible = False
+                    row.follow_ineligible_reason = "position_check_failed"
+                else:
+                    row.follow_eligible = reason is None
+                    row.follow_ineligible_reason = reason
+
+                matches = rule_matches[key]
+                for rule_type in matches:
+                    state = states.get((row.id, rule_type))
+                    if state is None:
+                        threshold = (
+                            _decimal(config["new_account_threshold_usdc"])
+                            if rule_type == NEW_ACCOUNT_RULE
+                            else _decimal(config["large_amount_threshold_usdc"])
+                        )
+                        state = WhaleEntryRuleState(
+                            entry_id=row.id,
+                            rule_type=rule_type,
+                            active=False,
+                            first_triggered_at=now,
+                            last_qualified_at=now,
+                            threshold_usdc_snapshot=threshold,
+                            registration_days_snapshot=(
+                                int(config["registration_window_days"])
+                                if rule_type == NEW_ACCOUNT_RULE
+                                else None
+                            ),
+                        )
+                        session.add(state)
+                        states[(row.id, rule_type)] = state
+                    else:
+                        state.last_qualified_at = now
+                    if position_failed:
+                        if state.first_triggered_at == now:
+                            state.inactive_at = now
+                            state.inactive_reason = "position_check_failed"
+                        continue
+                    state.active = position_present and not market_terminal
+                    if state.active:
+                        state.inactive_at = None
+                        state.inactive_reason = None
+                    else:
+                        state.inactive_at = now
+                        state.inactive_reason = (
+                            "market_closed" if market_terminal else "position_exited"
+                        )
+
+            qualified_keys = set(rule_matches)
+            entries_by_id = {row.id: row for row in existing.values()}
+            for (entry_id, _rule_type), state in states.items():
+                if not state.active:
+                    continue
+                row = entries_by_id.get(entry_id)
+                if row is None:
+                    continue
+                key = (row.proxy_wallet, row.asset_id)
+                # Once a rule has triggered, it stays current while the position
+                # remains open. The 24-hour window and account-age rule only
+                # decide whether a new trigger is created.
+                if key in qualified_keys:
+                    continue
+                market = markets.get(row.condition_id)
+                market_terminal = bool(
+                    market is not None
+                    and (market.closed or not market.active or market_price_is_settled(market))
+                )
+                if row.proxy_wallet in failed_wallets:
+                    row.follow_eligible = False
+                    row.follow_ineligible_reason = "position_check_failed"
+                    continue
+                position = positions_by_wallet.get(row.proxy_wallet, {}).get(row.asset_id)
+                position_present = position is not None and position.size > ZERO
+                row.position_checked_at = now
+                if position_present:
+                    row.net_size = position.size
+                    row.net_ratio = max(
+                        ZERO,
+                        min(
+                            HUNDRED,
+                            position.size / row.gross_buy_size * HUNDRED
+                            if row.gross_buy_size > ZERO
+                            else HUNDRED,
+                        ),
+                    )
+                    row.status = "holding"
+                else:
+                    row.net_size = ZERO
+                    row.net_ratio = ZERO
+                    row.status = "exited"
+                if market_terminal:
+                    row.status = "exited"
+                    if market is not None and market_price_is_settled(market):
+                        prices = [
+                            _decimal(value) for value in _json_list(market.outcome_prices_json)
+                        ]
+                        if 0 <= row.outcome_index < len(prices):
+                            row.settlement_price = prices[row.outcome_index]
+                            row.settled_at = now
+                reason = self._follow_ineligible_reason(
+                    market,
+                    position_present=position_present,
+                    config=config,
+                )
+                row.follow_eligible = reason is None
+                row.follow_ineligible_reason = reason
+                if market_terminal or not position_present:
+                    state.active = False
+                    state.inactive_at = now
+                    state.inactive_reason = (
+                        "market_closed" if market_terminal else "position_exited"
+                    )
+
+            active_entry_ids = {entry_id for (entry_id, _), state in states.items() if state.active}
+            for row in existing.values():
+                if row.id not in active_entry_ids:
+                    row.follow_eligible = False
+                    if row.follow_ineligible_reason is None:
+                        row.follow_ineligible_reason = "rule_inactive"
             await session.commit()
 
     async def _update_tag_counts(self, *, now: datetime) -> None:
@@ -851,6 +1382,14 @@ class WhaleFollowQuote:
     total_cost_usdc: Decimal
     profit_ratio_percent: Decimal
     max_loss_usdc: Decimal
+    winning_payout_usdc: Decimal
+    winning_profit_usdc: Decimal
+    immediate_exit_price: Decimal | None
+    immediate_exit_proceeds_usdc: Decimal | None
+    immediate_exit_fee_usdc: Decimal | None
+    immediate_exit_pnl_usdc: Decimal | None
+    immediate_exit_pnl_percent: Decimal | None
+    immediate_exit_unavailable_reason: str | None
     whale_avg_price: Decimal | None
     whale_profit_ratio_percent: Decimal | None
     profit_ratio_gap_percent: Decimal | None
@@ -1019,23 +1558,16 @@ class WhaleFollowExecutor:
     def _ensure_market_open(market: WhaleMarket) -> None:
         if market.closed or not market.active or not market.accepting_orders:
             raise ValueError("市场当前已不再开放交易")
-        if (
-            market.end_date is not None
-            and not market.end_date_is_date_only
-            and market.end_date <= utcnow()
-        ):
-            raise ValueError("市场已经到达结束时间")
 
     async def quote_follow(
         self,
         *,
         asset_id: str,
         amount_usdc: Decimal,
-        entry_id: int | None,
+        entry_id: int,
     ) -> WhaleFollowQuote:
         if not self.settings.live_copy_enabled:
             raise ValueError("自动实盘已被系统紧急停用")
-        account = await self._account()
         async with self.database.sessions() as session:
             whale_settings = await session.get(WhaleSettings, 1)
             if whale_settings is None:
@@ -1046,13 +1578,28 @@ class WhaleFollowExecutor:
                 raise ValueError(
                     f"单笔跟单金额不能超过 {whale_settings.max_follow_amount_usdc} USDC"
                 )
-            entry = await session.get(WhaleEntry, entry_id) if entry_id is not None else None
-            if entry_id is not None and (entry is None or entry.asset_id != asset_id):
+            entry = await session.get(WhaleEntry, entry_id)
+            if entry is None or entry.asset_id != asset_id:
                 raise ValueError("巨鲸投入记录与所选 outcome 不匹配")
+            active_rule_count = int(
+                await session.scalar(
+                    select(func.count(WhaleEntryRuleState.id)).where(
+                        WhaleEntryRuleState.entry_id == entry.id,
+                        WhaleEntryRuleState.active.is_(True),
+                    )
+                )
+                or 0
+            )
+            if active_rule_count == 0:
+                raise ValueError("该巨鲸信号已经进入历史记录，不能继续跟买")
+            if not entry.follow_eligible:
+                raise ValueError("该巨鲸信号当前不满足跟买条件")
             slippage = whale_settings.follow_slippage_cents
+            sell_slippage = whale_settings.sell_slippage_cents
             warning_delta = whale_settings.max_price_delta_cents
-            source_wallet = entry.proxy_wallet if entry is not None else None
-            whale_avg_price = entry.avg_buy_price if entry is not None else None
+            source_wallet = entry.proxy_wallet
+            whale_avg_price = entry.avg_buy_price
+        account = await self._account()
         market, outcome_index, outcome = await self._market_for_asset(asset_id)
         self._ensure_market_open(market)
         if market_price_is_settled(market):
@@ -1071,6 +1618,35 @@ class WhaleFollowExecutor:
         if total_cost > balance:
             raise ValueError("执行钱包可用余额不足以支付买入金额与手续费")
         profit_ratio = (shares - total_cost) / total_cost * HUNDRED
+        winning_profit = shares - total_cost
+        immediate_exit_price: Decimal | None = None
+        immediate_exit_proceeds: Decimal | None = None
+        immediate_exit_fee: Decimal | None = None
+        immediate_exit_pnl: Decimal | None = None
+        immediate_exit_pnl_percent: Decimal | None = None
+        immediate_exit_unavailable_reason: str | None = None
+        if book.best_bid is None:
+            immediate_exit_unavailable_reason = "市场当前没有可成交买盘"
+        elif shares < book.min_order_size:
+            immediate_exit_unavailable_reason = f"预计份额低于市场最小卖出量 {book.min_order_size}"
+        else:
+            immediate_exit_price = market_worst_price(
+                book.best_bid,
+                book.tick_size,
+                sell_slippage,
+                side="SELL",
+            )
+            immediate_exit_proceeds = shares * immediate_exit_price
+            immediate_exit_fee = estimated_market_fee(
+                shares,
+                immediate_exit_price,
+                market.fee_rate,
+                market.fee_exponent,
+            )
+            immediate_exit_pnl = immediate_exit_proceeds - immediate_exit_fee - total_cost
+            immediate_exit_pnl_percent = (
+                immediate_exit_pnl / total_cost * HUNDRED if total_cost > ZERO else ZERO
+            )
         whale_profit = (
             settlement_profit_ratio(
                 amount_usdc,
@@ -1104,6 +1680,14 @@ class WhaleFollowExecutor:
             total_cost_usdc=total_cost,
             profit_ratio_percent=profit_ratio,
             max_loss_usdc=total_cost,
+            winning_payout_usdc=shares,
+            winning_profit_usdc=winning_profit,
+            immediate_exit_price=immediate_exit_price,
+            immediate_exit_proceeds_usdc=immediate_exit_proceeds,
+            immediate_exit_fee_usdc=immediate_exit_fee,
+            immediate_exit_pnl_usdc=immediate_exit_pnl,
+            immediate_exit_pnl_percent=immediate_exit_pnl_percent,
+            immediate_exit_unavailable_reason=immediate_exit_unavailable_reason,
             whale_avg_price=whale_avg_price,
             whale_profit_ratio_percent=whale_profit,
             profit_ratio_gap_percent=(
@@ -1967,6 +2551,42 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
                     await session.scalar(select(func.count(func.distinct(WhaleEntry.condition_id))))
                     or 0
                 ),
+                "new_account_active_count": int(
+                    await session.scalar(
+                        select(func.count(WhaleEntryRuleState.id)).where(
+                            WhaleEntryRuleState.rule_type == NEW_ACCOUNT_RULE,
+                            WhaleEntryRuleState.active.is_(True),
+                        )
+                    )
+                    or 0
+                ),
+                "new_account_history_count": int(
+                    await session.scalar(
+                        select(func.count(WhaleEntryRuleState.id)).where(
+                            WhaleEntryRuleState.rule_type == NEW_ACCOUNT_RULE,
+                            WhaleEntryRuleState.active.is_(False),
+                        )
+                    )
+                    or 0
+                ),
+                "large_amount_active_count": int(
+                    await session.scalar(
+                        select(func.count(WhaleEntryRuleState.id)).where(
+                            WhaleEntryRuleState.rule_type == LARGE_AMOUNT_RULE,
+                            WhaleEntryRuleState.active.is_(True),
+                        )
+                    )
+                    or 0
+                ),
+                "large_amount_history_count": int(
+                    await session.scalar(
+                        select(func.count(WhaleEntryRuleState.id)).where(
+                            WhaleEntryRuleState.rule_type == LARGE_AMOUNT_RULE,
+                            WhaleEntryRuleState.active.is_(False),
+                        )
+                    )
+                    or 0
+                ),
             }
         )
         return values
@@ -1986,18 +2606,30 @@ async def list_whale_markets(
     offset: int = 0,
     condition_id: str | None = None,
     include_trades: bool = False,
+    rule: str = NEW_ACCOUNT_RULE,
 ) -> dict[str, Any]:
+    if rule not in WHALE_RULES:
+        raise ValueError("巨鲸监控规则无效")
     now = utcnow()
     async with database.sessions() as session:
         settings = await session.get(WhaleSettings, 1)
         if settings is None:
             raise ValueError("巨鲸模块尚未初始化")
-        entry_query = select(WhaleEntry)
+        entry_query = (
+            select(WhaleEntry)
+            .join(WhaleEntryRuleState, WhaleEntryRuleState.entry_id == WhaleEntry.id)
+            .where(
+                WhaleEntryRuleState.rule_type == rule,
+                WhaleEntryRuleState.active.is_(True),
+            )
+        )
         if condition_id:
             entry_query = entry_query.where(WhaleEntry.condition_id == condition_id)
         entries = list((await session.scalars(entry_query)).all())
         if not include_exited:
-            entries = [entry for entry in entries if entry.status != "exited"]
+            entries = [
+                entry for entry in entries if entry.status != "exited" and entry.net_size > ZERO
+            ]
         if not include_hedged:
             entries = [entry for entry in entries if not entry.hedged]
         condition_ids = list(dict.fromkeys(entry.condition_id for entry in entries))
@@ -2018,13 +2650,22 @@ async def list_whale_markets(
                 )
             ).all()
         }
+        rule_state_rows = list(
+            (
+                await session.scalars(
+                    select(WhaleEntryRuleState).where(
+                        WhaleEntryRuleState.entry_id.in_([entry.id for entry in entries])
+                    )
+                )
+            ).all()
+        )
         raw_trades = (
             list(
                 (
                     await session.scalars(
                         select(WhaleTrade)
                         .where(
-                            WhaleTrade.timestamp >= now - timedelta(hours=settings.window_hours),
+                            WhaleTrade.timestamp >= now - WHALE_TRADE_WINDOW,
                             WhaleTrade.condition_id.in_(condition_ids),
                         )
                         .order_by(WhaleTrade.timestamp.desc(), WhaleTrade.id.desc())
@@ -2041,11 +2682,11 @@ async def list_whale_markets(
     trades_by_entry: dict[tuple[str, str], list[WhaleTrade]] = defaultdict(list)
     for trade in raw_trades:
         trades_by_entry[(trade.proxy_wallet, trade.asset_id)].append(trade)
+    states_by_entry: dict[int, list[WhaleEntryRuleState]] = defaultdict(list)
+    for state in rule_state_rows:
+        states_by_entry[state.entry_id].append(state)
 
     cards: list[dict[str, Any]] = []
-    minimum_remaining = (
-        settings.min_remaining_minutes if min_remaining_minutes is None else min_remaining_minutes
-    )
     for linked_condition_id, market_entries in by_condition.items():
         market = markets.get(linked_condition_id)
         if market is None or market_price_is_settled(market):
@@ -2058,8 +2699,6 @@ async def list_whale_markets(
             if market.end_date is not None and not market.end_date_is_date_only
             else None
         )
-        if remaining_seconds is not None and remaining_seconds < minimum_remaining * 60:
-            continue
         outcomes = [str(value) for value in _json_list(market.outcomes_json)]
         tokens = [str(value) for value in _json_list(market.clob_token_ids_json)]
         prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
@@ -2072,6 +2711,7 @@ async def list_whale_markets(
             if max_price_delta_cents is not None and delta > max_price_delta_cents:
                 continue
             profile = wallets.get(entry.proxy_wallet)
+            entry_states = states_by_entry.get(entry.id, [])
             detail_trades = trades_by_entry.get((entry.proxy_wallet, entry.asset_id), [])
             side_entries[entry.outcome_index].append(
                 {
@@ -2082,6 +2722,7 @@ async def list_whale_markets(
                         if profile is not None and profile.display_name
                         else f"{entry.proxy_wallet[:6]}…{entry.proxy_wallet[-4:]}"
                     ),
+                    "wallet_avatar_url": profile.profile_image_url if profile is not None else None,
                     "profile_url": f"https://polymarket.com/profile/{entry.proxy_wallet}",
                     "wallet_created_at": (
                         profile.profile_created_at if profile is not None else None
@@ -2094,6 +2735,12 @@ async def list_whale_markets(
                     "taker_tier_name": profile.taker_tier_name if profile else None,
                     "gross_buy_usdc": entry.gross_buy_usdc,
                     "gross_buy_size": entry.gross_buy_size,
+                    "net_size": entry.net_size,
+                    "current_value_usdc": (
+                        entry.net_size * current_price
+                        if 0 <= entry.outcome_index < len(prices)
+                        else None
+                    ),
                     "avg_buy_price": entry.avg_buy_price,
                     "max_single_usdc": entry.max_single_usdc,
                     "trade_count": entry.trade_count,
@@ -2106,6 +2753,17 @@ async def list_whale_markets(
                     "price_delta_percent": (
                         delta / entry.avg_buy_price if entry.avg_buy_price > ZERO else ZERO
                     ),
+                    "matched_rules": sorted(state.rule_type for state in entry_states),
+                    "first_triggered_at": min(
+                        (state.first_triggered_at for state in entry_states),
+                        default=entry.computed_at,
+                    ),
+                    "last_qualified_at": max(
+                        (state.last_qualified_at for state in entry_states),
+                        default=entry.computed_at,
+                    ),
+                    "follow_eligible": entry.follow_eligible,
+                    "follow_ineligible_reason": entry.follow_ineligible_reason,
                     "trades": [
                         {
                             "id": trade.id,
@@ -2241,11 +2899,466 @@ async def list_whale_markets(
     )
     return {
         "generated_at": now,
-        "window_start": now - timedelta(hours=settings.window_hours),
+        "window_start": now - WHALE_TRADE_WINDOW,
         "stale": stale,
         "total": total_cards,
         "items": cards[offset : offset + limit],
     }
+
+
+async def list_whale_history(
+    database: Database,
+    *,
+    rule: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    if rule not in WHALE_RULES:
+        raise ValueError("巨鲸监控规则无效")
+    now = utcnow()
+    async with database.sessions() as session:
+        state_query = (
+            select(WhaleEntryRuleState)
+            .where(
+                WhaleEntryRuleState.rule_type == rule,
+                WhaleEntryRuleState.active.is_(False),
+            )
+            .order_by(
+                WhaleEntryRuleState.inactive_at.desc(),
+                WhaleEntryRuleState.last_qualified_at.desc(),
+                WhaleEntryRuleState.id.desc(),
+            )
+        )
+        total = int(
+            await session.scalar(
+                select(func.count(WhaleEntryRuleState.id)).where(
+                    WhaleEntryRuleState.rule_type == rule,
+                    WhaleEntryRuleState.active.is_(False),
+                )
+            )
+            or 0
+        )
+        states = list((await session.scalars(state_query.offset(offset).limit(limit))).all())
+        entry_ids = [state.entry_id for state in states]
+        entries = {
+            row.id: row
+            for row in (
+                await session.scalars(select(WhaleEntry).where(WhaleEntry.id.in_(entry_ids)))
+            ).all()
+        }
+        all_states: dict[int, list[WhaleEntryRuleState]] = defaultdict(list)
+        for state in (
+            await session.scalars(
+                select(WhaleEntryRuleState).where(WhaleEntryRuleState.entry_id.in_(entry_ids))
+            )
+        ).all():
+            all_states[state.entry_id].append(state)
+        wallet_ids = list(dict.fromkeys(row.proxy_wallet for row in entries.values()))
+        wallets = {
+            row.proxy_wallet: row
+            for row in (
+                await session.scalars(
+                    select(WhaleWallet).where(WhaleWallet.proxy_wallet.in_(wallet_ids))
+                )
+            ).all()
+        }
+        condition_ids = list(dict.fromkeys(row.condition_id for row in entries.values()))
+        markets = {
+            row.condition_id: row
+            for row in (
+                await session.scalars(
+                    select(WhaleMarket).where(WhaleMarket.condition_id.in_(condition_ids))
+                )
+            ).all()
+        }
+
+    items: list[dict[str, Any]] = []
+    for state in states:
+        entry = entries.get(state.entry_id)
+        if entry is None:
+            continue
+        wallet = wallets.get(entry.proxy_wallet)
+        market = markets.get(entry.condition_id)
+        hold_pnl = (
+            entry.gross_buy_size * entry.settlement_price - entry.gross_buy_usdc
+            if entry.settlement_price is not None
+            else None
+        )
+        items.append(
+            {
+                "entry_id": entry.id,
+                "rule_type": state.rule_type,
+                "matched_rules": sorted(item.rule_type for item in all_states[entry.id]),
+                "proxy_wallet": entry.proxy_wallet,
+                "display_name": wallet.display_name if wallet is not None else None,
+                "wallet_created_at": wallet.profile_created_at if wallet is not None else None,
+                "wallet_age_days": _wallet_age_days(
+                    wallet.profile_created_at if wallet is not None else None,
+                    now=now,
+                ),
+                "title": market.title if market is not None else "未命名市场",
+                "outcome": entry.outcome,
+                "market_slug": market.market_slug if market is not None else None,
+                "event_slug": market.event_slug if market is not None else None,
+                "gross_buy_usdc": entry.gross_buy_usdc,
+                "gross_buy_size": entry.gross_buy_size,
+                "avg_buy_price": entry.avg_buy_price,
+                "net_size": entry.net_size,
+                "first_buy_at": entry.first_buy_at,
+                "first_triggered_at": state.first_triggered_at,
+                "last_qualified_at": state.last_qualified_at,
+                "inactive_at": state.inactive_at,
+                "inactive_reason": state.inactive_reason,
+                "threshold_usdc_snapshot": state.threshold_usdc_snapshot,
+                "registration_days_snapshot": state.registration_days_snapshot,
+                "settlement_price": entry.settlement_price,
+                "settled_at": entry.settled_at,
+                "hold_to_settlement_pnl_usdc": hold_pnl,
+            }
+        )
+    return {"total": total, "items": items}
+
+
+def _whale_statistics_range_start(range_name: str, *, now: datetime) -> datetime | None:
+    if range_name not in WHALE_STATISTICS_RANGES:
+        raise ValueError("巨鲸统计时间范围无效")
+    duration = WHALE_STATISTICS_RANGES[range_name]
+    return now - duration if duration is not None else None
+
+
+def _whale_statistics_result(settlement_price: Decimal | None) -> str:
+    if settlement_price is None:
+        return "pending"
+    if settlement_price == ONE:
+        return "hit"
+    if settlement_price == ZERO:
+        return "miss"
+    return "special"
+
+
+def _whale_statistics_in_amount_band(amount: Decimal, band: str) -> bool:
+    if band == "all":
+        return True
+    for key, _label, lower, upper in WHALE_STATISTICS_AMOUNT_BANDS:
+        if key != band:
+            continue
+        return amount >= lower and (upper is None or amount < upper)
+    raise ValueError("巨鲸统计金额分层无效")
+
+
+async def _load_whale_statistics_records(
+    database: Database,
+    *,
+    range_start: datetime | None = None,
+    include_pending: bool = True,
+) -> list[dict[str, Any]]:
+    async with database.sessions() as session:
+        entry_query = select(WhaleEntry)
+        if range_start is not None:
+            range_filter = WhaleEntry.settled_at >= range_start
+            entry_query = entry_query.where(
+                or_(range_filter, WhaleEntry.settlement_price.is_(None))
+                if include_pending
+                else range_filter
+            )
+        elif not include_pending:
+            entry_query = entry_query.where(WhaleEntry.settlement_price.is_not(None))
+        entries = list((await session.scalars(entry_query)).all())
+        if not entries:
+            return []
+        entry_ids = [entry.id for entry in entries]
+        states = list(
+            (
+                await session.scalars(
+                    select(WhaleEntryRuleState).where(WhaleEntryRuleState.entry_id.in_(entry_ids))
+                )
+            ).all()
+        )
+        wallet_ids = list(dict.fromkeys(entry.proxy_wallet for entry in entries))
+        condition_ids = list(dict.fromkeys(entry.condition_id for entry in entries))
+        wallets = {
+            row.proxy_wallet: row
+            for row in (
+                await session.scalars(
+                    select(WhaleWallet).where(WhaleWallet.proxy_wallet.in_(wallet_ids))
+                )
+            ).all()
+        }
+        markets = {
+            row.condition_id: row
+            for row in (
+                await session.scalars(
+                    select(WhaleMarket).where(WhaleMarket.condition_id.in_(condition_ids))
+                )
+            ).all()
+        }
+
+    states_by_entry: dict[int, list[WhaleEntryRuleState]] = defaultdict(list)
+    for state in states:
+        states_by_entry[state.entry_id].append(state)
+
+    records: list[dict[str, Any]] = []
+    for entry in entries:
+        entry_states = states_by_entry.get(entry.id, [])
+        if not entry_states:
+            continue
+        first_triggered_at = min(state.first_triggered_at for state in entry_states)
+        settlement_price = (
+            _decimal(entry.settlement_price) if entry.settlement_price is not None else None
+        )
+        result = _whale_statistics_result(settlement_price)
+        theoretical_payout = (
+            entry.gross_buy_size * settlement_price if settlement_price is not None else None
+        )
+        theoretical_pnl = (
+            theoretical_payout - entry.gross_buy_usdc if theoretical_payout is not None else None
+        )
+        wallet = wallets.get(entry.proxy_wallet)
+        market = markets.get(entry.condition_id)
+        wallet_created_at = wallet.profile_created_at if wallet is not None else None
+        wallet_age_days_at_trigger = (
+            max(0, int((first_triggered_at - wallet_created_at).total_seconds() // 86400))
+            if wallet_created_at is not None
+            else None
+        )
+        records.append(
+            {
+                "entry_id": entry.id,
+                "result": result,
+                "matched_rules": sorted({state.rule_type for state in entry_states}),
+                "proxy_wallet": entry.proxy_wallet,
+                "display_name": wallet.display_name if wallet is not None else None,
+                "profile_url": f"https://polymarket.com/profile/{entry.proxy_wallet}",
+                "wallet_created_at": wallet_created_at,
+                "wallet_age_days_at_trigger": wallet_age_days_at_trigger,
+                "condition_id": entry.condition_id,
+                "title": market.title if market is not None else "未命名市场",
+                "outcome": entry.outcome,
+                "market_slug": market.market_slug if market is not None else None,
+                "event_slug": market.event_slug if market is not None else None,
+                "polymarket_url": _market_url(market)
+                if market is not None
+                else "https://polymarket.com",
+                "gross_buy_usdc": entry.gross_buy_usdc,
+                "gross_buy_size": entry.gross_buy_size,
+                "avg_buy_price": entry.avg_buy_price,
+                "settlement_price": settlement_price,
+                "theoretical_payout_usdc": theoretical_payout,
+                "theoretical_pnl_usdc": theoretical_pnl,
+                "theoretical_roi_percent": (
+                    theoretical_pnl / entry.gross_buy_usdc * HUNDRED
+                    if theoretical_pnl is not None and entry.gross_buy_usdc > ZERO
+                    else None
+                ),
+                "first_triggered_at": first_triggered_at,
+                "settled_at": entry.settled_at,
+            }
+        )
+    return records
+
+
+def _whale_statistics_group(records: list[dict[str, Any]], group: str) -> list[dict[str, Any]]:
+    if group == "overall":
+        return records
+    if group == "dual_match":
+        return [
+            item
+            for item in records
+            if NEW_ACCOUNT_RULE in item["matched_rules"]
+            and LARGE_AMOUNT_RULE in item["matched_rules"]
+        ]
+    if group in WHALE_RULES:
+        return [item for item in records if group in item["matched_rules"]]
+    raise ValueError("巨鲸统计规则无效")
+
+
+def _whale_statistics_metrics(
+    settled_records: list[dict[str, Any]],
+    *,
+    pending_count: int = 0,
+) -> dict[str, Any]:
+    hits = sum(item["result"] == "hit" for item in settled_records)
+    misses = sum(item["result"] == "miss" for item in settled_records)
+    specials = sum(item["result"] == "special" for item in settled_records)
+    effective = hits + misses
+    cost = sum((_decimal(item["gross_buy_usdc"]) for item in settled_records), ZERO)
+    shares = sum((_decimal(item["gross_buy_size"]) for item in settled_records), ZERO)
+    payout = sum((_decimal(item["theoretical_payout_usdc"]) for item in settled_records), ZERO)
+    pnl = payout - cost
+    hit_rate = Decimal(hits) / Decimal(effective) * HUNDRED if effective else None
+    weighted_price = cost / shares if shares > ZERO else None
+    break_even = weighted_price * HUNDRED if weighted_price is not None else None
+    return {
+        "settled_count": len(settled_records),
+        "effective_sample_count": effective,
+        "hit_count": hits,
+        "miss_count": misses,
+        "special_count": specials,
+        "pending_count": pending_count,
+        "hit_rate_percent": hit_rate,
+        "theoretical_cost_usdc": cost,
+        "theoretical_payout_usdc": payout,
+        "theoretical_pnl_usdc": pnl,
+        "theoretical_roi_percent": pnl / cost * HUNDRED if cost > ZERO else None,
+        "weighted_avg_buy_price": weighted_price,
+        "break_even_rate_percent": break_even,
+        "edge_percentage_points": (
+            hit_rate - break_even if hit_rate is not None and break_even is not None else None
+        ),
+        "wallet_count": len({str(item["proxy_wallet"]) for item in settled_records}),
+        "market_count": len({str(item["condition_id"]) for item in settled_records}),
+    }
+
+
+def _whale_statistics_trend_key(settled_at: datetime, range_name: str) -> tuple[str, str]:
+    local = settled_at.replace(tzinfo=UTC).astimezone(BEIJING_TIMEZONE)
+    if range_name == "all":
+        key = local.strftime("%Y-%m")
+        return key, key
+    if range_name == "90d":
+        week_start = local.date() - timedelta(days=local.weekday())
+        key = week_start.isoformat()
+        return key, week_start.strftime("%m-%d")
+    key = local.date().isoformat()
+    return key, local.strftime("%m-%d")
+
+
+async def whale_statistics(
+    database: Database,
+    *,
+    range_name: str = "all",
+) -> dict[str, Any]:
+    now = utcnow()
+    range_start = _whale_statistics_range_start(range_name, now=now)
+    async with database.sessions() as session:
+        coverage_start = await session.scalar(
+            select(func.min(WhaleEntryRuleState.first_triggered_at))
+        )
+    all_records = await _load_whale_statistics_records(
+        database,
+        range_start=range_start,
+        include_pending=True,
+    )
+    settled = [
+        item
+        for item in all_records
+        if item["result"] != "pending"
+        and item["settled_at"] is not None
+        and (range_start is None or item["settled_at"] >= range_start)
+        and item["settled_at"] <= now
+    ]
+
+    metrics_by_group: dict[str, dict[str, Any]] = {}
+    for group in ("overall", NEW_ACCOUNT_RULE, LARGE_AMOUNT_RULE, "dual_match"):
+        group_settled = _whale_statistics_group(settled, group)
+        group_pending = _whale_statistics_group(
+            [item for item in all_records if item["result"] == "pending"], group
+        )
+        metrics_by_group[group] = _whale_statistics_metrics(
+            group_settled,
+            pending_count=len(group_pending),
+        )
+
+    trend_groups: dict[str, dict[str, Any]] = {}
+    for item in settled:
+        key, label = _whale_statistics_trend_key(item["settled_at"], range_name)
+        bucket = trend_groups.setdefault(key, {"label": label, "items": []})
+        bucket["items"].append(item)
+    trend = [
+        {
+            "key": key,
+            "label": trend_groups[key]["label"],
+            "metrics": _whale_statistics_metrics(trend_groups[key]["items"]),
+        }
+        for key in sorted(trend_groups)
+    ]
+
+    amount_bands = [
+        {
+            "key": key,
+            "label": label,
+            "metrics": _whale_statistics_metrics(
+                [
+                    item
+                    for item in settled
+                    if item["gross_buy_usdc"] >= lower
+                    and (upper is None or item["gross_buy_usdc"] < upper)
+                ]
+            ),
+        }
+        for key, label, lower, upper in WHALE_STATISTICS_AMOUNT_BANDS
+    ]
+    return {
+        "generated_at": now,
+        "coverage_start": coverage_start,
+        "range": range_name,
+        "range_start": range_start,
+        "range_end": now,
+        "overall": metrics_by_group["overall"],
+        "new_account": metrics_by_group[NEW_ACCOUNT_RULE],
+        "large_amount": metrics_by_group[LARGE_AMOUNT_RULE],
+        "dual_match": metrics_by_group["dual_match"],
+        "trend": trend,
+        "amount_bands": amount_bands,
+    }
+
+
+async def list_whale_statistics_signals(
+    database: Database,
+    *,
+    range_name: str = "all",
+    rule: str = "all",
+    result: str = "all",
+    amount_band: str = "all",
+    sort: str = "settled_desc",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    if rule not in {"all", NEW_ACCOUNT_RULE, LARGE_AMOUNT_RULE, "both"}:
+        raise ValueError("巨鲸统计规则无效")
+    if result not in {"all", "hit", "miss", "special"}:
+        raise ValueError("巨鲸统计结果无效")
+    if sort not in {"settled_desc", "amount_desc", "pnl_desc", "pnl_asc"}:
+        raise ValueError("巨鲸统计排序无效")
+    _whale_statistics_in_amount_band(ZERO, amount_band)
+    now = utcnow()
+    range_start = _whale_statistics_range_start(range_name, now=now)
+    records = [
+        item
+        for item in await _load_whale_statistics_records(
+            database,
+            range_start=range_start,
+            include_pending=False,
+        )
+        if item["result"] != "pending"
+        and item["settled_at"] is not None
+        and (range_start is None or item["settled_at"] >= range_start)
+        and item["settled_at"] <= now
+    ]
+    if rule == "both":
+        records = _whale_statistics_group(records, "dual_match")
+    elif rule != "all":
+        records = _whale_statistics_group(records, rule)
+    if result != "all":
+        records = [item for item in records if item["result"] == result]
+    records = [
+        item
+        for item in records
+        if _whale_statistics_in_amount_band(item["gross_buy_usdc"], amount_band)
+    ]
+    if sort == "amount_desc":
+        records.sort(key=lambda item: (item["gross_buy_usdc"], item["settled_at"]), reverse=True)
+    elif sort == "pnl_desc":
+        records.sort(
+            key=lambda item: (item["theoretical_pnl_usdc"], item["settled_at"]),
+            reverse=True,
+        )
+    elif sort == "pnl_asc":
+        records.sort(key=lambda item: (item["theoretical_pnl_usdc"], item["settled_at"]))
+    else:
+        records.sort(key=lambda item: (item["settled_at"], item["entry_id"]), reverse=True)
+    total = len(records)
+    return {"total": total, "items": records[offset : offset + limit]}
 
 
 def whale_order_payload(order: WhaleOrder) -> dict[str, Any]:
@@ -2313,6 +3426,71 @@ async def _position_marks(
 
     rows = await asyncio.gather(*(one(position) for position in positions))
     return {position_id: (price, status) for position_id, price, status in rows}
+
+
+@dataclass(frozen=True, slots=True)
+class WhaleFollowPnlSummary:
+    open_cost_usdc: Decimal
+    market_value_usdc: Decimal | None
+    unrealized_pnl: Decimal | None
+    realized_pnl: Decimal
+    total_pnl: Decimal | None
+    valuation_complete: bool
+    unpriced_positions: int
+
+
+def _whale_follow_pnl_summary(
+    positions: Iterable[WhaleFollowPosition],
+    ledger: Iterable[WhaleFollowLedger],
+    marks: dict[int, tuple[Decimal | None, str]],
+) -> WhaleFollowPnlSummary:
+    position_rows = list(positions)
+    open_positions = [
+        position
+        for position in position_rows
+        if position.size > ZERO and position.status in {"opening", "open", "closing", "redeeming"}
+    ]
+    open_cost = sum((position.cost_usdc for position in open_positions), ZERO)
+    unpriced_positions = sum(
+        1 for position in open_positions if marks[position.id][1] == "unavailable"
+    )
+    valuation_complete = unpriced_positions == 0
+    realized = sum((row.realized_pnl for row in ledger), ZERO)
+    if valuation_complete:
+        market_value = sum(
+            (
+                position.size * marks[position.id][0]
+                for position in open_positions
+                if marks[position.id][0] is not None
+            ),
+            ZERO,
+        )
+        unrealized = market_value - open_cost
+        total = realized + unrealized
+    else:
+        market_value = None
+        unrealized = None
+        total = None
+    return WhaleFollowPnlSummary(
+        open_cost_usdc=open_cost,
+        market_value_usdc=market_value,
+        unrealized_pnl=unrealized,
+        realized_pnl=realized,
+        total_pnl=total,
+        valuation_complete=valuation_complete,
+        unpriced_positions=unpriced_positions,
+    )
+
+
+async def whale_follow_pnl_summary(
+    database: Database,
+    client: PolymarketClient,
+) -> WhaleFollowPnlSummary:
+    async with database.sessions() as session:
+        positions = list((await session.scalars(select(WhaleFollowPosition))).all())
+        ledger = list((await session.scalars(select(WhaleFollowLedger))).all())
+    marks = await _position_marks(client, positions)
+    return _whale_follow_pnl_summary(positions, ledger, marks)
 
 
 def _position_payload(
@@ -2510,20 +3688,12 @@ async def list_whale_records(
         )
 
     marks = await _position_marks(client, positions)
+    pnl = _whale_follow_pnl_summary(positions, ledger, marks)
     open_positions = [
         position
         for position in positions
         if position.size > ZERO and position.status in {"opening", "open", "closing", "redeeming"}
     ]
-    unavailable = any(marks[position.id][1] == "unavailable" for position in open_positions)
-    unrealized = sum(
-        (
-            position.size * marks[position.id][0] - position.cost_usdc
-            for position in open_positions
-            if marks[position.id][0] is not None
-        ),
-        ZERO,
-    )
     finished = [
         position
         for position in positions
@@ -2541,16 +3711,15 @@ async def list_whale_records(
         (row.amount_usdc for row in ledger if row.type in {"sell", "redeem"}), ZERO
     )
     total_fees = sum((row.fee_usdc for row in ledger), ZERO)
-    realized = sum((row.realized_pnl for row in ledger), ZERO)
     return {
         "items": items,
         "summary": {
             "total_invested_usdc": total_invested,
             "total_proceeds_usdc": total_proceeds,
             "total_fee_usdc": total_fees,
-            "realized_pnl": realized,
-            "unrealized_pnl": None if unavailable else unrealized,
-            "total_pnl": None if unavailable else realized + unrealized,
+            "realized_pnl": pnl.realized_pnl,
+            "unrealized_pnl": pnl.unrealized_pnl,
+            "total_pnl": pnl.total_pnl,
             "open_position_count": len(open_positions),
             "closed_position_count": len(finished),
             "win_count": wins,

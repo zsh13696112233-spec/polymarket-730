@@ -66,6 +66,19 @@ Development mode:
 npm run dev:all
 ```
 
+If Polymarket needs to be accessed through the local proxy, use the one-command proxy launcher
+(the default proxy is `http://127.0.0.1:7897`):
+
+```bash
+npm run dev:proxy
+```
+
+To use a different proxy address:
+
+```bash
+POLYMARKET_PROXY_URL=http://127.0.0.1:7890 npm run dev:proxy
+```
+
 The start script first cleanly stops any old services on ports `3000` or `8730`, then starts new processes.
 
 Open [http://localhost:3000](http://localhost:3000), then add a wallet address or Polymarket profile link on the page.
@@ -76,6 +89,8 @@ Stable run:
 npm run build
 npm run start:local
 ```
+
+For a stable run through the proxy, replace the second command with `npm run start:proxy`.
 
 Both commands listen on localhost only. Monitoring stops when the terminal is closed.
 

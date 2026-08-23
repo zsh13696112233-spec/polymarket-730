@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from backend.whale_requests import current_whale_request_capture
+
 ADDRESS_RE = re.compile(r"0x[a-fA-F0-9]{40}")
 ZERO = Decimal("0")
 
@@ -144,11 +146,40 @@ class WhaleMarketSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class WhaleHolderSnapshot:
+    proxy_wallet: str
+    asset_id: str
+    amount: Decimal
+    outcome_index: int
+    display_name: str | None
+    profile_image_url: str | None
+    verified_badge: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WhaleMarketPositionSnapshot:
+    proxy_wallet: str
+    asset_id: str
+    condition_id: str
+    outcome: str
+    outcome_index: int
+    size: Decimal
+    total_bought: Decimal
+    avg_price: Decimal
+    current_price: Decimal
+    current_value: Decimal
+    display_name: str | None
+    profile_image_url: str | None
+    verified_badge: bool
+
+
+@dataclass(frozen=True, slots=True)
 class WhalePublicProfile:
     proxy_wallet: str
     display_name: str | None
     name: str | None
     pseudonym: str | None
+    profile_image_url: str | None
     created_at: datetime | None
     verified_badge: bool
     taker_tier: int | None
@@ -326,11 +357,10 @@ class PolymarketClient:
         self.data_api_url = data_api_url.rstrip("/")
         self.gamma_api_url = gamma_api_url.rstrip("/")
         self.clob_api_url = clob_api_url.rstrip("/")
-        self._http = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            transport=transport,
-            headers={"User-Agent": "polymarket-wallet-monitor/0.1"},
-        )
+        self._timeout = httpx.Timeout(timeout)
+        self._transport = transport
+        self._http_reset_lock = asyncio.Lock()
+        self._http = self._new_http_client()
         self._market_end_cache: dict[str, tuple[float, datetime | None]] = {}
         self._closed_positions_cache: dict[
             str, tuple[float, tuple[ClosedPositionSnapshot, ...]]
@@ -339,6 +369,22 @@ class PolymarketClient:
     async def close(self) -> None:
         await self._http.aclose()
 
+    def _new_http_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=self._timeout,
+            transport=self._transport,
+            headers={"User-Agent": "polymarket-wallet-monitor/0.1"},
+        )
+
+    async def _reset_http_client(self, failed_client: httpx.AsyncClient) -> None:
+        """Drop a connection pool that may contain a stale proxy tunnel."""
+
+        async with self._http_reset_lock:
+            if self._http is not failed_client:
+                return
+            self._http = self._new_http_client()
+            await failed_client.aclose()
+
     async def _get_json(
         self,
         url: str,
@@ -346,24 +392,118 @@ class PolymarketClient:
         params: dict[str, Any],
         not_found_none: bool = False,
     ) -> Any:
+        client = self._http
+        request = client.build_request("GET", url, params=params)
+        capture = current_whale_request_capture()
+        request_record_id: int | None = None
+        if capture is not None:
+            query_params: dict[str, str | list[str]] = {}
+            for key, value in request.url.params.multi_items():
+                current = query_params.get(key)
+                if current is None:
+                    query_params[key] = value
+                elif isinstance(current, list):
+                    current.append(value)
+                else:
+                    query_params[key] = [current, value]
+            request_record_id = await capture.monitor.begin(
+                scan_id=capture.scan_id,
+                method=request.method,
+                url=str(request.url).partition("?")[0],
+                query_params=query_params,
+            )
         try:
-            response = await self._http.get(url, params=params)
+            response = await client.send(request)
         except (httpx.TimeoutException, httpx.NetworkError) as error:
-            raise PolymarketAPIError(f"Polymarket 接口连接失败：{error}") from error
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    error_type=type(error).__name__,
+                    error_message=str(error).strip() or type(error).__name__,
+                )
+            await self._reset_http_client(client)
+            reason = type(error).__name__
+            host = urlparse(url).netloc or url
+            detail = str(error).strip()
+            message = f"Polymarket 接口连接失败（{reason}，{host}）"
+            if detail:
+                message += f"：{detail}"
+            raise PolymarketAPIError(message) from error
+        except asyncio.CancelledError as error:
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    error_type=type(error).__name__,
+                    error_message="请求已取消",
+                )
+            raise
+        except Exception as error:
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    error_type=type(error).__name__,
+                    error_message=str(error).strip() or type(error).__name__,
+                )
+            raise
         if response.status_code == 429:
             retry_after = self._parse_retry_after(response.headers.get("Retry-After"))
-            raise PolymarketAPIError("Polymarket 接口请求过于频繁", retry_after=retry_after)
+            message = "Polymarket 接口请求过于频繁"
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    http_status=response.status_code,
+                    error_type="HTTPError",
+                    error_message=message,
+                    response_excerpt=response.text.strip(),
+                )
+            raise PolymarketAPIError(message, retry_after=retry_after)
         if response.status_code == 404 and not_found_none:
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="success",
+                    http_status=response.status_code,
+                )
             return None
         if response.status_code >= 400:
             detail = response.text[:300].strip()
-            raise PolymarketAPIError(
-                f"Polymarket 接口返回 {response.status_code}" + (f"：{detail}" if detail else "")
+            message = f"Polymarket 接口返回 {response.status_code}" + (
+                f"：{detail}" if detail else ""
             )
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    http_status=response.status_code,
+                    error_type="HTTPError",
+                    error_message=message,
+                    response_excerpt=response.text.strip(),
+                )
+            raise PolymarketAPIError(message)
         try:
-            return response.json()
+            payload = response.json()
         except ValueError as error:
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    http_status=response.status_code,
+                    error_type=type(error).__name__,
+                    error_message="Polymarket 接口返回了无效 JSON",
+                    response_excerpt=response.text.strip(),
+                )
             raise PolymarketAPIError("Polymarket 接口返回了无效 JSON") from error
+        if capture is not None and request_record_id is not None:
+            await capture.monitor.complete(
+                request_record_id,
+                status="success",
+                http_status=response.status_code,
+            )
+        return payload
 
     async def fetch_large_trades(
         self,
@@ -393,6 +533,7 @@ class PolymarketClient:
                 "limit": limit,
                 "offset": offset,
                 "takerOnly": "false",
+                "side": "BUY",
             },
         )
         if not isinstance(payload, list):
@@ -475,6 +616,231 @@ class PolymarketClient:
                 markets.append(self._parse_whale_market(item))
         return markets
 
+    async def fetch_closed_markets_with_tags(
+        self,
+        condition_ids: Iterable[str],
+    ) -> list[WhaleMarketSnapshot]:
+        """Fetch resolved/closed markets omitted by Gamma's default market query."""
+
+        conditions = list(
+            dict.fromkeys(str(condition_id) for condition_id in condition_ids if condition_id)
+        )
+        markets: list[WhaleMarketSnapshot] = []
+        for offset in range(0, len(conditions), self.MARKET_RESOLUTION_BATCH_SIZE):
+            batch = conditions[offset : offset + self.MARKET_RESOLUTION_BATCH_SIZE]
+            payload = await self._get_json(
+                f"{self.gamma_api_url}/markets",
+                params={
+                    "condition_ids": batch,
+                    "closed": "true",
+                    "include_tag": "true",
+                    "limit": len(batch),
+                },
+            )
+            if not isinstance(payload, list):
+                raise PolymarketAPIError("已关闭市场元数据接口返回格式无效")
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                condition_id = str(item.get("conditionId") or "")
+                if condition_id in batch:
+                    markets.append(self._parse_whale_market(item))
+        return markets
+
+    async def fetch_active_whale_markets(
+        self,
+        *,
+        min_liquidity_usdc: Decimal,
+        min_volume_usdc: Decimal,
+        page_size: int = 100,
+    ) -> list[WhaleMarketSnapshot]:
+        """Fetch every open, sufficiently liquid Gamma market with stable pagination."""
+
+        if min_liquidity_usdc < ZERO:
+            raise ValueError("市场最低流动性不能小于 0")
+        if min_volume_usdc < ZERO:
+            raise ValueError("市场最低成交额不能小于 0")
+        if page_size <= 0:
+            raise ValueError("市场分页数量必须大于 0")
+        markets: list[WhaleMarketSnapshot] = []
+        seen: set[str] = set()
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "closed": "false",
+                "liquidity_num_min": str(min_liquidity_usdc),
+                "volume_num_min": str(min_volume_usdc),
+                "include_tag": "true",
+                "order": "id",
+                "ascending": "true",
+                "limit": page_size,
+            }
+            if cursor is not None:
+                params["after_cursor"] = cursor
+            payload = await self._get_json(
+                f"{self.gamma_api_url}/markets/keyset",
+                params=params,
+            )
+            if not isinstance(payload, dict) or not isinstance(payload.get("markets"), list):
+                raise PolymarketAPIError("活跃市场接口返回格式无效")
+            for item in payload["markets"]:
+                if not isinstance(item, dict):
+                    continue
+                market = self._parse_whale_market(item)
+                if (
+                    not market.condition_id
+                    or market.condition_id in seen
+                    or market.closed
+                    or not market.active
+                    or not market.accepting_orders
+                ):
+                    continue
+                seen.add(market.condition_id)
+                markets.append(market)
+            next_cursor = str(payload.get("next_cursor") or "").strip()
+            if not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        return markets
+
+    async def fetch_top_holders(
+        self,
+        condition_ids: Iterable[str],
+        *,
+        min_balance: int = 1,
+        limit: int = 20,
+    ) -> list[WhaleHolderSnapshot]:
+        """Fetch the official top holders, batching market IDs to keep URLs bounded."""
+
+        conditions = list(
+            dict.fromkeys(str(condition_id) for condition_id in condition_ids if condition_id)
+        )
+        if not 0 <= limit <= 20:
+            raise ValueError("单个结果的持仓者数量必须在 0 到 20 之间")
+        if not 0 <= min_balance <= 999999:
+            raise ValueError("最低持仓份额必须在 0 到 999999 之间")
+        holders: list[WhaleHolderSnapshot] = []
+
+        async def fetch_batch(batch: list[str]) -> Any:
+            for attempt in range(5):
+                try:
+                    return await self._get_json(
+                        f"{self.data_api_url}/holders",
+                        params={
+                            "market": ",".join(batch),
+                            "limit": limit,
+                            "minBalance": min_balance,
+                        },
+                    )
+                except PolymarketAPIError as error:
+                    if attempt >= 4:
+                        raise
+                    await asyncio.sleep(max(0.1, float(error.retry_after or (attempt + 1))))
+            raise AssertionError("unreachable")
+
+        batches = [conditions[offset : offset + 50] for offset in range(0, len(conditions), 50)]
+        for offset in range(0, len(batches), 5):
+            payloads = await asyncio.gather(
+                *(fetch_batch(batch) for batch in batches[offset : offset + 5])
+            )
+            for payload in payloads:
+                if not isinstance(payload, list):
+                    raise PolymarketAPIError("市场大额持仓接口返回格式无效")
+                for token_group in payload:
+                    if not isinstance(token_group, dict):
+                        continue
+                    asset_id = str(token_group.get("token") or "")
+                    raw_holders = token_group.get("holders")
+                    if not asset_id or not isinstance(raw_holders, list):
+                        continue
+                    for item in raw_holders:
+                        if not isinstance(item, dict):
+                            continue
+                        wallet = str(item.get("proxyWallet") or "").lower()
+                        amount = to_decimal(item.get("amount"))
+                        if not wallet or amount <= ZERO:
+                            continue
+                        holders.append(
+                            WhaleHolderSnapshot(
+                                proxy_wallet=wallet,
+                                asset_id=str(item.get("asset") or asset_id),
+                                amount=amount,
+                                outcome_index=int(item.get("outcomeIndex") or 0),
+                                display_name=self._optional_text(item.get("name"))
+                                or self._optional_text(item.get("pseudonym")),
+                                profile_image_url=self._optional_text(item.get("profileImage"))
+                                or self._optional_text(item.get("profileImageOptimized")),
+                                verified_badge=self._as_bool(item.get("verified")),
+                            )
+                        )
+        return holders
+
+    async def fetch_market_positions(
+        self,
+        condition_id: str,
+        *,
+        limit: int = 20,
+    ) -> list[WhaleMarketPositionSnapshot]:
+        """Fetch official open positions for one market, largest token balances first."""
+
+        if not 0 < limit <= 500:
+            raise ValueError("市场持仓数量必须在 1 到 500 之间")
+        payload = await self._get_json(
+            f"{self.data_api_url}/v1/market-positions",
+            params={
+                "market": condition_id,
+                "status": "OPEN",
+                "sortBy": "TOKENS",
+                "sortDirection": "DESC",
+                "limit": limit,
+                "offset": 0,
+            },
+        )
+        if not isinstance(payload, list):
+            raise PolymarketAPIError("市场持仓明细接口返回格式无效")
+        positions: list[WhaleMarketPositionSnapshot] = []
+        for token_group in payload:
+            if not isinstance(token_group, dict):
+                continue
+            group_asset_id = str(token_group.get("token") or "")
+            raw_positions = token_group.get("positions")
+            if not isinstance(raw_positions, list):
+                continue
+            for item in raw_positions:
+                if not isinstance(item, dict):
+                    continue
+                wallet = str(item.get("proxyWallet") or "").lower()
+                asset_id = str(item.get("asset") or group_asset_id)
+                linked_condition_id = str(item.get("conditionId") or condition_id)
+                size = to_decimal(item.get("size"))
+                if (
+                    not wallet
+                    or not asset_id
+                    or linked_condition_id != condition_id
+                    or size <= ZERO
+                ):
+                    continue
+                positions.append(
+                    WhaleMarketPositionSnapshot(
+                        proxy_wallet=wallet,
+                        asset_id=asset_id,
+                        condition_id=linked_condition_id,
+                        outcome=str(item.get("outcome") or ""),
+                        outcome_index=int(item.get("outcomeIndex") or 0),
+                        size=size,
+                        total_bought=to_decimal(item.get("totalBought")),
+                        avg_price=to_decimal(item.get("avgPrice")),
+                        current_price=to_decimal(item.get("currPrice")),
+                        current_value=to_decimal(item.get("currentValue")),
+                        display_name=self._optional_text(item.get("name")),
+                        profile_image_url=self._optional_text(item.get("profileImage")),
+                        verified_badge=self._as_bool(item.get("verified")),
+                    )
+                )
+        return positions
+
     async def fetch_public_profile(self, address: str) -> WhalePublicProfile | None:
         normalized_address = address.strip().lower()
         payload = await self._get_json(
@@ -493,6 +859,7 @@ class PolymarketClient:
             display_name=name or pseudonym,
             name=name,
             pseudonym=pseudonym,
+            profile_image_url=self._optional_text(payload.get("profileImage")),
             created_at=parse_datetime(payload.get("createdAt")),
             verified_badge=self._as_bool(payload.get("verifiedBadge")),
             taker_tier=self._optional_int(payload.get("takerTier")),

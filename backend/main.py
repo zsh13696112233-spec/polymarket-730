@@ -43,6 +43,7 @@ from backend.models import (
     PositionOverlapPeriod,
     WalletTrade,
     WatchedWallet,
+    WhaleFollowLedger,
     WhaleOrder,
     WhaleSettings,
     WhaleTag,
@@ -66,6 +67,8 @@ from backend.schemas import (
     CopyDashboardRead,
     CopyOrderRead,
     CopyOrdersResponse,
+    CopyOverviewPnlBreakdownRead,
+    CopyOverviewPnlSourceRead,
     CopyOverviewRead,
     CopyOverviewTotalsRead,
     CopyPortfolioSummaryRead,
@@ -113,18 +116,23 @@ from backend.schemas import (
     WhaleFollowExecuteRequest,
     WhaleFollowPreviewRead,
     WhaleFollowPreviewRequest,
+    WhaleHistoryListRead,
     WhaleMarketDetailRead,
     WhaleMarketListRead,
     WhaleOrderRead,
     WhalePositionDetailRead,
     WhalePositionListRead,
     WhaleRecordListRead,
+    WhaleRequestLogListRead,
+    WhaleRequestLogRead,
     WhaleScanRead,
     WhaleSellExecuteRequest,
     WhaleSellPreviewRead,
     WhaleSellPreviewRequest,
     WhaleSettingsRead,
     WhaleSettingsUpdate,
+    WhaleStatisticsRead,
+    WhaleStatisticsSignalListRead,
     WhaleTagRead,
 )
 from backend.trading import (
@@ -137,13 +145,18 @@ from backend.trading import (
 from backend.whale import (
     WhaleDiscoveryScanner,
     WhaleFollowExecutor,
+    list_whale_history,
     list_whale_markets,
     list_whale_positions,
     list_whale_records,
+    list_whale_statistics_signals,
+    whale_follow_pnl_summary,
     whale_order_payload,
     whale_position_detail,
     whale_settings_read,
+    whale_statistics,
 )
+from backend.whale_requests import WhaleRequestMonitor
 
 
 def wallet_is_stale(wallet: WatchedWallet, settings: Settings) -> bool:
@@ -317,10 +330,25 @@ async def copy_daily_realized_pnl(
             CopySubscription.id == CopyLedger.subscription_id,
         ).where(CopySubscription.tracked_wallet_id == tracked_wallet_id)
     ledger = list((await session.scalars(ledger_query.order_by(CopyLedger.timestamp.asc()))).all())
+    whale_ledger = (
+        list(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger)
+                    .where(WhaleFollowLedger.timestamp < utc_end)
+                    .order_by(WhaleFollowLedger.timestamp.asc())
+                )
+            ).all()
+        )
+        if tracked_wallet_id is None
+        else []
+    )
     default_first_day = today - timedelta(days=29)
+    timestamps = [row.timestamp for row in ledger]
+    timestamps.extend(row.timestamp for row in whale_ledger)
     earliest_day = (
-        ledger[0].timestamp.replace(tzinfo=UTC).astimezone(SHANGHAI).date()
-        if ledger
+        min(timestamps).replace(tzinfo=UTC).astimezone(SHANGHAI).date()
+        if timestamps
         else default_first_day
     )
     first_day = min(default_first_day, earliest_day)
@@ -332,6 +360,13 @@ async def copy_daily_realized_pnl(
         first_day + timedelta(days=offset): Decimal("0") for offset in range(days)
     }
     for entry in ledger:
+        local_day = entry.timestamp.replace(tzinfo=UTC).astimezone(SHANGHAI).date()
+        if local_day not in realized_totals:
+            continue
+        realized_totals[local_day] += entry.realized_pnl
+        if entry.type == "buy":
+            bought_totals[local_day] += entry.amount_usdc
+    for entry in whale_ledger:
         local_day = entry.timestamp.replace(tzinfo=UTC).astimezone(SHANGHAI).date()
         if local_day not in realized_totals:
             continue
@@ -1324,6 +1359,7 @@ def create_app(
             timeout=resolved_settings.request_timeout_seconds,
         )
         broker = EventBroker()
+        whale_request_monitor = WhaleRequestMonitor(capacity=100)
         monitor = WalletMonitor(
             database=database,
             client=polymarket_client,
@@ -1348,6 +1384,7 @@ def create_app(
             client=polymarket_client,
             settings=resolved_settings,
             executor=whale_executor,
+            request_monitor=whale_request_monitor,
         )
         application.state.settings = resolved_settings
         application.state.database = database
@@ -1358,6 +1395,7 @@ def create_app(
         application.state.copy_engine = copy_engine
         application.state.whale_executor = whale_executor
         application.state.whale_scanner = whale_scanner
+        application.state.whale_request_monitor = whale_request_monitor
         application.state.copy_toggle_lock = asyncio.Lock()
         application.state.rehearsal_previews = {}
         application.state.force_buy_previews = {}
@@ -1443,6 +1481,15 @@ def create_app(
         # the visible threshold would not necessarily narrow results.
         if "cumulative_threshold_usdc" in values and "single_trade_threshold_usdc" not in values:
             values["single_trade_threshold_usdc"] = values["cumulative_threshold_usdc"]
+        if "new_account_threshold_usdc" in values:
+            values["single_trade_threshold_usdc"] = values["new_account_threshold_usdc"]
+            values["cumulative_threshold_usdc"] = values["new_account_threshold_usdc"]
+        elif "cumulative_threshold_usdc" in values:
+            values["new_account_threshold_usdc"] = values["cumulative_threshold_usdc"]
+            values["single_trade_threshold_usdc"] = values["cumulative_threshold_usdc"]
+        elif "single_trade_threshold_usdc" in values:
+            values["new_account_threshold_usdc"] = values["single_trade_threshold_usdc"]
+            values["cumulative_threshold_usdc"] = values["single_trade_threshold_usdc"]
         async with database.sessions() as session:
             row = await session.get(WhaleSettings, 1)
             if row is None:
@@ -1455,8 +1502,14 @@ def create_app(
                 raise HTTPException(status_code=422, detail="单笔重仓阈值不能低于采集金额阈值")
             if merged["cumulative_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
                 raise HTTPException(status_code=422, detail="累计重仓阈值不能低于采集金额阈值")
+            if merged["new_account_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
+                raise HTTPException(status_code=422, detail="新号大额门槛不能低于采集金额阈值")
+            if merged["large_amount_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
+                raise HTTPException(status_code=422, detail="全量超大额门槛不能低于采集金额阈值")
             if merged["exited_ratio_threshold"] >= merged["holding_ratio_threshold"]:
                 raise HTTPException(status_code=422, detail="退出比例阈值必须低于持有比例阈值")
+            if merged["default_follow_amount_usdc"] > merged["max_follow_amount_usdc"]:
+                raise HTTPException(status_code=422, detail="默认买入金额不能超过单笔买入上限")
             for key, value in values.items():
                 setattr(row, key, value)
             row.updated_at = utcnow()
@@ -1469,6 +1522,51 @@ def create_app(
         require_whale_module(request)
         completed = await request.app.state.whale_scanner.scan_now()
         return WhaleScanRead(status="ok" if completed else "skipped")
+
+    @application.get(
+        "/api/whales/request-logs",
+        response_model=WhaleRequestLogListRead,
+    )
+    async def get_whale_request_logs(request: Request) -> WhaleRequestLogListRead:
+        require_whale_module(request)
+        monitor: WhaleRequestMonitor = request.app.state.whale_request_monitor
+        records = await monitor.snapshot()
+        return WhaleRequestLogListRead(
+            generated_at=utcnow(),
+            total=len(records),
+            items=[WhaleRequestLogRead.model_validate(record) for record in records],
+        )
+
+    @application.get("/api/whales/request-logs/stream")
+    async def stream_whale_request_logs(request: Request) -> StreamingResponse:
+        require_whale_module(request)
+        monitor: WhaleRequestMonitor = request.app.state.whale_request_monitor
+
+        async def event_stream():
+            yield ": connected\n\n"
+            async with monitor.subscribe() as queue:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        record = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    payload = WhaleRequestLogRead.model_validate(record).model_dump(mode="json")
+                    yield (
+                        f"id: {record.id}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                    )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @application.get("/api/whales/tags", response_model=list[WhaleTagRead])
     async def get_whale_tags(request: Request) -> list[WhaleTagRead]:
@@ -1486,6 +1584,59 @@ def create_app(
             )
         return [WhaleTagRead.model_validate(tag) for tag in tags]
 
+    @application.get("/api/whales/statistics", response_model=WhaleStatisticsRead)
+    async def get_whale_statistics(
+        request: Request,
+        range_name: str = Query(
+            default="all",
+            alias="range",
+            pattern="^(all|7d|30d|90d)$",
+        ),
+    ) -> WhaleStatisticsRead:
+        require_whale_module(request)
+        payload = await whale_statistics(
+            request.app.state.database,
+            range_name=range_name,
+        )
+        return WhaleStatisticsRead.model_validate(payload)
+
+    @application.get(
+        "/api/whales/statistics/signals",
+        response_model=WhaleStatisticsSignalListRead,
+    )
+    async def get_whale_statistics_signals(
+        request: Request,
+        range_name: str = Query(
+            default="all",
+            alias="range",
+            pattern="^(all|7d|30d|90d)$",
+        ),
+        rule: str = Query(default="all", pattern="^(all|new_account|large_amount|both)$"),
+        result: str = Query(default="all", pattern="^(all|hit|miss|special)$"),
+        amount_band: str = Query(
+            default="all",
+            pattern="^(all|lt_100k|100k_500k|500k_1m|gte_1m)$",
+        ),
+        sort: str = Query(
+            default="settled_desc",
+            pattern="^(settled_desc|amount_desc|pnl_desc|pnl_asc)$",
+        ),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> WhaleStatisticsSignalListRead:
+        require_whale_module(request)
+        payload = await list_whale_statistics_signals(
+            request.app.state.database,
+            range_name=range_name,
+            rule=rule,
+            result=result,
+            amount_band=amount_band,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+        return WhaleStatisticsSignalListRead.model_validate(payload)
+
     @application.get("/api/whales/markets", response_model=WhaleMarketListRead)
     async def get_whale_markets(
         request: Request,
@@ -1496,6 +1647,7 @@ def create_app(
         include_exited: bool = False,
         include_hedged: bool = True,
         sort: str = Query(default="default"),
+        rule: str = Query(default="new_account", pattern="^(new_account|large_amount)$"),
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
     ) -> WhaleMarketListRead:
@@ -1513,13 +1665,31 @@ def create_app(
             sort=sort,
             limit=limit,
             offset=offset,
+            rule=rule,
         )
         return WhaleMarketListRead.model_validate(payload)
+
+    @application.get("/api/whales/history", response_model=WhaleHistoryListRead)
+    async def get_whale_history(
+        request: Request,
+        rule: str = Query(default="new_account", pattern="^(new_account|large_amount)$"),
+        limit: int = Query(default=100, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> WhaleHistoryListRead:
+        require_whale_module(request)
+        payload = await list_whale_history(
+            request.app.state.database,
+            rule=rule,
+            limit=limit,
+            offset=offset,
+        )
+        return WhaleHistoryListRead.model_validate(payload)
 
     @application.get("/api/whales/markets/{condition_id}", response_model=WhaleMarketDetailRead)
     async def get_whale_market_detail(
         condition_id: str,
         request: Request,
+        rule: str = Query(default="new_account", pattern="^(new_account|large_amount)$"),
     ) -> WhaleMarketDetailRead:
         require_whale_module(request)
         payload = await list_whale_markets(
@@ -1528,6 +1698,7 @@ def create_app(
             condition_id=condition_id,
             include_trades=True,
             limit=1,
+            rule=rule,
         )
         if not payload["items"]:
             raise HTTPException(status_code=404, detail="巨鲸市场不存在")
@@ -2674,6 +2845,10 @@ def create_app(
             position_items, global_portfolio = await workspace_position_reads(
                 request, session, positions, wallet_by_subscription
             )
+            whale_portfolio = await whale_follow_pnl_summary(
+                database,
+                request.app.state.polymarket_client,
+            )
             items_by_subscription: dict[int, list[CopyWorkspacePositionRead]] = {}
             for item in position_items:
                 items_by_subscription.setdefault(item.subscription_id, []).append(item)
@@ -2746,6 +2921,38 @@ def create_app(
                 (item.subscription.daily_bought_usdc for item in strategies),
                 start=Decimal("0"),
             )
+            valuation_complete = (
+                global_portfolio.valuation_complete and whale_portfolio.valuation_complete
+            )
+            realized_pnl = global_portfolio.realized_pnl + whale_portfolio.realized_pnl
+            if valuation_complete:
+                market_value = (global_portfolio.market_value_usdc or Decimal("0")) + (
+                    whale_portfolio.market_value_usdc or Decimal("0")
+                )
+                unrealized_pnl = (global_portfolio.unrealized_pnl or Decimal("0")) + (
+                    whale_portfolio.unrealized_pnl or Decimal("0")
+                )
+                total_pnl = realized_pnl + unrealized_pnl
+            else:
+                market_value = None
+                unrealized_pnl = None
+                total_pnl = None
+            pnl_breakdown = CopyOverviewPnlBreakdownRead(
+                copy_trading=CopyOverviewPnlSourceRead(
+                    realized_pnl=global_portfolio.realized_pnl,
+                    unrealized_pnl=global_portfolio.unrealized_pnl,
+                    total_pnl=global_portfolio.total_pnl,
+                    valuation_complete=global_portfolio.valuation_complete,
+                    unpriced_positions=global_portfolio.unpriced_positions,
+                ),
+                whale_follow=CopyOverviewPnlSourceRead(
+                    realized_pnl=whale_portfolio.realized_pnl,
+                    unrealized_pnl=whale_portfolio.unrealized_pnl,
+                    total_pnl=whale_portfolio.total_pnl,
+                    valuation_complete=whale_portfolio.valuation_complete,
+                    unpriced_positions=whale_portfolio.unpriced_positions,
+                ),
+            )
             return CopyOverviewRead(
                 live_copy_enabled=request.app.state.settings.live_copy_enabled,
                 account=execution_account_read(account),
@@ -2754,13 +2961,18 @@ def create_app(
                     available_capacity_usdc=available_capacity,
                     open_exposure_usdc=open_exposure,
                     daily_bought_usdc=daily_bought,
-                    open_cost_usdc=global_portfolio.open_cost_usdc,
-                    market_value_usdc=global_portfolio.market_value_usdc,
-                    unrealized_pnl=global_portfolio.unrealized_pnl,
-                    realized_pnl=global_portfolio.realized_pnl,
-                    total_pnl=global_portfolio.total_pnl,
-                    valuation_complete=global_portfolio.valuation_complete,
-                    unpriced_positions=global_portfolio.unpriced_positions,
+                    open_cost_usdc=(
+                        global_portfolio.open_cost_usdc + whale_portfolio.open_cost_usdc
+                    ),
+                    market_value_usdc=market_value,
+                    unrealized_pnl=unrealized_pnl,
+                    realized_pnl=realized_pnl,
+                    total_pnl=total_pnl,
+                    valuation_complete=valuation_complete,
+                    unpriced_positions=(
+                        global_portfolio.unpriced_positions + whale_portfolio.unpriced_positions
+                    ),
+                    pnl_breakdown=pnl_breakdown,
                 ),
                 daily_realized_pnl=await copy_daily_realized_pnl(
                     session,

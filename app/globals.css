@@ -8441,6 +8441,318 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleExecutionResult dd { margin: 5px 0 0; color: #cfe9d8; font-family: "Courier New", Consolas, monospace; font-size: 16px; }
 .whaleExecutionResult p { margin: 0; color: #92a99a; font-size: 14px; }
 
+/* Simplified whale holdings */
+.whaleInlineSettings { scroll-margin-top: 16px; }
+.whaleInlineSettingsPanel { overflow: hidden; border-color: #75682a; box-shadow: inset 3px 0 #f2c319; }
+.whaleInlineSettingsBody { display: grid; align-items: start; grid-template-columns: minmax(0, 1fr) minmax(360px, 0.55fr); gap: 20px; }
+.whaleSettingsStatus { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #403b1f; background: #403b1f; }
+.whaleSettingsStatus > div { display: grid; min-height: 67px; align-content: center; gap: 5px; padding: 10px 12px; background: #0c0d08; }
+.whaleSettingsStatus span { color: #817c5f; font-size: 12px; }
+.whaleSettingsStatus strong { color: #e8e3bd; font-size: 15px; font-variant-numeric: tabular-nums; }
+.whaleRuleTabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; border: 1px solid #403b1f; background: #403b1f; }
+.whaleRuleTabs button { display: grid; min-height: 68px; align-content: center; justify-items: start; gap: 6px; padding: 12px 16px; border: 0; background: #0c0d08; color: #8d896a; cursor: pointer; text-align: left; }
+.whaleRuleTabs button:hover { background: #121309; }
+.whaleRuleTabs button.active { box-shadow: inset 0 -3px #f2c319; background: #171608; color: #f2c319; }
+.whaleRuleTabs strong { color: inherit; font-size: 17px; }
+.whaleRuleTabs span { font-size: 12px; }
+.whaleRuleBadges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.whaleHistoryPanel { overflow: hidden; }
+.whaleHistoryPanel > .pcPanelHeader > strong { color: #f2c319; font-family: "Courier New", Consolas, monospace; font-size: 18px; }
+.whaleHistoryTableWrap { overflow-x: auto; }
+.whaleHistoryTable { width: 100%; min-width: 1160px; border-collapse: collapse; }
+.whaleHistoryTable th { padding: 10px 12px; border-bottom: 1px solid #403b1f; background: #090a06; color: #777358; font-size: 12px; text-align: left; }
+.whaleHistoryTable td { padding: 12px; border-bottom: 1px solid #2d2b19; color: #d8d1a8; font-size: 13px; vertical-align: top; }
+.whaleHistoryTable tr:last-child td { border-bottom: 0; }
+.whaleHistoryTable td > strong,
+.whaleHistoryTable td > a,
+.whaleHistoryTable td > small { display: block; }
+.whaleHistoryTable td > a { max-width: 320px; overflow: hidden; color: #e8e3bd; font-weight: 700; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.whaleHistoryTable td > small { margin-top: 5px; color: #777358; }
+.whaleHistoryTable td.numeric { font-family: "Courier New", Consolas, monospace; font-variant-numeric: tabular-nums; }
+.whaleHistoryTable .profit { color: #6fd59a; }
+.whaleHistoryTable .loss { color: #ef8b78; }
+.whaleHistoryTable .whaleRuleBadges { margin-top: 7px; }
+.whaleHistoryTable .whaleHistoryWalletLink { display: grid; gap: 5px; color: inherit; text-decoration: none; white-space: normal; }
+.whaleHistoryTable .whaleHistoryWalletLink strong { color: #e8e3bd; }
+.whaleHistoryTable .whaleHistoryWalletLink small { color: #777358; }
+.whaleHistoryTable .whaleHistoryWalletLink:hover strong { color: #ffe052; }
+.whaleHistoryEmpty { padding: 28px 16px; color: #817c5f; text-align: center; }
+
+/* Whale signal statistics */
+.whaleStatisticsWorkspace { display: grid; gap: 14px; }
+.whaleStatsToolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; }
+.whaleStatsToolbar h2 { margin: 4px 0 0; color: #eee9c8; font-size: 20px; }
+.whaleStatsToolbar p { margin: 6px 0 0; color: #817c5f; font-size: 12px; }
+.whaleStatsRange { display: inline-flex; overflow: hidden; flex: 0 0 auto; border: 1px solid #514b23; background: #090a06; }
+.whaleStatsRange button { min-height: 38px; padding: 0 13px; border: 0; border-right: 1px solid #3b381f; background: transparent; color: #8d896a; cursor: pointer; font-size: 13px; }
+.whaleStatsRange button:last-child { border-right: 0; }
+.whaleStatsRange button:hover { color: #e8e3bd; }
+.whaleStatsRange button.active { background: #f2c319; color: #111006; font-weight: 800; }
+.whaleStatsHero { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.whaleStatsHeroCard { display: grid; min-height: 156px; align-content: center; gap: 7px; padding: 17px; border: 1px solid #403b1f; background: linear-gradient(145deg, #121309, #090a06); }
+.whaleStatsHeroCard.primary { border-color: #8a7521; box-shadow: inset 3px 0 #f2c319; }
+.whaleStatsHeroCard > span { color: #8d896a; font-size: 12px; font-weight: 750; letter-spacing: .03em; }
+.whaleStatsHeroCard > strong { color: #f3edc8; font-family: "Courier New", Consolas, monospace; font-size: 27px; font-variant-numeric: tabular-nums; }
+.whaleStatsHeroCard.primary > strong { color: #ffe052; font-size: 35px; }
+.whaleStatsHeroCard > small { color: #aaa47d; font-size: 13px; }
+.whaleStatsHeroCard > em { color: #6f6b52; font-size: 11px; font-style: normal; }
+.whaleStatsHeroCard .profit,
+.whaleStatsCohortCard .profit,
+.whaleStatsTable .profit { color: #3be6a1; }
+.whaleStatsHeroCard .loss,
+.whaleStatsCohortCard .loss,
+.whaleStatsTable .loss { color: #ff7186; }
+.whaleStatsCohorts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.whaleStatsCohortCard { overflow: hidden; border: 1px solid #403b1f; background: #0b0c07; }
+.whaleStatsCohortCard > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 15px; border-bottom: 1px solid #34321d; background: linear-gradient(105deg, #15160c, #0d0e08 70%); }
+.whaleStatsCohortCard > header > div:first-child { display: grid; gap: 4px; }
+.whaleStatsCohortCard > header span { color: #777358; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.whaleStatsCohortCard h3 { margin: 0; color: #ebe5c3; font-size: 17px; }
+.whaleStatsCohortRate { display: grid; justify-items: end; gap: 3px; }
+.whaleStatsCohortRate strong { color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 25px; }
+.whaleStatsCohortRate small { color: #817c5f; font-size: 11px; }
+.whaleStatsCohortCard dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; background: #292817; }
+.whaleStatsCohortCard dl > div { display: grid; min-height: 72px; align-content: center; gap: 5px; padding: 10px; background: #0b0c07; }
+.whaleStatsCohortCard dt { color: #777358; font-size: 11px; }
+.whaleStatsCohortCard dd { overflow: hidden; margin: 0; color: #dcd6b5; font-family: "Courier New", Consolas, monospace; font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.whaleStatsAnalysisGrid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(360px, .65fr); gap: 10px; }
+.whaleStatsTrendPanel,
+.whaleStatsBandsPanel,
+.whaleStatsSignalsPanel { overflow: hidden; }
+.whaleStatsTrendList { display: grid; max-height: 390px; overflow-y: auto; }
+.whaleStatsTrendRow { display: grid; min-height: 44px; align-items: center; grid-template-columns: 70px minmax(100px, 1fr) 62px 60px; gap: 10px; padding: 0 14px; border-bottom: 1px solid #292817; }
+.whaleStatsTrendRow:last-child { border-bottom: 0; }
+.whaleStatsTrendRow > span,
+.whaleStatsTrendRow > small { color: #817c5f; font-size: 11px; }
+.whaleStatsTrendRow > strong { color: #e4ddba; font-family: "Courier New", Consolas, monospace; font-size: 12px; text-align: right; }
+.whaleStatsTrendBar { position: relative; height: 10px; border: 1px solid #3c391f; background: #111208; }
+.whaleStatsTrendBar b { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, #8f7210, #f2c319); }
+.whaleStatsTrendBar i { position: absolute; top: -4px; width: 1px; height: 16px; background: #f1eee0; box-shadow: 0 0 0 1px #090a06; }
+.whaleStatsBandGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: #34321d; }
+.whaleStatsBandGrid button { display: grid; min-height: 104px; align-content: center; justify-items: start; gap: 6px; padding: 13px; border: 0; background: #0b0c07; color: inherit; cursor: pointer; text-align: left; }
+.whaleStatsBandGrid button:hover { background: #14150c; }
+.whaleStatsBandGrid span { color: #817c5f; font-size: 11px; }
+.whaleStatsBandGrid strong { color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 21px; }
+.whaleStatsBandGrid small { color: #8d896a; font-size: 11px; line-height: 1.45; }
+.whaleStatsSignalsPanel > .pcPanelHeader > strong { color: #f2c319; font-family: "Courier New", Consolas, monospace; font-size: 17px; }
+.whaleStatsFilters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 12px; border-bottom: 1px solid #34321d; background: #090a06; }
+.whaleStatsFilters label { display: grid; gap: 5px; color: #817c5f; font-size: 11px; }
+.whaleStatsFilters select { width: 100%; height: 38px; padding: 0 9px; border: 1px solid #514b23; background: #0d0e08; color: #ddd8b6; outline: none; }
+.whaleStatsFilters select:focus { border-color: #f2c319; }
+.whaleStatsTableWrap { overflow-x: auto; transition: opacity 140ms ease; }
+.whaleStatsTableWrap.refreshing { opacity: .55; }
+.whaleStatsTable { width: 100%; min-width: 1120px; border-collapse: collapse; }
+.whaleStatsTable th { padding: 10px 12px; border-bottom: 1px solid #403b1f; background: #090a06; color: #777358; font-size: 12px; text-align: left; }
+.whaleStatsTable td { padding: 12px; border-bottom: 1px solid #292817; color: #d8d1a8; font-size: 12px; vertical-align: top; }
+.whaleStatsTable td > a { display: grid; max-width: 310px; gap: 4px; overflow: hidden; color: #e8e3bd; font-weight: 700; text-decoration: none; }
+.whaleStatsTable td > a:hover { color: #ffe052; }
+.whaleStatsTable td > a > strong,
+.whaleStatsTable td > a > small,
+.whaleStatsTable td > strong,
+.whaleStatsTable td > small { display: block; }
+.whaleStatsTable td > small,
+.whaleStatsTable td > a > small { margin-top: 5px; color: #777358; font-weight: 400; }
+.whaleStatsTable td.numeric { font-family: "Courier New", Consolas, monospace; font-variant-numeric: tabular-nums; }
+.whaleStatsTable .whaleRuleBadges { display: flex; margin-top: 7px; }
+.whaleStatsPagination { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-top: 1px solid #34321d; background: #090a06; }
+.whaleStatsPagination > span { color: #777358; font-size: 12px; }
+.whaleStatsPagination > div { display: flex; gap: 6px; }
+.whaleStatsPagination button { min-height: 32px; padding: 0 12px; border: 1px solid #514b23; background: #111208; color: #c9c3a2; cursor: pointer; }
+.whaleStatsPagination button:disabled { cursor: not-allowed; opacity: .4; }
+
+.whaleSimpleToolbar {
+  display: grid;
+  align-items: end;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+}
+.whaleSimpleSort select {
+  width: 100%;
+  height: 42px;
+  border: 1px solid #514b23;
+  background: #0c0d08;
+  color: #e7e1bb;
+  outline: none;
+}
+.whaleSimpleSort select:focus { border-color: #f2c319; box-shadow: 0 0 0 1px rgba(242, 195, 25, 0.2); }
+.whaleSimpleSort { display: grid; gap: 6px; color: #8d896a; font-size: 12px; }
+.whaleSimpleSort select { padding-inline: 10px; font-size: 14px; }
+.whaleSimpleMeta { display: grid; justify-items: end; gap: 5px; padding-bottom: 3px; white-space: nowrap; }
+.whaleSimpleMeta strong { color: #d8d1a8; font-size: 14px; }
+.whaleSimpleMeta span { color: #7f7a5d; font-size: 12px; }
+.whaleWalletList { display: grid; gap: 14px; transition: opacity 140ms ease; }
+.whaleWalletList.refreshing { opacity: 0.62; }
+.whaleWalletCard { overflow: hidden; }
+.whaleWalletHeader {
+  display: flex;
+  min-height: 88px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #514a21;
+  background: linear-gradient(105deg, #15160c, #0d0e08 70%);
+}
+.whaleWalletIdentity { display: flex; min-width: 0; align-items: center; gap: 12px; color: inherit; text-decoration: none; }
+.whaleWalletAvatar { display: block; width: 48px; height: 48px; flex: 0 0 auto; border: 2px solid #75682a; border-radius: 50%; background: #11120a; box-shadow: 0 0 0 3px rgba(242, 195, 25, 0.08); object-fit: cover; }
+.whaleWalletAvatarFallback { display: grid; place-items: center; color: #fff5b8; font-family: "Courier New", Consolas, monospace; font-size: 15px; font-weight: 900; letter-spacing: 0.04em; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6); }
+.whaleWalletIdentity > div { display: grid; min-width: 0; gap: 3px; }
+.whaleWalletIdentity strong { overflow: hidden; color: #f0edcf; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.whaleWalletIdentity span { color: #b1a97d; font-family: "Courier New", Consolas, monospace; font-size: 13px; }
+.whaleWalletIdentity small { color: #817c5f; font-size: 12px; }
+.whaleWalletIdentity:hover strong { color: #ffe052; }
+.whaleWalletTotal { display: grid; flex: 0 0 auto; justify-items: end; gap: 3px; }
+.whaleWalletTotal span,
+.whaleWalletTotal small { color: #817c5f; font-size: 12px; }
+.whaleWalletTotal strong { color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 24px; font-variant-numeric: tabular-nums; }
+.whaleHoldingHeader,
+.whaleHoldingRow {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(230px, 2fr) minmax(95px, 0.76fr) minmax(82px, 0.66fr) minmax(95px, 0.76fr) minmax(72px, 0.58fr) minmax(68px, 0.54fr) minmax(100px, 0.82fr) minmax(86px, 0.64fr);
+  gap: 10px;
+}
+.whaleHoldingHeader { min-height: 38px; padding: 0 14px; border-bottom: 1px solid #2d2b19; background: #090a06; color: #777358; font-size: 12px; font-weight: 750; }
+.whaleHoldingRow { min-height: 108px; padding: 12px 14px; border-bottom: 1px solid #2d2b19; }
+.whaleHoldingRow:last-child { border-bottom: 0; }
+.whaleHoldingRow:hover { background: rgba(242, 195, 25, 0.03); }
+.whaleHoldingMarket { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.whaleHoldingMarketIcon { width: 38px; height: 38px; flex: 0 0 auto; border: 1px solid #514b23; background: #111208; object-fit: cover; }
+.whaleHoldingMarketIcon.fallback { display: grid; place-items: center; color: #8f8969; font-size: 18px; }
+.whaleHoldingMarketContent { display: grid; min-width: 0; gap: 8px; }
+.whaleHoldingMarketContent > a { overflow: hidden; color: #e8e3bd; font-size: 15px; font-weight: 750; line-height: 1.35; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.whaleHoldingMarketContent > a:hover { color: #ffe052; }
+.whaleHoldingMarketContent > div { display: flex; align-items: center; gap: 6px; }
+.whaleHoldingMarket .whaleOutcomeMark { min-height: 24px; padding-inline: 7px; font-size: 12px; }
+.whaleHoldingMarket .pcBadge { min-height: 24px !important; padding-inline: 7px !important; font-size: 11px !important; }
+.whaleHoldingMetric { display: grid; min-width: 0; gap: 4px; }
+.whaleHoldingMetric strong { overflow: hidden; color: #e6e0ba; font-family: "Courier New", Consolas, monospace; font-size: 14px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; }
+.whaleHoldingMetric small { color: #777358; font-size: 11px; }
+.whaleHoldingTimes { gap: 3px; }
+.whaleHoldingTimes small { line-height: 1.25; }
+.whaleHoldingAction { display: grid; gap: 4px; }
+.whaleHoldingAction .pcButton { width: 100%; }
+.whaleHoldingAction .pcButton:disabled { cursor: not-allowed; }
+.whaleHoldingAction small { color: #9c765e; font-size: 10px; line-height: 1.3; text-align: center; }
+.whaleQuoteGrid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.whaleProfitScenarios { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.whaleProfitScenario { display: grid; align-content: start; gap: 6px; padding: 13px; border: 1px solid #454124; background: #101108; }
+.whaleProfitScenario.winning { border-color: #2a7455; background: rgba(40, 230, 158, 0.045); }
+.whaleProfitScenario > span { color: #8d896a; font-size: 13px; }
+.whaleProfitScenario > strong { color: #ddd8b6; font-family: "Courier New", Consolas, monospace; font-size: 20px; }
+.whaleProfitScenario > strong.profit { color: #3be6a1; }
+.whaleProfitScenario > strong.loss { color: #ff7186; }
+.whaleProfitScenario > small { min-height: 18px; color: #817c5f; font-size: 12px; line-height: 1.45; }
+.whaleProfitScenario dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 3px 0 0; }
+.whaleProfitScenario dl > div { padding-top: 7px; border-top: 1px solid #35331e; }
+.whaleProfitScenario dt { color: #777358; font-size: 11px; }
+.whaleProfitScenario dd { margin: 3px 0 0; color: #d8d1aa; font-family: "Courier New", Consolas, monospace; font-size: 13px; }
+.whaleProfitScenario dd.loss { color: #ff7186; }
+.whaleEstimateDisclaimer { margin: 0; color: #777358; font-size: 12px; line-height: 1.5; }
+.pcWhaleSettingSummary { display: grid; align-content: center; gap: 7px; padding: 14px; border: 1px solid #514b23; background: #101108; }
+.pcWhaleSettingSummary span { color: #8d896a; font-size: 13px; }
+.pcWhaleSettingSummary strong { color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 25px; }
+.pcWhaleSettingSummary small { color: #817c5f; font-size: 13px; line-height: 1.5; }
+
+/* Whale request monitor */
+.whaleRequestMonitor { overflow: hidden; }
+.whaleRequestMonitorHeader {
+  display: flex;
+  min-height: 78px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #454124;
+  background: linear-gradient(105deg, #12140c, #0a0c08 72%);
+}
+.whaleRequestMonitorTitle { display: flex; min-width: 0; align-items: center; gap: 11px; }
+.whaleRequestMonitorTitle > span { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border: 1px solid #75682a; color: #ffe052; font-size: 21px; }
+.whaleRequestMonitorTitle h2 { margin: 0; color: #eee9c7; font-size: 18px; }
+.whaleRequestMonitorTitle p { margin: 4px 0 0; color: #827d60; font-size: 12px; }
+.whaleRequestMonitorControls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.whaleRequestConnection,
+.whaleRequestCount { display: inline-flex; min-height: 30px; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #454124; background: #0c0e08; color: #aaa581; font-size: 12px; font-weight: 720; }
+.whaleRequestConnection i { width: 7px; height: 7px; border-radius: 50%; background: #aa8f25; box-shadow: 0 0 0 3px rgba(170, 143, 37, 0.12); }
+.whaleRequestConnection.connected { border-color: #246c50; color: #54dba2; }
+.whaleRequestConnection.connected i { background: #31d995; box-shadow: 0 0 0 3px rgba(49, 217, 149, 0.13); }
+.whaleRequestConnection.disconnected { border-color: #873044; color: #ff8395; }
+.whaleRequestConnection.disconnected i { background: #ff6178; box-shadow: 0 0 0 3px rgba(255, 97, 120, 0.13); }
+.whaleRequestCount.danger { border-color: #873044; color: #ff8395; }
+.whaleRequestFilters { display: flex; min-height: 32px; border: 1px solid #514b23; background: #090a06; }
+.whaleRequestFilters button { min-width: 54px; padding: 0 9px; border: 0; border-right: 1px solid #514b23; background: transparent; color: #8d896a; cursor: pointer; font-size: 12px; font-weight: 750; }
+.whaleRequestFilters button:last-child { border-right: 0; }
+.whaleRequestFilters button.active { background: rgba(242, 195, 25, 0.14); color: #ffe052; }
+.whaleRequestMonitorWarning { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 18px; border-bottom: 1px solid #873044; background: rgba(255, 76, 108, 0.08); color: #ff91a0; font-size: 12px; }
+.whaleRequestMonitorWarning button { border: 0; background: transparent; color: #ff9dab; cursor: pointer; font-size: 12px; text-decoration: underline; }
+.whaleRequestLogHead,
+.whaleRequestLog > summary { display: grid; align-items: center; grid-template-columns: 150px minmax(260px, 1fr) 70px 85px; gap: 12px; }
+.whaleRequestLogHead { min-height: 34px; padding: 0 18px; border-bottom: 1px solid #29291a; background: #080a06; color: #6f6d55; font-size: 11px; font-weight: 760; }
+.whaleRequestLog { border-bottom: 1px solid #29291a; background: #0c0e09; }
+.whaleRequestLog:last-child { border-bottom: 0; }
+.whaleRequestLog.failed { box-shadow: inset 3px 0 #d7435b; }
+.whaleRequestLog.pending { box-shadow: inset 3px 0 #c7a72d; }
+.whaleRequestLog > summary { min-height: 58px; padding: 7px 18px; cursor: pointer; list-style: none; }
+.whaleRequestLog > summary::-webkit-details-marker { display: none; }
+.whaleRequestLog > summary:hover { background: rgba(242, 195, 25, 0.035); }
+.whaleRequestWhen { display: grid; gap: 4px; }
+.whaleRequestWhen strong { color: #bdb795; font-family: "Courier New", Consolas, monospace; font-size: 12px; font-weight: 650; }
+.whaleRequestWhen em { width: max-content; color: #55dba3; font-size: 11px; font-style: normal; font-weight: 820; }
+.whaleRequestLog.failed .whaleRequestWhen em { color: #ff7186; }
+.whaleRequestLog.pending .whaleRequestWhen em { color: #e5c849; }
+.whaleRequestEndpoint { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.whaleRequestEndpoint > b { min-width: 38px; padding: 4px 5px; border: 1px solid #5d5424; color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 10px; text-align: center; }
+.whaleRequestEndpoint > span { display: grid; min-width: 0; gap: 3px; }
+.whaleRequestEndpoint strong { overflow: hidden; color: #ded9b8; font-family: "Courier New", Consolas, monospace; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.whaleRequestEndpoint small { color: #747157; font-size: 10px; }
+.whaleRequestHttp,
+.whaleRequestDuration { color: #aaa581; font-family: "Courier New", Consolas, monospace; font-size: 12px; font-variant-numeric: tabular-nums; }
+.whaleRequestLog.failed .whaleRequestHttp { color: #ff7186; }
+.whaleRequestDetail { display: grid; gap: 10px; padding: 13px 18px 16px 180px; border-top: 1px solid #29291a; background: #070906; }
+.whaleRequestDetail > div { display: grid; gap: 5px; }
+.whaleRequestDetail span { color: #777358; font-size: 11px; font-weight: 760; }
+.whaleRequestDetail code,
+.whaleRequestDetail pre { overflow: auto; margin: 0; padding: 9px 10px; border: 1px solid #36351f; background: #0d0f09; color: #c6c09d; font-family: "Courier New", Consolas, monospace; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
+.whaleRequestDetail code { padding: 6px 8px; }
+.whaleRequestDetail .whaleRequestFailure { padding: 10px; border: 1px solid #873044; background: rgba(255, 76, 108, 0.07); }
+.whaleRequestFailure strong { color: #ff91a0; font-size: 12px; line-height: 1.5; }
+.whaleRequestFailure pre { border-color: #5f2e39; color: #e7b1b8; }
+.whaleRequestEmpty { display: grid; min-height: 92px; place-items: center; color: #777358; font-size: 13px; }
+.whaleTerminalFrame { margin: 12px; overflow: hidden; border: 1px solid #282d33; background: #090c0f; box-shadow: inset 0 0 28px rgba(0, 0, 0, 0.65), 0 10px 28px rgba(0, 0, 0, 0.24); }
+.whaleTerminalChrome { display: grid; min-height: 38px; align-items: center; grid-template-columns: 120px 1fr 120px; padding: 0 13px; border-bottom: 1px solid #242930; background: #12161b; color: #65707c; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 10px; }
+.whaleTerminalChrome > span { display: flex; gap: 7px; }
+.whaleTerminalChrome i { display: block; width: 9px; height: 9px; border-radius: 50%; background: #4b525b; }
+.whaleTerminalChrome i:first-child { background: #ff6159; }
+.whaleTerminalChrome i:nth-child(2) { background: #ffbd2e; }
+.whaleTerminalChrome i:nth-child(3) { background: #28c941; }
+.whaleTerminalChrome code { color: #87919c; font: inherit; text-align: center; }
+.whaleTerminalChrome b { color: #59636e; font-weight: 600; text-align: right; }
+.whaleRequestTerminal { height: clamp(300px, 38vh, 480px); overflow: auto; padding: 12px 0 22px; background: radial-gradient(circle at 70% 0, rgba(31, 40, 49, 0.13), transparent 44%), #090c0f; color: #b8bec5; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.65; scrollbar-color: #343a41 #0b0e11; scrollbar-width: thin; }
+.whaleRequestTerminal::-webkit-scrollbar { width: 9px; }
+.whaleRequestTerminal::-webkit-scrollbar-track { background: #0b0e11; }
+.whaleRequestTerminal::-webkit-scrollbar-thumb { border: 2px solid #0b0e11; border-radius: 8px; background: #343a41; }
+.whaleTerminalEntry { padding: 4px 15px 7px; }
+.whaleTerminalEntry + .whaleTerminalEntry { padding-top: 8px; }
+.whaleTerminalEntry.failed { background: linear-gradient(90deg, rgba(255, 65, 91, 0.035), transparent 58%); }
+.whaleTerminalLine { display: grid; align-items: start; grid-template-columns: 142px 100px minmax(0, 1fr); gap: 12px; min-height: 22px; }
+.whaleTerminalLine time { color: #4f5862; font: inherit; font-variant-numeric: tabular-nums; white-space: pre; }
+.whaleTerminalLine > b { font: inherit; font-weight: 800; white-space: nowrap; }
+.whaleTerminalLine > b.request { color: #e4b93f; }
+.whaleTerminalLine > b.query { color: #8272d8; }
+.whaleTerminalLine > b.pending { color: #c79d36; }
+.whaleTerminalLine > b.success { color: #32c96b; }
+.whaleTerminalLine > b.failed,
+.whaleTerminalLine > b.error { color: #ff526b; }
+.whaleTerminalLine > b.response { color: #ff875f; }
+.whaleTerminalLine code { min-width: 0; color: #b7bdc4; font: inherit; overflow-wrap: anywhere; white-space: pre-wrap; }
+.whaleTerminalLine code strong { color: #e2e6ea; font: inherit; font-weight: 850; }
+.whaleTerminalLine.continuation code { color: #89929c; }
+.whaleTerminalEntry.failed .whaleTerminalLine code { color: #c9c2c4; }
+.whaleTerminalEmpty { display: flex; min-height: 250px; align-items: flex-end; gap: 9px; padding: 18px; color: #58616b; }
+.whaleTerminalEmpty span { width: 8px; height: 17px; overflow: hidden; background: #3bcf73; color: transparent; animation: whaleTerminalCursor 1s steps(1) infinite; }
+@keyframes whaleTerminalCursor { 50% { opacity: 0; } }
+
 /* Whale records */
 .whaleRecordMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
 .whaleRecordMetrics .pcMetricCard > strong { margin: 10px 0 8px !important; padding: 6px 8px !important; font-size: clamp(26px, 2.8vw, 38px) !important; }
@@ -8483,6 +8795,10 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleAmountInput input:disabled { cursor: not-allowed; opacity: 0.48; }
 
 @media (max-width: 1280px) {
+  .whaleStatsHero { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleStatsCohortCard dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleHoldingHeader,
+  .whaleHoldingRow { grid-template-columns: minmax(210px, 1.7fr) repeat(5, minmax(72px, 0.62fr)) minmax(90px, 0.75fr) minmax(78px, 0.58fr); }
   .whaleFilterGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .whaleToggleField { justify-content: center; }
   .whaleSides.two { grid-template-columns: 1fr; }
@@ -8493,6 +8809,18 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 }
 
 @media (max-width: 900px) {
+  .whaleStatsToolbar { align-items: flex-start; flex-direction: column; }
+  .whaleStatsAnalysisGrid { grid-template-columns: 1fr; }
+  .whaleStatsCohorts { grid-template-columns: 1fr; }
+  .whaleStatsFilters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleInlineSettingsBody { grid-template-columns: 1fr; }
+  .whaleSimpleToolbar { grid-template-columns: 210px minmax(0, 1fr); }
+  .whaleSimpleMeta { align-items: center; grid-template-columns: 1fr; justify-items: end; }
+  .whaleHoldingHeader { display: none; }
+  .whaleHoldingRow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .whaleHoldingMarket { grid-column: 1 / -1; }
+  .whaleHoldingAction { align-self: stretch; }
+  .whaleQuoteGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .whaleFilterGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .whaleFilterMeta { align-items: flex-start; flex-direction: column; gap: 5px; }
   .whaleMarketHeader { align-items: flex-start; }
@@ -8506,9 +8834,34 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .whaleEntryActions { grid-row: span 2; align-self: stretch; }
   .whaleRecordMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .whalePositionTimeline { grid-template-columns: 1fr; }
+  .whaleRequestMonitorHeader { align-items: flex-start; flex-direction: column; }
+  .whaleRequestMonitorControls { justify-content: flex-start; }
+  .whaleRequestLogHead,
+  .whaleRequestLog > summary { grid-template-columns: 125px minmax(180px, 1fr) 55px 75px; gap: 8px; }
+  .whaleRequestDetail { padding-left: 18px; }
+  .whaleTerminalLine { grid-template-columns: 120px 90px minmax(0, 1fr); gap: 9px; }
 }
 
 @media (max-width: 640px) {
+  .whaleRuleTabs { grid-template-columns: 1fr; }
+  .whaleStatsRange { display: grid; width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleStatsRange button:nth-child(2) { border-right: 0; }
+  .whaleStatsRange button:nth-child(-n+2) { border-bottom: 1px solid #3b381f; }
+  .whaleStatsHero { grid-template-columns: 1fr; }
+  .whaleStatsHeroCard { min-height: 138px; }
+  .whaleStatsBandGrid { grid-template-columns: 1fr; }
+  .whaleStatsFilters { grid-template-columns: 1fr; }
+  .whaleStatsTrendRow { grid-template-columns: 62px minmax(90px, 1fr) 55px; }
+  .whaleStatsTrendRow > small { display: none; }
+  .whaleInlineSettingsPanel .pcPanelHeader { align-items: flex-start; }
+  .whaleSimpleToolbar { grid-template-columns: 1fr; }
+  .whaleSimpleMeta { grid-column: auto; grid-template-columns: 1fr; gap: 3px; }
+  .whaleWalletHeader { align-items: flex-start; flex-direction: column; }
+  .whaleWalletTotal { width: 100%; align-items: center; grid-template-columns: 1fr auto; justify-items: start; }
+  .whaleWalletTotal small { grid-column: 1 / -1; }
+  .whaleHoldingRow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleHoldingAction { grid-column: 1 / -1; }
+  .whaleProfitScenarios { grid-template-columns: 1fr; }
   .whaleHealthBanner { align-items: flex-start; flex-wrap: wrap; }
   .whaleHealthBanner button { margin-left: 40px; }
   .whaleCategoryBar { padding-inline: 9px; }
@@ -8542,6 +8895,21 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .whaleDateFilters label { flex: 1; align-items: flex-start; flex-direction: column; }
   .whaleDateFilters input { width: 100%; }
   .whaleDateFilters .pcButton { align-self: flex-end; }
+  .whaleRequestMonitorHeader { padding: 12px; }
+  .whaleRequestMonitorControls { width: 100%; }
+  .whaleRequestLogHead { display: none; }
+  .whaleRequestLog > summary { grid-template-columns: 1fr auto; padding: 10px 12px; }
+  .whaleRequestEndpoint { grid-row: 2; grid-column: 1 / -1; }
+  .whaleRequestHttp { grid-row: 1; grid-column: 2; }
+  .whaleRequestDuration { grid-row: 3; grid-column: 1 / -1; padding-left: 48px; }
+  .whaleRequestDetail { padding: 12px; }
+  .whaleTerminalFrame { margin: 8px; }
+  .whaleTerminalChrome { grid-template-columns: 68px 1fr; }
+  .whaleTerminalChrome b { display: none; }
+  .whaleTerminalChrome code { overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+  .whaleRequestTerminal { height: 380px; font-size: 10px; }
+  .whaleTerminalEntry { padding-inline: 10px; }
+  .whaleTerminalLine { grid-template-columns: 76px 70px minmax(0, 1fr); gap: 6px; }
 }
 
 .whaleWorkspace .pcTitleGroup h1 { font-size: 26px !important; }

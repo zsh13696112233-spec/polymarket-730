@@ -57,6 +57,16 @@ const account = {
   last_error: null,
 };
 
+const whaleSettings = {
+  window_hours: 24,
+  registration_window_days: 3,
+  collect_filter_amount_usdc: 1000,
+  single_trade_threshold_usdc: 100000,
+  cumulative_threshold_usdc: 100000,
+  default_follow_amount_usdc: 20,
+  max_follow_amount_usdc: 200,
+};
+
 const filledOrder = {
   id: 101,
   asset_id: "asset-one",
@@ -136,6 +146,22 @@ const overview = {
     total_pnl: 7.5,
     valuation_complete: true,
     unpriced_positions: 0,
+    pnl_breakdown: {
+      copy_trading: {
+        realized_pnl: 2.5,
+        unrealized_pnl: 5,
+        total_pnl: 7.5,
+        valuation_complete: true,
+        unpriced_positions: 0,
+      },
+      whale_follow: {
+        realized_pnl: 0,
+        unrealized_pnl: 0,
+        total_pnl: 0,
+        valuation_complete: true,
+        unpriced_positions: 0,
+      },
+    },
   },
   daily_realized_pnl: dailyRealizedPnl,
   strategies: [{
@@ -183,6 +209,19 @@ describe("PolyCopy workspace", () => {
       if (init?.body) requestBodies.push(JSON.parse(String(init.body)));
       if (url.includes("/api/copy-trading/overview")) return json(overview);
       if (url.endsWith("/api/wallets")) return json([wallet]);
+      if (url.endsWith("/api/whales/settings")) {
+        if (init?.method === "PUT") {
+          const body = JSON.parse(String(init.body));
+          return json({
+            ...whaleSettings,
+            ...body,
+            single_trade_threshold_usdc:
+              body.cumulative_threshold_usdc ?? whaleSettings.single_trade_threshold_usdc,
+          });
+        }
+        return json(whaleSettings);
+      }
+      if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
       if (url.includes("/api/copy-trading/positions")) return json({
         items: [{
           id: 1,
@@ -225,6 +264,8 @@ describe("PolyCopy workspace", () => {
     expect(screen.getAllByText("策略一").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Will Team A win?").length).toBeGreaterThan(0);
     expect(screen.getAllByText("+$7.50").length).toBeGreaterThan(0);
+    expect(screen.getByText("自动跟单 +$7.50 · 巨鲸跟单 $0.00")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "系统全部" })).toBeInTheDocument();
     expect(screen.getByText("累计跟单")).toBeInTheDocument();
     expect(screen.getByText("12 笔")).toBeInTheDocument();
     expect(screen.getAllByText("源钱包交易金额").length).toBeGreaterThan(0);
@@ -484,7 +525,7 @@ describe("PolyCopy workspace", () => {
     render(<PolyCopyWorkspace view="overview" />);
     const chart = await screen.findByRole("region", { name: "每日盈亏" });
     const walletSelect = within(chart).getByRole("combobox", { name: "目标钱包" });
-    expect(within(chart).getByText("全部策略按北京时间汇总的已实现盈亏。")).toBeInTheDocument();
+    expect(within(chart).getByText("系统全部按北京时间汇总的已实现盈亏，包含自动跟单与巨鲸跟单。")).toBeInTheDocument();
 
     await user.selectOptions(walletSelect, "1");
     await waitFor(() => expect(requests.some((url) => url.includes("tracked_wallet_id=1"))).toBe(true));
@@ -780,6 +821,23 @@ describe("PolyCopy workspace", () => {
     await waitFor(() => expect(requestBodies).toContainEqual(expect.objectContaining({
       auto_redeem: false,
     })));
+  });
+
+  it("综合设置页只修改巨鲸跟买金额，不再包含监测阈值", async () => {
+    const user = userEvent.setup();
+    render(<PolyCopyWorkspace view="settings" />);
+    const defaultAmount = await screen.findByRole("spinbutton", { name: "巨鲸默认买入金额" });
+    await waitFor(() => expect(defaultAmount).toBeEnabled());
+    expect(screen.queryByRole("spinbutton", { name: "巨鲸买入金额阈值" })).not.toBeInTheDocument();
+    await user.clear(defaultAmount);
+    await user.type(defaultAmount, "50");
+    await user.click(screen.getByRole("button", { name: "保存跟买设置" }));
+    await waitFor(() => expect(requestBodies).toContainEqual({
+      default_follow_amount_usdc: 50,
+      max_follow_amount_usdc: 200,
+    }));
+    expect(requests.some((url) => url.endsWith("/api/whales/scan"))).toBe(false);
+    expect(await screen.findByText("巨鲸跟买设置已保存。")).toBeInTheDocument();
   });
 
   it("策略高级参数不再显示已删除的观测钱包", async () => {

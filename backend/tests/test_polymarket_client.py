@@ -24,6 +24,7 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
         assert request.url.params["limit"] == "123"
         assert request.url.params["offset"] == "456"
         assert request.url.params["takerOnly"] == "false"
+        assert request.url.params["side"] == "BUY"
         return httpx.Response(
             200,
             json=[
@@ -175,6 +176,145 @@ async def test_whale_markets_batch_include_tags_and_parse_json_fields_and_dates(
 
 
 @pytest.mark.asyncio
+async def test_active_whale_markets_paginate_and_filter_non_tradable_rows():
+    condition_ids = [f"0x{index:064x}" for index in range(3)]
+    cursors: list[str | None] = []
+
+    def market(condition_id: str, *, active: bool = True) -> dict[str, object]:
+        return {
+            "conditionId": condition_id,
+            "question": condition_id,
+            "closed": False,
+            "active": active,
+            "acceptingOrders": True,
+            "outcomes": '["Yes","No"]',
+            "outcomePrices": '["0.6","0.4"]',
+            "clobTokenIds": f'["{condition_id}-yes","{condition_id}-no"]',
+            "liquidity": "5000",
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/markets/keyset"
+        assert request.url.params["closed"] == "false"
+        assert request.url.params["liquidity_num_min"] == "5000"
+        assert request.url.params["volume_num_min"] == "10000"
+        assert request.url.params["include_tag"] == "true"
+        cursor = request.url.params.get("after_cursor")
+        cursors.append(cursor)
+        if cursor is None:
+            return httpx.Response(
+                200,
+                json={
+                    "markets": [
+                        market(condition_ids[0]),
+                        market(condition_ids[1], active=False),
+                    ],
+                    "next_cursor": "page-2",
+                },
+            )
+        assert cursor == "page-2"
+        return httpx.Response(200, json={"markets": [market(condition_ids[2])]})
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        markets = await client.fetch_active_whale_markets(
+            min_liquidity_usdc=Decimal("5000"),
+            min_volume_usdc=Decimal("10000"),
+            page_size=2,
+        )
+    finally:
+        await client.close()
+
+    assert cursors == [None, "page-2"]
+    assert [market.condition_id for market in markets] == [condition_ids[0], condition_ids[2]]
+
+
+@pytest.mark.asyncio
+async def test_official_holders_and_market_positions_are_parsed():
+    condition_id = "0x" + "a" * 64
+    asset_id = "asset-yes"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/holders":
+            assert request.url.params["market"] == condition_id
+            assert request.url.params["limit"] == "20"
+            assert request.url.params["minBalance"] == "10000"
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "token": asset_id,
+                        "holders": [
+                            {
+                                "proxyWallet": TEST_ADDRESS.upper(),
+                                "asset": asset_id,
+                                "amount": "25000.5",
+                                "outcomeIndex": 0,
+                                "name": "Position Whale",
+                                "profileImage": "https://example.test/whale.png",
+                                "verified": True,
+                            }
+                        ],
+                    }
+                ],
+            )
+        assert request.url.path == "/v1/market-positions"
+        assert request.url.params["market"] == condition_id
+        assert request.url.params["status"] == "OPEN"
+        assert request.url.params["sortBy"] == "TOKENS"
+        assert request.url.params["limit"] == "20"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "token": asset_id,
+                    "positions": [
+                        {
+                            "proxyWallet": TEST_ADDRESS.upper(),
+                            "asset": asset_id,
+                            "conditionId": condition_id,
+                            "avgPrice": "0.40",
+                            "size": "25000.5",
+                            "totalBought": "25000.5",
+                            "currPrice": "0.60",
+                            "currentValue": "15000.3",
+                            "outcome": "Yes",
+                            "outcomeIndex": 0,
+                            "name": "Position Whale",
+                            "verified": True,
+                        }
+                    ],
+                }
+            ],
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        holders = await client.fetch_top_holders([condition_id], min_balance=10000, limit=20)
+        positions = await client.fetch_market_positions(condition_id)
+    finally:
+        await client.close()
+
+    assert holders[0].proxy_wallet == TEST_ADDRESS
+    assert holders[0].amount == Decimal("25000.5")
+    assert holders[0].verified_badge is True
+    assert positions[0].condition_id == condition_id
+    assert positions[0].total_bought == Decimal("25000.5")
+    assert positions[0].avg_price == Decimal("0.40")
+    assert positions[0].current_value == Decimal("15000.3")
+
+
+@pytest.mark.asyncio
 async def test_whale_public_profile_parses_fields_and_returns_none_for_404():
     missing_address = "0x" + "2" * 40
 
@@ -191,6 +331,7 @@ async def test_whale_public_profile_parses_fields_and_returns_none_for_404():
                 "proxyWallet": TEST_ADDRESS.upper(),
                 "pseudonym": "Whirlwind-Catalogue",
                 "name": "Named Whale",
+                "profileImage": "https://example.test/whale-avatar.jpg",
                 "verifiedBadge": True,
                 "takerTier": "3",
                 "takerTierName": "Tier 3",
@@ -213,6 +354,7 @@ async def test_whale_public_profile_parses_fields_and_returns_none_for_404():
     assert profile is not None
     assert profile.proxy_wallet == TEST_ADDRESS
     assert profile.display_name == "Named Whale"
+    assert profile.profile_image_url == "https://example.test/whale-avatar.jpg"
     assert profile.created_at == datetime(2026, 3, 27, 0, 18, 3, 788884)
     assert profile.verified_badge is True
     assert profile.taker_tier == 3
@@ -714,10 +856,42 @@ async def test_http_timeout_is_reported_as_api_error():
         transport=httpx.MockTransport(handler),
     )
     try:
-        with pytest.raises(PolymarketAPIError, match="接口连接失败"):
+        with pytest.raises(PolymarketAPIError, match="接口连接失败") as raised:
             await client.resolve_profile(TEST_ADDRESS, None)
     finally:
         await client.close()
+
+    assert "ReadTimeout" in str(raised.value)
+    assert "gamma.test" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_http_client_pool_is_replaced_after_network_error():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("stale proxy tunnel", request=request)
+        return httpx.Response(200, json={"name": "Recovered"})
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    original = client._http
+    try:
+        with pytest.raises(PolymarketAPIError):
+            await client.resolve_profile(TEST_ADDRESS, None)
+        assert client._http is not original
+        profile = await client.resolve_profile(TEST_ADDRESS, None)
+    finally:
+        await client.close()
+
+    assert profile.label == "Recovered"
 
 
 @pytest.mark.asyncio

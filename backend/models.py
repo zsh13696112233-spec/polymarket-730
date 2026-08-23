@@ -670,19 +670,43 @@ class WhaleSettings(Base):
             "max_follow_amount_usdc > 0",
             name="ck_whale_settings_max_follow_amount",
         ),
+        CheckConstraint(
+            "default_follow_amount_usdc > 0 "
+            "AND default_follow_amount_usdc <= max_follow_amount_usdc",
+            name="ck_whale_settings_default_follow_amount",
+        ),
+        CheckConstraint(
+            "registration_window_days >= 1 AND registration_window_days <= 30",
+            name="ck_whale_settings_registration_window_days",
+        ),
+        CheckConstraint(
+            "new_account_threshold_usdc >= collect_filter_amount_usdc",
+            name="ck_whale_settings_new_account_threshold",
+        ),
+        CheckConstraint(
+            "large_amount_threshold_usdc >= collect_filter_amount_usdc",
+            name="ck_whale_settings_large_amount_threshold",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     window_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    registration_window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     collect_filter_amount_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("1000")
     )
     single_trade_threshold_usdc: Mapped[Decimal] = mapped_column(
-        DECIMAL_TYPE, nullable=False, default=Decimal("10000")
+        DECIMAL_TYPE, nullable=False, default=Decimal("100000")
     )
     cumulative_threshold_usdc: Mapped[Decimal] = mapped_column(
-        DECIMAL_TYPE, nullable=False, default=Decimal("10000")
+        DECIMAL_TYPE, nullable=False, default=Decimal("100000")
+    )
+    new_account_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("100000")
+    )
+    large_amount_threshold_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("500000")
     )
     min_liquidity_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("5000")
@@ -702,6 +726,9 @@ class WhaleSettings(Base):
     trade_retention_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=72)
     max_follow_amount_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("200")
+    )
+    default_follow_amount_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("20")
     )
     follow_slippage_cents: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("3")
@@ -806,6 +833,7 @@ class WhaleWallet(Base):
     proxy_wallet: Mapped[str] = mapped_column(String(42), primary_key=True)
     display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     pseudonym: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    profile_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     profile_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     verified_badge: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     taker_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -825,6 +853,7 @@ class WhaleEntry(Base):
         ),
         Index("ix_whale_entries_condition", "condition_id"),
         Index("ix_whale_entries_status_amount", "status", "gross_buy_usdc"),
+        Index("ix_whale_entries_settled_at", "settled_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -848,6 +877,42 @@ class WhaleEntry(Base):
     hedged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     window_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    follow_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    follow_ineligible_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    settlement_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    rule_states: Mapped[list[WhaleEntryRuleState]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan"
+    )
+
+
+class WhaleEntryRuleState(Base):
+    __tablename__ = "whale_entry_rule_states"
+    __table_args__ = (
+        UniqueConstraint("entry_id", "rule_type", name="uq_whale_entry_rule_state"),
+        CheckConstraint(
+            "rule_type IN ('new_account', 'large_amount')",
+            name="ck_whale_entry_rule_state_type",
+        ),
+        Index("ix_whale_entry_rule_active", "rule_type", "active", "last_qualified_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("whale_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    first_triggered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_qualified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    inactive_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    inactive_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    threshold_usdc_snapshot: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    registration_days_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    entry: Mapped[WhaleEntry] = relationship(back_populates="rule_states")
 
 
 class WhaleFollowPosition(Base):

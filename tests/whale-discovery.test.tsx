@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WhaleDiscoveryWorkspace from "../app/components/WhaleDiscoveryWorkspace";
 import WhaleRecordsWorkspace from "../app/components/WhaleRecordsWorkspace";
+import { WhaleRequestMonitorPanel } from "../app/components/WhaleRequestMonitorPanel";
 
 function json(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -14,12 +15,17 @@ function json(payload: unknown, status = 200) {
 const settings = {
   enabled: true,
   window_hours: 24,
+  registration_window_days: 7,
+  new_account_threshold_usdc: 100000,
+  large_amount_threshold_usdc: 500000,
+  collect_filter_amount_usdc: 1000,
   cumulative_threshold_usdc: 10000,
   single_trade_threshold_usdc: 10000,
   min_liquidity_usdc: 5000,
   min_remaining_minutes: 30,
   max_price_delta_cents: 5,
   max_follow_amount_usdc: 200,
+  default_follow_amount_usdc: 20,
   scan_interval_seconds: 60,
   last_scan_at: "2026-08-16T09:00:00Z",
   last_scan_error: null,
@@ -27,12 +33,67 @@ const settings = {
   tracked_trade_count: 12,
   entry_count: 2,
   market_count: 1,
+  new_account_active_count: 2,
+  new_account_history_count: 0,
+  large_amount_active_count: 1,
+  large_amount_history_count: 0,
 };
+
+describe("巨鲸页内设置", () => {
+  it("在巨鲸页面内直接展示设置，保存后立即重新扫描", async () => {
+    const user = userEvent.setup();
+    const bodies: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/whales/settings") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        bodies.push(body);
+        return json({
+          ...settings,
+          ...body,
+          single_trade_threshold_usdc: body.new_account_threshold_usdc,
+          cumulative_threshold_usdc: body.new_account_threshold_usdc,
+        });
+      }
+      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
+      if (url.includes("/api/whales/markets?")) return json({
+        generated_at: "2026-08-16T09:00:00Z",
+        window_start: "2026-08-15T09:00:00Z",
+        stale: false,
+        total: 0,
+        items: [],
+      });
+      if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<WhaleDiscoveryWorkspace />);
+    const days = await screen.findByRole("spinbutton", { name: "巨鲸注册窗口天数" });
+    const threshold = screen.getByRole("spinbutton", { name: "新号大额买入门槛" });
+    const largeThreshold = screen.getByRole("spinbutton", { name: "全量超大额买入门槛" });
+    await waitFor(() => expect(days).toBeEnabled());
+    await user.clear(days);
+    await user.type(days, "7");
+    await user.clear(threshold);
+    await user.type(threshold, "25000");
+    await user.clear(largeThreshold);
+    await user.type(largeThreshold, "600000");
+    await user.click(screen.getByRole("button", { name: "保存监测条件" }));
+
+    await waitFor(() => expect(bodies).toContainEqual({
+      registration_window_days: 7,
+      new_account_threshold_usdc: 25000,
+      large_amount_threshold_usdc: 600000,
+    }));
+    expect(await screen.findByText("巨鲸监测条件已保存，数据已重新扫描。")).toBeInTheDocument();
+  });
+});
 
 const whaleMarket = {
   condition_id: `0x${"1".repeat(64)}`,
   title: "LoL: Movistar KOI vs Natus Vincere",
-  icon_url: null,
+  icon_url: "https://example.test/market.png",
   market_slug: "lol-mkoi-navi",
   event_slug: "lol-mkoi-navi",
   polymarket_url: "https://polymarket.com/event/lol-mkoi-navi",
@@ -61,6 +122,7 @@ const whaleMarket = {
         entry_id: 1,
         proxy_wallet: "0x1111111111111111111111111111111111111111",
         display_name: "Alpha Whale",
+        wallet_avatar_url: "https://example.test/alpha-avatar.jpg",
         profile_url: null,
         wallet_created_at: null,
         wallet_age_days: null,
@@ -68,6 +130,8 @@ const whaleMarket = {
         taker_tier_name: null,
         gross_buy_usdc: 16000,
         gross_buy_size: 30000,
+        net_size: 24000,
+        current_value_usdc: 14640,
         avg_buy_price: 0.52,
         max_single_usdc: 10000,
         trade_count: 2,
@@ -78,6 +142,11 @@ const whaleMarket = {
         hedged: true,
         price_delta_cents: 9,
         price_delta_percent: 17.3,
+        matched_rules: ["new_account", "large_amount"],
+        first_triggered_at: "2026-08-16T08:10:00Z",
+        last_qualified_at: "2026-08-16T09:00:00Z",
+        follow_eligible: true,
+        follow_ineligible_reason: null,
       }],
     },
     {
@@ -93,6 +162,7 @@ const whaleMarket = {
         entry_id: 2,
         proxy_wallet: "0x2222222222222222222222222222222222222222",
         display_name: "Beta Whale",
+        wallet_avatar_url: null,
         profile_url: null,
         wallet_created_at: "2025-08-16T00:00:00Z",
         wallet_age_days: 365,
@@ -100,6 +170,8 @@ const whaleMarket = {
         taker_tier_name: "Tier 2",
         gross_buy_usdc: 10000,
         gross_buy_size: 25000,
+        net_size: 20000,
+        current_value_usdc: 7800,
         avg_buy_price: 0.4,
         max_single_usdc: 10000,
         trade_count: 1,
@@ -110,6 +182,11 @@ const whaleMarket = {
         hedged: false,
         price_delta_cents: -1,
         price_delta_percent: -2.5,
+        matched_rules: ["new_account"],
+        first_triggered_at: "2026-08-16T08:20:00Z",
+        last_qualified_at: "2026-08-16T09:00:00Z",
+        follow_eligible: true,
+        follow_ineligible_reason: null,
       }],
     },
   ],
@@ -117,12 +194,185 @@ const whaleMarket = {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("巨鲸发现页", () => {
-  it("合并渲染双边巨鲸，并在固定确认文案前禁用真实买入", async () => {
+describe("巨鲸请求监测面板", () => {
+  it("读取请求快照、实时更新失败并支持仅看失败", async () => {
+    class FakeEventSource {
+      static instance: FakeEventSource | null = null;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      readonly url: string;
+
+      constructor(url: string) {
+        this.url = url;
+        FakeEventSource.instance = this;
+      }
+
+      close() {}
+    }
+
+    const pending = {
+      id: 7,
+      scan_id: "scan-live",
+      status: "pending",
+      started_at: "2026-08-23T08:00:01Z",
+      finished_at: null,
+      method: "GET",
+      url: "https://data-api.polymarket.com/trades",
+      query_params: { side: "BUY", limit: "500" },
+      http_status: null,
+      duration_ms: null,
+      error_type: null,
+      error_message: null,
+      response_excerpt: null,
+    };
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("fetch", vi.fn(async () => json({
+      generated_at: "2026-08-23T08:00:01Z",
+      total: 1,
+      items: [pending],
+    })));
+
+    const user = userEvent.setup();
+    render(<WhaleRequestMonitorPanel />);
+
+    expect(await screen.findByText("[pending]")).toBeInTheDocument();
+    FakeEventSource.instance?.onopen?.(new Event("open"));
+    expect(await screen.findByText("实时已连接")).toBeInTheDocument();
+
+    FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
+      data: JSON.stringify({
+        ...pending,
+        status: "failed",
+        finished_at: "2026-08-23T08:00:02Z",
+        http_status: 503,
+        duration_ms: 924,
+        error_type: "HTTPError",
+        error_message: "Polymarket 接口返回 503",
+        response_excerpt: "upstream unavailable",
+      }),
+    }));
+
+    expect(await screen.findByText("失败 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "仅失败" }));
+    expect(screen.getByText(/HTTPError: Polymarket 接口返回 503/)).toBeInTheDocument();
+    expect(screen.getByText("upstream unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/"side":"BUY"/)).toBeInTheDocument();
+  });
+
+  it("实时连接失败只在监测面板显示断线状态", async () => {
+    class FailedEventSource {
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor() {
+        window.setTimeout(() => this.onerror?.(new Event("error")), 0);
+      }
+
+      close() {}
+    }
+    vi.stubGlobal("EventSource", FailedEventSource);
+    vi.stubGlobal("fetch", vi.fn(async () => json({
+      generated_at: "2026-08-23T08:00:01Z",
+      total: 0,
+      items: [],
+    })));
+
+    render(<WhaleRequestMonitorPanel />);
+
+    expect(await screen.findByText("实时连接中断")).toBeInTheDocument();
+    expect(screen.getByText("waiting for next whale scan request…")).toBeInTheDocument();
+  });
+});
+
+describe("巨鲸持仓页", () => {
+  it("按双规则切换当前持仓和永久历史记录", async () => {
+    const requests: string[] = [];
+    const historyItem = {
+      entry_id: 9,
+      rule_type: "new_account",
+      matched_rules: ["new_account", "large_amount"],
+      proxy_wallet: "0x9999999999999999999999999999999999999999",
+      display_name: "Settled Whale",
+      wallet_created_at: "2026-08-15T00:00:00Z",
+      wallet_age_days: 1,
+      title: "Settled market",
+      outcome: "Yes",
+      market_slug: "settled-market",
+      event_slug: "settled-market",
+      gross_buy_usdc: 600000,
+      gross_buy_size: 1000000,
+      avg_buy_price: 0.6,
+      net_size: 0,
+      first_buy_at: "2026-08-16T07:30:00Z",
+      first_triggered_at: "2026-08-16T08:00:00Z",
+      last_qualified_at: "2026-08-16T08:30:00Z",
+      inactive_at: "2026-08-16T09:00:00Z",
+      inactive_reason: "market_closed",
+      threshold_usdc_snapshot: 100000,
+      registration_days_snapshot: 7,
+      settlement_price: 1,
+      settled_at: "2026-08-16T09:00:00Z",
+      hold_to_settlement_pnl_usdc: 400000,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.includes("/api/whales/markets?")) return json({
+        generated_at: "2026-08-16T09:00:00Z",
+        window_start: "2026-08-15T09:00:00Z",
+        stale: false,
+        total: 1,
+        items: [whaleMarket],
+      });
+      if (url.includes("/api/whales/history?rule=new_account")) {
+        return json({ total: 1, items: [historyItem] });
+      }
+      if (url.includes("/api/whales/history?rule=large_amount")) {
+        return json({ total: 0, items: [] });
+      }
+      return json({ detail: "not found" }, 404);
+    }));
+
+    const user = userEvent.setup();
+    render(<WhaleDiscoveryWorkspace />);
+    const settledWalletLink = await screen.findByRole("link", { name: /Settled Whale/ });
+    expect(screen.getByText("市场已结算")).toBeInTheDocument();
+    expect(screen.getAllByText(/^建仓 /).length).toBeGreaterThan(0);
+    expect(settledWalletLink).toHaveAttribute(
+      "href",
+      "https://polymarket.com/profile/0x9999999999999999999999999999999999999999",
+    );
+
+    await user.click(screen.getByRole("button", { name: /全量超大额/ }));
+    await waitFor(() => expect(requests.some((url) => url.includes("markets?rule=large_amount"))).toBe(true));
+    expect(await screen.findByLabelText("全量超大额历史记录")).toHaveTextContent("该规则暂无历史触发记录");
+  });
+
+  it("按钱包分组持仓，并在收益预览后允许确认买入", async () => {
+    const secondMarket = {
+      ...whaleMarket,
+      condition_id: `0x${"2".repeat(64)}`,
+      title: "Will Bitcoin reach $200,000?",
+      sides: [{
+        ...whaleMarket.sides[0],
+        asset_id: "asset-c",
+        outcome: "Yes",
+        current_price: 0.5,
+        entries: [{
+          ...whaleMarket.sides[0].entries[0],
+          entry_id: 3,
+          net_size: 10000,
+          current_value_usdc: 5000,
+          last_buy_at: "2026-08-16T08:30:00Z",
+        }],
+      }],
+    };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/api/whales/settings")) return json(settings);
-      if (url.endsWith("/api/whales/tags")) return json([{ id: "64", slug: "esports", label: "Esports", market_count: 1 }]);
       if (url.includes("/api/whales/follow/preview")) return json({
         confirmation_id: "confirmation-token",
         expires_at: "2026-08-16T09:05:00Z",
@@ -142,6 +392,14 @@ describe("巨鲸发现页", () => {
         total_cost_usdc: 20.4,
         profit_ratio_percent: 53.2,
         max_loss_usdc: 20.4,
+        winning_payout_usdc: 31.25,
+        winning_profit_usdc: 10.85,
+        immediate_exit_price: 0.57,
+        immediate_exit_proceeds_usdc: 17.8125,
+        immediate_exit_fee_usdc: 0.2,
+        immediate_exit_pnl_usdc: -2.7875,
+        immediate_exit_pnl_percent: -13.66,
+        immediate_exit_unavailable_reason: null,
         whale_avg_price: 0.52,
         whale_profit_ratio_percent: 87.8,
         profit_ratio_gap_percent: -34.6,
@@ -154,33 +412,174 @@ describe("巨鲸发现页", () => {
         generated_at: "2026-08-16T09:00:00Z",
         window_start: "2026-08-15T09:00:00Z",
         stale: true,
-        total: 1,
-        items: [whaleMarket],
+        total: 2,
+        items: [whaleMarket, secondMarket],
       });
+      if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    const user = userEvent.setup();
+    const { container } = render(<WhaleDiscoveryWorkspace />);
+
+    expect(await screen.findByRole("heading", { name: "巨鲸监测" })).toBeInTheDocument();
+    expect((await screen.findAllByText("24小时买入")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("2 个钱包 · 3 个持仓")).toBeInTheDocument();
+    expect(screen.getAllByText("监测建仓").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/首次触发/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Alpha Whale")).toHaveLength(1);
+    expect(screen.getByText("2 个持仓")).toBeInTheDocument();
+    expect(screen.getByText("注册日期 2025-08-16 · 已认证")).toBeInTheDocument();
+    expect(screen.getByText("24000.00")).toBeInTheDocument();
+    expect(screen.getByText("14.6K USDC")).toBeInTheDocument();
+    expect(screen.getByText("Movistar KOI")).toBeInTheDocument();
+    expect(container.querySelector('img.whaleWalletAvatar[src="https://example.test/alpha-avatar.jpg"]')).not.toBeNull();
+    expect(screen.getByLabelText("Beta Whale 钱包默认头像")).toHaveTextContent("BW");
+    expect(container.querySelector('img.whaleHoldingMarketIcon[src="https://example.test/market.png"]')).not.toBeNull();
+
+    expect(screen.queryByLabelText("搜索巨鲸持仓")).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("button", { name: "跟单" })[0]);
+    const execute = screen.getByRole("button", { name: "等待收益预览" });
+    expect(execute).toBeDisabled();
+
+    expect(await screen.findByText("总成本", {}, { timeout: 2000 })).toBeInTheDocument();
+    expect(screen.getByText("净赚 10.85 USDC")).toBeInTheDocument();
+    expect(screen.getByText("按当前盘口立即卖出")).toBeInTheDocument();
+    expect(screen.getByText("-2.79 USDC")).toBeInTheDocument();
+    expect(screen.getByText("最大亏损")).toBeInTheDocument();
+    expect(screen.queryByLabelText("真实买入确认文案")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "确认买入 20.00 USDC" })).toBeEnabled());
+  });
+
+  it("同一钱包持有同一市场两侧时保留两条并提示双向持仓", async () => {
+    const dualMarket = {
+      ...whaleMarket,
+      sides: [
+        whaleMarket.sides[0],
+        {
+          ...whaleMarket.sides[1],
+          entries: [{
+            ...whaleMarket.sides[1].entries[0],
+            proxy_wallet: whaleMarket.sides[0].entries[0].proxy_wallet,
+            display_name: "Alpha Whale",
+          }],
+        },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.includes("/api/whales/markets?")) return json({
+        generated_at: "2026-08-16T09:00:00Z",
+        window_start: "2026-08-15T09:00:00Z",
+        stale: false,
+        total: 1,
+        items: [dualMarket],
+      });
+      if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<WhaleDiscoveryWorkspace />);
+
+    expect(await screen.findByText("1 个钱包 · 2 个持仓")).toBeInTheDocument();
+    expect(screen.getAllByText("双向持仓")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "跟单" })).toHaveLength(2);
+  });
+});
+
+describe("巨鲸命中率统计", () => {
+  it("通过第三页签展示总览、规则对比、趋势和可筛选明细", async () => {
+    const requests: string[] = [];
+    const metrics = {
+      settled_count: 2,
+      effective_sample_count: 2,
+      hit_count: 1,
+      miss_count: 1,
+      special_count: 0,
+      pending_count: 1,
+      hit_rate_percent: 50,
+      theoretical_cost_usdc: 300000,
+      theoretical_payout_usdc: 360000,
+      theoretical_pnl_usdc: 60000,
+      theoretical_roi_percent: 20,
+      weighted_avg_buy_price: 0.55,
+      break_even_rate_percent: 55,
+      edge_percentage_points: -5,
+      wallet_count: 2,
+      market_count: 2,
+    };
+    const statistics = {
+      generated_at: "2026-08-23T09:00:00Z",
+      coverage_start: "2026-08-01T08:00:00Z",
+      range: "all",
+      range_start: null,
+      range_end: "2026-08-23T09:00:00Z",
+      overall: metrics,
+      new_account: metrics,
+      large_amount: { ...metrics, hit_rate_percent: 100, hit_count: 1, miss_count: 0, effective_sample_count: 1 },
+      dual_match: { ...metrics, hit_rate_percent: null, hit_count: 0, miss_count: 0, effective_sample_count: 0 },
+      trend: [{ key: "2026-08", label: "2026-08", metrics }],
+      amount_bands: [
+        { key: "lt_100k", label: "< 10万", metrics },
+        { key: "100k_500k", label: "10万–50万", metrics: { ...metrics, hit_rate_percent: null, effective_sample_count: 0 } },
+        { key: "500k_1m", label: "50万–100万", metrics: { ...metrics, hit_rate_percent: null, effective_sample_count: 0 } },
+        { key: "gte_1m", label: "≥ 100万", metrics: { ...metrics, hit_rate_percent: null, effective_sample_count: 0 } },
+      ],
+    };
+    const signal = {
+      entry_id: 19,
+      result: "hit",
+      matched_rules: ["new_account", "large_amount"],
+      proxy_wallet: "0x9999999999999999999999999999999999999999",
+      display_name: "Winning Whale",
+      profile_url: "https://polymarket.com/profile/0x9999999999999999999999999999999999999999",
+      wallet_created_at: "2026-08-01T00:00:00Z",
+      wallet_age_days_at_trigger: 2,
+      condition_id: whaleMarket.condition_id,
+      title: "Winning market",
+      outcome: "Yes",
+      market_slug: "winning-market",
+      event_slug: "winning-market",
+      polymarket_url: "https://polymarket.com/event/winning-market",
+      gross_buy_usdc: 120000,
+      gross_buy_size: 200000,
+      avg_buy_price: 0.6,
+      settlement_price: 1,
+      theoretical_payout_usdc: 200000,
+      theoretical_pnl_usdc: 80000,
+      theoretical_roi_percent: 66.7,
+      first_triggered_at: "2026-08-03T08:00:00Z",
+      settled_at: "2026-08-22T08:00:00Z",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.includes("/api/whales/markets?")) return json({ generated_at: "2026-08-23T09:00:00Z", window_start: "2026-08-22T09:00:00Z", stale: false, total: 0, items: [] });
+      if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
+      if (url.endsWith("/api/whales/request-logs")) return json({ generated_at: "2026-08-23T09:00:00Z", total: 0, items: [] });
+      if (url.includes("/api/whales/statistics/signals?")) return json({ total: 1, items: [signal] });
+      if (url.includes("/api/whales/statistics?")) return json({ ...statistics, range: url.includes("range=7d") ? "7d" : "all" });
       return json({ detail: "not found" }, 404);
     }));
 
     const user = userEvent.setup();
     render(<WhaleDiscoveryWorkspace />);
+    await user.click(await screen.findByRole("button", { name: /统计/ }));
 
-    expect(await screen.findByText("双边对赌")).toBeInTheDocument();
-    expect(screen.getByText("Movistar KOI")).toBeInTheDocument();
-    expect(screen.getByText("Natus Vincere")).toBeInTheDocument();
-    expect(screen.getByText("疑似做市/对冲")).toBeInTheDocument();
-    expect(screen.getByText("注册 未知")).toBeInTheDocument();
-    expect(screen.getAllByText("数据可能过期").length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "巨鲸信号表现" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("巨鲸监测设置")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("整体统计")).toHaveTextContent("50.0%");
+    expect(screen.getByLabelText("规则表现对比")).toHaveTextContent("样本不足");
+    expect(await screen.findByText("Winning Whale ↗")).toBeInTheDocument();
+    expect(screen.getByText("持有至结算，未计手续费")).toBeInTheDocument();
 
-    await user.click(screen.getAllByRole("button", { name: "跟随买入" })[0]);
-    const execute = screen.getByRole("button", { name: "确认买入" });
-    expect(execute).toBeDisabled();
-
-    expect(await screen.findByText("总成本", {}, { timeout: 2000 })).toBeInTheDocument();
-    expect(screen.getByText("最大亏损")).toBeInTheDocument();
-    expect(screen.getByText("结算可得")).toBeInTheDocument();
-    expect(execute).toBeDisabled();
-
-    await user.type(screen.getByLabelText("真实买入确认文案"), "确认真实买入");
-    await waitFor(() => expect(execute).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "近 7 天" }));
+    await waitFor(() => expect(requests.some((url) => url.includes("statistics?range=7d"))).toBe(true));
+    await user.selectOptions(screen.getByLabelText("统计结果筛选"), "hit");
+    await waitFor(() => expect(requests.some((url) => url.includes("result=hit"))).toBe(true));
   });
 });
 
@@ -254,9 +653,8 @@ describe("巨鲸跟单记录页", () => {
     const user = userEvent.setup();
     render(<WhaleRecordsWorkspace />);
 
-    expect(await screen.findByText("当前持仓")).toBeInTheDocument();
+    expect(await screen.findByText("无法估值")).toBeInTheDocument();
     expect(screen.getAllByText("20.40 USDC").length).toBeGreaterThan(0);
-    expect(screen.getByText("无法估值")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "一键卖出" }));
     const execute = screen.getByRole("button", { name: "确认卖出" });

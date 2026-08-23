@@ -9,6 +9,8 @@ import pytest
 from backend.models import WhaleMarket
 from backend.polymarket import LargeTradeSnapshot
 from backend.whale import (
+    WhaleDiscoveryScanner,
+    WhaleFollowExecutor,
     aggregate_whale_trades,
     estimated_market_fee,
     fingerprint_large_trades,
@@ -312,15 +314,10 @@ def test_market_eligibility_rejects_settled_outcome_prices(outcome_prices, eligi
     )
 
 
-def test_market_eligibility_handles_remaining_time_and_date_only_end_date():
+def test_market_eligibility_does_not_treat_sports_start_time_as_market_close():
     now = BASE_TIME
-    eligible = whale_market(now=now, end_date=now + timedelta(minutes=31))
-    ending_at_cutoff = whale_market(now=now, end_date=now + timedelta(minutes=30))
-    date_only = whale_market(
-        now=now,
-        end_date=now - timedelta(days=1),
-        end_date_is_date_only=True,
-    )
+    before_start = whale_market(now=now, end_date=now + timedelta(minutes=10))
+    after_start = whale_market(now=now, end_date=now - timedelta(minutes=10))
 
     def is_eligible(market: WhaleMarket) -> bool:
         return market_is_eligible(
@@ -330,9 +327,36 @@ def test_market_eligibility_handles_remaining_time_and_date_only_end_date():
             min_remaining_minutes=30,
         )
 
-    assert is_eligible(eligible)
-    assert not is_eligible(ending_at_cutoff)
-    assert is_eligible(date_only)
+    assert is_eligible(before_start)
+    assert is_eligible(after_start)
+
+
+def test_follow_eligibility_uses_accepting_orders_instead_of_end_date():
+    now = BASE_TIME
+    market = whale_market(now=now, end_date=now - timedelta(minutes=10))
+    config = {"min_liquidity_usdc": Decimal("5000"), "min_remaining_minutes": 30}
+
+    assert (
+        WhaleDiscoveryScanner._follow_ineligible_reason(
+            market,
+            position_present=True,
+            config=config,
+        )
+        is None
+    )
+    WhaleFollowExecutor._ensure_market_open(market)
+
+    market.accepting_orders = False
+    assert (
+        WhaleDiscoveryScanner._follow_ineligible_reason(
+            market,
+            position_present=True,
+            config=config,
+        )
+        == "orders_not_accepted"
+    )
+    with pytest.raises(ValueError, match="市场当前已不再开放交易"):
+        WhaleFollowExecutor._ensure_market_open(market)
 
 
 def test_estimated_market_fee_and_settlement_profit_ratio_match_formula():

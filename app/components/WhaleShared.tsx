@@ -7,16 +7,22 @@ export const API_BASE = (
 ).replace(/\/$/, "");
 
 export type Numeric = number | string;
+export type WhaleRule = "new_account" | "large_amount";
 
 export type WhaleSettings = {
   enabled: boolean;
   window_hours: number;
+  registration_window_days: number;
+  new_account_threshold_usdc: Numeric;
+  large_amount_threshold_usdc: Numeric;
+  collect_filter_amount_usdc: Numeric;
   cumulative_threshold_usdc: Numeric;
   single_trade_threshold_usdc: Numeric;
   min_liquidity_usdc: Numeric;
   min_remaining_minutes: number;
   max_price_delta_cents: Numeric;
   max_follow_amount_usdc: Numeric;
+  default_follow_amount_usdc: Numeric;
   scan_interval_seconds: number;
   last_scan_at: string | null;
   last_scan_error: string | null;
@@ -24,6 +30,10 @@ export type WhaleSettings = {
   tracked_trade_count: number;
   entry_count: number;
   market_count: number;
+  new_account_active_count: number;
+  new_account_history_count: number;
+  large_amount_active_count: number;
+  large_amount_history_count: number;
 };
 
 export type WhaleTag = {
@@ -47,6 +57,7 @@ export type WhaleEntry = {
   entry_id: number;
   proxy_wallet: string;
   display_name: string | null;
+  wallet_avatar_url: string | null;
   profile_url?: string | null;
   wallet_created_at: string | null;
   wallet_age_days: number | null;
@@ -54,6 +65,8 @@ export type WhaleEntry = {
   taker_tier_name: string | null;
   gross_buy_usdc: Numeric;
   gross_buy_size: Numeric;
+  net_size: Numeric;
+  current_value_usdc: Numeric | null;
   avg_buy_price: Numeric;
   max_single_usdc: Numeric;
   trade_count: number;
@@ -64,6 +77,11 @@ export type WhaleEntry = {
   hedged: boolean;
   price_delta_cents: Numeric | null;
   price_delta_percent: Numeric | null;
+  matched_rules: WhaleRule[];
+  first_triggered_at: string;
+  last_qualified_at: string;
+  follow_eligible: boolean;
+  follow_ineligible_reason: string | null;
   trades?: WhaleTrade[];
 };
 
@@ -109,6 +127,137 @@ export type WhaleMarketList = {
   items: WhaleMarket[];
 };
 
+export type WhaleRequestLog = {
+  id: number;
+  scan_id: string;
+  status: "pending" | "success" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  method: string;
+  url: string;
+  query_params: Record<string, string | string[]>;
+  http_status: number | null;
+  duration_ms: number | null;
+  error_type: string | null;
+  error_message: string | null;
+  response_excerpt: string | null;
+};
+
+export type WhaleRequestLogList = {
+  generated_at: string;
+  total: number;
+  items: WhaleRequestLog[];
+};
+
+export type WhaleHistory = {
+  entry_id: number;
+  rule_type: WhaleRule;
+  matched_rules: WhaleRule[];
+  proxy_wallet: string;
+  display_name: string | null;
+  wallet_created_at: string | null;
+  wallet_age_days: number | null;
+  title: string;
+  outcome: string;
+  market_slug: string | null;
+  event_slug: string | null;
+  gross_buy_usdc: Numeric;
+  gross_buy_size: Numeric;
+  avg_buy_price: Numeric;
+  net_size: Numeric;
+  first_buy_at: string;
+  first_triggered_at: string;
+  last_qualified_at: string;
+  inactive_at: string | null;
+  inactive_reason: string | null;
+  threshold_usdc_snapshot: Numeric;
+  registration_days_snapshot: number | null;
+  settlement_price: Numeric | null;
+  settled_at: string | null;
+  hold_to_settlement_pnl_usdc: Numeric | null;
+};
+
+export type WhaleHistoryList = {
+  total: number;
+  items: WhaleHistory[];
+};
+
+export type WhaleStatisticsRange = "all" | "7d" | "30d" | "90d";
+export type WhaleStatisticsRule = "all" | "new_account" | "large_amount" | "both";
+export type WhaleStatisticsResult = "all" | "hit" | "miss" | "special";
+export type WhaleStatisticsAmountBand = "all" | "lt_100k" | "100k_500k" | "500k_1m" | "gte_1m";
+export type WhaleStatisticsSort = "settled_desc" | "amount_desc" | "pnl_desc" | "pnl_asc";
+
+export type WhaleStatisticsMetrics = {
+  settled_count: number;
+  effective_sample_count: number;
+  hit_count: number;
+  miss_count: number;
+  special_count: number;
+  pending_count: number;
+  hit_rate_percent: Numeric | null;
+  theoretical_cost_usdc: Numeric;
+  theoretical_payout_usdc: Numeric;
+  theoretical_pnl_usdc: Numeric;
+  theoretical_roi_percent: Numeric | null;
+  weighted_avg_buy_price: Numeric | null;
+  break_even_rate_percent: Numeric | null;
+  edge_percentage_points: Numeric | null;
+  wallet_count: number;
+  market_count: number;
+};
+
+export type WhaleStatisticsSlice = {
+  key: string;
+  label: string;
+  metrics: WhaleStatisticsMetrics;
+};
+
+export type WhaleStatistics = {
+  generated_at: string;
+  coverage_start: string | null;
+  range: WhaleStatisticsRange;
+  range_start: string | null;
+  range_end: string;
+  overall: WhaleStatisticsMetrics;
+  new_account: WhaleStatisticsMetrics;
+  large_amount: WhaleStatisticsMetrics;
+  dual_match: WhaleStatisticsMetrics;
+  trend: WhaleStatisticsSlice[];
+  amount_bands: WhaleStatisticsSlice[];
+};
+
+export type WhaleStatisticsSignal = {
+  entry_id: number;
+  result: Exclude<WhaleStatisticsResult, "all">;
+  matched_rules: WhaleRule[];
+  proxy_wallet: string;
+  display_name: string | null;
+  profile_url: string;
+  wallet_created_at: string | null;
+  wallet_age_days_at_trigger: number | null;
+  condition_id: string;
+  title: string;
+  outcome: string;
+  market_slug: string | null;
+  event_slug: string | null;
+  polymarket_url: string;
+  gross_buy_usdc: Numeric;
+  gross_buy_size: Numeric;
+  avg_buy_price: Numeric;
+  settlement_price: Numeric;
+  theoretical_payout_usdc: Numeric;
+  theoretical_pnl_usdc: Numeric;
+  theoretical_roi_percent: Numeric | null;
+  first_triggered_at: string;
+  settled_at: string;
+};
+
+export type WhaleStatisticsSignalList = {
+  total: number;
+  items: WhaleStatisticsSignal[];
+};
+
 export type WhaleFollowPreview = {
   confirmation_id: string;
   expires_at: string;
@@ -128,6 +277,14 @@ export type WhaleFollowPreview = {
   total_cost_usdc: Numeric;
   profit_ratio_percent: Numeric;
   max_loss_usdc: Numeric;
+  winning_payout_usdc: Numeric;
+  winning_profit_usdc: Numeric;
+  immediate_exit_price: Numeric | null;
+  immediate_exit_proceeds_usdc: Numeric | null;
+  immediate_exit_fee_usdc: Numeric | null;
+  immediate_exit_pnl_usdc: Numeric | null;
+  immediate_exit_pnl_percent: Numeric | null;
+  immediate_exit_unavailable_reason: string | null;
   whale_avg_price: Numeric | null;
   whale_profit_ratio_percent: Numeric | null;
   profit_ratio_gap_percent: Numeric | null;

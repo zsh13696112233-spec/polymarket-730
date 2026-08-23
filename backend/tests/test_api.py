@@ -21,6 +21,8 @@ from backend.models import (
     PositionEvent,
     PositionEventFill,
     PositionOverlapPeriod,
+    WhaleFollowLedger,
+    WhaleFollowPosition,
 )
 from backend.monitor import utcnow
 from backend.polymarket import (
@@ -103,6 +105,203 @@ async def insert_daily_pnl_fixture(database, subscription_ids: list[int], local_
                     timestamp=utc_timestamp(day, hour),
                 )
             )
+        await session.commit()
+
+
+async def insert_system_pnl_fixture(database, subscription_id: int, local_day) -> None:
+    shanghai = ZoneInfo("Asia/Shanghai")
+
+    def utc_timestamp(hour: int) -> datetime:
+        local_timestamp = datetime.combine(
+            local_day,
+            datetime.min.time(),
+            tzinfo=shanghai,
+        ).replace(hour=hour, minute=30)
+        return local_timestamp.astimezone(UTC).replace(tzinfo=None)
+
+    async with database.sessions() as session:
+        copy_position = CopyPosition(
+            subscription_id=subscription_id,
+            asset_id="system-copy-asset",
+            condition_id="0x" + "1" * 64,
+            title="系统自动跟单",
+            outcome="Yes",
+            outcome_index=0,
+            neg_risk=False,
+            event_slug="system-copy",
+            settlement_date=None,
+            cycle_no=1,
+            attributed_size=Decimal("0"),
+            attributed_cost=Decimal("0"),
+            reserved_buy_usdc=Decimal("0"),
+            realized_pnl=Decimal("-4"),
+            status="redeemed",
+            created_at=utc_timestamp(9),
+            updated_at=utc_timestamp(10),
+        )
+        session.add(copy_position)
+        await session.flush()
+        copy_order = CopyOrder(
+            subscription_id=subscription_id,
+            copy_position_id=copy_position.id,
+            leader_event_id=None,
+            idempotency_key="system-copy-buy",
+            source="copy",
+            signed_order_hash=None,
+            asset_id=copy_position.asset_id,
+            condition_id=copy_position.condition_id,
+            side="BUY",
+            requested_size=Decimal("20"),
+            requested_usdc=Decimal("10"),
+            leader_purchase_usdc=Decimal("100"),
+            proportional_target_usdc=Decimal("10"),
+            limit_price=Decimal("0.5"),
+            reference_price=Decimal("0.5"),
+            filled_size=Decimal("20"),
+            filled_usdc=Decimal("10"),
+            fee_usdc=Decimal("0"),
+            status="filled",
+            reason=None,
+            external_order_id="system-copy-order",
+            external_trade_id="system-copy-trade",
+            created_at=utc_timestamp(9),
+            updated_at=utc_timestamp(9),
+        )
+        session.add(copy_order)
+        await session.flush()
+        session.add(
+            CopyFill(
+                order_id=copy_order.id,
+                fingerprint="system-copy-fill",
+                external_trade_id="system-copy-trade",
+                size=Decimal("20"),
+                price=Decimal("0.5"),
+                amount=Decimal("10"),
+                fee_usdc=Decimal("0"),
+                timestamp=utc_timestamp(9),
+            )
+        )
+        session.add(
+            CopyLedger(
+                subscription_id=subscription_id,
+                copy_position_id=copy_position.id,
+                order_id=None,
+                type="redeem",
+                amount_usdc=Decimal("0"),
+                realized_pnl=Decimal("-4"),
+                detail="自动跟单结算",
+                timestamp=utc_timestamp(10),
+            )
+        )
+        whale_position = WhaleFollowPosition(
+            asset_id="system-whale-asset",
+            condition_id="0x" + "2" * 64,
+            title="系统巨鲸跟单",
+            outcome="Yes",
+            outcome_index=0,
+            neg_risk=False,
+            market_slug="system-whale",
+            event_slug="system-whale",
+            icon_url=None,
+            source_wallet=OTHER_ADDRESS,
+            source_whale_avg_price=Decimal("0.4"),
+            cycle_no=1,
+            size=Decimal("0"),
+            cost_usdc=Decimal("0"),
+            lifetime_bought_size=Decimal("20"),
+            lifetime_bought_usdc=Decimal("10"),
+            lifetime_sold_size=Decimal("0"),
+            lifetime_sold_usdc=Decimal("0"),
+            lifetime_fee_usdc=Decimal("0"),
+            realized_pnl=Decimal("6"),
+            status="redeemed",
+            opened_at=utc_timestamp(11),
+            closed_at=utc_timestamp(12),
+            created_at=utc_timestamp(11),
+            updated_at=utc_timestamp(12),
+        )
+        session.add(whale_position)
+        await session.flush()
+        session.add_all(
+            [
+                WhaleFollowLedger(
+                    position_id=whale_position.id,
+                    order_id=None,
+                    type="buy",
+                    size=Decimal("20"),
+                    price=Decimal("0.5"),
+                    amount_usdc=Decimal("10"),
+                    fee_usdc=Decimal("0"),
+                    realized_pnl=Decimal("0"),
+                    transaction_hash=None,
+                    detail="人工跟随巨鲸买入",
+                    timestamp=utc_timestamp(11),
+                ),
+                WhaleFollowLedger(
+                    position_id=whale_position.id,
+                    order_id=None,
+                    type="redeem",
+                    size=Decimal("20"),
+                    price=None,
+                    amount_usdc=Decimal("16"),
+                    fee_usdc=Decimal("0"),
+                    realized_pnl=Decimal("6"),
+                    transaction_hash="0xsystemwhaleredeem",
+                    detail="巨鲸跟单自动赎回",
+                    timestamp=utc_timestamp(12),
+                ),
+            ]
+        )
+        await session.commit()
+
+
+async def insert_unpriced_whale_position(database) -> None:
+    now = utcnow()
+    async with database.sessions() as session:
+        position = WhaleFollowPosition(
+            asset_id="unpriced-whale-asset",
+            condition_id="0x" + "3" * 64,
+            title="未定价巨鲸跟单",
+            outcome="Yes",
+            outcome_index=0,
+            neg_risk=False,
+            market_slug="unpriced-whale",
+            event_slug="unpriced-whale",
+            icon_url=None,
+            source_wallet=OTHER_ADDRESS,
+            source_whale_avg_price=Decimal("0.4"),
+            cycle_no=1,
+            size=Decimal("10"),
+            cost_usdc=Decimal("4"),
+            lifetime_bought_size=Decimal("10"),
+            lifetime_bought_usdc=Decimal("4"),
+            lifetime_sold_size=Decimal("0"),
+            lifetime_sold_usdc=Decimal("0"),
+            lifetime_fee_usdc=Decimal("0"),
+            realized_pnl=Decimal("0"),
+            status="open",
+            opened_at=now,
+            closed_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(position)
+        await session.flush()
+        session.add(
+            WhaleFollowLedger(
+                position_id=position.id,
+                order_id=None,
+                type="buy",
+                size=Decimal("10"),
+                price=Decimal("0.4"),
+                amount_usdc=Decimal("4"),
+                fee_usdc=Decimal("0"),
+                realized_pnl=Decimal("0"),
+                transaction_hash=None,
+                detail="人工跟随巨鲸买入",
+                timestamp=now,
+            )
+        )
         await session.commit()
 
 
@@ -2437,6 +2636,73 @@ def test_copy_workspace_returns_complete_shanghai_daily_realized_pnl_points(
     assert bought_by_date[local_day.isoformat()] == pytest.approx(12)
     assert bought_by_date[(local_day - timedelta(days=2)).isoformat()] == pytest.approx(8)
     assert bought_by_date[(local_day - timedelta(days=40)).isoformat()] == 0
+
+
+def test_copy_workspace_combines_whale_pnl_in_totals_and_system_daily_points(
+    app_client_factory,
+):
+    client, _ = app_client_factory([[]])
+    wallet = add_wallet(client)
+    subscription = client.post(
+        "/api/copy-trading/subscriptions",
+        json={"tracked_wallet_id": wallet["id"]},
+    ).json()
+    shanghai = ZoneInfo("Asia/Shanghai")
+    local_day = datetime.now(shanghai).date()
+    assert client.portal is not None
+    client.portal.call(
+        insert_system_pnl_fixture,
+        client.app.state.database,
+        subscription["id"],
+        local_day,
+    )
+
+    response = client.get("/api/copy-trading/overview")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    totals = payload["totals"]
+    assert totals["realized_pnl"] == pytest.approx(2)
+    assert totals["unrealized_pnl"] == pytest.approx(0)
+    assert totals["total_pnl"] == pytest.approx(2)
+    assert totals["valuation_complete"] is True
+    assert totals["pnl_breakdown"]["copy_trading"]["total_pnl"] == pytest.approx(-4)
+    assert totals["pnl_breakdown"]["whale_follow"]["total_pnl"] == pytest.approx(6)
+    today = next(
+        point for point in payload["daily_realized_pnl"] if point["date"] == local_day.isoformat()
+    )
+    assert today["realized_pnl"] == pytest.approx(2)
+    assert today["bought_usdc"] == pytest.approx(10)
+
+    filtered = client.get(
+        "/api/copy-trading/overview",
+        params={"tracked_wallet_id": wallet["id"]},
+    ).json()
+    filtered_today = next(
+        point for point in filtered["daily_realized_pnl"] if point["date"] == local_day.isoformat()
+    )
+    assert filtered_today["realized_pnl"] == pytest.approx(-4)
+    assert filtered_today["bought_usdc"] == pytest.approx(0)
+
+
+def test_copy_workspace_marks_system_pnl_incomplete_for_unpriced_whale_position(
+    app_client_factory,
+):
+    client, _ = app_client_factory([[]])
+    assert client.portal is not None
+    client.portal.call(insert_unpriced_whale_position, client.app.state.database)
+
+    response = client.get("/api/copy-trading/overview")
+
+    assert response.status_code == 200, response.text
+    totals = response.json()["totals"]
+    assert totals["valuation_complete"] is False
+    assert totals["unpriced_positions"] == 1
+    assert totals["total_pnl"] is None
+    whale = totals["pnl_breakdown"]["whale_follow"]
+    assert whale["valuation_complete"] is False
+    assert whale["unpriced_positions"] == 1
+    assert whale["total_pnl"] is None
 
 
 def test_copy_workspace_filters_daily_realized_pnl_by_tracked_wallet(

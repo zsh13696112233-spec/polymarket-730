@@ -10,6 +10,15 @@ const API_BASE = (
 
 type Numeric = number | string;
 
+type WhaleSettingsConfig = {
+  window_hours: number;
+  collect_filter_amount_usdc: Numeric;
+  single_trade_threshold_usdc: Numeric;
+  cumulative_threshold_usdc: Numeric;
+  default_follow_amount_usdc: Numeric;
+  max_follow_amount_usdc: Numeric;
+};
+
 type Wallet = {
   id: number;
   address: string;
@@ -209,6 +218,22 @@ type Overview = {
     total_pnl: Numeric | null;
     valuation_complete: boolean;
     unpriced_positions: number;
+    pnl_breakdown: {
+      copy_trading: {
+        realized_pnl: Numeric;
+        unrealized_pnl: Numeric | null;
+        total_pnl: Numeric | null;
+        valuation_complete: boolean;
+        unpriced_positions: number;
+      };
+      whale_follow: {
+        realized_pnl: Numeric;
+        unrealized_pnl: Numeric | null;
+        total_pnl: Numeric | null;
+        valuation_complete: boolean;
+        unpriced_positions: number;
+      };
+    };
   };
   daily_realized_pnl: Array<{
     date: string;
@@ -966,7 +991,7 @@ function DailyRealizedPnlChart({
   const labelStep = visibleItems.length <= 7 ? 1 : visibleItems.length <= 15 ? 2 : 5;
   const description = selectedStrategy
     ? `${selectedStrategy.wallet.label} 按北京时间汇总的已实现盈亏。`
-    : "全部策略按北京时间汇总的已实现盈亏。";
+    : "系统全部按北京时间汇总的已实现盈亏，包含自动跟单与巨鲸跟单。";
   const chartStyle = {
     "--pc-daily-pnl-columns": visibleItems.length,
     "--pc-daily-pnl-min-width": `${range === "all" ? Math.max(340, visibleItems.length * 18) : 340}px`,
@@ -985,7 +1010,7 @@ function DailyRealizedPnlChart({
             <label className="pcSelect pcDailyPnlFilterField">
               <span>目标钱包</span>
               <select value={walletId} onChange={(event) => selectWallet(event.target.value)} aria-label="目标钱包">
-                <option value="all">全部钱包</option>
+                <option value="all">系统全部</option>
                 {strategies.map((strategy) => (
                   <option value={strategy.wallet.id} key={strategy.wallet.id}>{strategy.wallet.label}</option>
                 ))}
@@ -1174,11 +1199,14 @@ function OverviewPage({
   const trackedWallets = wallets.filter((wallet) => wallet.wallet_role === "tracked" && wallet.enabled !== false);
   const strategyByWallet = new Map(overview.strategies.map((strategy) => [strategy.wallet.id, strategy]));
   const total = overview.totals.total_pnl;
+  const copyTotal = overview.totals.pnl_breakdown.copy_trading.total_pnl;
+  const whaleTotal = overview.totals.pnl_breakdown.whale_follow.total_pnl;
+  const pnlBreakdown = `自动跟单 ${signedMoney(copyTotal, "未完整定价")} · 巨鲸跟单 ${signedMoney(whaleTotal, "未完整定价")}`;
   const metrics = [
     { label: "执行钱包余额", value: money(overview.totals.collateral_balance), meta: overview.account?.last_balance_at ? `更新于 ${dateTime(overview.account.last_balance_at)}` : "等待账户验证", tone: "" },
-    { label: "可用额度", value: money(overview.totals.available_capacity_usdc), meta: `今日已买入 ${money(overview.totals.daily_bought_usdc)}`, tone: "" },
+    { label: "可用额度", value: money(overview.totals.available_capacity_usdc), meta: `自动策略今日已买入 ${money(overview.totals.daily_bought_usdc)}`, tone: "" },
     { label: "持仓成本", value: money(overview.totals.open_exposure_usdc), meta: `${overview.strategies.filter((item) => item.subscription.enabled).length} 个策略运行中`, tone: "" },
-    { label: "总盈亏", value: total === null ? "未完整定价" : signedMoney(total), meta: overview.totals.valuation_complete ? "包含已实现与浮动盈亏" : `${overview.totals.unpriced_positions} 个仓位缺少报价`, tone: total === null ? "" : number(total) > 0 ? "profit" : number(total) < 0 ? "loss" : "" },
+    { label: "总盈亏", value: total === null ? "未完整定价" : signedMoney(total), meta: overview.totals.valuation_complete ? pnlBreakdown : `${overview.totals.unpriced_positions} 个仓位缺少报价 · ${pnlBreakdown}`, tone: total === null ? "" : number(total) > 0 ? "profit" : number(total) < 0 ? "loss" : "" },
   ];
   return (
     <>
@@ -1414,6 +1442,81 @@ function RehearsalForm({ enabled }: { enabled: boolean }) {
   return <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={loadPreview}><div className="pcFormGrid three"><label className="pcField"><span>市场链接</span><input type="url" value={marketUrl} onChange={(event) => setMarketUrl(event.target.value)} placeholder="https://polymarket.com/event/…" disabled={!enabled || busy} required /></label><label className="pcField"><span>Outcome</span><input value={outcome} onChange={(event) => setOutcome(event.target.value)} placeholder="例如 Yes 或球队名称" disabled={!enabled || busy} required /></label><label className="pcField"><span>最高花费</span><div className="pcUnitInput"><input type="number" min="0.01" max="100" step="0.01" value={maxTotalUsdc} onChange={(event) => setMaxTotalUsdc(event.target.value)} disabled={!enabled || busy} required /><b>USDC</b></div></label></div>{!enabled && <p className="pcFormHint">完成执行钱包验证后才能进行真实下单演练。</p>}{preview && <div className="pcRehearsalPreview"><span><strong>{preview.title} · {preview.outcome}</strong><small>卖一 {price(preview.best_ask)} · 动态费用 {preview.fee_rate_bps} bps · 硬上限 {money(preview.max_total_usdc)}</small></span><button className="pcButton danger" type="button" onClick={execute} disabled={busy}>确认执行 {money(preview.max_total_usdc)} 买入</button></div>}{message && <p className={message.includes("已完成") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}<div className="pcSettingsActions"><button className="pcButton ghost" type="submit" disabled={!enabled || busy}>{busy ? "正在检查…" : `预览 ${maxTotalUsdc || "0"} USDC 买入`}</button></div></form>;
 }
 
+function WhaleFollowSettingsForm() {
+  const [settings, setSettings] = useState<WhaleSettingsConfig | null>(null);
+  const [defaultAmount, setDefaultAmount] = useState("");
+  const [maxAmount, setMaxAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const next = await api<WhaleSettingsConfig>("/api/whales/settings");
+      setSettings(next);
+      setDefaultAmount(String(next.default_follow_amount_usdc ?? 20));
+      setMaxAmount(String(next.max_follow_amount_usdc ?? 200));
+    } catch (loadError) {
+      setMessage(loadError instanceof Error ? loadError.message : "无法读取巨鲸设置");
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const defaultValue = Number(defaultAmount);
+    const maxValue = Number(maxAmount);
+    if (!Number.isFinite(defaultValue) || defaultValue <= 0) {
+      setMessage("默认买入金额必须大于 0 USDC。");
+      return;
+    }
+    if (!Number.isFinite(maxValue) || maxValue <= 0 || defaultValue > maxValue) {
+      setMessage("单笔买入上限必须大于 0，且不能低于默认买入金额。");
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      const next = await api<WhaleSettingsConfig>("/api/whales/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          default_follow_amount_usdc: defaultValue,
+          max_follow_amount_usdc: maxValue,
+        }),
+      });
+      setSettings(next);
+      setDefaultAmount(String(next.default_follow_amount_usdc));
+      setMaxAmount(String(next.max_follow_amount_usdc));
+      setMessage("巨鲸跟买设置已保存。");
+    } catch (submitError) {
+      setMessage(submitError instanceof Error ? submitError.message : "保存巨鲸跟买设置失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={submit}>
+    <div className="pcSettingsIntro">设置点击巨鲸“跟单”时默认带入的买入金额和单笔上限。</div>
+    <div className="pcFormGrid two">
+      <label className="pcField">
+        <span>默认买入金额</span>
+        <div className="pcUnitInput"><input aria-label="巨鲸默认买入金额" type="number" min="0.01" step="0.01" value={defaultAmount} onChange={(event) => setDefaultAmount(event.target.value)} disabled={!settings || busy} /><b>USDC</b></div>
+        <small>点击跟单后自动带入，仍可在弹窗中临时修改。</small>
+      </label>
+      <label className="pcField">
+        <span>单笔买入上限</span>
+        <div className="pcUnitInput"><input aria-label="巨鲸单笔买入上限" type="number" min="0.01" step="0.01" value={maxAmount} onChange={(event) => setMaxAmount(event.target.value)} disabled={!settings || busy} /><b>USDC</b></div>
+        <small>任何一笔巨鲸跟单都不能超过这个金额。</small>
+      </label>
+    </div>
+    {message && <p className={message.includes("已保存") ? "pcFormSuccess" : "pcFormError"}>{message}</p>}
+    <div className="pcSettingsActions"><button className="pcButton primary" type="submit" disabled={!settings || busy}>{busy ? "保存中…" : "保存跟买设置"}</button><Link className="pcButton ghost" href="/whales#whale-monitor-settings">前往巨鲸监测</Link></div>
+  </form>;
+}
+
 function SettingsPage({
   overview,
   wallets,
@@ -1466,6 +1569,7 @@ function SettingsPage({
   return <div className="pcSettingsStack pcSystemSettings">
     <section className="pcPanel pcExecutionAccountPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION ACCOUNT</span><h2>执行钱包</h2><p>唯一资金账户，为全部策略提供共享余额与风险边界。</p></div>{account && <Badge label={account.status === "ready" ? "已验证" : account.status === "insufficient_balance" ? "余额不足" : "待验证"} tone={account.status === "ready" ? "success" : "warning"} />}</header>{account ? <div className="pcAccountSummary"><div><span>签名地址</span><strong>{shortAddress(account.signer_address)}</strong></div><div><span>资金地址</span><strong>{shortAddress(account.funder_address)}</strong></div><div><span>当前余额</span><strong>{money(account.collateral_balance)}</strong><small>{account.last_balance_at ? `更新于 ${dateTime(account.last_balance_at)}` : "尚未刷新"}</small></div><div><span>密钥状态</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><button className="pcButton ghost" type="button" disabled={busy} onClick={refreshBalance}>{busy ? "正在刷新…" : "刷新余额"}</button><button className="pcButton ghost" type="button" disabled={busy} onClick={verify}>验证密钥与余额</button></div> : <EmptyState title="尚未绑定执行钱包" message="先设置“我的钱包”，再将其绑定为唯一执行账户。" action={<button className="pcButton primary" type="button" disabled={busy} onClick={bindAccount}>{selfWallet ? "绑定执行钱包" : "设置我的钱包"}</button>} />}{message && <p className={message.includes("完成") || message.includes("已绑定") || message.includes("已刷新") ? "pcFormSuccess pcPanelMessage" : "pcFormError pcPanelMessage"}>{message}</p>}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">CAPITAL RISK</span><h2>资金风控</h2><p>这些限制由所有目标钱包共享，修改后需要重新验证执行账户。</p></div></header>{account ? <AccountRiskForm account={account} onSaved={onReload} /> : <EmptyState title="等待执行钱包" message="绑定执行钱包后可配置预算、现金保留和每日风控。" />}</section>
+    <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">WHALE FOLLOW</span><h2>巨鲸跟买设置</h2><p>管理跟买默认金额和单笔上限；监测条件已合并到巨鲸页面。</p></div></header><WhaleFollowSettingsForm /></section>
     <section className="pcPanel"><header className="pcPanelHeader pcFilterHeader"><div><span className="pcEyebrow">ADVANCED STRATEGY</span><h2>策略高级参数</h2><p>常用的执行比例和单市场上限请在总览页快速调整。</p></div>{activeStrategies.length > 0 && <label className="pcSelect"><span>目标钱包</span><select value={selectedStrategyId} onChange={(event) => setStrategyId(event.target.value)}>{activeStrategies.map((item) => <option value={item.subscription.id} key={item.subscription.id}>{item.wallet.label}</option>)}</select></label>}</header>{strategy ? <AdvancedStrategyForm key={strategy.subscription.id} strategy={strategy} onSaved={onReload} /> : <EmptyState title="暂无已配置策略" message="从总览页为目标钱包创建策略后，可在这里调整高级参数。" />}</section>
     <section className="pcPanel"><header className="pcPanelHeader"><div><span className="pcEyebrow">DIAGNOSTICS</span><h2>账户诊断与下单演练</h2><p>低频维护工具集中在这里，不影响日常策略工作台。</p></div></header>{account?.signer_address && !account.credentials_configured && <div className="pcCommandHint"><span>导入执行密钥</span><code>uv run python -m backend.copy_cli set-key --account {account.signer_address}</code></div>}<RehearsalForm enabled={Boolean(overview.live_copy_enabled && account?.status === "ready")} /></section>
   </div>;

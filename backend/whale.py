@@ -29,6 +29,7 @@ from backend.models import (
     ExecutionAccount,
     WhaleEntry,
     WhaleEntryRuleState,
+    WhaleExclusion,
     WhaleFill,
     WhaleFollowLedger,
     WhaleFollowPosition,
@@ -82,6 +83,10 @@ WHALE_STATISTICS_AMOUNT_BANDS = (
     ("gte_1m", "≥ 100万", Decimal("1000000"), None),
 )
 BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _not_excluded_wallet(column: Any) -> Any:
+    return func.lower(column).not_in(select(WhaleExclusion.proxy_wallet))
 
 
 def _decimal(value: Any, default: Decimal = ZERO) -> Decimal:
@@ -568,6 +573,7 @@ class WhaleDiscoveryScanner:
                         .where(
                             WhaleTrade.timestamp >= window_start,
                             WhaleTrade.side == "BUY",
+                            _not_excluded_wallet(WhaleTrade.proxy_wallet),
                         )
                         .order_by(WhaleTrade.timestamp.asc(), WhaleTrade.id.asc())
                     )
@@ -593,7 +599,10 @@ class WhaleDiscoveryScanner:
                     (
                         await session.scalars(
                             select(WhaleEntry.condition_id)
-                            .where(WhaleEntry.settlement_price.is_(None))
+                            .where(
+                                WhaleEntry.settlement_price.is_(None),
+                                _not_excluded_wallet(WhaleEntry.proxy_wallet),
+                            )
                             .distinct()
                         )
                     ).all()
@@ -656,6 +665,7 @@ class WhaleDiscoveryScanner:
                             WhaleEntryRuleState.entry_id == WhaleEntry.id,
                         )
                         .where(WhaleEntryRuleState.active.is_(True))
+                        .where(_not_excluded_wallet(WhaleEntry.proxy_wallet))
                         .distinct()
                     )
                 ).all()
@@ -694,7 +704,10 @@ class WhaleDiscoveryScanner:
             entries = list(
                 (
                     await session.scalars(
-                        select(WhaleEntry).where(WhaleEntry.settlement_price.is_(None))
+                        select(WhaleEntry).where(
+                            WhaleEntry.settlement_price.is_(None),
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet),
+                        )
                     )
                 ).all()
             )
@@ -1338,7 +1351,13 @@ class WhaleDiscoveryScanner:
     async def _update_tag_counts(self, *, now: datetime) -> None:
         async with self.database.sessions() as session:
             market_ids = set(
-                (await session.scalars(select(WhaleEntry.condition_id).distinct())).all()
+                (
+                    await session.scalars(
+                        select(WhaleEntry.condition_id)
+                        .where(_not_excluded_wallet(WhaleEntry.proxy_wallet))
+                        .distinct()
+                    )
+                ).all()
             )
             markets = list(
                 (
@@ -1581,6 +1600,8 @@ class WhaleFollowExecutor:
             entry = await session.get(WhaleEntry, entry_id)
             if entry is None or entry.asset_id != asset_id:
                 raise ValueError("巨鲸投入记录与所选 outcome 不匹配")
+            if await session.get(WhaleExclusion, entry.proxy_wallet.lower()) is not None:
+                raise ValueError("该巨鲸账户已加入排除名单，不能继续跟买")
             active_rule_count = int(
                 await session.scalar(
                     select(func.count(WhaleEntryRuleState.id)).where(
@@ -1703,6 +1724,10 @@ class WhaleFollowExecutor:
         async with self._lock:
             if not self.settings.live_copy_enabled:
                 raise ValueError("自动实盘已被系统紧急停用")
+            if quote.source_wallet is not None:
+                async with self.database.sessions() as session:
+                    if await session.get(WhaleExclusion, quote.source_wallet.lower()) is not None:
+                        raise ValueError("该巨鲸账户已加入排除名单，不能继续跟买")
             book = await self.client.fetch_order_book(quote.asset_id)
             if book.best_ask is None or book.best_ask > quote.worst_price:
                 raise ValueError("市场价格已变动，请重新预览")
@@ -2532,6 +2557,66 @@ def _wallet_age_days(created_at: datetime | None, *, now: datetime) -> int | Non
     return max(0, int((now - created_at).total_seconds() // 86400))
 
 
+async def whale_exclusion_addresses(database: Database) -> set[str]:
+    async with database.sessions() as session:
+        return {
+            address.lower()
+            for address in (await session.scalars(select(WhaleExclusion.proxy_wallet))).all()
+        }
+
+
+async def list_whale_exclusions(database: Database) -> dict[str, Any]:
+    async with database.sessions() as session:
+        exclusions = list(
+            (
+                await session.scalars(
+                    select(WhaleExclusion).order_by(
+                        WhaleExclusion.created_at.desc(),
+                        WhaleExclusion.proxy_wallet.asc(),
+                    )
+                )
+            ).all()
+        )
+        addresses = [row.proxy_wallet.lower() for row in exclusions]
+        if not addresses:
+            return {"total": 0, "items": []}
+        wallets = {
+            row.proxy_wallet.lower(): row
+            for row in (
+                await session.scalars(
+                    select(WhaleWallet).where(func.lower(WhaleWallet.proxy_wallet).in_(addresses))
+                )
+            ).all()
+        }
+        counts = {
+            address: int(count)
+            for address, count in (
+                await session.execute(
+                    select(func.lower(WhaleEntry.proxy_wallet), func.count(WhaleEntry.id))
+                    .where(func.lower(WhaleEntry.proxy_wallet).in_(addresses))
+                    .group_by(func.lower(WhaleEntry.proxy_wallet))
+                )
+            ).all()
+        }
+    items = []
+    for exclusion in exclusions:
+        address = exclusion.proxy_wallet.lower()
+        wallet = wallets.get(address)
+        fallback = f"{address[:6]}…{address[-4:]}"
+        items.append(
+            {
+                "proxy_wallet": address,
+                "display_name": exclusion.label
+                or (wallet.display_name if wallet is not None else None)
+                or fallback,
+                "profile_url": f"https://polymarket.com/profile/{address}",
+                "hidden_entry_count": counts.get(address, 0),
+                "created_at": exclusion.created_at,
+            }
+        )
+    return {"total": len(items), "items": items}
+
+
 async def whale_settings_read(database: Database) -> dict[str, Any]:
     async with database.sessions() as session:
         settings = await session.get(WhaleSettings, 1)
@@ -2544,45 +2629,73 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
         values.update(
             {
                 "tracked_trade_count": int(
-                    await session.scalar(select(func.count(WhaleTrade.id))) or 0
+                    await session.scalar(
+                        select(func.count(WhaleTrade.id)).where(
+                            _not_excluded_wallet(WhaleTrade.proxy_wallet)
+                        )
+                    )
+                    or 0
                 ),
-                "entry_count": int(await session.scalar(select(func.count(WhaleEntry.id))) or 0),
+                "entry_count": int(
+                    await session.scalar(
+                        select(func.count(WhaleEntry.id)).where(
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet)
+                        )
+                    )
+                    or 0
+                ),
                 "market_count": int(
-                    await session.scalar(select(func.count(func.distinct(WhaleEntry.condition_id))))
+                    await session.scalar(
+                        select(func.count(func.distinct(WhaleEntry.condition_id))).where(
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet)
+                        )
+                    )
                     or 0
                 ),
                 "new_account_active_count": int(
                     await session.scalar(
-                        select(func.count(WhaleEntryRuleState.id)).where(
+                        select(func.count(WhaleEntryRuleState.id))
+                        .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
+                        .where(
                             WhaleEntryRuleState.rule_type == NEW_ACCOUNT_RULE,
                             WhaleEntryRuleState.active.is_(True),
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet),
                         )
                     )
                     or 0
                 ),
                 "new_account_history_count": int(
                     await session.scalar(
-                        select(func.count(WhaleEntryRuleState.id)).where(
+                        select(func.count(WhaleEntryRuleState.id))
+                        .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
+                        .where(
                             WhaleEntryRuleState.rule_type == NEW_ACCOUNT_RULE,
                             WhaleEntryRuleState.active.is_(False),
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet),
                         )
                     )
                     or 0
                 ),
                 "large_amount_active_count": int(
                     await session.scalar(
-                        select(func.count(WhaleEntryRuleState.id)).where(
+                        select(func.count(WhaleEntryRuleState.id))
+                        .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
+                        .where(
                             WhaleEntryRuleState.rule_type == LARGE_AMOUNT_RULE,
                             WhaleEntryRuleState.active.is_(True),
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet),
                         )
                     )
                     or 0
                 ),
                 "large_amount_history_count": int(
                     await session.scalar(
-                        select(func.count(WhaleEntryRuleState.id)).where(
+                        select(func.count(WhaleEntryRuleState.id))
+                        .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
+                        .where(
                             WhaleEntryRuleState.rule_type == LARGE_AMOUNT_RULE,
                             WhaleEntryRuleState.active.is_(False),
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet),
                         )
                     )
                     or 0
@@ -2621,6 +2734,7 @@ async def list_whale_markets(
             .where(
                 WhaleEntryRuleState.rule_type == rule,
                 WhaleEntryRuleState.active.is_(True),
+                _not_excluded_wallet(WhaleEntry.proxy_wallet),
             )
         )
         if condition_id:
@@ -2919,9 +3033,11 @@ async def list_whale_history(
     async with database.sessions() as session:
         state_query = (
             select(WhaleEntryRuleState)
+            .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
             .where(
                 WhaleEntryRuleState.rule_type == rule,
                 WhaleEntryRuleState.active.is_(False),
+                _not_excluded_wallet(WhaleEntry.proxy_wallet),
             )
             .order_by(
                 WhaleEntryRuleState.inactive_at.desc(),
@@ -2931,9 +3047,12 @@ async def list_whale_history(
         )
         total = int(
             await session.scalar(
-                select(func.count(WhaleEntryRuleState.id)).where(
+                select(func.count(WhaleEntryRuleState.id))
+                .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
+                .where(
                     WhaleEntryRuleState.rule_type == rule,
                     WhaleEntryRuleState.active.is_(False),
+                    _not_excluded_wallet(WhaleEntry.proxy_wallet),
                 )
             )
             or 0
@@ -3053,7 +3172,7 @@ async def _load_whale_statistics_records(
     include_pending: bool = True,
 ) -> list[dict[str, Any]]:
     async with database.sessions() as session:
-        entry_query = select(WhaleEntry)
+        entry_query = select(WhaleEntry).where(_not_excluded_wallet(WhaleEntry.proxy_wallet))
         if range_start is not None:
             range_filter = WhaleEntry.settled_at >= range_start
             entry_query = entry_query.where(
@@ -3233,6 +3352,8 @@ async def whale_statistics(
     async with database.sessions() as session:
         coverage_start = await session.scalar(
             select(func.min(WhaleEntryRuleState.first_triggered_at))
+            .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
+            .where(_not_excluded_wallet(WhaleEntry.proxy_wallet))
         )
     all_records = await _load_whale_statistics_records(
         database,

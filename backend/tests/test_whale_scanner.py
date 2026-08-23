@@ -14,6 +14,7 @@ from backend.db import Database
 from backend.models import (
     WhaleEntry,
     WhaleEntryRuleState,
+    WhaleExclusion,
     WhaleMarket,
     WhaleSettings,
     WhaleTrade,
@@ -395,6 +396,44 @@ async def test_scanner_finds_recent_large_buyers_and_confirms_current_position(d
     assert settings is not None
     assert settings.last_scan_error is None
     assert client.trade_calls == 1
+
+
+async def test_scanner_retains_raw_trade_but_skips_excluded_wallet_external_checks(database):
+    client = PositionDiscoveryClient()
+    async with database.sessions() as session:
+        session.add(
+            WhaleExclusion(
+                proxy_wallet=client.wallet,
+                label="Excluded Whale",
+                created_at=utcnow(),
+            )
+        )
+        await session.commit()
+
+    async def unexpected_profile_check(address: str) -> None:
+        raise AssertionError(f"excluded profile should not be checked: {address}")
+
+    async def unexpected_position_check(user: str) -> list[PositionSnapshot]:
+        raise AssertionError(f"excluded positions should not be checked: {user}")
+
+    client.fetch_public_profile = unexpected_profile_check  # type: ignore[method-assign]
+    client.fetch_active_positions = unexpected_position_check  # type: ignore[method-assign]
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+
+    assert await scanner.tick() is True
+
+    async with database.sessions() as session:
+        trades = list((await session.scalars(select(WhaleTrade))).all())
+        entries = list((await session.scalars(select(WhaleEntry))).all())
+        wallet = await session.get(WhaleWallet, client.wallet)
+    assert len(trades) == 1
+    assert trades[0].proxy_wallet == client.wallet
+    assert entries == []
+    assert wallet is None
 
 
 async def test_scanner_excludes_wallets_older_than_registration_window(database):

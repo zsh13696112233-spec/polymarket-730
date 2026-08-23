@@ -36,6 +36,19 @@ export type WhaleSettings = {
   large_amount_history_count: number;
 };
 
+export type WhaleExclusion = {
+  proxy_wallet: string;
+  display_name: string;
+  profile_url: string;
+  hidden_entry_count: number;
+  created_at: string;
+};
+
+export type WhaleExclusionList = {
+  total: number;
+  items: WhaleExclusion[];
+};
+
 export type WhaleTag = {
   id: string;
   slug: string;

@@ -843,6 +843,14 @@ class WhaleWallet(Base):
     refreshed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class WhaleExclusion(Base):
+    __tablename__ = "whale_exclusions"
+
+    proxy_wallet: Mapped[str] = mapped_column(String(42), primary_key=True)
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class WhaleEntry(Base):
     __tablename__ = "whale_entries"
     __table_args__ = (

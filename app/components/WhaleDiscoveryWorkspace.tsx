@@ -212,6 +212,7 @@ export default function WhaleDiscoveryWorkspace() {
 
   const reloadWorkspace = useCallback(async () => {
     await Promise.all([loadSettings(), loadMarkets(), loadHistory()]);
+    setStatisticsRefreshToken((current) => current + 1);
   }, [loadHistory, loadMarkets, loadSettings]);
 
   const walletGroups = useMemo(

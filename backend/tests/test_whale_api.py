@@ -343,7 +343,106 @@ def test_whale_routes_return_503_when_environment_switch_is_off(app_client_facto
     assert client.get("/api/whales/settings").status_code == 503
     assert client.get("/api/whales/markets").status_code == 503
     assert client.get("/api/whales/statistics").status_code == 503
+    assert client.get("/api/whales/exclusions").status_code == 503
     assert client.post("/api/whales/scan").status_code == 503
+
+
+def test_whale_exclusion_crud_normalizes_profile_links_and_seeds_default(
+    app_client_factory,
+):
+    client, _ = app_client_factory([[]])
+    default_wallet = "0x6d20c35f65d9899b6d6b74f8466e824580f9a165"
+    profile_wallet = "0x" + "AbCd" * 10
+    normalized_profile_wallet = profile_wallet.lower()
+
+    initial = client.get("/api/whales/exclusions")
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["total"] == 1
+    assert initial.json()["items"][0]["proxy_wallet"] == default_wallet
+    assert initial.json()["items"][0]["display_name"] == "Djdjdjekekek"
+    assert initial.json()["items"][0]["profile_url"].endswith(default_wallet)
+
+    duplicate = client.post(
+        "/api/whales/exclusions",
+        json={"address": f"https://polymarket.com/profile/{default_wallet}"},
+    )
+    assert duplicate.status_code == 409
+
+    created = client.post(
+        "/api/whales/exclusions",
+        json={
+            "address": f"https://polymarket.com/profile/{profile_wallet}",
+            "label": "  测试排除账户  ",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["proxy_wallet"] == normalized_profile_wallet
+    assert created.json()["display_name"] == "测试排除账户"
+    assert created.json()["hidden_entry_count"] == 0
+
+    invalid = client.post("/api/whales/exclusions", json={"address": "not-a-wallet"})
+    assert invalid.status_code == 422
+
+    removed = client.delete(f"/api/whales/exclusions/{normalized_profile_wallet}")
+    assert removed.status_code == 204
+    assert client.delete(f"/api/whales/exclusions/{normalized_profile_wallet}").status_code == 404
+
+
+def test_whale_exclusion_hides_all_monitoring_views_and_blocks_follow(
+    app_client_factory,
+):
+    client, _ = app_client_factory([[]])
+    client.portal.call(seed_two_sided_whale_market, client.app.state.database)
+    client.portal.call(seed_whale_statistics, client.app.state.database)
+
+    before = client.get("/api/whales/statistics").json()
+    assert before["overall"]["settled_count"] == 3
+    hedged_entry_id = next(
+        entry["entry_id"]
+        for market in client.get("/api/whales/markets").json()["items"]
+        for side in market["sides"]
+        for entry in side["entries"]
+        if entry["proxy_wallet"] == WALLET_HEDGED
+    )
+
+    added = client.post(
+        "/api/whales/exclusions",
+        json={"address": WALLET_HEDGED, "label": "隐藏双边钱包"},
+    )
+    assert added.status_code == 201, added.text
+    assert added.json()["hidden_entry_count"] == 2
+
+    markets = client.get("/api/whales/markets").json()
+    visible_wallets = {
+        entry["proxy_wallet"]
+        for market in markets["items"]
+        for side in market["sides"]
+        for entry in side["entries"]
+    }
+    assert WALLET_HEDGED not in visible_wallets
+    assert client.get("/api/whales/history?rule=new_account").json()["total"] == 0
+    statistics = client.get("/api/whales/statistics").json()
+    assert statistics["overall"]["settled_count"] == 1
+    assert statistics["large_amount"]["settled_count"] == 0
+    details = client.get("/api/whales/statistics/signals").json()
+    assert details["total"] == 1
+    assert all(item["proxy_wallet"] != WALLET_HEDGED for item in details["items"])
+    settings = client.get("/api/whales/settings").json()
+    assert settings["entry_count"] == 2
+    assert settings["tracked_trade_count"] == 1
+
+    blocked = client.post(
+        "/api/whales/follow/preview",
+        json={"entry_id": hedged_entry_id, "asset_id": ASSET_YES, "amount_usdc": 20},
+    )
+    assert blocked.status_code == 409
+    assert "排除名单" in blocked.text
+
+    removed = client.delete(f"/api/whales/exclusions/{WALLET_HEDGED}")
+    assert removed.status_code == 204
+    restored = client.get("/api/whales/statistics").json()
+    assert restored["overall"]["settled_count"] == 3
+    assert restored["large_amount"]["settled_count"] == 1
 
 
 def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_factory):

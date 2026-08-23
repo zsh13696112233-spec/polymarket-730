@@ -56,6 +56,7 @@ describe("巨鲸页内设置", () => {
         });
       }
       if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.endsWith("/api/whales/exclusions")) return json({ total: 0, items: [] });
       if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
       if (url.includes("/api/whales/markets?")) return json({
         generated_at: "2026-08-16T09:00:00Z",
@@ -87,6 +88,84 @@ describe("巨鲸页内设置", () => {
       large_amount_threshold_usdc: 600000,
     }));
     expect(await screen.findByText("巨鲸监测条件已保存，数据已重新扫描。")).toBeInTheDocument();
+  });
+
+  it("展示默认排除账户，并支持用个人页新增和移出", async () => {
+    const user = userEvent.setup();
+    const defaultWallet = "0x6d20c35f65d9899b6d6b74f8466e824580f9a165";
+    const addedWallet = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+    let exclusions = [{
+      proxy_wallet: defaultWallet,
+      display_name: "Djdjdjekekek",
+      profile_url: `https://polymarket.com/profile/${defaultWallet}`,
+      hidden_entry_count: 13,
+      created_at: "2026-08-23T00:00:00Z",
+    }];
+    const requests: Array<{ method: string; body?: unknown; url: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.endsWith("/api/whales/exclusions") && method === "POST") {
+        const body = JSON.parse(String(init?.body));
+        requests.push({ method, body, url });
+        const item = {
+          proxy_wallet: addedWallet,
+          display_name: body.label,
+          profile_url: `https://polymarket.com/profile/${addedWallet}`,
+          hidden_entry_count: 0,
+          created_at: "2026-08-23T01:00:00Z",
+        };
+        exclusions = [item, ...exclusions];
+        return json(item, 201);
+      }
+      if (url.includes("/api/whales/exclusions/") && method === "DELETE") {
+        requests.push({ method, url });
+        const wallet = url.split("/").at(-1);
+        exclusions = exclusions.filter((item) => item.proxy_wallet !== wallet);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith("/api/whales/exclusions")) {
+        return json({ total: exclusions.length, items: exclusions });
+      }
+      if (url.includes("/api/whales/markets?")) return json({
+        generated_at: "2026-08-23T01:00:00Z",
+        window_start: "2026-08-22T01:00:00Z",
+        stale: false,
+        total: 0,
+        items: [],
+      });
+      if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<WhaleDiscoveryWorkspace />);
+    expect(await screen.findByRole("link", { name: "Djdjdjekekek" })).toHaveAttribute(
+      "href",
+      `https://polymarket.com/profile/${defaultWallet}`,
+    );
+    expect(screen.getByText("13")).toBeInTheDocument();
+
+    await user.type(
+      screen.getByRole("textbox", { name: "排除账户地址或个人页" }),
+      `https://polymarket.com/profile/${addedWallet}`,
+    );
+    await user.type(screen.getByRole("textbox", { name: "排除账户显示名称" }), "测试账户");
+    await user.click(screen.getByRole("button", { name: "加入排除名单" }));
+
+    expect(await screen.findByRole("link", { name: "测试账户" })).toBeInTheDocument();
+    expect(requests).toContainEqual({
+      method: "POST",
+      url: "http://127.0.0.1:8730/api/whales/exclusions",
+      body: {
+        address: `https://polymarket.com/profile/${addedWallet}`,
+        label: "测试账户",
+      },
+    });
+
+    await user.click(screen.getAllByRole("button", { name: "移出" })[0]);
+    await waitFor(() => expect(screen.queryByRole("link", { name: "测试账户" })).not.toBeInTheDocument());
+    expect(requests.some((request) => request.method === "DELETE" && request.url.endsWith(addedWallet))).toBe(true);
   });
 });
 

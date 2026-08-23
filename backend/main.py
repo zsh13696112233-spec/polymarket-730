@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from backend.broker import EventBroker
@@ -43,6 +44,9 @@ from backend.models import (
     PositionOverlapPeriod,
     WalletTrade,
     WatchedWallet,
+    WhaleEntry,
+    WhaleEntryRuleState,
+    WhaleExclusion,
     WhaleFollowLedger,
     WhaleOrder,
     WhaleSettings,
@@ -53,6 +57,7 @@ from backend.polymarket import (
     InvalidWalletInput,
     PolymarketAPIError,
     PolymarketClient,
+    parse_wallet_input,
 )
 from backend.purchase_history import (
     ActivePositionCycle,
@@ -113,6 +118,9 @@ from backend.schemas import (
     WalletRead,
     WalletRecordedPnlRead,
     WalletUpdate,
+    WhaleExclusionCreate,
+    WhaleExclusionListRead,
+    WhaleExclusionRead,
     WhaleFollowExecuteRequest,
     WhaleFollowPreviewRead,
     WhaleFollowPreviewRequest,
@@ -145,6 +153,7 @@ from backend.trading import (
 from backend.whale import (
     WhaleDiscoveryScanner,
     WhaleFollowExecutor,
+    list_whale_exclusions,
     list_whale_history,
     list_whale_markets,
     list_whale_positions,
@@ -1467,6 +1476,89 @@ def create_app(
             )
         except ValueError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @application.get("/api/whales/exclusions", response_model=WhaleExclusionListRead)
+    async def get_whale_exclusions(request: Request) -> WhaleExclusionListRead:
+        require_whale_module(request)
+        return WhaleExclusionListRead.model_validate(
+            await list_whale_exclusions(request.app.state.database)
+        )
+
+    @application.post(
+        "/api/whales/exclusions",
+        response_model=WhaleExclusionRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_whale_exclusion(
+        payload: WhaleExclusionCreate,
+        request: Request,
+    ) -> WhaleExclusionRead:
+        require_whale_module(request)
+        try:
+            address = parse_wallet_input(payload.address)
+        except InvalidWalletInput as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        label = payload.label.strip() if payload.label and payload.label.strip() else None
+        database: Database = request.app.state.database
+        now = utcnow()
+        async with database.sessions() as session:
+            if await session.get(WhaleExclusion, address) is not None:
+                raise HTTPException(status_code=409, detail="该账户已在巨鲸排除名单中")
+            session.add(WhaleExclusion(proxy_wallet=address, label=label, created_at=now))
+            entries = list(
+                (
+                    await session.scalars(
+                        select(WhaleEntry).where(func.lower(WhaleEntry.proxy_wallet) == address)
+                    )
+                ).all()
+            )
+            if entries:
+                states = list(
+                    (
+                        await session.scalars(
+                            select(WhaleEntryRuleState).where(
+                                WhaleEntryRuleState.entry_id.in_([entry.id for entry in entries]),
+                                WhaleEntryRuleState.active.is_(True),
+                            )
+                        )
+                    ).all()
+                )
+                for state_row in states:
+                    state_row.active = False
+                    state_row.inactive_at = now
+                    state_row.inactive_reason = "account_excluded"
+            try:
+                await session.commit()
+            except IntegrityError as error:
+                await session.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="该账户已在巨鲸排除名单中",
+                ) from error
+        request.app.state.whale_scanner.wake()
+        result = await list_whale_exclusions(database)
+        item = next(item for item in result["items"] if item["proxy_wallet"] == address)
+        return WhaleExclusionRead.model_validate(item)
+
+    @application.delete(
+        "/api/whales/exclusions/{proxy_wallet}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_whale_exclusion(proxy_wallet: str, request: Request) -> Response:
+        require_whale_module(request)
+        try:
+            address = parse_wallet_input(proxy_wallet)
+        except InvalidWalletInput as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            exclusion = await session.get(WhaleExclusion, address)
+            if exclusion is None:
+                raise HTTPException(status_code=404, detail="该账户不在巨鲸排除名单中")
+            await session.delete(exclusion)
+            await session.commit()
+        request.app.state.whale_scanner.wake()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @application.put("/api/whales/settings", response_model=WhaleSettingsRead)
     async def update_whale_settings(

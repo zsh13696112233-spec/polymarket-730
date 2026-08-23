@@ -3,12 +3,155 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
 import {
+  WhaleExclusion,
+  WhaleExclusionList,
   WhaleSettings,
   formatBeijing,
   formatCompactUsdc,
   numeric,
   whaleApi,
 } from "./WhaleShared";
+
+function shortWallet(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+function WhaleExclusionManager({ onReload }: { onReload: () => Promise<void> }) {
+  const [exclusions, setExclusions] = useState<WhaleExclusion[]>([]);
+  const [address, setAddress] = useState("");
+  const [label, setLabel] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busyWallet, setBusyWallet] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await whaleApi<WhaleExclusionList>("/api/whales/exclusions");
+      setExclusions(result.items);
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "无法读取账户排除名单");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  async function addExclusion(event: FormEvent) {
+    event.preventDefault();
+    if (!address.trim()) {
+      setError("请输入钱包地址或 Polymarket 个人页链接。");
+      return;
+    }
+    setBusyWallet("new");
+    setError(null);
+    setMessage(null);
+    try {
+      const created = await whaleApi<WhaleExclusion>("/api/whales/exclusions", {
+        method: "POST",
+        body: JSON.stringify({ address: address.trim(), label: label.trim() || null }),
+      });
+      setAddress("");
+      setLabel("");
+      setMessage(`${created.display_name} 已加入排除名单，后台扫描正在更新。`);
+      await Promise.all([load(), onReload()]);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "加入排除名单失败");
+    } finally {
+      setBusyWallet(null);
+    }
+  }
+
+  async function removeExclusion(item: WhaleExclusion) {
+    setBusyWallet(item.proxy_wallet);
+    setError(null);
+    setMessage(null);
+    try {
+      await whaleApi<void>(`/api/whales/exclusions/${item.proxy_wallet}`, {
+        method: "DELETE",
+      });
+      setMessage(`${item.display_name} 已移出排除名单，旧历史与统计已恢复。`);
+      await Promise.all([load(), onReload()]);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "移出排除名单失败");
+    } finally {
+      setBusyWallet(null);
+    }
+  }
+
+  return (
+    <div className="whaleExclusionManager">
+      <div className="whaleExclusionHeading">
+        <div>
+          <span className="pcEyebrow">ACCOUNT FILTER</span>
+          <h3>账户排除名单</h3>
+          <p>排除后不再监测、统计或允许跟单；底层历史和真实交易账本不会删除。</p>
+        </div>
+        <strong>{exclusions.length} 个账户</strong>
+      </div>
+      <form className="whaleExclusionForm" onSubmit={addExclusion}>
+        <label className="pcField whaleExclusionAddress">
+          <span>钱包地址或个人页</span>
+          <input
+            aria-label="排除账户地址或个人页"
+            value={address}
+            onChange={(event) => setAddress(event.target.value)}
+            placeholder="0x… 或 https://polymarket.com/profile/0x…"
+            disabled={busyWallet !== null}
+          />
+        </label>
+        <label className="pcField">
+          <span>显示名称（可选）</span>
+          <input
+            aria-label="排除账户显示名称"
+            value={label}
+            maxLength={200}
+            onChange={(event) => setLabel(event.target.value)}
+            placeholder="便于识别"
+            disabled={busyWallet !== null}
+          />
+        </label>
+        <button className="pcButton primary" type="submit" disabled={busyWallet !== null}>
+          {busyWallet === "new" ? "加入中…" : "加入排除名单"}
+        </button>
+      </form>
+      {error && <p className="pcFormError" role="alert">{error}</p>}
+      {message && <p className="pcFormSuccess">{message}</p>}
+      <div className="whaleExclusionList" aria-live="polite">
+        {loading && exclusions.length === 0 ? (
+          <p className="whaleExclusionEmpty">正在读取排除名单…</p>
+        ) : exclusions.length === 0 ? (
+          <p className="whaleExclusionEmpty">暂无排除账户。</p>
+        ) : exclusions.map((item) => (
+          <article key={item.proxy_wallet} className="whaleExclusionItem">
+            <div>
+              <a href={item.profile_url} target="_blank" rel="noreferrer">{item.display_name}</a>
+              <code title={item.proxy_wallet}>{shortWallet(item.proxy_wallet)}</code>
+            </div>
+            <dl>
+              <div><dt>隐藏信号</dt><dd>{item.hidden_entry_count}</dd></div>
+              <div><dt>加入时间</dt><dd>{formatBeijing(item.created_at, true)}</dd></div>
+            </dl>
+            <button
+              className="pcButton"
+              type="button"
+              disabled={busyWallet !== null}
+              onClick={() => void removeExclusion(item)}
+            >
+              {busyWallet === item.proxy_wallet ? "移出中…" : "移出"}
+            </button>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function WhaleSettingsPanel({
   settings,
@@ -161,6 +304,7 @@ export function WhaleSettingsPanel({
             </button>
           </div>
         </form>
+        <WhaleExclusionManager onReload={onReload} />
       </section>
   );
 }

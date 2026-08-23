@@ -882,6 +882,30 @@ class WhaleSettingsUpdate(APIModel):
         return self
 
 
+class WhaleExclusionCreate(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=1, max_length=500)
+    label: str | None = Field(default=None, max_length=200)
+
+
+class WhaleExclusionRead(APIModel):
+    proxy_wallet: str
+    display_name: str
+    profile_url: str
+    hidden_entry_count: int
+    created_at: datetime
+
+    @field_serializer("created_at", when_used="json")
+    def serialize_created_at(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleExclusionListRead(APIModel):
+    total: int
+    items: list[WhaleExclusionRead]
+
+
 class WhaleScanRead(APIModel):
     status: Literal["ok", "skipped"]
 

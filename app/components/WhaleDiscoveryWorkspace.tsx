@@ -145,6 +145,8 @@ export default function WhaleDiscoveryWorkspace() {
   const [history, setHistory] = useState<WhaleHistoryList | null>(null);
   const [rule, setRule] = useState<WhaleRule>("new_account");
   const [statisticsVisible, setStatisticsVisible] = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [fullHistoryVisible, setFullHistoryVisible] = useState(false);
   const [statisticsRefreshToken, setStatisticsRefreshToken] = useState(0);
   const [sort, setSort] = useState<WalletSort>("value");
   const [loading, setLoading] = useState(true);
@@ -246,7 +248,11 @@ export default function WhaleDiscoveryWorkspace() {
             type="button"
             className={!statisticsVisible && rule === item ? "active" : ""}
             aria-pressed={!statisticsVisible && rule === item}
-            onClick={() => { setRule(item); setStatisticsVisible(false); }}
+            onClick={() => {
+              setRule(item);
+              setStatisticsVisible(false);
+              setFullHistoryVisible(false);
+            }}
           >
             <strong>{RULE_LABELS[item]}</strong>
             <span>
@@ -259,20 +265,15 @@ export default function WhaleDiscoveryWorkspace() {
           type="button"
           className={statisticsVisible ? "active" : ""}
           aria-pressed={statisticsVisible}
-          onClick={() => setStatisticsVisible(true)}
+          onClick={() => {
+            setStatisticsVisible(true);
+            setSettingsVisible(false);
+          }}
         >
           <strong>统计</strong>
           <span>命中率 · 理论收益 · 结算明细</span>
         </button>
       </nav>
-
-      {!statisticsVisible && <div id="whale-monitor-settings" className="whaleInlineSettings">
-        <WhaleSettingsPanel
-          settings={settings}
-          onSettingsChange={setSettings}
-          onReload={reloadWorkspace}
-        />
-      </div>}
 
       {Boolean(settings?.last_scan_error || settings?.consecutive_failures) && (
         <div className="whaleHealthBanner danger">
@@ -285,61 +286,98 @@ export default function WhaleDiscoveryWorkspace() {
         </div>
       )}
 
-      {!statisticsVisible && <WhaleRequestMonitorPanel />}
-
       {statisticsVisible ? (
         <WhaleStatisticsPanel refreshToken={statisticsRefreshToken} />
-      ) : <><section className="pcPanel whaleSimpleToolbar" aria-label="巨鲸持仓工具栏">
-        <label className="whaleSimpleSort">
-          <span>排序</span>
-          <select
-            aria-label="巨鲸钱包排序"
-            value={sort}
-            onChange={(event) => setSort(event.target.value as WalletSort)}
-          >
-            <option value="value">持仓价值最高</option>
-            <option value="recent">最近加仓</option>
-          </select>
-        </label>
-        <div className="whaleSimpleMeta">
-          <strong>{walletGroups.length} 个钱包 · {visibleHoldingCount} 个持仓</strong>
-          <span>
-            {rule === "new_account" ? `注册 ≤ ${settings?.registration_window_days ?? 7} 天 · ` : "不限账号年龄 · "}
-            近 {settings?.window_hours ?? 24} 小时买入 ≥ {formatCompactUsdc(rule === "new_account" ? settings?.new_account_threshold_usdc : settings?.large_amount_threshold_usdc)}
-            {" · "}最后更新 {formatBeijing(settings?.last_scan_at, true)}
-          </span>
-        </div>
-      </section>
+      ) : <>
+        <div className="whaleDashboardGrid">
+          <section className="whaleDashboardMain" aria-label="当前巨鲸持仓">
+            <section className="pcPanel whaleSimpleToolbar" aria-label="巨鲸持仓工具栏">
+              <label className="whaleSimpleSort">
+                <span>排序</span>
+                <select
+                  aria-label="巨鲸钱包排序"
+                  value={sort}
+                  onChange={(event) => setSort(event.target.value as WalletSort)}
+                >
+                  <option value="value">持仓价值最高</option>
+                  <option value="recent">最近加仓</option>
+                </select>
+              </label>
+              <div className="whaleSimpleMeta">
+                <strong>{walletGroups.length} 个钱包 · {visibleHoldingCount} 个持仓</strong>
+                <span>
+                  {rule === "new_account" ? `注册 ≤ ${settings?.registration_window_days ?? 7} 天 · ` : "不限账号年龄 · "}
+                  近 {settings?.window_hours ?? 24} 小时买入 ≥ {formatCompactUsdc(rule === "new_account" ? settings?.new_account_threshold_usdc : settings?.large_amount_threshold_usdc)}
+                  {" · "}最后更新 {formatBeijing(settings?.last_scan_at, true)}
+                </span>
+              </div>
+            </section>
 
-      {error && (
-        <div className="pcAlert danger whalePageError" role="alert">
-          <strong>请求未完成</strong>
-          <p>{error}</p>
-          <button type="button" onClick={() => void loadMarkets()}>重试</button>
-        </div>
-      )}
+            {error && (
+              <div className="pcAlert danger whalePageError" role="alert">
+                <strong>请求未完成</strong>
+                <p>{error}</p>
+                <button type="button" onClick={() => void loadMarkets()}>重试</button>
+              </div>
+            )}
 
-      {loading && !markets ? (
-        <div className="pcPanel pcLoading whaleLoading">正在汇总巨鲸持仓…</div>
-      ) : walletGroups.length ? (
-        <div className={`whaleWalletList ${loading ? "refreshing" : ""}`} aria-live="polite">
-          {walletGroups.map((group) => (
-            <WhaleWalletCard
-              key={group.address}
-              group={group}
-              onFollow={({ market, side, entry }) => setFollowTarget({ market, side, entry })}
+            {loading && !markets ? (
+              <div className="pcPanel pcLoading whaleLoading">正在汇总巨鲸持仓…</div>
+            ) : walletGroups.length ? (
+              <div className={`whaleWalletList ${loading ? "refreshing" : ""}`} aria-live="polite">
+                {walletGroups.map((group) => (
+                  <WhaleWalletCard
+                    key={group.address}
+                    group={group}
+                    onFollow={({ market, side, entry }) => setFollowTarget({ market, side, entry })}
+                  />
+                ))}
+              </div>
+            ) : (
+              <section className="pcPanel pcEmptyState whaleEmptyState">
+                <div className="pcEmptyIcon">◈</div>
+                <h2>暂未发现仍在持有的巨鲸钱包</h2>
+                <p>刷新数据后，新发现的大额持仓会出现在这里。</p>
+              </section>
+            )}
+          </section>
+
+          <aside className="whaleDashboardRail" aria-label="巨鲸运行状态与最近历史">
+            <WhaleOperationsPanel
+              settings={settings}
+              rule={rule}
+              onOpenSettings={() => setSettingsVisible(true)}
             />
-          ))}
+            <WhaleRecentHistoryPanel
+              rule={rule}
+              history={history}
+              expanded={fullHistoryVisible}
+              onToggleExpanded={() => setFullHistoryVisible((current) => !current)}
+            />
+            <WhaleRequestMonitorPanel />
+          </aside>
         </div>
-      ) : (
-        <section className="pcPanel pcEmptyState whaleEmptyState">
-          <div className="pcEmptyIcon">◈</div>
-          <h2>暂未发现仍在持有的巨鲸钱包</h2>
-          <p>刷新数据后，新发现的大额持仓会出现在这里。</p>
-        </section>
-      )}
 
-      <WhaleHistorySection rule={rule} history={history} />
+        {fullHistoryVisible && (
+          <div id="whale-full-history" className="whaleFullHistory">
+            <WhaleHistorySection rule={rule} history={history} />
+          </div>
+        )}
+
+        {settingsVisible && (
+          <ModalShell
+            className="whaleSettingsModal"
+            title="巨鲸监测设置"
+            eyebrow="MONITOR SETTINGS"
+            onClose={() => setSettingsVisible(false)}
+          >
+            <WhaleSettingsPanel
+              settings={settings}
+              onSettingsChange={setSettings}
+              onReload={reloadWorkspace}
+            />
+          </ModalShell>
+        )}
       </>}
 
       {!statisticsVisible && followTarget && (
@@ -374,6 +412,115 @@ function WhaleRuleBadges({ rules }: { rules: WhaleRule[] }) {
     <span className="whaleRuleBadges">
       {rules.map((item) => <span className={`pcBadge ${item === "new_account" ? "warning" : "danger"}`} key={item}>{RULE_LABELS[item]}</span>)}
     </span>
+  );
+}
+
+function WhaleOperationsPanel({
+  settings,
+  rule,
+  onOpenSettings,
+}: {
+  settings: WhaleSettings | null;
+  rule: WhaleRule;
+  onOpenSettings: () => void;
+}) {
+  const activeCount = rule === "new_account"
+    ? settings?.new_account_active_count ?? 0
+    : settings?.large_amount_active_count ?? 0;
+  const threshold = rule === "new_account"
+    ? settings?.new_account_threshold_usdc
+    : settings?.large_amount_threshold_usdc;
+
+  return (
+    <section className="pcPanel whaleOperationsPanel" aria-label="巨鲸运行概览">
+      <header>
+        <div>
+          <span className="pcEyebrow">LIVE OVERVIEW</span>
+          <h2>运行概览</h2>
+        </div>
+        <span className={`whaleRunState ${settings?.consecutive_failures ? "danger" : "healthy"}`}>
+          {settings?.consecutive_failures ? `${settings.consecutive_failures} 次失败` : "运行正常"}
+        </span>
+      </header>
+      <dl>
+        <div><dt>当前规则</dt><dd>{RULE_LABELS[rule]}</dd></div>
+        <div><dt>活跃钱包</dt><dd>{activeCount}</dd></div>
+        <div><dt>24 小时门槛</dt><dd>{formatCompactUsdc(threshold)}</dd></div>
+        <div><dt>最后扫描</dt><dd>{formatBeijing(settings?.last_scan_at, true)}</dd></div>
+      </dl>
+      <button className="pcButton ghost whaleOpenSettings" type="button" onClick={onOpenSettings}>
+        打开监测设置
+      </button>
+    </section>
+  );
+}
+
+function WhaleRecentHistoryPanel({
+  rule,
+  history,
+  expanded,
+  onToggleExpanded,
+}: {
+  rule: WhaleRule;
+  history: WhaleHistoryList | null;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+}) {
+  const items = history?.items.slice(0, 6) ?? [];
+
+  return (
+    <section className="pcPanel whaleRecentHistory" aria-label={`${RULE_LABELS[rule]}最近历史`}>
+      <header>
+        <div>
+          <span className="pcEyebrow">RECENT HISTORY</span>
+          <h2>最近触发</h2>
+        </div>
+        <strong>{history?.total ?? 0} 条</strong>
+      </header>
+      {items.length ? (
+        <div className="whaleRecentHistoryList">
+          {items.map((item) => {
+            const reason = INACTIVE_REASON_LABELS[item.inactive_reason || ""] || item.inactive_reason || "已失效";
+            return (
+              <article key={`${item.entry_id}:${item.rule_type}`}>
+                <div className="whaleRecentHistoryTopline">
+                  <a href={profileUrl(item.proxy_wallet)} target="_blank" rel="noreferrer">
+                    {item.display_name || shortAddress(item.proxy_wallet)} ↗
+                  </a>
+                  <strong>{formatCompactUsdc(item.gross_buy_usdc)}</strong>
+                </div>
+                <a
+                  className="whaleRecentMarket"
+                  href={marketUrl(item.event_slug || item.market_slug, null)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {item.title} · {item.outcome}
+                </a>
+                <div className="whaleRecentHistoryMeta">
+                  <span>{reason} · {formatBeijing(item.first_triggered_at)}</span>
+                  <b className={item.hold_to_settlement_pnl_usdc != null && numeric(item.hold_to_settlement_pnl_usdc) >= 0 ? "profit" : "loss"}>
+                    {item.hold_to_settlement_pnl_usdc == null ? "待结算" : formatSigned(item.hold_to_settlement_pnl_usdc, " USDC")}
+                  </b>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="whaleRecentHistoryEmpty">该规则暂无历史触发记录。</div>
+      )}
+      <button
+        className="whaleHistoryExpand"
+        type="button"
+        onClick={onToggleExpanded}
+        disabled={!history?.items.length}
+        aria-expanded={expanded}
+        aria-controls="whale-full-history"
+      >
+        {expanded ? "收起完整历史" : "展开完整历史"}
+      </button>
+    </section>
   );
 }
 
@@ -444,8 +591,11 @@ function WhaleWalletCard({
           />
           <div>
             <strong>{group.displayName}</strong>
-            <span>{shortAddress(group.address)} ↗</span>
-            <small>注册日期 {formatRegistrationDate(group.createdAt)}{group.verified ? " · 已认证" : ""}</small>
+            <span className="whaleWalletIdentityMeta">
+              <code>{shortAddress(group.address)} ↗</code>
+              <i aria-hidden="true">·</i>
+              <small>注册日期 {formatRegistrationDate(group.createdAt)}{group.verified ? " · 已认证" : ""}</small>
+            </span>
           </div>
         </a>
         <div className="whaleWalletTotal">
@@ -562,11 +712,11 @@ function WhaleHoldingRow({ holding, onFollow }: { holding: WalletHolding; onFoll
           </div>
         </div>
       </div>
-      <div className="whaleHoldingMetric"><strong>{formatCompactUsdc(entry.gross_buy_usdc)}</strong><small>{entry.trade_count} 笔累计</small></div>
-      <div className="whaleHoldingMetric"><strong>{numeric(entry.net_size).toFixed(2)}</strong><small>份</small></div>
-      <div className="whaleHoldingMetric"><strong>{entry.current_value_usdc == null ? "—" : formatCompactUsdc(entry.current_value_usdc)}</strong><small>按现价估算</small></div>
-      <div className="whaleHoldingMetric"><strong>{formatPrice(entry.avg_buy_price)}</strong><small>USDC</small></div>
-      <div className="whaleHoldingMetric"><strong>{formatPrice(side.current_price)}</strong><small>USDC</small></div>
+      <div className="whaleHoldingMetric"><span>24小时买入</span><strong>{formatCompactUsdc(entry.gross_buy_usdc)}</strong><small>{entry.trade_count} 笔累计</small></div>
+      <div className="whaleHoldingMetric"><span>剩余持仓</span><strong>{numeric(entry.net_size).toFixed(2)}</strong><small>份</small></div>
+      <div className="whaleHoldingMetric"><span>当前估值</span><strong>{entry.current_value_usdc == null ? "—" : formatCompactUsdc(entry.current_value_usdc)}</strong><small>按现价估算</small></div>
+      <div className="whaleHoldingMetric"><span>买入均价</span><strong>{formatPrice(entry.avg_buy_price)}</strong><small>USDC</small></div>
+      <div className="whaleHoldingMetric"><span>当前价</span><strong>{formatPrice(side.current_price)}</strong><small>USDC</small></div>
       <div className="whaleHoldingMetric whaleHoldingTimes"><strong>{formatBeijing(entry.first_buy_at)}</strong><small>监测建仓</small><small>最近加仓 {formatBeijing(entry.last_buy_at)}</small><small>首次触发 {formatBeijing(entry.first_triggered_at)}</small></div>
       <div className="whaleHoldingAction">
         <button className="pcButton primary" type="button" onClick={onFollow} disabled={Boolean(disabledReason)}>跟单</button>

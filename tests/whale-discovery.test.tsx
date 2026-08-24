@@ -70,6 +70,7 @@ describe("巨鲸页内设置", () => {
     }));
 
     render(<WhaleDiscoveryWorkspace />);
+    await user.click(await screen.findByRole("button", { name: "打开监测设置" }));
     const days = await screen.findByRole("spinbutton", { name: "巨鲸注册窗口天数" });
     const threshold = screen.getByRole("spinbutton", { name: "新号大额买入门槛" });
     const largeThreshold = screen.getByRole("spinbutton", { name: "全量超大额买入门槛" });
@@ -140,6 +141,7 @@ describe("巨鲸页内设置", () => {
     }));
 
     render(<WhaleDiscoveryWorkspace />);
+    await user.click(await screen.findByRole("button", { name: "打开监测设置" }));
     expect(await screen.findByRole("link", { name: "Djdjdjekekek" })).toHaveAttribute(
       "href",
       `https://polymarket.com/profile/${defaultWallet}`,
@@ -274,7 +276,7 @@ const whaleMarket = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("巨鲸请求监测面板", () => {
-  it("读取请求快照、实时更新失败并支持仅看失败", async () => {
+  it("只显示最近一条成功请求并用新的成功请求替换", async () => {
     class FakeEventSource {
       static instance: FakeEventSource | null = null;
       onopen: ((event: Event) => void) | null = null;
@@ -305,19 +307,34 @@ describe("巨鲸请求监测面板", () => {
       error_message: null,
       response_excerpt: null,
     };
+    const snapshotSuccess = {
+      ...pending,
+      id: 6,
+      status: "success",
+      finished_at: "2026-08-23T08:00:00Z",
+      http_status: 200,
+      duration_ms: 321,
+    };
     vi.stubGlobal("EventSource", FakeEventSource);
     vi.stubGlobal("fetch", vi.fn(async () => json({
       generated_at: "2026-08-23T08:00:01Z",
-      total: 1,
-      items: [pending],
+      total: 2,
+      items: [pending, snapshotSuccess],
     })));
 
-    const user = userEvent.setup();
     render(<WhaleRequestMonitorPanel />);
 
-    expect(await screen.findByText("[pending]")).toBeInTheDocument();
+    expect(await screen.findByText("[success]")).toBeInTheDocument();
+    expect(screen.getByText("16:00:00")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Request Monitor" })).toBeInTheDocument();
+    expect(screen.getByText("Latest successful Polymarket request")).toBeInTheDocument();
+    expect(screen.getByText(/https:\/\/data-api\.polymarket\.com\/trades/)).toHaveTextContent(
+      "GET https://data-api.polymarket.com/trades · HTTP 200 · 321ms · complete ✓",
+    );
+    expect(screen.queryByText("[pending]")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "仅失败" })).not.toBeInTheDocument();
     FakeEventSource.instance?.onopen?.(new Event("open"));
-    expect(await screen.findByText("实时已连接")).toBeInTheDocument();
+    expect(await screen.findByText("LIVE")).toBeInTheDocument();
 
     FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
       data: JSON.stringify({
@@ -331,21 +348,45 @@ describe("巨鲸请求监测面板", () => {
         response_excerpt: "upstream unavailable",
       }),
     }));
+    expect(screen.getByText("16:00:00")).toBeInTheDocument();
+    expect(screen.queryByText(/HTTPError/)).not.toBeInTheDocument();
 
-    expect(await screen.findByText("失败 1")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "仅失败" }));
-    expect(screen.getByText(/HTTPError: Polymarket 接口返回 503/)).toBeInTheDocument();
-    expect(screen.getByText("upstream unavailable")).toBeInTheDocument();
-    expect(screen.getByText(/"side":"BUY"/)).toBeInTheDocument();
+    FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
+      data: JSON.stringify({
+        ...pending,
+        id: 8,
+        status: "success",
+        finished_at: "2026-08-23T08:00:03Z",
+        http_status: 200,
+        duration_ms: 410,
+      }),
+    }));
+    expect(await screen.findByText("16:00:03")).toBeInTheDocument();
+    expect(screen.queryByText("16:00:00")).not.toBeInTheDocument();
+
+    FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
+      data: JSON.stringify({
+        ...pending,
+        id: 9,
+        status: "success",
+        finished_at: "2026-08-23T08:00:05Z",
+        http_status: 200,
+        duration_ms: 280,
+      }),
+    }));
+    expect(await screen.findByText("16:00:05")).toBeInTheDocument();
+    expect(screen.getAllByText("[success]")).toHaveLength(1);
   });
 
-  it("实时连接失败只在监测面板显示断线状态", async () => {
+  it("没有成功请求时显示等待状态，断线后显示自动重连", async () => {
     class FailedEventSource {
+      static instance: FailedEventSource | null = null;
       onopen: ((event: Event) => void) | null = null;
       onmessage: ((event: MessageEvent<string>) => void) | null = null;
       onerror: ((event: Event) => void) | null = null;
 
       constructor() {
+        FailedEventSource.instance = this;
         window.setTimeout(() => this.onerror?.(new Event("error")), 0);
       }
 
@@ -360,8 +401,10 @@ describe("巨鲸请求监测面板", () => {
 
     render(<WhaleRequestMonitorPanel />);
 
-    expect(await screen.findByText("实时连接中断")).toBeInTheDocument();
-    expect(screen.getByText("waiting for next whale scan request…")).toBeInTheDocument();
+    expect(await screen.findByText("RECONNECTING")).toBeInTheDocument();
+    expect(screen.getByText("waiting for successful request…")).toBeInTheDocument();
+    FailedEventSource.instance?.onopen?.(new Event("open"));
+    expect(await screen.findByText("LIVE")).toBeInTheDocument();
   });
 });
 
@@ -418,7 +461,9 @@ describe("巨鲸持仓页", () => {
     const user = userEvent.setup();
     render(<WhaleDiscoveryWorkspace />);
     const settledWalletLink = await screen.findByRole("link", { name: /Settled Whale/ });
-    expect(screen.getByText("市场已结算")).toBeInTheDocument();
+    expect(screen.getByText(/市场已结算/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开完整历史" }));
+    expect(await screen.findByLabelText("新号大额历史记录")).toBeInTheDocument();
     expect(screen.getAllByText(/^建仓 /).length).toBeGreaterThan(0);
     expect(settledWalletLink).toHaveAttribute(
       "href",
@@ -427,7 +472,8 @@ describe("巨鲸持仓页", () => {
 
     await user.click(screen.getByRole("button", { name: /全量超大额/ }));
     await waitFor(() => expect(requests.some((url) => url.includes("markets?rule=large_amount"))).toBe(true));
-    expect(await screen.findByLabelText("全量超大额历史记录")).toHaveTextContent("该规则暂无历史触发记录");
+    expect(await screen.findByLabelText("全量超大额最近历史")).toHaveTextContent("该规则暂无历史触发记录");
+    expect(screen.queryByLabelText("新号大额历史记录")).not.toBeInTheDocument();
   });
 
   it("按钱包分组持仓，并在收益预览后允许确认买入", async () => {

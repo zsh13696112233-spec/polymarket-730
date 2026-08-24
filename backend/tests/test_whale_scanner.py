@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -95,6 +96,54 @@ async def current_threshold(database: Database) -> Decimal:
         return row.cumulative_threshold_usdc
 
 
+async def test_incremental_trade_collection_discards_provider_rows_before_cursor(database):
+    start = utcnow() - timedelta(minutes=5)
+    base = {
+        "proxy_wallet": "0x1111111111111111111111111111111111111111",
+        "asset_id": "asset-yes",
+        "condition_id": "0x" + "a" * 64,
+        "side": "BUY",
+        "size": Decimal("2000"),
+        "price": Decimal("0.50"),
+        "amount": Decimal("1000"),
+        "title": "Cursor market",
+        "outcome": "Yes",
+        "outcome_index": 0,
+        "market_slug": "cursor-market",
+        "event_slug": "cursor-event",
+        "icon_url": None,
+        "display_name": "Cursor Wallet",
+    }
+
+    class Client:
+        async def fetch_large_trades(self, **_: Any) -> list[LargeTradeSnapshot]:
+            return [
+                LargeTradeSnapshot(
+                    **base,
+                    timestamp=start + timedelta(seconds=1),
+                    transaction_hash="0xnew",
+                ),
+                LargeTradeSnapshot(
+                    **base,
+                    timestamp=start - timedelta(seconds=1),
+                    transaction_hash="0xold",
+                ),
+            ]
+
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=Client(),  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    trades, hit_page_limit = await scanner._collect_trades(
+        start=start,
+        amount=Decimal("1000"),
+    )
+
+    assert [trade.transaction_hash for trade in trades] == ["0xnew"]
+    assert hit_page_limit is False
+
+
 async def test_background_tick_skips_while_another_round_is_running(database, monkeypatch):
     scanner = build_scanner(database)
     gate = ScanGate()
@@ -176,6 +225,7 @@ class PositionDiscoveryClient:
         self.profile_available = True
         self.position_available = True
         self.position_error = False
+        self.trade_outcome_index = 0
         self.trade_calls = 0
         self.holder_calls: list[dict[str, Any]] = []
         self.position_calls: list[str] = []
@@ -325,7 +375,7 @@ class PositionDiscoveryClient:
                 timestamp=self.trade_timestamp,
                 title="Official position market",
                 outcome="Yes",
-                outcome_index=0,
+                outcome_index=self.trade_outcome_index,
                 market_slug="official-position-market",
                 event_slug="official-position-event",
                 icon_url=None,
@@ -396,6 +446,71 @@ async def test_scanner_finds_recent_large_buyers_and_confirms_current_position(d
     assert settings is not None
     assert settings.last_scan_error is None
     assert client.trade_calls == 1
+
+
+async def test_scanner_uses_market_token_mapping_when_trade_outcome_index_is_invalid(database):
+    client = PositionDiscoveryClient()
+    client.trade_outcome_index = 999
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+
+    assert await scanner.tick() is True
+
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+    assert entry is not None
+    assert entry.asset_id == client.asset_id
+    assert entry.outcome_index == 0
+
+
+async def test_scanner_restores_incremental_watermark_from_persisted_trades(
+    database,
+    monkeypatch,
+):
+    client = PositionDiscoveryClient()
+    first_scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await first_scanner.tick() is True
+
+    starts = []
+
+    async def no_new_trades(**kwargs: Any) -> list[Any]:
+        starts.append(kwargs["start"])
+        return []
+
+    monkeypatch.setattr(client, "fetch_large_trades", no_new_trades)
+    restarted_scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await restarted_scanner.tick() is True
+    assert starts == [client.trade_timestamp - timedelta(seconds=120)]
+
+
+async def test_profile_refresh_honors_per_scan_limit(database):
+    calls: list[str] = []
+
+    class ProfileClient:
+        async def fetch_public_profile(self, address: str) -> None:
+            calls.append(address)
+            return None
+
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=ProfileClient(),  # type: ignore[arg-type]
+        settings=replace(database.settings, whale_profile_batch_limit=2),
+    )
+    wallets = [f"0x{index:040x}" for index in range(1, 6)]
+    await scanner._refresh_wallets(wallets, now=utcnow(), cache_hours=24)
+
+    assert calls == wallets[:2]
 
 
 async def test_scanner_retains_raw_trade_but_skips_excluded_wallet_external_checks(database):
@@ -627,3 +742,34 @@ async def test_settlement_is_mapped_to_the_entry_outcome_and_deactivates_rule(da
     assert state is not None
     assert state.active is False
     assert state.inactive_reason == "market_closed"
+
+
+async def test_settlement_repairs_invalid_outcome_index_from_market_token_mapping(database):
+    client = PositionDiscoveryClient()
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,
+        settings=database.settings,  # type: ignore[arg-type]
+    )
+    assert await scanner.tick() is True
+    now = utcnow()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        market = await session.get(WhaleMarket, client.condition_id)
+        assert entry is not None
+        assert market is not None
+        entry.outcome_index = 999
+        market.closed = True
+        market.active = False
+        market.accepting_orders = False
+        market.outcome_prices_json = '["0", "1"]'
+        await session.commit()
+
+    await scanner._update_entry_settlements(now=now)
+
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+    assert entry is not None
+    assert entry.outcome_index == 0
+    assert entry.settlement_price == Decimal("0")
+    assert entry.settled_at == now

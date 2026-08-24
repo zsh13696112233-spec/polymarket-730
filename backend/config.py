@@ -18,12 +18,16 @@ class Settings:
     relayer_api_url: str = "https://relayer-v2.polymarket.com"
     polygon_rpc_url: str = "https://polygon.drpc.org"
     poll_interval_seconds: float = 15.0
+    redemption_poll_interval_seconds: float = 60.0
     copy_poll_interval_seconds: float = 15.0
     copy_balance_refresh_interval_seconds: float = 10.0
     quiet_window_seconds: float = 15.0
     hard_window_seconds: float = 60.0
     max_wallet_concurrency: int = 3
     request_timeout_seconds: float = 12.0
+    data_api_concurrency: int = 10
+    gamma_api_concurrency: int = 6
+    clob_api_concurrency: int = 10
     max_backoff_seconds: float = 300.0
     start_monitor: bool = True
     live_copy_enabled: bool = True
@@ -55,6 +59,9 @@ class Settings:
             ),
             polygon_rpc_url=os.getenv("POLYMARKET_POLYGON_RPC_URL", "https://polygon.drpc.org"),
             poll_interval_seconds=float(os.getenv("POLYMARKET_POLL_INTERVAL_SECONDS", "15")),
+            redemption_poll_interval_seconds=float(
+                os.getenv("POLYMARKET_REDEMPTION_POLL_INTERVAL_SECONDS", "60")
+            ),
             copy_poll_interval_seconds=float(
                 os.getenv("POLYMARKET_COPY_POLL_INTERVAL_SECONDS", "15")
             ),
@@ -65,6 +72,9 @@ class Settings:
             hard_window_seconds=float(os.getenv("POLYMARKET_SETTLE_HARD_SECONDS", "60")),
             max_wallet_concurrency=int(os.getenv("POLYMARKET_MAX_CONCURRENCY", "3")),
             request_timeout_seconds=float(os.getenv("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "12")),
+            data_api_concurrency=int(os.getenv("POLYMARKET_DATA_API_CONCURRENCY", "10")),
+            gamma_api_concurrency=int(os.getenv("POLYMARKET_GAMMA_API_CONCURRENCY", "6")),
+            clob_api_concurrency=int(os.getenv("POLYMARKET_CLOB_API_CONCURRENCY", "10")),
             max_backoff_seconds=float(os.getenv("POLYMARKET_MAX_BACKOFF_SECONDS", "300")),
             start_monitor=os.getenv("POLYMARKET_START_MONITOR", "1").lower()
             not in {"0", "false", "no"},

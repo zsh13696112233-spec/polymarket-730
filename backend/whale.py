@@ -3,16 +3,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from backend.config import Settings
@@ -64,7 +67,7 @@ HUNDRED = Decimal("100")
 SETTLED_PRICE_THRESHOLD = Decimal("0.999")
 PROFILE_MISSING_CACHE = timedelta(days=7)
 TAG_CACHE = timedelta(hours=24)
-MARKET_CACHE = timedelta(seconds=60)
+MARKET_CACHE = timedelta(seconds=120)
 WHALE_TRADE_WINDOW = timedelta(hours=24)
 WHALE_HISTORY_REFRESH = timedelta(hours=1)
 NEW_ACCOUNT_RULE = "new_account"
@@ -83,6 +86,7 @@ WHALE_STATISTICS_AMOUNT_BANDS = (
     ("gte_1m", "≥ 100万", Decimal("1000000"), None),
 )
 BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
+LOGGER = logging.getLogger(__name__)
 
 
 def _not_excluded_wallet(column: Any) -> Any:
@@ -160,10 +164,13 @@ def fingerprint_large_trades(trades: Iterable[Any]) -> list[tuple[str, Any]]:
     occurrences: dict[str, int] = defaultdict(int)
     result: list[tuple[str, Any]] = []
     for trade in ordered:
+        timestamp = _attribute(trade, "timestamp")
+        transaction_hash = str(_attribute(trade, "transaction_hash", default="") or "")
+        transaction_key = transaction_hash or f"timestamp:{timestamp}"
         base = "|".join(
             [
                 str(_attribute(trade, "proxy_wallet", default="") or "").lower(),
-                str(_attribute(trade, "transaction_hash", default="") or ""),
+                transaction_key,
                 str(_attribute(trade, "asset_id", "asset", default="") or ""),
                 str(_attribute(trade, "side", default="") or "").upper(),
                 str(_decimal(_attribute(trade, "price"))),
@@ -391,6 +398,38 @@ def market_price_is_settled(market: Any) -> bool:
     return any(price >= SETTLED_PRICE_THRESHOLD for price in prices)
 
 
+def _market_outcome_index(
+    market: Any,
+    *,
+    asset_id: str,
+    fallback: int | None,
+) -> int | None:
+    """Resolve an outcome from the market token mapping before trusting feed metadata.
+
+    Polymarket's public trade feed sometimes returns ``outcomeIndex=999`` even
+    though the asset token still identifies the outcome unambiguously.  The
+    market's token ordering is the canonical mapping used by settlement prices.
+    """
+
+    token_ids = [
+        str(value)
+        for value in _json_list(
+            _attribute(market, "clob_token_ids_json", "clob_token_ids", default=[])
+        )
+    ]
+    normalized_asset_id = str(asset_id or "")
+    if normalized_asset_id:
+        try:
+            return token_ids.index(normalized_asset_id)
+        except ValueError:
+            pass
+
+    outcome_count = len(_json_list(_attribute(market, "outcomes_json", "outcomes", default=[])))
+    if fallback is not None and 0 <= fallback < outcome_count:
+        return fallback
+    return None
+
+
 def market_is_eligible(
     market: WhaleMarket,
     *,
@@ -454,6 +493,7 @@ class WhaleDiscoveryScanner:
 
     async def _run(self) -> None:
         while True:
+            cycle_started = monotonic()
             try:
                 await self.tick()
             except asyncio.CancelledError:
@@ -474,6 +514,7 @@ class WhaleDiscoveryScanner:
                 self.settings.max_backoff_seconds,
                 max(1.0, float(configured)) * (2 ** min(failures, 6)),
             )
+            delay = max(0.05, delay - (monotonic() - cycle_started))
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=delay)
@@ -513,6 +554,7 @@ class WhaleDiscoveryScanner:
                 }
                 self._running_config_at = whale_settings.updated_at
             try:
+                scan_started = monotonic()
                 with capture_whale_requests(self.request_monitor, uuid4().hex):
                     warning = await self._scan(values)
                 if self.executor is not None:
@@ -528,6 +570,11 @@ class WhaleDiscoveryScanner:
                         row.consecutive_failures = 0
                         row.updated_at = utcnow()
                         await session.commit()
+                LOGGER.debug(
+                    "Whale scan completed duration_ms=%s warning=%s",
+                    round((monotonic() - scan_started) * 1000),
+                    warning,
+                )
                 return True
             except asyncio.CancelledError:
                 raise
@@ -545,8 +592,13 @@ class WhaleDiscoveryScanner:
 
     async def _scan(self, config: dict[str, Any]) -> str | None:
         now = utcnow()
-        window_start = now - WHALE_TRADE_WINDOW
+        window_start = now - timedelta(hours=max(1, int(config["window_hours"])))
         incremental_start = window_start
+        if self._last_trade_timestamp is None:
+            async with self.database.sessions() as session:
+                self._last_trade_timestamp = await session.scalar(
+                    select(func.max(WhaleTrade.timestamp))
+                )
         if self._last_trade_timestamp is not None:
             incremental_start = max(
                 window_start,
@@ -728,9 +780,15 @@ class WhaleDiscoveryScanner:
                 if market is None or not market_price_is_settled(market):
                     continue
                 prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
-                if not (0 <= row.outcome_index < len(prices)):
+                outcome_index = _market_outcome_index(
+                    market,
+                    asset_id=row.asset_id,
+                    fallback=row.outcome_index,
+                )
+                if outcome_index is None or not (0 <= outcome_index < len(prices)):
                     continue
-                row.settlement_price = prices[row.outcome_index]
+                row.outcome_index = outcome_index
+                row.settlement_price = prices[outcome_index]
                 row.settled_at = now
                 row.status = "exited"
                 row.follow_eligible = False
@@ -766,8 +824,8 @@ class WhaleDiscoveryScanner:
         )
         positions_by_wallet: dict[str, dict[str, Any]] = {}
         failed_wallets: set[str] = set()
-        for offset in range(0, len(wallets), 10):
-            batch = wallets[offset : offset + 10]
+        for offset in range(0, len(wallets), 5):
+            batch = wallets[offset : offset + 5]
             results = await asyncio.gather(
                 *(self._retry(self.client.fetch_active_positions, user=wallet) for wallet in batch),
                 return_exceptions=True,
@@ -799,12 +857,20 @@ class WhaleDiscoveryScanner:
                 offset=offset,
             )
             page_items = list(payload)
-            results.extend(page_items)
             timestamps = [
                 _attribute(item, "timestamp")
                 for item in page_items
                 if isinstance(_attribute(item, "timestamp"), datetime)
             ]
+            # The provider ignores its undocumented start parameter. Bound the
+            # returned page locally so the overlap page is not reprocessed and
+            # rechecked against SQLite on every incremental scan.
+            results.extend(
+                item
+                for item in page_items
+                if not isinstance(_attribute(item, "timestamp"), datetime)
+                or _attribute(item, "timestamp") >= start
+            )
             if len(page_items) < limit or (timestamps and min(timestamps) < start):
                 return results, False
         return results, True
@@ -834,38 +900,52 @@ class WhaleDiscoveryScanner:
                     ).all()
                 )
                 now = utcnow()
+                rows: list[dict[str, Any]] = []
                 for fingerprint, trade in batch:
                     if fingerprint in known:
                         continue
                     size = _decimal(_attribute(trade, "size"))
                     price = _decimal(_attribute(trade, "price"))
-                    session.add(
-                        WhaleTrade(
-                            fingerprint=fingerprint,
-                            proxy_wallet=str(_attribute(trade, "proxy_wallet") or "").lower(),
-                            asset_id=str(_attribute(trade, "asset_id", "asset") or ""),
-                            condition_id=str(_attribute(trade, "condition_id") or ""),
-                            side=str(_attribute(trade, "side") or "").upper(),
-                            size=size,
-                            price=price,
-                            amount=_decimal(_attribute(trade, "amount")) or size * price,
-                            outcome=str(_attribute(trade, "outcome") or ""),
-                            outcome_index=int(_attribute(trade, "outcome_index", default=0) or 0),
-                            title=str(_attribute(trade, "title") or ""),
-                            market_slug=str(_attribute(trade, "market_slug", "slug") or ""),
-                            event_slug=str(_attribute(trade, "event_slug") or ""),
-                            icon_url=_attribute(trade, "icon_url", "icon"),
-                            display_name=_display_name(trade),
-                            transaction_hash=_attribute(trade, "transaction_hash"),
-                            timestamp=_attribute(trade, "timestamp"),
-                            imported_at=now,
-                        )
+                    rows.append(
+                        {
+                            "fingerprint": fingerprint,
+                            "proxy_wallet": str(_attribute(trade, "proxy_wallet") or "").lower(),
+                            "asset_id": str(_attribute(trade, "asset_id", "asset") or ""),
+                            "condition_id": str(_attribute(trade, "condition_id") or ""),
+                            "side": str(_attribute(trade, "side") or "").upper(),
+                            "size": size,
+                            "price": price,
+                            "amount": _decimal(_attribute(trade, "amount")) or size * price,
+                            "outcome": str(_attribute(trade, "outcome") or ""),
+                            "outcome_index": int(
+                                _attribute(trade, "outcome_index", default=0) or 0
+                            ),
+                            "title": str(_attribute(trade, "title") or ""),
+                            "market_slug": str(_attribute(trade, "market_slug", "slug") or ""),
+                            "event_slug": str(_attribute(trade, "event_slug") or ""),
+                            "icon_url": _attribute(trade, "icon_url", "icon"),
+                            "display_name": _display_name(trade),
+                            "transaction_hash": _attribute(trade, "transaction_hash"),
+                            "timestamp": _attribute(trade, "timestamp"),
+                            "imported_at": now,
+                        }
                     )
-                try:
+                if not rows:
+                    continue
+                if self.database.settings.database_url.startswith("sqlite"):
+                    await session.execute(
+                        sqlite_insert(WhaleTrade)
+                        .values(rows)
+                        .on_conflict_do_nothing(index_elements=["fingerprint"])
+                    )
                     await session.commit()
-                except IntegrityError:
-                    # Another manual scan may have won the unique-key race.
-                    await session.rollback()
+                else:
+                    session.add_all(WhaleTrade(**row) for row in rows)
+                    try:
+                        await session.commit()
+                    except IntegrityError:
+                        # Another manual scan may have won the unique-key race.
+                        await session.rollback()
 
     async def _refresh_markets(self, condition_ids: list[str], *, now: datetime) -> None:
         if not condition_ids:
@@ -1032,6 +1112,7 @@ class WhaleDiscoveryScanner:
                 )
             )
         ]
+        wanted = wanted[: max(0, self.settings.whale_profile_batch_limit)]
         for offset in range(0, len(wanted), 10):
             batch = wanted[offset : offset + 10]
             profiles = await asyncio.gather(
@@ -1125,12 +1206,22 @@ class WhaleDiscoveryScanner:
         window_start: datetime,
     ) -> None:
         async with self.database.sessions() as session:
-            markets = {
-                row.condition_id: row for row in (await session.scalars(select(WhaleMarket))).all()
-            }
             existing = {
                 (row.proxy_wallet, row.asset_id): row
                 for row in (await session.scalars(select(WhaleEntry))).all()
+            }
+            relevant_condition_ids = {
+                item.condition_id for item in aggregates if item.condition_id
+            } | {row.condition_id for row in existing.values()}
+            markets = {
+                row.condition_id: row
+                for row in (
+                    await session.scalars(
+                        select(WhaleMarket).where(
+                            WhaleMarket.condition_id.in_(relevant_condition_ids)
+                        )
+                    )
+                ).all()
             }
             states = {
                 (row.entry_id, row.rule_type): row
@@ -1138,6 +1229,17 @@ class WhaleDiscoveryScanner:
             }
             for aggregate in aggregates:
                 market = markets.get(aggregate.condition_id)
+                outcome_index = (
+                    _market_outcome_index(
+                        market,
+                        asset_id=aggregate.asset_id,
+                        fallback=aggregate.outcome_index,
+                    )
+                    if market is not None
+                    else aggregate.outcome_index
+                )
+                if outcome_index is None:
+                    outcome_index = aggregate.outcome_index
                 key = (aggregate.proxy_wallet, aggregate.asset_id)
                 row = existing.get(key)
                 if row is None:
@@ -1146,7 +1248,7 @@ class WhaleDiscoveryScanner:
                         asset_id=aggregate.asset_id,
                         condition_id=aggregate.condition_id,
                         outcome=aggregate.outcome,
-                        outcome_index=aggregate.outcome_index,
+                        outcome_index=outcome_index,
                         gross_buy_usdc=aggregate.gross_buy_usdc,
                         gross_buy_size=aggregate.gross_buy_size,
                         sold_size=aggregate.sold_size,
@@ -1169,7 +1271,7 @@ class WhaleDiscoveryScanner:
                     existing[key] = row
                 row.condition_id = aggregate.condition_id
                 row.outcome = aggregate.outcome
-                row.outcome_index = aggregate.outcome_index
+                row.outcome_index = outcome_index
                 row.gross_buy_usdc = aggregate.gross_buy_usdc
                 row.gross_buy_size = aggregate.gross_buy_size
                 row.sold_size = aggregate.sold_size

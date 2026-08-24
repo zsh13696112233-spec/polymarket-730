@@ -20,7 +20,7 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
         assert request.url.path == "/trades"
         assert request.url.params["filterType"] == "CASH"
         assert request.url.params["filterAmount"] == "1000.00"
-        assert request.url.params["start"] == str(int(start.replace(tzinfo=UTC).timestamp()))
+        assert "start" not in request.url.params
         assert request.url.params["limit"] == "123"
         assert request.url.params["offset"] == "456"
         assert request.url.params["takerOnly"] == "false"

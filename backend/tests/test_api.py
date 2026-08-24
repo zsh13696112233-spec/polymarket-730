@@ -1646,7 +1646,7 @@ def test_redemption_without_asset_or_outcome_uses_unique_trade_balance(
 
 
 def test_redemption_failure_does_not_interrupt_wallet_sync(app_client_factory):
-    client, fake = app_client_factory([[]])
+    client, fake = app_client_factory([[]], redemption_poll_interval_seconds=0)
     wallet = add_wallet(client)
     fake.redemption_error = PolymarketAPIError("redemptions unavailable")
 
@@ -1660,6 +1660,18 @@ def test_redemption_failure_does_not_interrupt_wallet_sync(app_client_factory):
         params={"wallet_id": wallet["id"]},
     ).json()
     assert events["items"] == []
+
+
+def test_empty_wallet_skips_trade_history_and_throttles_redemptions(app_client_factory):
+    client, fake = app_client_factory([[]], redemption_poll_interval_seconds=60)
+    wallet = add_wallet(client)
+
+    assert fake.trade_calls == 0
+    assert fake.redemption_calls == 1
+
+    assert client.post(f"/api/wallets/{wallet['id']}/sync").status_code == 200
+    assert fake.trade_calls == 0
+    assert fake.redemption_calls == 1
 
 
 def test_position_event_groups_preserve_cycles_and_summarize_wallet_pnl(

@@ -278,10 +278,11 @@ def fingerprint_trades(
             item.size,
         ),
     ):
+        transaction_key = trade.transaction_hash or f"timestamp:{trade.timestamp.isoformat()}"
         base = "|".join(
             [
                 proxy_wallet,
-                trade.transaction_hash or "",
+                transaction_key,
                 trade.asset_id,
                 trade.side,
                 str(trade.price),
@@ -353,6 +354,9 @@ class PolymarketClient:
         clob_api_url: str = "https://clob.polymarket.com",
         timeout: float,
         transport: httpx.AsyncBaseTransport | None = None,
+        data_api_concurrency: int = 10,
+        gamma_api_concurrency: int = 6,
+        clob_api_concurrency: int = 10,
     ) -> None:
         self.data_api_url = data_api_url.rstrip("/")
         self.gamma_api_url = gamma_api_url.rstrip("/")
@@ -361,13 +365,30 @@ class PolymarketClient:
         self._transport = transport
         self._http_reset_lock = asyncio.Lock()
         self._http = self._new_http_client()
+        self._retired_http_clients: set[httpx.AsyncClient] = set()
+        self._retired_close_tasks: set[asyncio.Task[None]] = set()
+        self._request_semaphores = {
+            urlparse(self.data_api_url).netloc: asyncio.Semaphore(max(1, data_api_concurrency)),
+            urlparse(self.gamma_api_url).netloc: asyncio.Semaphore(max(1, gamma_api_concurrency)),
+            urlparse(self.clob_api_url).netloc: asyncio.Semaphore(max(1, clob_api_concurrency)),
+        }
         self._market_end_cache: dict[str, tuple[float, datetime | None]] = {}
         self._closed_positions_cache: dict[
             str, tuple[float, tuple[ClosedPositionSnapshot, ...]]
         ] = {}
 
     async def close(self) -> None:
+        for task in self._retired_close_tasks:
+            task.cancel()
+        if self._retired_close_tasks:
+            await asyncio.gather(*self._retired_close_tasks, return_exceptions=True)
         await self._http.aclose()
+        if self._retired_http_clients:
+            await asyncio.gather(
+                *(client.aclose() for client in self._retired_http_clients),
+                return_exceptions=True,
+            )
+        self._retired_http_clients.clear()
 
     def _new_http_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -383,7 +404,21 @@ class PolymarketClient:
             if self._http is not failed_client:
                 return
             self._http = self._new_http_client()
-            await failed_client.aclose()
+            self._retired_http_clients.add(failed_client)
+            task = asyncio.create_task(
+                self._close_retired_client(failed_client),
+                name="polymarket-retired-http-client",
+            )
+            self._retired_close_tasks.add(task)
+            task.add_done_callback(self._retired_close_tasks.discard)
+
+    async def _close_retired_client(self, client: httpx.AsyncClient) -> None:
+        try:
+            # Let requests already using the old pool finish before closing it.
+            await asyncio.sleep(30)
+        finally:
+            await asyncio.shield(client.aclose())
+            self._retired_http_clients.discard(client)
 
     async def _get_json(
         self,
@@ -413,7 +448,12 @@ class PolymarketClient:
                 query_params=query_params,
             )
         try:
-            response = await client.send(request)
+            semaphore = self._request_semaphores.get(request.url.host or "")
+            if semaphore is None:
+                response = await client.send(request)
+            else:
+                async with semaphore:
+                    response = await client.send(request)
         except (httpx.TimeoutException, httpx.NetworkError) as error:
             if capture is not None and request_record_id is not None:
                 await capture.monitor.complete(
@@ -521,15 +561,14 @@ class PolymarketClient:
             raise ValueError("大额成交单页数量必须在 1 到 500 之间")
         if offset < 0:
             raise ValueError("大额成交分页偏移不能为负数")
-        normalized_start = (
-            start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)
-        )
+        # The Data API currently ignores an undocumented `start` query parameter.
+        # Keep the boundary in the method contract for caller-side pagination only.
+        _ = start
         payload = await self._get_json(
             f"{self.data_api_url}/trades",
             params={
                 "filterType": "CASH",
                 "filterAmount": str(filter_amount_usdc),
-                "start": int(normalized_start.timestamp()),
                 "limit": limit,
                 "offset": offset,
                 "takerOnly": "false",

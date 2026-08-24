@@ -623,6 +623,13 @@ class WalletTrade(Base):
     __table_args__ = (
         UniqueConstraint("fingerprint", name="uq_wallet_trade_fingerprint"),
         Index("ix_wallet_trades_wallet_asset_time", "wallet_id", "asset_id", "timestamp"),
+        Index(
+            "ix_wallet_trades_wallet_condition_time",
+            "wallet_id",
+            "condition_id",
+            "timestamp",
+            "id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

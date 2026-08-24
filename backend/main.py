@@ -1366,6 +1366,9 @@ def create_app(
             gamma_api_url=resolved_settings.gamma_api_url,
             clob_api_url=resolved_settings.clob_api_url,
             timeout=resolved_settings.request_timeout_seconds,
+            data_api_concurrency=resolved_settings.data_api_concurrency,
+            gamma_api_concurrency=resolved_settings.gamma_api_concurrency,
+            clob_api_concurrency=resolved_settings.clob_api_concurrency,
         )
         broker = EventBroker()
         whale_request_monitor = WhaleRequestMonitor(capacity=100)

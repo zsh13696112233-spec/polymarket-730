@@ -78,9 +78,11 @@ class FakePolymarketClient:
         self.last_snapshot: list[PositionSnapshot] = []
         self.trades: list[TradeSnapshot] = []
         self.trade_error: Exception | None = None
+        self.trade_calls = 0
         self.market_end_dates: dict[str, datetime | None] = {}
         self.redemptions: list[RedemptionSnapshot] = []
         self.redemption_error: Exception | None = None
+        self.redemption_calls = 0
         self.closed_positions: list[ClosedPositionSnapshot] | None = None
         self.evidence = SettlementEvidence(frozenset(), frozenset(), frozenset())
         self.settlement_calls: list[list[str]] = []
@@ -201,6 +203,7 @@ class FakePolymarketClient:
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> list[TradeSnapshot]:
+        self.trade_calls += 1
         if self.trade_error is not None:
             raise self.trade_error
         conditions = set(condition_ids or [])
@@ -241,6 +244,7 @@ class FakePolymarketClient:
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> list[RedemptionSnapshot]:
+        self.redemption_calls += 1
         if self.redemption_error is not None:
             raise self.redemption_error
         return [

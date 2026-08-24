@@ -7,8 +7,10 @@ from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 
 from sqlalchemy import or_, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -135,6 +137,7 @@ class WalletMonitor:
             return await self._sync_wallet_unlocked(wallet_id)
 
     async def _sync_wallet_unlocked(self, wallet_id: int) -> bool:
+        sync_started = monotonic()
         attempt_at = utcnow()
         async with self.database.sessions() as session:
             wallet = await session.get(WatchedWallet, wallet_id)
@@ -145,38 +148,18 @@ class WalletMonitor:
             wallet.updated_at = attempt_at
             await session.commit()
             proxy_wallet = wallet.proxy_wallet
+            previous_trade_history_error = wallet.trade_history_error
+            previous_redemption_history_error = wallet.redemption_history_error
         await self.broker.publish("sync.status", wallet_id)
 
         try:
+            positions_started = monotonic()
             snapshot = await self.client.fetch_active_positions(proxy_wallet)
-            trade_history_error: str | None = None
-            redemption_history_error: str | None = None
+            positions_ms = round((monotonic() - positions_started) * 1000)
+            trade_history_error = previous_trade_history_error
+            redemption_history_error = previous_redemption_history_error
             created_redemptions = 0
-            try:
-                await self._sync_trade_history(
-                    wallet_id,
-                    snapshot,
-                    observed_at=attempt_at,
-                )
-            except Exception as error:
-                trade_history_error = str(error)[:1000]
-                LOGGER.warning(
-                    "Wallet trade history sync failed for wallet_id=%s: %s",
-                    wallet_id,
-                    error,
-                )
-            try:
-                created_redemptions = await self._sync_redemptions(
-                    wallet_id,
-                    observed_at=attempt_at,
-                )
-            except Exception as error:
-                redemption_history_error = str(error)[:1000]
-                LOGGER.warning(
-                    "Wallet redemption history sync failed for wallet_id=%s: %s",
-                    wallet_id,
-                    error,
-                )
+            created_trades = 0
             snapshot_assets = {item.asset_id for item in snapshot}
             async with self.database.sessions() as session:
                 positions = list(
@@ -191,6 +174,7 @@ class WalletMonitor:
                 for position in positions
                 if position.asset_id not in snapshot_assets and position.missing_count >= 1
             ]
+            known_assets_before_snapshot = {position.asset_id for position in positions}
             evidence = SettlementEvidence(frozenset(), frozenset(), frozenset())
             if confirmable:
                 evidence = await self.client.fetch_settlement_evidence(
@@ -218,37 +202,110 @@ class WalletMonitor:
                         error,
                     )
 
-            success_at = utcnow()
+            async def sync_histories(*, force_redemptions: bool) -> None:
+                nonlocal created_trades
+                nonlocal created_redemptions
+                nonlocal trade_history_error
+                nonlocal redemption_history_error
+                trade_result, redemption_result = await asyncio.gather(
+                    self._sync_trade_history(
+                        wallet_id,
+                        snapshot,
+                        observed_at=attempt_at,
+                        known_assets=known_assets_before_snapshot,
+                    ),
+                    self._sync_redemptions(
+                        wallet_id,
+                        observed_at=attempt_at,
+                        force=force_redemptions,
+                    ),
+                    return_exceptions=True,
+                )
+                if isinstance(trade_result, BaseException):
+                    trade_history_error = str(trade_result)[:1000]
+                    LOGGER.warning(
+                        "Wallet trade history sync failed for wallet_id=%s: %s",
+                        wallet_id,
+                        trade_result,
+                    )
+                else:
+                    created_trades = trade_result
+                    trade_history_error = None
+                if isinstance(redemption_result, BaseException):
+                    redemption_history_error = str(redemption_result)[:1000]
+                    LOGGER.warning(
+                        "Wallet redemption history sync failed for wallet_id=%s: %s",
+                        wallet_id,
+                        redemption_result,
+                    )
+                else:
+                    redemption_polled, created_redemptions = redemption_result
+                    if redemption_polled:
+                        redemption_history_error = None
+
+            # A disappearing position may already have an on-chain redemption.
+            # Import it before creating settlement terminal events so the existing
+            # de-duplication path can enrich, rather than duplicate, that event.
+            if confirmable:
+                await sync_histories(force_redemptions=True)
+
+            snapshot_at = utcnow()
             terminal_events = await self._apply_snapshot(
                 wallet_id,
                 snapshot,
                 evidence=evidence,
                 settlement_resolutions=settlement_resolutions,
-                observed_at=success_at,
+                observed_at=snapshot_at,
             )
-            await self._refresh_overlap_periods(wallet_id, observed_at=success_at)
+            await self._refresh_overlap_periods(wallet_id, observed_at=snapshot_at)
+            await self.broker.publish("positions.updated", wallet_id)
+
+            if not confirmable:
+                await sync_histories(force_redemptions=False)
+            if created_trades or created_redemptions:
+                try:
+                    await self._refresh_redemption_costs_for_wallet(wallet_id)
+                except Exception as error:
+                    redemption_history_error = str(error)[:1000]
+                    LOGGER.warning(
+                        "Wallet redemption cost refresh failed for wallet_id=%s: %s",
+                        wallet_id,
+                        error,
+                    )
+
+            completed_at = utcnow()
             async with self.database.sessions() as session:
                 wallet = await session.get(WatchedWallet, wallet_id)
                 if wallet is None:
                     return False
                 wallet.status = "ok"
-                wallet.last_success_at = success_at
+                wallet.last_success_at = snapshot_at
                 wallet.last_error = None
                 wallet.trade_history_error = trade_history_error
                 wallet.redemption_history_error = redemption_history_error
                 wallet.consecutive_failures = 0
-                wallet.next_sync_at = success_at + timedelta(
-                    seconds=self.settings.poll_interval_seconds
+                wallet.next_sync_at = max(
+                    completed_at,
+                    attempt_at + timedelta(seconds=self.settings.poll_interval_seconds),
                 )
-                wallet.updated_at = success_at
+                wallet.updated_at = completed_at
                 await session.commit()
-            await self.broker.publish("positions.updated", wallet_id)
             created_events = terminal_events + await self.finalize_due_candidates(
-                wallet_id, now=success_at
+                wallet_id, now=completed_at
             )
             if created_events or created_redemptions:
                 await self.broker.publish("events.created", wallet_id)
             await self.broker.publish("sync.status", wallet_id)
+            LOGGER.debug(
+                "Wallet sync completed wallet_id=%s total_ms=%s positions_ms=%s "
+                "positions=%s new_trades=%s new_redemptions=%s",
+                wallet_id,
+                round((monotonic() - sync_started) * 1000),
+                positions_ms,
+                len(snapshot),
+                created_trades,
+                created_redemptions,
+            )
             return True
         except Exception as error:
             await self._record_failure(wallet_id, error)
@@ -431,28 +488,41 @@ class WalletMonitor:
         snapshot: list[PositionSnapshot],
         *,
         observed_at: datetime,
-    ) -> None:
+        known_assets: set[str] | None = None,
+    ) -> int:
         active_assets = {item.asset_id for item in snapshot}
         condition_ids = {item.condition_id for item in snapshot}
         async with self.database.sessions() as session:
             wallet = await session.get(WatchedWallet, wallet_id)
             if wallet is None:
-                return
-            known_assets = set(
-                (
-                    await session.scalars(
-                        select(CurrentPosition.asset_id).where(
-                            CurrentPosition.wallet_id == wallet_id
+                return 0
+            if known_assets is None:
+                known_assets = set(
+                    (
+                        await session.scalars(
+                            select(CurrentPosition.asset_id).where(
+                                CurrentPosition.wallet_id == wallet_id
+                            )
                         )
-                    )
-                ).all()
-            )
+                    ).all()
+                )
             start = wallet.trade_history_synced_at
             if active_assets - known_assets:
                 start = None
             elif start is not None:
                 start -= timedelta(seconds=120)
             proxy_wallet = wallet.proxy_wallet
+
+        if not active_assets or not condition_ids:
+            async with self.database.sessions() as session:
+                wallet = await session.get(WatchedWallet, wallet_id)
+                if wallet is not None and (
+                    wallet.trade_history_synced_at is None or wallet.trade_history_error is not None
+                ):
+                    wallet.trade_history_synced_at = observed_at
+                    wallet.trade_history_error = None
+                    await session.commit()
+            return 0
 
         trades = await self.client.fetch_trades(
             proxy_wallet,
@@ -484,50 +554,70 @@ class WalletMonitor:
                         )
                     ).all()
                 )
-            for fingerprint, trade in fingerprinted:
-                if fingerprint in existing_fingerprints:
-                    continue
-                try:
-                    async with session.begin_nested():
-                        session.add(
-                            WalletTrade(
-                                wallet_id=wallet_id,
-                                fingerprint=fingerprint,
-                                asset_id=trade.asset_id,
-                                condition_id=trade.condition_id,
-                                side=trade.side,
-                                size=trade.size,
-                                price=trade.price,
-                                amount=trade.size * trade.price,
-                                timestamp=trade.timestamp,
-                                transaction_hash=trade.transaction_hash,
-                                title=trade.title,
-                                outcome=trade.outcome,
-                                outcome_index=trade.outcome_index,
-                                event_slug=trade.event_slug,
-                                market_slug=trade.market_slug,
-                                imported_at=observed_at,
-                            )
-                        )
-                        await session.flush()
-                except IntegrityError:
-                    continue
+            rows = [
+                {
+                    "wallet_id": wallet_id,
+                    "fingerprint": fingerprint,
+                    "asset_id": trade.asset_id,
+                    "condition_id": trade.condition_id,
+                    "side": trade.side,
+                    "size": trade.size,
+                    "price": trade.price,
+                    "amount": trade.size * trade.price,
+                    "timestamp": trade.timestamp,
+                    "transaction_hash": trade.transaction_hash,
+                    "title": trade.title,
+                    "outcome": trade.outcome,
+                    "outcome_index": trade.outcome_index,
+                    "event_slug": trade.event_slug,
+                    "market_slug": trade.market_slug,
+                    "imported_at": observed_at,
+                }
+                for fingerprint, trade in fingerprinted
+                if fingerprint not in existing_fingerprints
+            ]
+            created = 0
+            if rows and self.database.settings.database_url.startswith("sqlite"):
+                result = await session.execute(
+                    sqlite_insert(WalletTrade)
+                    .values(rows)
+                    .on_conflict_do_nothing(index_elements=["fingerprint"])
+                )
+                created = max(0, int(result.rowcount or 0))
+            else:
+                for row in rows:
+                    try:
+                        async with session.begin_nested():
+                            session.add(WalletTrade(**row))
+                            await session.flush()
+                            created += 1
+                    except IntegrityError:
+                        continue
             wallet = await session.get(WatchedWallet, wallet_id)
             if wallet is not None:
                 wallet.trade_history_synced_at = observed_at
                 wallet.trade_history_error = None
             await session.commit()
+            return created
 
     async def _sync_redemptions(
         self,
         wallet_id: int,
         *,
         observed_at: datetime,
-    ) -> int:
+        force: bool = False,
+    ) -> tuple[bool, int]:
         async with self.database.sessions() as session:
             wallet = await session.get(WatchedWallet, wallet_id)
             if wallet is None:
-                return 0
+                return False, 0
+            if (
+                not force
+                and wallet.redemption_history_synced_at is not None
+                and (observed_at - wallet.redemption_history_synced_at).total_seconds()
+                < self.settings.redemption_poll_interval_seconds
+            ):
+                return False, 0
             start = wallet.redemption_history_synced_at or wallet.created_at
             if wallet.redemption_history_synced_at is not None:
                 start -= timedelta(seconds=120)
@@ -598,13 +688,17 @@ class WalletMonitor:
                 existing_fingerprints.add(fingerprint)
                 created += 1
 
-            await self._refresh_redemption_costs(session, wallet_id)
             wallet = await session.get(WatchedWallet, wallet_id)
             if wallet is not None:
                 wallet.redemption_history_synced_at = observed_at
                 wallet.redemption_history_error = None
             await session.commit()
-            return created
+            return True, created
+
+    async def _refresh_redemption_costs_for_wallet(self, wallet_id: int) -> None:
+        async with self.database.sessions() as session:
+            await self._refresh_redemption_costs(session, wallet_id)
+            await session.commit()
 
     async def _refresh_redemption_costs(
         self,

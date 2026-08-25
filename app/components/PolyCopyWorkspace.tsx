@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { PolyCopyShell, WorkspaceView } from "./PolyCopyShell";
 
@@ -319,12 +319,6 @@ function profileUrl(proxyWallet: string) {
 
 function PixelAmount({ value }: { value: string }) {
   return <span className="pcPixelAmount">{value}</span>;
-}
-
-function moveCardGlow(event: ReactPointerEvent<HTMLElement>) {
-  const bounds = event.currentTarget.getBoundingClientRect();
-  event.currentTarget.style.setProperty("--pc-card-x", `${event.clientX - bounds.left}px`);
-  event.currentTarget.style.setProperty("--pc-card-y", `${event.clientY - bounds.top}px`);
 }
 
 const strategyState: Record<string, { label: string; tone: string }> = {
@@ -1162,7 +1156,7 @@ function OverviewPage({
     <>
       {!overview.live_copy_enabled && <div className="pcAlert danger"><span>!</span><p><strong>实盘策略已被系统停用</strong>当前不能开启新的买入，已有仓位仍会继续处理退出。</p></div>}
       <section className="pcMetricGrid" aria-label="全局资金概览">
-        {metrics.map((metric) => <article className="pcMetricCard pcInteractiveCard" key={metric.label} onPointerMove={moveCardGlow}><span>{metric.label}</span><strong className={metric.tone}><PixelAmount value={metric.value} /></strong><small>{metric.meta}</small></article>)}
+        {metrics.map((metric) => <article className="pcMetricCard" key={metric.label}><span>{metric.label}</span><strong className={metric.tone}><PixelAmount value={metric.value} /></strong><small>{metric.meta}</small></article>)}
       </section>
 
       <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} strategies={activeStrategies} />
@@ -1611,7 +1605,7 @@ export default function PolyCopyWorkspace({ view }: { view: CoreWorkspaceView })
   }
 
   const copy = viewCopy[view];
-  const actions = <><span className="pcAsOf"><span className={error ? "pcStatusDot error" : "pcStatusDot"} />{error ? "数据连接异常" : overview ? `更新于 ${dateTime(overview.as_of)}` : "正在连接"}</span>{view !== "settings" && <button className="pcButton primary" type="button" onClick={() => setWalletModal("tracked")}>＋ 添加目标</button>}</>;
+  const actions = <><span className="pcAsOf"><span className={error ? "pcStatusDot error" : "pcStatusDot"} />{error ? "数据连接异常" : overview ? `更新于 ${dateTime(overview.as_of)}` : "正在连接"}</span>{view !== "settings" && <button className="pcButton primary" type="button" onClick={() => setWalletModal("tracked")}><svg className="pcButtonIcon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>添加目标</button>}</>;
 
   return (
     <PolyCopyShell active={view} title={copy.title} subtitle={copy.subtitle} actions={actions}>

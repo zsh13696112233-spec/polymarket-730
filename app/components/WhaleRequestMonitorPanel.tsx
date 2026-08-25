@@ -102,21 +102,26 @@ export function WhaleRequestMonitorPanel() {
   }, [acceptSuccesses, loadSnapshot]);
 
   const connectionLabel = connection === "connected"
-    ? "LIVE"
+    ? "实时连接"
     : connection === "disconnected"
-      ? "RECONNECTING"
-      : "CONNECTING";
+      ? "正在重连"
+      : "正在连接";
 
   return (
     <section className="whaleRequestMonitor whaleRequestMonitorInline" aria-label="Request Monitor">
       <div className="whaleTerminalFrame">
         <div className="whaleTerminalChrome">
-          <code aria-hidden="true">polymarket-whale-monitor</code>
+          <span>
+            <strong>请求监控</strong>
+            <small>最近成功请求</small>
+          </span>
           <b
             className={`whaleTerminalLive ${connection}`}
             aria-label={`请求监控状态：${connectionLabel}`}
             title={connectionLabel}
-          />
+          >
+            {connectionLabel}
+          </b>
         </div>
         <div className="whaleRequestTerminal recent" aria-live="polite" role="status">
           {recentSuccesses.length ? (
@@ -124,17 +129,17 @@ export function WhaleRequestMonitorPanel() {
               <div className="whaleTerminalEntry success" key={record.id}>
                 <div className="whaleTerminalLine">
                   <time>{consoleTime(record.finished_at || record.started_at)}</time>
-                  <b className="success">[success]</b>
+                  <b className="success">成功</b>
                   <code>
-                    <strong>{record.method}</strong> {record.url}
-                    {` · HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms · complete ✓`}
+                    <span><strong>{record.method}</strong> {record.url}</span>
+                    <small>{`HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
                   </code>
                 </div>
               </div>
             ))
           ) : (
             <div className="whaleTerminalEmpty">
-              <span aria-hidden="true">_</span>waiting for successful request…
+              暂无成功请求，收到新数据后会自动更新。
             </div>
           )}
         </div>

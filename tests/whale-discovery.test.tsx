@@ -324,17 +324,18 @@ describe("巨鲸请求监测面板", () => {
 
     render(<WhaleRequestMonitorPanel />);
 
-    expect(await screen.findByText("[success]")).toBeInTheDocument();
+    expect(await screen.findByText("成功")).toBeInTheDocument();
     expect(screen.getByText("16:00:00")).toBeInTheDocument();
     expect(screen.getByLabelText("Request Monitor")).not.toHaveClass("pcPanel");
     expect(screen.queryByRole("heading", { name: "Request Monitor" })).not.toBeInTheDocument();
     expect(screen.getByText(/https:\/\/data-api\.polymarket\.com\/trades/)).toHaveTextContent(
-      "GET https://data-api.polymarket.com/trades · HTTP 200 · 321ms · complete ✓",
+      "GET https://data-api.polymarket.com/trades",
     );
+    expect(screen.getByText("HTTP 200 · 321ms")).toBeInTheDocument();
     expect(screen.queryByText("[pending]")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "仅失败" })).not.toBeInTheDocument();
     FakeEventSource.instance?.onopen?.(new Event("open"));
-    expect(await screen.findByLabelText("请求监控状态：LIVE")).toBeInTheDocument();
+    expect(await screen.findByLabelText("请求监控状态：实时连接")).toBeInTheDocument();
 
     FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
       data: JSON.stringify({
@@ -388,7 +389,7 @@ describe("巨鲸请求监测面板", () => {
         }),
       }));
     }
-    await waitFor(() => expect(screen.getAllByText("[success]")).toHaveLength(5));
+    await waitFor(() => expect(screen.getAllByText("成功")).toHaveLength(5));
     expect(screen.queryByText("16:00:00")).not.toBeInTheDocument();
     expect(screen.getByText("16:00:08")).toBeInTheDocument();
   });
@@ -416,10 +417,10 @@ describe("巨鲸请求监测面板", () => {
 
     render(<WhaleRequestMonitorPanel />);
 
-    expect(await screen.findByLabelText("请求监控状态：RECONNECTING")).toBeInTheDocument();
-    expect(screen.getByText("waiting for successful request…")).toBeInTheDocument();
+    expect(await screen.findByLabelText("请求监控状态：正在重连")).toBeInTheDocument();
+    expect(screen.getByText("暂无成功请求，收到新数据后会自动更新。")).toBeInTheDocument();
     FailedEventSource.instance?.onopen?.(new Event("open"));
-    expect(await screen.findByLabelText("请求监控状态：LIVE")).toBeInTheDocument();
+    expect(await screen.findByLabelText("请求监控状态：实时连接")).toBeInTheDocument();
   });
 });
 
@@ -569,7 +570,7 @@ describe("巨鲸持仓页", () => {
     const requestMonitor = screen.getByLabelText("Request Monitor");
     expect(requestMonitor.closest(".whaleDashboardMain")).not.toBeNull();
     expect(requestMonitor.closest(".whaleDashboardRail")).toBeNull();
-    expect(await screen.findByRole("heading", { name: "方向分歧" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "分歧市场" })).toBeInTheDocument();
     expect(screen.getByLabelText("巨鲸分歧市场")).toHaveTextContent("1 个市场");
     expect(screen.getByLabelText("Movistar KOI方向")).toHaveTextContent("16.0K USDC");
     expect(screen.getByLabelText("Natus Vincere方向")).toHaveTextContent("10.0K USDC");
@@ -641,9 +642,9 @@ describe("巨鲸持仓页", () => {
 
     expect(await screen.findByText("1 个钱包 · 2 个持仓")).toBeInTheDocument();
     expect(screen.getAllByText("钱包对冲")).toHaveLength(2);
-    expect(screen.getByRole("heading", { name: "方向分歧" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "分歧市场" })).toBeInTheDocument();
     expect(screen.getByLabelText("巨鲸分歧市场")).toHaveTextContent("0 个市场");
-    expect(screen.getByText("当前没有方向分歧")).toBeInTheDocument();
+    expect(screen.getByText("暂无分歧市场")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "只看分歧持仓" })).not.toBeInTheDocument();
     expect(screen.queryByText("反向巨鲸")).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "跟单" })).toHaveLength(2);

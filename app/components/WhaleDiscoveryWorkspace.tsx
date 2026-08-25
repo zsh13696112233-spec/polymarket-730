@@ -672,6 +672,8 @@ function WhaleWalletCard({
   group: WalletGroup;
   onFollow: (holding: WalletHolding) => void;
 }) {
+  const compactTotalValue = formatCompactUsdc(group.totalValue).replace(/\s+USDC$/, "");
+
   return (
     <article className="pcPanel whaleWalletCard">
       <header className="whaleWalletHeader">
@@ -698,7 +700,10 @@ function WhaleWalletCard({
         </a>
         <div className="whaleWalletTotal">
           <span>当前持仓估值</span>
-          <strong>{formatCompactUsdc(group.totalValue)}</strong>
+          <strong aria-label={`${compactTotalValue} USDC`}>
+            <b>{compactTotalValue}</b>
+            <em>USDC</em>
+          </strong>
           <small>{group.holdings.length} 个持仓</small>
         </div>
       </header>
@@ -731,11 +736,8 @@ function WhaleDivergencePanel({
     <section className="pcPanel whaleDivergencePanel" aria-label="巨鲸分歧市场">
       <header className="whaleDivergenceHeader">
         <div className="whaleDivergenceTitle">
-          <span className="whaleDivergenceIcon" aria-hidden="true">⇄</span>
           <div>
-            <span className="pcEyebrow">OPPOSING WHALES</span>
-            <h2>方向分歧</h2>
-            <p>不同钱包在同一市场买入相反方向；钱包自身对冲不计入。</p>
+            <h2>分歧市场</h2>
           </div>
         </div>
         <div className="whaleDivergenceActions">
@@ -809,8 +811,7 @@ function WhaleDivergencePanel({
         <div className="whaleDivergenceEmpty">
           <span aria-hidden="true">✓</span>
           <div>
-            <strong>当前没有方向分歧</strong>
-            <p>所选规则下，暂未发现不同巨鲸在同一市场买入相反方向。</p>
+            <strong>暂无分歧市场</strong>
           </div>
         </div>
       )}
@@ -827,11 +828,22 @@ function walletAvatarInitials(name: string, address: string): string {
   return (words.length > 1 ? `${words[0][0]}${words[1][0]}` : cleanName.slice(0, 2)).toUpperCase();
 }
 
-function walletAvatarHue(address: string): number {
-  return Array.from(address.toLowerCase()).reduce(
-    (hash, character) => (hash * 31 + character.charCodeAt(0)) % 360,
+const WALLET_AVATAR_GRADIENTS = [
+  ["#5267e3", "#7768ce"],
+  ["#2878e8", "#5558d9"],
+  ["#078da6", "#3578e5"],
+  ["#6659db", "#9b5bd5"],
+  ["#0b9188", "#376ed4"],
+  ["#485fe0", "#7654c8"],
+] as const;
+
+function walletAvatarGradient(address: string): string {
+  const paletteIndex = Array.from(address.toLowerCase()).reduce(
+    (hash, character) => (hash * 31 + character.charCodeAt(0)) % WALLET_AVATAR_GRADIENTS.length,
     0,
   );
+  const [start, end] = WALLET_AVATAR_GRADIENTS[paletteIndex];
+  return `linear-gradient(145deg, ${start}, ${end})`;
 }
 
 function WhaleWalletAvatar({
@@ -846,12 +858,11 @@ function WhaleWalletAvatar({
   const [failed, setFailed] = useState(false);
 
   if (!url || failed) {
-    const hue = walletAvatarHue(address);
     return (
       <span
         className="whaleWalletAvatar whaleWalletAvatarFallback"
         style={{
-          background: `linear-gradient(145deg, hsl(${hue} 58% 34%), hsl(${(hue + 42) % 360} 62% 16%))`,
+          background: walletAvatarGradient(address),
         }}
         title="该钱包未设置公开头像"
         aria-label={`${name} 钱包默认头像`}

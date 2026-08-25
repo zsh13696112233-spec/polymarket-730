@@ -1151,13 +1151,13 @@ summary
 
 ### 12.1 导航
 
-在 `app/components/PolyCopyShell.tsx` 的 `navigation` 数组中，「记录」与「钱包分析」之间插入：
+在 `app/components/PolyCopyShell.tsx` 的 `navigation` 数组中，于「记录」之后插入：
 
 ```ts
 { id: "whales", href: "/whales", label: "巨鲸", icon: "◈" },
 ```
 
-同时把 `WorkspaceView` 联合类型加上 `"whales"`，并把 `navigation.slice(0, 4)` / `slice(4)` 的分组下标相应调整为 5，否则新入口会被分到「系统」分组下。
+同时把 `WorkspaceView` 联合类型加上 `"whales"`。钱包分析页面移除后，工作台分组保持 `navigation.slice(0, 4)`，系统分组从 `slice(4)` 开始。
 
 ### 12.2 巨鲸发现页 `/whales`
 

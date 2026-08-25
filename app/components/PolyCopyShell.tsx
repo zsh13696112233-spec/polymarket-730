@@ -8,7 +8,6 @@ export type WorkspaceView =
   | "positions"
   | "records"
   | "whales"
-  | "analysis"
   | "settings";
 
 const navigation: Array<{
@@ -20,8 +19,7 @@ const navigation: Array<{
   { id: "overview", href: "/", label: "总览", icon: "⌂" },
   { id: "positions", href: "/positions", label: "持仓", icon: "◇" },
   { id: "records", href: "/records", label: "记录", icon: "≡" },
-  { id: "whales", href: "/whales", label: "巨鲸", icon: "◈" },
-  { id: "analysis", href: "/analysis", label: "钱包分析", icon: "⌁" },
+  { id: "whales", href: "/whales", label: "链上监测", icon: "◈" },
   { id: "settings", href: "/settings", label: "设置", icon: "⚙" },
 ];
 
@@ -62,7 +60,7 @@ export function PolyCopyShell({
         </Link>
         <nav className="pcNavigation" aria-label="主导航">
           <span className="pcNavLabel">工作台</span>
-          {navigation.slice(0, 5).map((item) => (
+          {navigation.slice(0, 4).map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}
@@ -75,7 +73,7 @@ export function PolyCopyShell({
             </Link>
           ))}
           <span className="pcNavLabel pcNavLabelSecondary">系统</span>
-          {navigation.slice(5).map((item) => (
+          {navigation.slice(4).map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}

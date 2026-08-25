@@ -50,10 +50,9 @@ test("server-renders the PolyCopy workspace and product metadata", async () => {
 });
 
 test("keeps PolyCopy workspace behavior in the client", async () => {
-  const [page, workspace, legacy, layout, css, icon] = await Promise.all([
+  const [page, workspace, layout, css, icon] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/PolyCopyWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/analysis/legacy.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/icon.svg", import.meta.url), "utf8"),
@@ -71,10 +70,6 @@ test("keeps PolyCopy workspace behavior in the client", async () => {
   assert.match(workspace, /copy-trading\/overview/);
   assert.match(workspace, /copy-trading\/orders/);
   assert.match(workspace, /跟单比例/);
-  assert.match(legacy, /new EventSource/);
-  assert.match(legacy, /event\/\$\{eventPath\}\/\$\{encodeURIComponent\(marketSlug\)\}/);
-  assert.match(legacy, /average_fill_price/);
-  assert.match(legacy, /transaction_hash/);
   assert.match(layout, /lang="zh-CN"/);
   assert.doesNotMatch(layout, /next\/font|Starter Project|codex-preview/);
   assert.match(css, /@media \(max-width: 760px\)/);

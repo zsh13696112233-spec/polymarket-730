@@ -1575,7 +1575,7 @@ function SettingsPage({
   </div>;
 }
 
-type CoreWorkspaceView = Exclude<WorkspaceView, "analysis" | "whales">;
+type CoreWorkspaceView = Exclude<WorkspaceView, "whales">;
 
 const viewCopy: Record<CoreWorkspaceView, { title: string; subtitle: string }> = {
   overview: { title: "总览", subtitle: "资金策略面板" },

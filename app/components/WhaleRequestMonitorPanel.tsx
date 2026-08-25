@@ -9,24 +9,24 @@ import {
 } from "./WhaleShared";
 
 type ConnectionState = "connecting" | "connected" | "disconnected";
+const MAX_RECENT_SUCCESSES = 5;
 
-function newestSuccess(records: WhaleRequestLog[]): WhaleRequestLog | null {
-  return records.reduce<WhaleRequestLog | null>(
-    (latest, record) =>
-      record.status === "success" && (!latest || record.id > latest.id)
-        ? record
-        : latest,
-    null,
-  );
+function successTimestamp(record: WhaleRequestLog): number {
+  const timestamp = Date.parse(record.finished_at || record.started_at);
+  return Number.isFinite(timestamp) ? timestamp : record.id;
 }
 
-function isNewerSuccess(candidate: WhaleRequestLog, current: WhaleRequestLog): boolean {
-  const candidateTime = Date.parse(candidate.finished_at || candidate.started_at);
-  const currentTime = Date.parse(current.finished_at || current.started_at);
-  if (Number.isFinite(candidateTime) && Number.isFinite(currentTime)) {
-    return candidateTime > currentTime;
+function mergeRecentSuccesses(
+  current: WhaleRequestLog[],
+  candidates: WhaleRequestLog[],
+): WhaleRequestLog[] {
+  const records = new Map(current.map((record) => [record.id, record]));
+  for (const record of candidates) {
+    if (record.status === "success") records.set(record.id, record);
   }
-  return candidate.id > current.id;
+  return Array.from(records.values())
+    .sort((left, right) => successTimestamp(right) - successTimestamp(left) || right.id - left.id)
+    .slice(0, MAX_RECENT_SUCCESSES);
 }
 
 function consoleTime(value: string): string {
@@ -42,25 +42,22 @@ function consoleTime(value: string): string {
 }
 
 export function WhaleRequestMonitorPanel() {
-  const [latestSuccess, setLatestSuccess] = useState<WhaleRequestLog | null>(null);
+  const [recentSuccesses, setRecentSuccesses] = useState<WhaleRequestLog[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
 
-  const acceptSuccess = useCallback((record: WhaleRequestLog | null) => {
-    if (!record) return;
-    setLatestSuccess((current) =>
-      !current || isNewerSuccess(record, current) ? record : current,
-    );
+  const acceptSuccesses = useCallback((records: WhaleRequestLog[]) => {
+    setRecentSuccesses((current) => mergeRecentSuccesses(current, records));
   }, []);
 
   const loadSnapshot = useCallback(async () => {
     try {
       const snapshot = await whaleApi<WhaleRequestLogList>("/api/whales/request-logs");
-      acceptSuccess(newestSuccess(snapshot.items));
+      acceptSuccesses(snapshot.items);
     } catch {
       // The live stream reconnects automatically; keep the last known success visible.
       return;
     }
-  }, [acceptSuccess]);
+  }, [acceptSuccesses]);
 
   useEffect(() => {
     let active = true;
@@ -88,7 +85,7 @@ export function WhaleRequestMonitorPanel() {
       if (!active) return;
       try {
         const record = JSON.parse(event.data) as WhaleRequestLog;
-        if (record.status === "success") acceptSuccess(record);
+        if (record.status === "success") acceptSuccesses([record]);
       } catch {
         return;
       }
@@ -102,7 +99,7 @@ export function WhaleRequestMonitorPanel() {
       window.clearTimeout(snapshotTimer);
       stream?.close();
     };
-  }, [acceptSuccess, loadSnapshot]);
+  }, [acceptSuccesses, loadSnapshot]);
 
   const connectionLabel = connection === "connected"
     ? "LIVE"
@@ -111,34 +108,30 @@ export function WhaleRequestMonitorPanel() {
       : "CONNECTING";
 
   return (
-    <section className="pcPanel whaleRequestMonitor" aria-label="Whale request monitor">
-      <header className="whaleRequestMonitorHeader">
-        <div className="whaleRequestMonitorTitle">
-          <span aria-hidden="true">⌁</span>
-          <div>
-            <h2>Request Monitor</h2>
-            <p>Latest successful Polymarket request</p>
-          </div>
-        </div>
-      </header>
-
+    <section className="whaleRequestMonitor whaleRequestMonitorInline" aria-label="Request Monitor">
       <div className="whaleTerminalFrame">
-        <div className="whaleTerminalChrome" aria-hidden="true">
-          <code>polymarket-whale-monitor</code>
-          <b className={`whaleTerminalLive ${connection}`}>{connectionLabel}</b>
+        <div className="whaleTerminalChrome">
+          <code aria-hidden="true">polymarket-whale-monitor</code>
+          <b
+            className={`whaleTerminalLive ${connection}`}
+            aria-label={`请求监控状态：${connectionLabel}`}
+            title={connectionLabel}
+          />
         </div>
-        <div className="whaleRequestTerminal single" aria-live="polite" role="status">
-          {latestSuccess ? (
-            <div className="whaleTerminalEntry success">
-              <div className="whaleTerminalLine">
-                <time>{consoleTime(latestSuccess.finished_at || latestSuccess.started_at)}</time>
-                <b className="success">[success]</b>
-                <code>
-                  <strong>{latestSuccess.method}</strong> {latestSuccess.url}
-                  {` · HTTP ${latestSuccess.http_status ?? "—"} · ${latestSuccess.duration_ms ?? 0}ms · complete ✓`}
-                </code>
+        <div className="whaleRequestTerminal recent" aria-live="polite" role="status">
+          {recentSuccesses.length ? (
+            recentSuccesses.map((record) => (
+              <div className="whaleTerminalEntry success" key={record.id}>
+                <div className="whaleTerminalLine">
+                  <time>{consoleTime(record.finished_at || record.started_at)}</time>
+                  <b className="success">[success]</b>
+                  <code>
+                    <strong>{record.method}</strong> {record.url}
+                    {` · HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms · complete ✓`}
+                  </code>
+                </div>
               </div>
-            </div>
+            ))
           ) : (
             <div className="whaleTerminalEmpty">
               <span aria-hidden="true">_</span>waiting for successful request…

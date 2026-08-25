@@ -44,6 +44,7 @@ type WalletHolding = {
   side: WhaleMarketSide;
   entry: WhaleEntry;
   dualSided: boolean;
+  divergentMarket: boolean;
 };
 
 type WalletGroup = {
@@ -56,6 +57,22 @@ type WalletGroup = {
   holdings: WalletHolding[];
   totalValue: number;
   latestBuyAt: string;
+};
+
+type WhaleDivergenceSide = {
+  side: WhaleMarketSide;
+  entries: WhaleEntry[];
+  totalUsdc: number;
+  walletCount: number;
+};
+
+export type WhaleDivergence = {
+  market: WhaleMarket;
+  sides: WhaleDivergenceSide[];
+  totalUsdc: number;
+  dominantOutcome: string;
+  dominantShare: number;
+  amountDifferenceUsdc: number;
 };
 
 function formatRegistrationDate(value: string | null): string {
@@ -82,6 +99,7 @@ function holdingValue(entry: WhaleEntry): number {
 export function buildWalletGroups(
   markets: WhaleMarket[],
   sort: WalletSort,
+  divergentMarketIds: ReadonlySet<string> = new Set<string>(),
 ): WalletGroup[] {
   const walletMarketSides = new Map<string, Set<string>>();
 
@@ -119,6 +137,7 @@ export function buildWalletGroups(
           side,
           entry,
           dualSided: (walletMarketSides.get(`${addressKey}:${market.condition_id}`)?.size ?? 0) > 1,
+          divergentMarket: divergentMarketIds.has(market.condition_id),
         });
         group.totalValue += holdingValue(entry);
         if (entry.last_buy_at > group.latestBuyAt) group.latestBuyAt = entry.last_buy_at;
@@ -139,6 +158,57 @@ export function buildWalletGroups(
   return values;
 }
 
+export function buildWhaleDivergences(markets: WhaleMarket[]): WhaleDivergence[] {
+  const divergences: WhaleDivergence[] = [];
+
+  for (const market of markets) {
+    const walletSides = new Map<string, Set<string>>();
+    for (const side of market.sides) {
+      for (const entry of side.entries) {
+        if (numeric(entry.net_size) <= 0) continue;
+        const address = entry.proxy_wallet.toLowerCase();
+        const sides = walletSides.get(address) ?? new Set<string>();
+        sides.add(side.asset_id);
+        walletSides.set(address, sides);
+      }
+    }
+
+    const hedgingWallets = new Set(
+      Array.from(walletSides.entries())
+        .filter(([, sides]) => sides.size > 1)
+        .map(([address]) => address),
+    );
+    const sides = market.sides.flatMap((side) => {
+      const entries = side.entries.filter(
+        (entry) => numeric(entry.net_size) > 0 && !hedgingWallets.has(entry.proxy_wallet.toLowerCase()),
+      );
+      if (!entries.length) return [];
+      return [{
+        side,
+        entries,
+        totalUsdc: entries.reduce((total, entry) => total + numeric(entry.gross_buy_usdc), 0),
+        walletCount: new Set(entries.map((entry) => entry.proxy_wallet.toLowerCase())).size,
+      }];
+    });
+    if (sides.length < 2) continue;
+
+    sides.sort((left, right) => right.totalUsdc - left.totalUsdc);
+    const totalUsdc = sides.reduce((total, side) => total + side.totalUsdc, 0);
+    divergences.push({
+      market,
+      sides,
+      totalUsdc,
+      dominantOutcome: sides[0].side.outcome,
+      dominantShare: totalUsdc > 0 ? sides[0].totalUsdc / totalUsdc : 0,
+      amountDifferenceUsdc: sides[0].totalUsdc - sides[1].totalUsdc,
+    });
+  }
+
+  return divergences.sort((left, right) =>
+    right.totalUsdc - left.totalUsdc || left.market.title.localeCompare(right.market.title),
+  );
+}
+
 export default function WhaleDiscoveryWorkspace() {
   const [settings, setSettings] = useState<WhaleSettings | null>(null);
   const [markets, setMarkets] = useState<WhaleMarketList | null>(null);
@@ -147,6 +217,7 @@ export default function WhaleDiscoveryWorkspace() {
   const [statisticsVisible, setStatisticsVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [fullHistoryVisible, setFullHistoryVisible] = useState(false);
+  const [divergenceOnly, setDivergenceOnly] = useState(false);
   const [statisticsRefreshToken, setStatisticsRefreshToken] = useState(0);
   const [sort, setSort] = useState<WalletSort>("value");
   const [loading, setLoading] = useState(true);
@@ -170,9 +241,11 @@ export default function WhaleDiscoveryWorkspace() {
     setLoading(true);
     setError(null);
     try {
-      setMarkets(await whaleApi<WhaleMarketList>(
+      const nextMarkets = await whaleApi<WhaleMarketList>(
         `/api/whales/markets?rule=${rule}&include_exited=false&include_hedged=true&limit=100&offset=0`,
-      ));
+      );
+      setMarkets(nextMarkets);
+      if (!buildWhaleDivergences(nextMarkets.items).length) setDivergenceOnly(false);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "巨鲸持仓加载失败");
     } finally {
@@ -217,9 +290,23 @@ export default function WhaleDiscoveryWorkspace() {
     setStatisticsRefreshToken((current) => current + 1);
   }, [loadHistory, loadMarkets, loadSettings]);
 
+  const divergences = useMemo(
+    () => buildWhaleDivergences(markets?.items ?? []),
+    [markets],
+  );
+  const divergentMarketIds = useMemo(
+    () => new Set(divergences.map((divergence) => divergence.market.condition_id)),
+    [divergences],
+  );
+  const visibleMarkets = useMemo(
+    () => divergenceOnly
+      ? (markets?.items ?? []).filter((market) => divergentMarketIds.has(market.condition_id))
+      : markets?.items ?? [],
+    [divergenceOnly, divergentMarketIds, markets],
+  );
   const walletGroups = useMemo(
-    () => buildWalletGroups(markets?.items ?? [], sort),
-    [markets, sort],
+    () => buildWalletGroups(visibleMarkets, sort, divergentMarketIds),
+    [divergentMarketIds, sort, visibleMarkets],
   );
   const visibleHoldingCount = walletGroups.reduce(
     (total, group) => total + group.holdings.length,
@@ -229,7 +316,7 @@ export default function WhaleDiscoveryWorkspace() {
   return (
     <PolyCopyShell
       active="whales"
-      title="巨鲸监测"
+      title="链上大额资金监测"
       subtitle="分别监测新号大额买入和全量超大额买入，永久保留触发历史。"
       actions={
         <>
@@ -252,6 +339,7 @@ export default function WhaleDiscoveryWorkspace() {
               setRule(item);
               setStatisticsVisible(false);
               setFullHistoryVisible(false);
+              setDivergenceOnly(false);
             }}
           >
             <strong>{RULE_LABELS[item]}</strong>
@@ -304,7 +392,7 @@ export default function WhaleDiscoveryWorkspace() {
                 </select>
               </label>
               <div className="whaleSimpleMeta">
-                <strong>{walletGroups.length} 个钱包 · {visibleHoldingCount} 个持仓</strong>
+                <strong>{divergenceOnly ? "分歧筛选 · " : ""}{walletGroups.length} 个钱包 · {visibleHoldingCount} 个持仓</strong>
                 <span>
                   {rule === "new_account" ? `注册 ≤ ${settings?.registration_window_days ?? 7} 天 · ` : "不限账号年龄 · "}
                   近 {settings?.window_hours ?? 24} 小时买入 ≥ {formatCompactUsdc(rule === "new_account" ? settings?.new_account_threshold_usdc : settings?.large_amount_threshold_usdc)}
@@ -312,6 +400,12 @@ export default function WhaleDiscoveryWorkspace() {
                 </span>
               </div>
             </section>
+
+            <WhaleDivergencePanel
+              divergences={divergences}
+              filtered={divergenceOnly}
+              onToggleFiltered={() => setDivergenceOnly((current) => !current)}
+            />
 
             {error && (
               <div className="pcAlert danger whalePageError" role="alert">
@@ -340,6 +434,8 @@ export default function WhaleDiscoveryWorkspace() {
                 <p>刷新数据后，新发现的大额持仓会出现在这里。</p>
               </section>
             )}
+
+            <WhaleRequestMonitorPanel />
           </section>
 
           <aside className="whaleDashboardRail" aria-label="巨鲸运行状态与最近历史">
@@ -354,7 +450,6 @@ export default function WhaleDiscoveryWorkspace() {
               expanded={fullHistoryVisible}
               onToggleExpanded={() => setFullHistoryVisible((current) => !current)}
             />
-            <WhaleRequestMonitorPanel />
           </aside>
         </div>
 
@@ -498,7 +593,10 @@ function WhaleRecentHistoryPanel({
                   {item.title} · {item.outcome}
                 </a>
                 <div className="whaleRecentHistoryMeta">
-                  <span>{reason} · {formatBeijing(item.first_triggered_at)}</span>
+                  <div className="whaleRecentHistoryDetails">
+                    <span>买入价 {formatPrice(item.avg_buy_price)} · {reason}</span>
+                    <time dateTime={item.first_triggered_at}>触发 {formatBeijing(item.first_triggered_at)}</time>
+                  </div>
                   <b className={item.hold_to_settlement_pnl_usdc != null && numeric(item.hold_to_settlement_pnl_usdc) >= 0 ? "profit" : "loss"}>
                     {item.hold_to_settlement_pnl_usdc == null ? "待结算" : formatSigned(item.hold_to_settlement_pnl_usdc, " USDC")}
                   </b>
@@ -620,6 +718,106 @@ function WhaleWalletCard({
   );
 }
 
+function WhaleDivergencePanel({
+  divergences,
+  filtered,
+  onToggleFiltered,
+}: {
+  divergences: WhaleDivergence[];
+  filtered: boolean;
+  onToggleFiltered: () => void;
+}) {
+  return (
+    <section className="pcPanel whaleDivergencePanel" aria-label="巨鲸分歧市场">
+      <header className="whaleDivergenceHeader">
+        <div className="whaleDivergenceTitle">
+          <span className="whaleDivergenceIcon" aria-hidden="true">⇄</span>
+          <div>
+            <span className="pcEyebrow">OPPOSING WHALES</span>
+            <h2>方向分歧</h2>
+            <p>不同钱包在同一市场买入相反方向；钱包自身对冲不计入。</p>
+          </div>
+        </div>
+        <div className="whaleDivergenceActions">
+          <strong>{divergences.length} 个市场</strong>
+          {divergences.length > 0 && (
+            <button
+              type="button"
+              className={filtered ? "active" : ""}
+              aria-pressed={filtered}
+              onClick={onToggleFiltered}
+            >
+              {filtered ? "显示全部持仓" : "只看分歧持仓"}
+            </button>
+          )}
+        </div>
+      </header>
+      {divergences.length ? (
+        <div className="whaleDivergenceList">
+          {divergences.map((divergence) => (
+          <article className="whaleDivergenceCard" key={divergence.market.condition_id}>
+            <div className="whaleDivergenceMarket">
+              <a
+                href={marketUrl(
+                  divergence.market.event_slug || divergence.market.market_slug,
+                  divergence.market.polymarket_url,
+                )}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {divergence.market.title} <span aria-hidden="true">↗</span>
+              </a>
+              <span className="pcBadge danger">方向冲突</span>
+            </div>
+            <div className="whaleDivergenceSides">
+              {divergence.sides.map((item) => {
+                const share = divergence.totalUsdc > 0 ? item.totalUsdc / divergence.totalUsdc : 0;
+                const names = item.entries
+                  .slice(0, 2)
+                  .map((entry) => entry.display_name || shortAddress(entry.proxy_wallet));
+                const extraWallets = Math.max(0, item.walletCount - names.length);
+                return (
+                  <div
+                    className={`whaleDivergenceSide ${item.side.outcome_index === 0 ? "positive" : "negative"}`}
+                    key={item.side.asset_id}
+                    aria-label={`${item.side.outcome}方向`}
+                  >
+                    <div>
+                      <span>{item.side.outcome}</span>
+                      <strong>{formatCompactUsdc(item.totalUsdc)}</strong>
+                    </div>
+                    <div className="whaleDivergenceBar" aria-hidden="true"><i style={{ width: `${share * 100}%` }} /></div>
+                    <footer>
+                      <span>{names.join("、")}{extraWallets ? ` 等 ${item.walletCount} 个钱包` : ""}</span>
+                      <b>{item.walletCount} 钱包 · {(share * 100).toFixed(1)}%</b>
+                    </footer>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="whaleDivergenceConclusion">
+              <span>24 小时方向性买入 {formatCompactUsdc(divergence.totalUsdc)}</span>
+              <strong>
+                暂偏 {divergence.dominantOutcome} {(divergence.dominantShare * 100).toFixed(1)}%
+                {" · "}净差 {formatCompactUsdc(divergence.amountDifferenceUsdc)}
+              </strong>
+            </div>
+          </article>
+          ))}
+        </div>
+      ) : (
+        <div className="whaleDivergenceEmpty">
+          <span aria-hidden="true">✓</span>
+          <div>
+            <strong>当前没有方向分歧</strong>
+            <p>所选规则下，暂未发现不同巨鲸在同一市场买入相反方向。</p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function walletAvatarInitials(name: string, address: string): string {
   const cleanName = name.trim();
   if (!cleanName || cleanName.toLowerCase() === shortAddress(address).toLowerCase()) {
@@ -707,7 +905,8 @@ function WhaleHoldingRow({ holding, onFollow }: { holding: WalletHolding; onFoll
           </a>
           <div>
             <span className={`whaleOutcomeMark ${side.outcome_index === 0 ? "positive" : "negative"}`}>{side.outcome}</span>
-            {holding.dualSided && <span className="pcBadge warning">双向持仓</span>}
+            {holding.dualSided && <span className="pcBadge muted">钱包对冲</span>}
+            {holding.divergentMarket && <span className="pcBadge warning">反向巨鲸</span>}
             <WhaleRuleBadges rules={entry.matched_rules} />
           </div>
         </div>

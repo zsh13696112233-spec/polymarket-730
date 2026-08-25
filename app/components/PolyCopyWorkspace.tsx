@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { PolyCopyShell, WorkspaceView } from "./PolyCopyShell";
 
@@ -317,64 +317,14 @@ function profileUrl(proxyWallet: string) {
   return `https://polymarket.com/profile/${proxyWallet}`;
 }
 
-const pixelGlyphs: Record<string, string[]> = {
-  "0": ["0110", "1001", "1001", "1001", "1001", "1001", "0110"],
-  "1": ["0010", "0110", "0010", "0010", "0010", "0010", "0111"],
-  "2": ["0110", "1001", "0001", "0010", "0100", "1000", "1111"],
-  "3": ["1110", "0001", "0001", "0110", "0001", "0001", "1110"],
-  "4": ["0010", "0110", "1010", "1010", "1111", "0010", "0010"],
-  "5": ["1111", "1000", "1000", "1110", "0001", "0001", "1110"],
-  "6": ["0110", "1000", "1000", "1110", "1001", "1001", "0110"],
-  "7": ["1111", "0001", "0010", "0010", "0100", "0100", "0100"],
-  "8": ["0110", "1001", "1001", "0110", "1001", "1001", "0110"],
-  "9": ["0110", "1001", "1001", "0111", "0001", "0001", "0110"],
-  "$": ["00100", "01111", "10100", "01110", "00101", "11110", "00100"],
-  "+": ["000", "010", "010", "111", "010", "010", "000"],
-  "-": ["000", "000", "000", "111", "000", "000", "000"],
-  ",": ["00", "00", "00", "00", "00", "01", "10"],
-  ".": ["0", "0", "0", "0", "0", "0", "1"],
-  "—": ["0000", "0000", "0000", "1111", "0000", "0000", "0000"],
-};
-
 function PixelAmount({ value }: { value: string }) {
-  const glyphs = Array.from(value, (character) => pixelGlyphs[character]);
-  if (glyphs.some((glyph) => !glyph)) return <>{value}</>;
+  return <span className="pcPixelAmount">{value}</span>;
+}
 
-  let cursor = 0;
-  const pixels: ReactNode[] = [];
-  glyphs.forEach((glyph, glyphIndex) => {
-    glyph.forEach((row, rowIndex) => {
-      Array.from(row).forEach((pixel, columnIndex) => {
-        if (pixel === "1") {
-          pixels.push(
-            <rect
-              key={`${glyphIndex}-${rowIndex}-${columnIndex}`}
-              x={cursor + columnIndex}
-              y={rowIndex}
-              width="0.88"
-              height="0.88"
-            />,
-          );
-        }
-      });
-    });
-    cursor += glyph[0].length + 1;
-  });
-
-  const viewWidth = Math.max(cursor - 1, 1);
-  return (
-    <span className="pcPixelAmount" aria-label={value}>
-      <svg
-        aria-hidden="true"
-        className="pcPixelAmountGlyphs"
-        focusable="false"
-        viewBox={`0 0 ${viewWidth} 7`}
-        style={{ width: `${viewWidth / 7}em` }}
-      >
-        {pixels}
-      </svg>
-    </span>
-  );
+function moveCardGlow(event: ReactPointerEvent<HTMLElement>) {
+  const bounds = event.currentTarget.getBoundingClientRect();
+  event.currentTarget.style.setProperty("--pc-card-x", `${event.clientX - bounds.left}px`);
+  event.currentTarget.style.setProperty("--pc-card-y", `${event.clientY - bounds.top}px`);
 }
 
 const strategyState: Record<string, { label: string; tone: string }> = {
@@ -1212,7 +1162,7 @@ function OverviewPage({
     <>
       {!overview.live_copy_enabled && <div className="pcAlert danger"><span>!</span><p><strong>实盘策略已被系统停用</strong>当前不能开启新的买入，已有仓位仍会继续处理退出。</p></div>}
       <section className="pcMetricGrid" aria-label="全局资金概览">
-        {metrics.map((metric) => <article className="pcMetricCard" key={metric.label}><span>{metric.label}</span><strong className={metric.tone}><PixelAmount value={metric.value} /></strong><small>{metric.meta}</small></article>)}
+        {metrics.map((metric) => <article className="pcMetricCard pcInteractiveCard" key={metric.label} onPointerMove={moveCardGlow}><span>{metric.label}</span><strong className={metric.tone}><PixelAmount value={metric.value} /></strong><small>{metric.meta}</small></article>)}
       </section>
 
       <DailyRealizedPnlChart items={overview.daily_realized_pnl ?? []} strategies={activeStrategies} />

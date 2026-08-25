@@ -2,10 +2,11 @@
   <title>PolyCopy</title>
   <defs>
     <linearGradient id="polycopy-gradient" x1="16" y1="12" x2="48" y2="52" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#6e91ff" />
-      <stop offset="1" stop-color="#31d6a1" />
+      <stop stop-color="#7ea0ff" />
+      <stop offset="0.52" stop-color="#4161ff" />
+      <stop offset="1" stop-color="#936dff" />
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="#0a0f1a" />
+  <rect width="64" height="64" rx="16" fill="#0b0c20" />
   <path d="M20 50V14h17a13 13 0 0 1 0 26H20" fill="none" stroke="url(#polycopy-gradient)" stroke-linecap="round" stroke-linejoin="round" stroke-width="8" />
 </svg>

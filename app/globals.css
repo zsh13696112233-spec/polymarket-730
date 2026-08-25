@@ -9215,3 +9215,1437 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .whaleOperationsPanel dl { grid-template-columns: 1fr 1fr; }
   .whaleRecentHistoryList { max-height: 300px; }
 }
+
+/* Final BigModel light cascade.
+   Based on the current public site: soft grey canvas, white editorial cards,
+   black typography and restrained blue-violet gradient accents. */
+.pcRoot {
+  --pc-bg: #f5f6f8;
+  --pc-sidebar: rgba(249, 250, 252, 0.92);
+  --pc-surface: rgba(255, 255, 255, 0.92);
+  --pc-surface-2: #f7f8fb;
+  --pc-surface-3: #eef1f7;
+  --pc-line: #dfe3ea;
+  --pc-line-soft: #eceef3;
+  --pc-text: #17181c;
+  --pc-text-2: #4f535d;
+  --pc-text-3: #858993;
+  --pc-blue: #536dfe;
+  --pc-blue-strong: #405cf3;
+  --pc-blue-soft: rgba(83, 109, 254, 0.1);
+  --pc-green: #079968;
+  --pc-green-soft: rgba(7, 153, 104, 0.09);
+  --pc-red: #d9485f;
+  --pc-red-soft: rgba(217, 72, 95, 0.09);
+  --pc-amber: #a86f11;
+  --pc-amber-soft: rgba(224, 158, 49, 0.11);
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 68% 7%, rgba(220, 196, 255, 0.34), transparent 18%),
+    radial-gradient(circle at 83% 13%, rgba(185, 220, 255, 0.36), transparent 22%),
+    linear-gradient(180deg, #f7f8fa 0%, #f4f5f7 100%);
+  background-size: auto;
+  color: var(--pc-text);
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  letter-spacing: normal;
+}
+
+.pcRoot::before,
+.pcRoot::after {
+  position: fixed;
+  z-index: 0;
+  border-radius: 50%;
+  content: "";
+  filter: blur(70px);
+  pointer-events: none;
+}
+
+.pcRoot::before {
+  top: 70px;
+  right: 7%;
+  width: 390px;
+  height: 220px;
+  background: rgba(173, 205, 255, 0.25);
+}
+
+.pcRoot::after {
+  top: 130px;
+  right: 28%;
+  width: 300px;
+  height: 180px;
+  background: rgba(221, 180, 255, 0.22);
+}
+
+.pcSidebar {
+  width: 248px;
+  border-right-color: #e7e9ee;
+  background: rgba(250, 251, 253, 0.9);
+  box-shadow: 16px 0 45px rgba(38, 44, 57, 0.035);
+  backdrop-filter: blur(24px) saturate(130%);
+}
+
+.pcBrand,
+.pcTopbar {
+  border-color: #e7e9ee;
+  background: rgba(248, 249, 251, 0.82);
+}
+
+.pcBrand {
+  height: 88px;
+  gap: 13px;
+  padding: 0 24px;
+}
+
+.pcBrandMark {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 12px;
+  background: #15161a;
+  box-shadow: 0 10px 24px rgba(24, 27, 36, 0.14);
+}
+
+.pcBrand strong,
+.pcTitleGroup h1 {
+  color: #15161a;
+  text-shadow: none;
+}
+
+.pcBrand strong { font-weight: 680; }
+.pcBrand small,
+.pcTitleGroup p,
+.pcAsOf,
+.pcNavLabel,
+.pcSidebarStatus small { color: #8b8f98; }
+
+.pcNavigation {
+  gap: 7px;
+  padding: 28px 16px;
+}
+
+.pcNavigation a {
+  min-height: 46px;
+  border-color: transparent;
+  border-radius: 12px;
+  color: #656a75;
+  font-family: inherit;
+  font-weight: 560;
+}
+
+.pcNavigation a:hover {
+  border-color: #e8eaf0;
+  background: rgba(255, 255, 255, 0.82);
+  color: #17181c;
+  transform: translateX(2px);
+}
+
+.pcNavigation a.active {
+  border-color: rgba(99, 113, 239, 0.16);
+  background: linear-gradient(100deg, rgba(220, 218, 255, 0.58), rgba(218, 237, 255, 0.55));
+  color: #17181c;
+  box-shadow: inset 3px 0 0 #6577f6, 0 8px 22px rgba(88, 107, 218, 0.08);
+}
+
+.pcNavIcon {
+  border: 0;
+  border-radius: 7px;
+  background: #f0f2f6;
+  color: #555a65;
+}
+
+.pcNavigation a.active .pcNavIcon {
+  background: rgba(255, 255, 255, 0.75);
+  color: #5367d9;
+}
+
+.pcSidebarStatus {
+  border-color: #e2e5eb;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 9px 26px rgba(41, 48, 64, 0.045);
+}
+
+.pcSidebarStatus strong { color: #41454e; }
+.pcLiveDot,
+.pcStatusDot { box-shadow: 0 0 0 4px rgba(7, 153, 104, 0.08); }
+
+.pcMain {
+  position: relative;
+  z-index: 1;
+  margin-left: 248px;
+}
+
+.pcTopbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  min-height: 88px;
+  padding: 17px 34px;
+  box-shadow: 0 12px 32px rgba(45, 51, 65, 0.025);
+  backdrop-filter: blur(24px) saturate(130%);
+}
+
+.pcTitleGroup h1 { font-weight: 620; letter-spacing: -0.035em; }
+.pcTitleGroup p { text-transform: none; letter-spacing: normal; }
+.pcContent { gap: 20px; padding: 30px 34px 56px; }
+
+.pcButton,
+.pcIconButton,
+.pcSegmented button,
+.pcSwitch,
+.pcActionMenu summary,
+.pcActionMenu button {
+  border-radius: 999px;
+  font-family: inherit;
+}
+
+.pcButton {
+  min-height: 39px;
+  padding: 0 17px;
+  border-color: #dde1e8;
+  background: #fff;
+  box-shadow: 0 5px 15px rgba(34, 39, 51, 0.04);
+  color: #3e424b;
+  font-weight: 620;
+  letter-spacing: normal;
+}
+
+.pcButton.primary {
+  border-color: #17181c;
+  background: #17181c;
+  box-shadow: 0 9px 22px rgba(22, 23, 28, 0.17);
+  color: #fff;
+}
+
+.pcButton.primary:hover { border-color: #303139; background: #303139; }
+.pcButton.ghost { border-color: #dde1e8; background: rgba(255, 255, 255, 0.86); color: #464a54; }
+.pcButton.ghost:hover { border-color: #c9ced8; background: #fff; color: #17181c; }
+
+.pcMetricGrid { gap: 14px; }
+.pcMetricCard {
+  min-height: 142px;
+  padding: 22px 22px 19px;
+  border-color: #e9ebf0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 16px 42px rgba(39, 45, 59, 0.045);
+  backdrop-filter: blur(14px);
+}
+
+.pcMetricCard::before {
+  width: 46%;
+  height: 2px;
+  background: linear-gradient(90deg, #8172ff, #60baff, transparent);
+  opacity: 0.66;
+}
+
+.pcMetricCard::after {
+  position: absolute;
+  top: -56px;
+  right: -42px;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(186, 211, 255, 0.3), transparent 67%);
+  content: "";
+}
+
+.pcMetricCard > span { color: #787d87; letter-spacing: 0.02em; }
+.pcMetricCard > small { color: #9296a0; }
+.pcMetricCard > strong {
+  border: 0;
+  background: transparent;
+  color: #17181c;
+  font-family: inherit;
+  font-weight: 620;
+  line-height: 1.05;
+  text-shadow: none;
+}
+.pcMetricCard > strong.profit { border: 0; background: transparent; color: var(--pc-green); text-shadow: none; }
+.pcMetricCard > strong.loss { border: 0; background: transparent; color: var(--pc-red); text-shadow: none; }
+.pcPixelAmount { display: block; font-variant-numeric: tabular-nums; letter-spacing: -0.045em; }
+
+.pcPanel,
+.pcAnalysisLegacy .walletSection,
+.pcAnalysisLegacy .contentPanel {
+  border-color: #e7e9ee;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 18px 50px rgba(39, 45, 59, 0.04);
+  backdrop-filter: blur(14px);
+}
+
+.pcPanelHeader {
+  min-height: 82px;
+  padding: 18px 22px;
+  border-bottom-color: #eceef2;
+  background: rgba(250, 251, 253, 0.48);
+}
+
+.pcPanelHeader h2,
+.pcStrategyIdentity strong,
+.pcWalletCell strong,
+.pcMarketIdentity strong,
+.pcTable td > strong { color: #202126; }
+
+.pcPanelHeader p,
+.pcStrategyIdentity small,
+.pcWalletCell small,
+.pcStrategyStatus small,
+.pcMarketIdentity span,
+.pcTable td > small { color: #898d96; }
+
+.pcEyebrow,
+.pcTextLink { color: #6978da; }
+.pcPanelCount,
+.pcRecordCount { border-color: #dfe3ea; border-radius: 999px; background: #f7f8fa; color: #737781; }
+
+.pcStrategyRow { border-bottom-color: #eceef2; }
+.pcStrategyRow:hover { background: linear-gradient(90deg, rgba(235, 233, 255, 0.42), rgba(232, 245, 255, 0.3)); }
+.pcWalletAvatar { border-color: #e0e3eb; border-radius: 12px; background: linear-gradient(135deg, #eeebff, #e8f4ff); color: #4e5da7; }
+.pcStrategyMetrics dt { color: #898d96; }
+.pcStrategyMetrics dd,
+.pcTable .numeric,
+.pcInlineSummary strong,
+.pcInlineSummary .pcPnl,
+.pcAccountSummary strong,
+.pcPnl { color: #24262c; }
+.pcPnl.profit { color: var(--pc-green); text-shadow: none; }
+.pcPnl.loss { color: var(--pc-red); text-shadow: none; }
+
+.pcBadge { border-radius: 999px; background: #f3f4f7; color: #676c76; }
+.pcBadge.success { border-color: rgba(7, 153, 104, 0.18); background: var(--pc-green-soft); color: var(--pc-green); }
+.pcBadge.warning { border-color: rgba(168, 111, 17, 0.2); background: var(--pc-amber-soft); color: var(--pc-amber); }
+.pcBadge.danger { border-color: rgba(217, 72, 95, 0.18); background: var(--pc-red-soft); color: var(--pc-red); }
+.pcBadge.processing,
+.pcBadge.buy { border-color: rgba(83, 109, 254, 0.18); background: var(--pc-blue-soft); color: #5267e3; }
+.pcBadge.sell { border-color: rgba(217, 72, 95, 0.18); background: var(--pc-red-soft); color: #d9485f; }
+.pcBadge.neutral { border-color: #e0e3e9; background: #f5f6f8; color: #747984; }
+
+.pcSwitch { border-color: #d8dce4; background: #e7e9ee; }
+.pcSwitch span { background: #9297a2; }
+.pcSwitch.on { border-color: rgba(83, 109, 254, 0.35); background: rgba(83, 109, 254, 0.2); }
+.pcSwitch.on span { background: #536dfe; box-shadow: none; }
+
+.pcActionMenu summary,
+.pcActionMenu > div { border-color: #dde1e8; background: #fff; color: #555a64; }
+.pcActionMenu > div { border-radius: 12px; box-shadow: 0 18px 45px rgba(36, 42, 55, 0.12); }
+
+.pcTable th { border-bottom-color: #e5e8ed; background: #fafbfc; color: #7d828c; }
+.pcTable td { border-bottom-color: #eef0f3; background: transparent; color: #616670; }
+.pcTable tbody tr:hover td { background: rgba(235, 237, 255, 0.32); }
+a.pcMarketIdentity:hover strong { color: #5367d9; }
+
+.pcSegmented { border-color: #e0e3e9; border-radius: 999px; background: #f1f3f6; }
+.pcSegmented button { color: #797e88; }
+.pcSegmented button.active { background: #fff; color: #17181c; box-shadow: 0 4px 12px rgba(35, 40, 52, 0.08); }
+.pcSelect { color: #7e838d; }
+.pcSelect select,
+.pcField input { border-color: #dde1e8; border-radius: 10px; background: #fff; color: #2f3238; }
+.pcField { color: #555a64; }
+.pcField input::placeholder { color: #adb1b9; }
+.pcField input:focus,
+.pcSelect select:focus { border-color: #7889ee; box-shadow: 0 0 0 3px rgba(83, 109, 254, 0.1); }
+
+.pcInlineSummary { border-bottom-color: #e8eaef; background: #fafbfc; }
+.pcInlineSummary > div { border-right-color: #e8eaef; }
+.pcInlineSummary > div > span { color: #838892; }
+.pcInlineSummary > p { background: var(--pc-amber-soft); color: var(--pc-amber); }
+.pcAlert { border-color: #e0e3e9; border-radius: 13px; background: rgba(255, 255, 255, 0.9); color: #50555f; }
+.pcAlert.danger { border-color: rgba(217, 72, 95, 0.16); background: #fff6f7; color: #c33f55; }
+.pcLoading,
+.pcEmptyState { color: #858a94; }
+.pcLoading > span { border-radius: 50%; background: #536dfe; box-shadow: 0 0 0 5px rgba(83, 109, 254, 0.1); }
+.pcEmptyIcon { border-color: #e2e5eb; border-radius: 14px; background: linear-gradient(135deg, #f1efff, #edf7ff); color: #6173df; }
+.pcEmptyState h2 { color: #292b31; }
+
+.pcModalBackdrop { background: rgba(31, 35, 45, 0.26); backdrop-filter: blur(10px); }
+.pcModal { border-color: #e1e4ea; border-radius: 18px; background: #fff; box-shadow: 0 35px 100px rgba(35, 41, 54, 0.2); }
+.pcModal > header { border-bottom-color: #e8eaef; background: #fafbfc; }
+.pcModal h2 { color: #23252a; }
+.pcIconButton { border-color: #dde1e8; background: #fff; color: #575c66; }
+.pcField > span small,
+.pcField > small { color: #8e929b; }
+.pcFormHint { background: #f7f8fa; color: #777c86; }
+.pcFormError { background: var(--pc-red-soft); color: var(--pc-red); }
+.pcFormSuccess { background: var(--pc-green-soft); color: var(--pc-green); }
+.pcAccountSummary span,
+.pcCommandHint { color: #838892; }
+.pcAccountSummary strong { color: #27292f; }
+.pcCommandHint code { border-color: #e0e3e9; background: #f7f8fa; color: #5367d9; }
+
+.pcDailyPnlRanges { border-color: #e0e3e9; background: #f1f3f6; }
+.pcDailyPnlRanges button { color: #797e88; }
+.pcDailyPnlRanges button:hover { color: #17181c; }
+.pcDailyPnlRanges button.active { background: #fff; color: #17181c; box-shadow: 0 4px 12px rgba(35, 40, 52, 0.08); }
+.pcDailyPnlSummary { border-color: #e5e8ed; background: transparent; }
+.pcDailyPnlSummary dt,
+.pcDailyPnlUnit,
+.pcDailyPnlDates { color: #858a94; }
+.pcDailyPnlSummary dd { color: #202228; filter: none; }
+.pcDailyPnlSummary dd.invested { color: #3d7edb; filter: none; }
+.pcDailyPnlSummary dd.days { color: #7364cb; filter: none; }
+.pcDailyPnlSummary dd.profit { color: var(--pc-green); filter: none; }
+.pcDailyPnlSummary dd.loss { color: var(--pc-red); filter: none; }
+.pcDailyPnlGridLine { background: #edf0f3; }
+.pcDailyPnlGridLine.zero { background: #cfd4dc; }
+.pcDailyPnlColumn.profit .pcDailyPnlBar { background: linear-gradient(180deg, #40c896, #079968); box-shadow: none; }
+.pcDailyPnlColumn.loss .pcDailyPnlBar { background: linear-gradient(180deg, #ee7083, #d9485f); box-shadow: none; }
+.pcDailyPnlColumn.flat .pcDailyPnlBar { background: #c9ced7; }
+.pcDailyPnlTooltip { border-color: #e0e3e9; background: #fff; color: #24262c; box-shadow: 0 10px 28px rgba(40, 46, 60, 0.12); }
+
+/* Dense whale views share the same light surfaces while keeping semantic
+   trading colors intact. */
+.whaleHealthBanner,
+.whaleCategoryBar,
+.whaleMarketHeader,
+.whaleSide > header,
+.whaleEntryHeader,
+.whaleTradeLoading,
+.whaleTradeDetail,
+.whaleModalFooter,
+.whaleFollowMarket,
+.whalePreviewGrid > div,
+.whalePriceComparison,
+.whalePreviewWarning,
+.whaleReserveWarning,
+.whaleSettingsStatus > div,
+.whaleExclusionManager,
+.whaleExclusionItem,
+.whaleExclusionEmpty,
+.whaleRuleTabs button,
+.whaleHistoryTable th,
+.whaleHistoryTable td {
+  border-color: #e5e8ed;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.whaleCategoryBar button,
+.whaleMarketBadges > span,
+.whaleMarketIcon,
+.whaleQuickAmounts button,
+.whaleFilterField input,
+.whaleFilterField select,
+.whaleAmountInput input,
+.whaleConfirmation input,
+.whaleDateFilters input {
+  border-color: #dfe3e9;
+  background: #fff;
+  color: #555a64;
+}
+
+.whaleCategoryBar button:hover,
+.whaleQuickAmounts button:hover { border-color: #c8cdd6; color: #17181c; }
+.whaleCategoryBar button.active,
+.whaleRuleTabs button.active { border-color: rgba(83, 109, 254, 0.24); background: var(--pc-blue-soft); color: #5267d9; box-shadow: inset 2px 0 #6477ed; }
+.whaleCategoryBar button.active span { background: rgba(83, 109, 254, 0.1); color: #5267d9; }
+.whaleFilterField input:focus,
+.whaleFilterField select:focus,
+.whaleAmountInput input:focus,
+.whaleConfirmation input:focus,
+.whaleDateFilters input:focus { border-color: #7889ee; box-shadow: 0 0 0 3px rgba(83, 109, 254, 0.1); }
+
+.whaleMarketHeadline > div > a,
+.whaleSide > header strong,
+.whaleWallet strong,
+.whaleEntryMetric strong,
+.whaleTradeRow strong,
+.whaleFollowMarket strong,
+.whalePreviewGrid dd,
+.whaleSettingsStatus strong,
+.whaleExclusionHeading h3,
+.whaleExclusionItem a,
+.whaleHistoryTable td,
+.whaleHistoryTable td > a,
+.whaleHistoryTable .whaleHistoryWalletLink strong { color: #292b31; }
+
+.whaleMarketHeadline > div > a:hover,
+.whaleWallet:hover strong,
+.whaleExclusionItem a:hover,
+.whaleHistoryTable .whaleHistoryWalletLink:hover strong { color: #5367d9; }
+.whaleMarketTotals strong,
+.whaleHistoryPanel > .pcPanelHeader > strong,
+.whaleExclusionHeading > strong { color: #5367d9; text-shadow: none; }
+.whaleOutcomeMark.positive,
+.whaleHistoryTable .profit { color: var(--pc-green); }
+.whaleOutcomeMark.negative,
+.whaleHistoryTable .loss { color: var(--pc-red); }
+.whaleEntry,
+.whaleTradeRow,
+.whaleHistoryTable td { border-bottom-color: #eceef2; }
+
+@media (min-width: 961px) {
+  .pcContent { gap: 20px !important; padding: 30px 34px 56px !important; }
+  .pcTopbar { min-height: 88px !important; padding: 17px 34px !important; }
+  .pcTitleGroup h1 { font-size: 22px !important; }
+  .pcMetricCard { min-height: 142px; padding: 22px 22px 19px !important; }
+  .pcMetricCard > span { font-size: 11px !important; }
+  .pcMetricCard > strong { margin: 13px 0 10px !important; font-size: clamp(24px, 2vw, 32px) !important; }
+  .pcMetricCard > small { font-size: 10px !important; }
+  .pcPanelHeader { min-height: 82px !important; padding: 18px 22px !important; }
+  .pcPanelHeader h2 { font-size: 16px !important; }
+  .pcPanelHeader p { font-size: 12px !important; }
+  .pcStrategyRow { min-height: 96px !important; padding: 16px 22px !important; }
+  .pcWalletAvatar { width: 40px !important; height: 40px !important; }
+  .pcStrategyIdentity strong,
+  .pcWalletCell strong { font-size: 14px !important; }
+  .pcStrategyMetrics dd { font-size: 14px !important; }
+  .pcTable td { font-size: 12px !important; }
+}
+
+@media (max-width: 960px) {
+  .pcMain { margin-left: 0; }
+  .pcSidebar { width: 248px; }
+}
+
+@media (max-width: 640px) {
+  .pcDailyPnlPanel .pcPanelHeader {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .pcDailyPnlPanel .pcPanelHeader > div:first-child,
+  .pcDailyPnlHeaderTools { width: 100%; }
+  .pcDailyPnlHeaderTools { align-items: stretch; }
+  .pcDailyPnlSummary { width: 100%; justify-content: space-between; }
+  .pcDailyPnlSummary > div { min-width: 0; justify-items: start; }
+}
+
+/* Complete the light treatment for the monitoring dashboard's purpose-built
+   components, which intentionally sit outside the generic panel primitives. */
+.whaleRuleTabs {
+  border-color: #e1e4ea;
+  background: #e1e4ea;
+}
+
+.whaleRuleTabs button {
+  background: #fff;
+  color: #747984;
+}
+
+.whaleRuleTabs button:hover { background: #f7f8fb; }
+.whaleRuleTabs button.active {
+  background: linear-gradient(105deg, #f0edff, #eaf5ff);
+  color: #5367d9;
+  box-shadow: inset 3px 0 #6577f6;
+}
+
+.whaleSimpleSort { color: #7f848e; }
+.whaleSimpleSort select {
+  border-color: #dde1e8;
+  border-radius: 10px;
+  background: #fff;
+  color: #33363d;
+}
+.whaleSimpleSort select:focus { border-color: #7889ee; box-shadow: 0 0 0 3px rgba(83, 109, 254, 0.1); }
+.whaleSimpleMeta strong { color: #555a64; }
+.whaleSimpleMeta span { color: #8a8f99; }
+
+.whaleDivergencePanel {
+  border-color: #e5e8ed;
+  box-shadow: 0 16px 42px rgba(39, 45, 59, 0.04), inset 3px 0 #8b7cf2;
+}
+.whaleDivergenceHeader {
+  border-bottom-color: #e8eaef;
+  background: linear-gradient(105deg, rgba(241, 235, 255, 0.68), rgba(247, 250, 255, 0.72));
+}
+.whaleDivergenceTitle h2 { color: #2b2d33; }
+.whaleDivergenceTitle p { color: #8a8f99; }
+.whaleDivergenceIcon { border-color: #d9d2f5; background: #f3efff; color: #7768ce; }
+.whaleDivergenceActions > strong { color: #b05e43; }
+.whaleDivergenceActions button { border-color: #e4d8d1; border-radius: 999px; background: #fff; color: #9a674f; }
+.whaleDivergenceActions button:hover,
+.whaleDivergenceActions button.active { border-color: #d7a68d; background: #fff6f1; color: #a95737; }
+.whaleDivergenceList { background: #e8eaef; }
+.whaleDivergenceCard,
+.whaleDivergenceEmpty { background: #fff; }
+.whaleDivergenceMarket > a { color: #34373e; }
+.whaleDivergenceMarket > a:hover { color: #5367d9; }
+.whaleDivergenceSide { border-color: #e2e5ea; background: #fafbfc; }
+.whaleDivergenceSide > div:first-child span,
+.whaleDivergenceSide > div:first-child strong { color: #444850; }
+.whaleDivergenceBar { background: #e7e9ee; }
+.whaleDivergenceSide footer span,
+.whaleDivergenceSide footer b,
+.whaleDivergenceConclusion span { color: #858a94; }
+.whaleDivergenceConclusion { border-top-color: #e8eaef; }
+.whaleDivergenceConclusion strong { color: #a95737; }
+.whaleDivergenceEmpty strong { color: #4a4e57; }
+.whaleDivergenceEmpty p { color: #8b909a; }
+
+.whaleOperationsPanel > header,
+.whaleRecentHistory > header {
+  border-bottom-color: #e7e9ee;
+  background: #fafbfc;
+}
+.whaleOperationsPanel > header h2,
+.whaleRecentHistory > header h2 { color: #292b31; }
+.whaleOperationsPanel dl { background: #e8eaef; }
+.whaleOperationsPanel dl > div { background: #fff; }
+.whaleOperationsPanel dt { color: #858a94; }
+.whaleOperationsPanel dd { color: #34373e; }
+.whaleRecentHistory > header > strong { color: #5367d9; }
+.whaleRecentHistoryList { scrollbar-color: #c9ced7 #f4f5f7; }
+.whaleRecentHistoryList article { border-bottom-color: #eceef2; background: #fff; }
+.whaleRecentHistoryTopline a { color: #34373e; }
+.whaleRecentHistoryTopline a:hover,
+.whaleRecentMarket:hover { color: #5367d9; }
+.whaleRecentHistoryTopline strong { color: #5367d9; }
+.whaleRecentMarket { color: #676c76; }
+.whaleRecentHistoryDetails span,
+.whaleRecentHistoryDetails time,
+.whaleRecentHistoryMeta b,
+.whaleRecentHistoryEmpty { color: #858a94; }
+.whaleHistoryExpand { border-top-color: #e4e7ec; background: #f8f9fb; color: #5f646e; }
+.whaleHistoryExpand:hover:not(:disabled) { background: #f0f2f6; color: #25272d; }
+
+.whaleWalletHeader {
+  border-bottom-color: #e7e9ee;
+  background: linear-gradient(105deg, #fafaff, #f7fbff 70%);
+}
+.whaleWalletAvatar { border-color: #dfe3ea; background: #f0f2f6; box-shadow: 0 0 0 3px rgba(83, 109, 254, 0.06); }
+.whaleWalletAvatarFallback { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22); }
+.whaleWalletIdentity strong { color: #292b31; }
+.whaleWalletIdentityMeta,
+.whaleWalletIdentityMeta code,
+.whaleWalletIdentityMeta i { color: #858a94; }
+.whaleWalletIdentity:hover strong { color: #5367d9; }
+.whaleWalletTotal span,
+.whaleWalletTotal small { color: #858a94; }
+.whaleWalletTotal strong { color: #27292f; }
+.whaleHoldingHeader { border-bottom-color: #e5e8ed; background: #fafbfc; color: #7f848e; }
+.whaleHoldingRow { border-bottom-color: #eceef2; background: #fff; }
+.whaleHoldingRow:hover { background: #fafaff; }
+.whaleHoldingMarketIcon { border-color: #e0e3e9; background: #f4f5f7; }
+.whaleHoldingMarketIcon.fallback { color: #858a94; }
+.whaleHoldingMarketContent > a { color: #34373e; }
+.whaleHoldingMarketContent > a:hover { color: #5367d9; }
+.whaleHoldingMetric > span,
+.whaleHoldingMetric small { color: #858a94; }
+.whaleHoldingMetric strong { color: #33363d; }
+
+.whaleProfitScenario,
+.pcWhaleSettingSummary { border-color: #e1e4ea; background: #fafbfc; }
+.whaleProfitScenario > span,
+.whaleProfitScenario > small,
+.whaleProfitScenario dt,
+.pcWhaleSettingSummary span,
+.pcWhaleSettingSummary small { color: #858a94; }
+.whaleProfitScenario > strong,
+.whaleProfitScenario dd,
+.pcWhaleSettingSummary strong { color: #34373e; }
+.whaleProfitScenario dl > div { border-top-color: #e5e8ed; }
+
+.whaleTerminalFrame {
+  border-color: #dfe3e9;
+  background: #f8f9fb;
+  box-shadow: inset 0 0 24px rgba(61, 69, 87, 0.03), 0 10px 25px rgba(41, 47, 60, 0.05);
+}
+.whaleTerminalChrome { border-bottom-color: #e2e5ea; background: #f0f2f5; color: #878c96; }
+.whaleTerminalChrome code { color: #6e737d; }
+.whaleRequestTerminal { background: #f8f9fb; color: #5f646e; scrollbar-color: #c9ced7 #f0f2f5; }
+.whaleRequestTerminal::-webkit-scrollbar-track { background: #f0f2f5; }
+.whaleRequestTerminal::-webkit-scrollbar-thumb { border-color: #f0f2f5; background: #c9ced7; }
+.whaleTerminalLine time { color: #9a9ea7; }
+.whaleTerminalLine code { color: #555a64; }
+.whaleTerminalLine code strong { color: #25272d; }
+.whaleTerminalLine.continuation code { color: #7d828c; }
+.whaleTerminalEmpty { color: #9398a2; }
+
+/* BigModel uses MiSans for Latin glyphs and PingFang SC for Chinese. */
+@font-face {
+  font-family: "MiSans";
+  src: url("/fonts/misans-latin-400.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/fonts/misans-latin-500.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/fonts/misans-latin-600.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 600;
+}
+
+/* BigModel typography and the card reveal used on its current landing page. */
+.pcRoot {
+  font-family: "MiSans", "PingFang SC", "PingFang HK", "Helvetica Neue", Helvetica, "Microsoft Yahei", "微软雅黑", Arial, sans-serif;
+  font-synthesis: none;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.pcRoot button,
+.pcRoot input,
+.pcRoot select,
+.pcRoot textarea { font-family: inherit; }
+
+.pcBrand strong,
+.pcTitleGroup h1,
+.pcPanelHeader h2,
+.pcMetricCard > strong,
+.pcStrategyIdentity strong,
+.pcWalletCell strong,
+.pcMarketIdentity strong,
+.pcTable td > strong,
+.pcInlineSummary strong,
+.pcAccountSummary strong {
+  font-weight: 600;
+}
+
+.pcBrand strong { letter-spacing: -0.015em; }
+.pcTitleGroup h1,
+.pcPanelHeader h2 { letter-spacing: -0.025em; }
+
+.pcNavigation a,
+.pcButton,
+.pcIconButton,
+.pcSegmented button,
+.pcSwitch,
+.pcActionMenu summary,
+.pcActionMenu button,
+.pcMetricCard > span,
+.pcPanelCount,
+.pcRecordCount,
+.pcBadge {
+  font-weight: 500;
+}
+
+.pcMetricCard > span { letter-spacing: 0; }
+.pcMetricCard > small { font-weight: 400; }
+.pcPixelAmount { letter-spacing: -0.025em; }
+
+.pcStrategyMetrics dd,
+.pcTable .numeric,
+.pcInlineSummary .pcPnl,
+.pcAccountSummary strong,
+.pcPnl { font-weight: 500; }
+
+.pcRoot :where(
+  .pcPnl,
+  .whaleMarketTotals strong,
+  .whaleSide > header strong,
+  .whaleWallet span,
+  .whaleEntryMetric strong,
+  .whaleTradeRow,
+  .whalePreviewHero > strong,
+  .whalePreviewGrid dd,
+  .whaleExecutionResult dd,
+  .whaleHistoryPanel > .pcPanelHeader > strong,
+  .whaleHistoryTable td.numeric,
+  .whaleStatsHeroCard > strong,
+  .whaleStatsCohortRate strong,
+  .whaleStatsCohortCard dd,
+  .whaleStatsTrendRow > strong,
+  .whaleStatsBandGrid strong,
+  .whaleStatsSignalsPanel > .pcPanelHeader > strong,
+  .whaleStatsTable td.numeric,
+  .whaleDivergenceActions > strong,
+  .whaleDivergenceSide > div:first-child strong,
+  .whaleDivergenceSide footer b,
+  .whaleDivergenceConclusion strong,
+  .whaleOperationsPanel dd,
+  .whaleRecentHistory > header > strong,
+  .whaleRecentHistoryTopline strong,
+  .whaleRecentHistoryDetails time,
+  .whaleRecentHistoryMeta b,
+  .whaleWalletAvatarFallback,
+  .whaleWalletIdentityMeta,
+  .whaleWalletTotal strong,
+  .whaleHoldingMetric strong,
+  .whaleProfitScenario > strong,
+  .whaleProfitScenario dd,
+  .pcWhaleSettingSummary strong,
+  .whaleRequestWhen strong,
+  .whaleRecordMetrics .pcMetricCard > strong,
+  .whaleTimelineItem > b,
+  .whalePositionConclusion b
+) { font-family: inherit; }
+
+.pcInteractiveCard {
+  --pc-card-x: 50%;
+  --pc-card-y: 50%;
+  isolation: isolate;
+  overflow: hidden;
+  cursor: default;
+  transform: translate3d(0, 0, 0);
+  transition:
+    transform 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 300ms ease,
+    box-shadow 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pcMetricCard.pcInteractiveCard::after {
+  position: absolute;
+  inset: -1px;
+  z-index: 0;
+  width: auto;
+  height: auto;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle 230px at var(--pc-card-x) var(--pc-card-y), rgba(255, 255, 255, 0.46), transparent 62%),
+    linear-gradient(125deg, #128ff3 0%, #11b8eb 52%, #35d9df 100%);
+  content: "";
+  opacity: 0;
+  transform: scale(1.04);
+  transition:
+    opacity 300ms ease,
+    transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+
+.pcMetricCard.pcInteractiveCard::before {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: auto;
+  height: auto;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.42) 0.55px, transparent 0.75px);
+  background-size: 4px 4px;
+  content: "";
+  opacity: 0;
+  transition: opacity 300ms ease;
+  pointer-events: none;
+}
+
+.pcMetricCard.pcInteractiveCard > * {
+  position: relative;
+  z-index: 2;
+  transition: color 260ms ease, opacity 260ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pcMetricCard.pcInteractiveCard:hover {
+    border-color: rgba(255, 255, 255, 0.7);
+    box-shadow: 0 24px 54px rgba(22, 153, 222, 0.25);
+    transform: translate3d(0, -6px, 0);
+  }
+
+  .pcMetricCard.pcInteractiveCard:hover::after {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  .pcMetricCard.pcInteractiveCard:hover::before { opacity: 0.18; }
+
+  .pcMetricCard.pcInteractiveCard:hover > span,
+  .pcMetricCard.pcInteractiveCard:hover > small,
+  .pcMetricCard.pcInteractiveCard:hover > strong,
+  .pcMetricCard.pcInteractiveCard:hover > strong.profit,
+  .pcMetricCard.pcInteractiveCard:hover > strong.loss {
+    color: #fff;
+    text-shadow: none;
+  }
+
+  .pcMetricCard.pcInteractiveCard:hover > small { opacity: 0.86; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pcInteractiveCard,
+  .pcInteractiveCard::before,
+  .pcInteractiveCard::after,
+  .pcInteractiveCard > * { transition-duration: 0.01ms !important; }
+}
+
+/* Financial figures need a denser data face than the editorial MiSans text. */
+.pcRoot {
+  --pc-data-font: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.pcMetricCard > strong,
+.pcPnl,
+.pcStrategyMetrics dd,
+.pcTable .numeric,
+.pcInlineSummary strong,
+.pcAccountSummary strong,
+.whaleMarketTotals strong,
+.whaleEntryMetric strong,
+.whalePreviewHero > strong,
+.whalePreviewGrid dd,
+.whaleExecutionResult dd,
+.whaleWalletTotal strong,
+.whaleHoldingMetric strong,
+.whaleProfitScenario > strong,
+.whaleProfitScenario dd,
+.pcWhaleSettingSummary strong,
+.whaleRecordMetrics .pcMetricCard > strong,
+.whaleStatsHeroCard > strong,
+.whaleStatsCohortRate strong,
+.whaleStatsBandGrid strong,
+.whaleStatsTable td.numeric {
+  font-family: var(--pc-data-font);
+  font-feature-settings: "kern" 1, "tnum" 1;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.pcMetricCard > strong .pcPixelAmount { letter-spacing: -0.015em; }
+
+.pcPnl small {
+  font-family: "MiSans", "PingFang SC", "PingFang HK", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* BigModel Docs refinement: Inter typography, quiet surfaces and compact rhythm. */
+@font-face {
+  font-family: "InterDocs";
+  src: url("/fonts/inter-variable-latin.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 100 900;
+}
+
+@font-face {
+  font-family: "PaperMono";
+  src: url("/fonts/paper-mono-variable.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 100 800;
+}
+
+.pcRoot {
+  --pc-bg: #f7f8fa;
+  --pc-sidebar: #fbfbfc;
+  --pc-surface: #fff;
+  --pc-surface-2: #f7f8fa;
+  --pc-surface-3: #f0f2f6;
+  --pc-line: #ebecf0;
+  --pc-line-soft: #f0f1f3;
+  --pc-text: #0b0c0e;
+  --pc-text-2: #5e5e66;
+  --pc-text-3: #8d8e99;
+  --pc-blue: #134cff;
+  --pc-blue-strong: #0035e5;
+  --pc-blue-soft: #ebeffe;
+  --pc-green: #008f62;
+  --pc-green-soft: #e8f7f1;
+  --pc-red: #d8454b;
+  --pc-red-soft: #fff0f0;
+  --pc-amber: #a46200;
+  --pc-amber-soft: #fff7e6;
+  --pc-data-font: "InterDocs", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  min-height: 100vh;
+  background: #f7f8fa;
+  color: var(--pc-text);
+  font-family: "InterDocs", "PingFang SC", "PingFang HK", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-synthesis: none;
+  line-height: 1.5;
+}
+
+.pcRoot::before,
+.pcRoot::after { display: none; }
+
+.pcSidebar {
+  width: 232px;
+  border-right: 1px solid var(--pc-line);
+  background: #fbfbfc;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.pcBrand {
+  height: 72px;
+  gap: 11px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--pc-line);
+  background: #fff;
+}
+
+.pcBrandMark {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, 0.16);
+}
+
+.pcBrand strong {
+  color: #0b0c0e;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.pcBrand small {
+  margin-top: 1px;
+  color: #8d8e99;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.055em;
+}
+
+.pcNavigation {
+  gap: 2px;
+  padding: 20px 12px;
+}
+
+.pcNavLabel {
+  padding: 0 10px 7px;
+  color: #8d8e99;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.pcNavLabelSecondary {
+  margin-top: 18px;
+  padding-top: 0;
+}
+
+.pcNavigation a {
+  min-height: 40px;
+  gap: 9px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #5e5e66;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+.pcNavigation a:hover {
+  border-color: transparent;
+  background: #f0f2f6;
+  color: #1f2328;
+  transform: none;
+}
+
+.pcNavigation a.active {
+  border-color: transparent;
+  background: #ebeffe;
+  color: #134cff;
+  box-shadow: none;
+}
+
+.pcNavIcon,
+.pcNavigation a.active .pcNavIcon {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: currentColor;
+}
+
+.pcSidebarStatus {
+  margin: auto 12px 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--pc-line);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.pcSidebarStatus strong { color: #4b4d55; font-size: 12px; font-weight: 500; }
+.pcSidebarStatus small { color: #8d8e99; font-size: 11px; }
+
+.pcMain { margin-left: 232px; }
+
+.pcTopbar {
+  min-height: 72px;
+  padding: 12px 30px;
+  border-bottom: 1px solid var(--pc-line);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: none;
+  backdrop-filter: blur(14px) saturate(120%);
+}
+
+.pcTitleGroup h1 {
+  color: #0b0c0e;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.pcTitleGroup p {
+  margin-top: 2px;
+  color: #8d8e99;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.pcAsOf { color: #8d8e99; font-size: 11px; }
+
+.pcContent {
+  width: min(100%, 1480px);
+  gap: 18px;
+  padding: 26px 30px 54px;
+}
+
+.pcButton,
+.pcIconButton,
+.pcSegmented button,
+.pcActionMenu summary,
+.pcActionMenu button {
+  border-radius: 8px;
+  font-family: inherit;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.pcButton {
+  min-height: 36px;
+  padding: 0 14px;
+  border-color: #dfe0e5;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, 0.05);
+  color: #2a2a2e;
+  font-size: 12px;
+}
+
+.pcButton.primary {
+  border-color: #134cff;
+  background: #134cff;
+  box-shadow: 0 1px 2px rgba(19, 76, 255, 0.18);
+  color: #fff;
+}
+
+.pcButton.primary:hover { border-color: #0035e5; background: #0035e5; }
+.pcButton.ghost { border-color: #dfe0e5; background: #fff; color: #5e5e66; }
+.pcButton.ghost:hover { border-color: #cfd1d4; background: #f7f8fa; color: #1f2328; }
+
+.pcMetricGrid { gap: 12px; }
+
+.pcMetricCard {
+  min-height: 136px;
+  padding: 20px 20px 18px !important;
+  border: 1px solid var(--pc-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, 0.035);
+  backdrop-filter: none;
+}
+
+.pcMetricCard:not(.pcInteractiveCard)::before,
+.pcMetricCard:not(.pcInteractiveCard)::after { display: none; }
+
+.pcMetricCard > span {
+  color: #696e7b;
+  font-size: 12px !important;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.pcMetricCard > strong {
+  margin: 12px 0 8px !important;
+  color: #0b0c0e;
+  font-size: clamp(27px, 2.4vw, 35px) !important;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+}
+
+.pcMetricCard > small {
+  color: #8d8e99;
+  font-size: 11px !important;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.pcPanel,
+.pcAnalysisLegacy .walletSection,
+.pcAnalysisLegacy .contentPanel,
+.whaleDivergencePanel,
+.whaleOperationsPanel,
+.whaleRecentHistory,
+.whaleWalletCard,
+.whaleTerminalFrame {
+  border: 1px solid var(--pc-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, 0.035);
+  backdrop-filter: none;
+}
+
+.pcPanelHeader {
+  min-height: 72px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--pc-line);
+  background: #fff;
+}
+
+.pcPanelHeader.compact { min-height: 62px; }
+
+.pcPanelHeader h2 {
+  margin-top: 1px;
+  color: #1f2328;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.pcPanelHeader p {
+  margin-top: 3px;
+  color: #8d8e99;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pcEyebrow {
+  color: #134cff;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+}
+
+.pcPanelCount,
+.pcRecordCount,
+.pcBadge {
+  border-color: #dfe0e5;
+  border-radius: 6px;
+  background: #f7f8fa;
+  color: #696e7b;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.pcBadge.success { border-color: #cdeee2; background: #e8f7f1; color: #008f62; }
+.pcBadge.warning { border-color: #f2dfbd; background: #fff7e6; color: #a46200; }
+.pcBadge.danger { border-color: #f2cfd1; background: #fff0f0; color: #d8454b; }
+
+.pcStrategyRow,
+.pcTable td,
+.pcTable th,
+.pcAnalysisLegacy .positionsTable td,
+.whaleHoldingRow { border-color: var(--pc-line); }
+
+.pcStrategyRow:hover,
+.pcTable tbody tr:hover,
+.whaleHoldingRow:hover { background: #f7f8fa; }
+
+.pcTable th,
+.whaleHoldingHeader {
+  background: #fbfbfc;
+  color: #8d8e99;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.035em;
+}
+
+.pcTable td { color: #5e5e66; font-size: 12px; }
+.pcTable td > strong { color: #1f2328; font-weight: 500; }
+.pcTable td > small { color: #8d8e99; }
+
+.pcStrategyIdentity strong,
+.pcWalletCell strong,
+.pcMarketIdentity strong { color: #1f2328; font-weight: 500; }
+
+.pcStrategyIdentity small,
+.pcWalletCell small,
+.pcMarketIdentity span,
+.pcStrategyMetrics dt { color: #8d8e99; }
+
+.pcStrategyMetrics dd,
+.pcTable .numeric,
+.pcInlineSummary strong,
+.pcAccountSummary strong,
+.pcPnl {
+  font-family: var(--pc-data-font);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.pcPnl small {
+  font-family: "InterDocs", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.pcSegmented,
+.whaleRuleTabs {
+  padding: 3px;
+  border: 1px solid var(--pc-line);
+  border-radius: 9px;
+  background: #f7f8fa;
+}
+
+.pcSegmented button,
+.whaleRuleTabs button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #696e7b;
+  box-shadow: none;
+}
+
+.pcSegmented button.active,
+.whaleRuleTabs button.active {
+  background: #fff;
+  color: #134cff;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, 0.08);
+}
+
+.pcRoot input,
+.pcRoot select,
+.pcRoot textarea {
+  border-color: #dfe0e5;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2328;
+}
+
+.pcRoot input::placeholder,
+.pcRoot textarea::placeholder { color: #b0b2bf; }
+
+.pcRoot input:focus,
+.pcRoot select:focus,
+.pcRoot textarea:focus {
+  border-color: #4a6cf7;
+  box-shadow: 0 0 0 3px rgba(19, 76, 255, 0.1);
+  outline: none;
+}
+
+.pcAlert {
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.pcAlert.danger { border-color: #f2cfd1; background: #fff0f0; color: #b83238; }
+
+.pcModalCard {
+  border-color: var(--pc-line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(11, 12, 14, 0.16);
+}
+
+.pcModalHeader,
+.pcModalFooter { border-color: var(--pc-line); background: #fff; }
+
+.pcActionMenu[open] summary,
+.pcActionMenu > div {
+  border-color: var(--pc-line);
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(11, 12, 14, 0.12);
+}
+
+.whaleDivergenceHeader,
+.whaleWalletHeader,
+.whaleOperationsPanel > header,
+.whaleRecentHistory > header {
+  border-bottom-color: var(--pc-line);
+  background: #fbfbfc;
+}
+
+.whaleDivergenceList,
+.whaleOperationsPanel dl { background: var(--pc-line); }
+.whaleDivergenceCard,
+.whaleOperationsPanel dl > div,
+.whaleRecentHistoryList article,
+.whaleHoldingRow { background: #fff; }
+
+.whaleDivergenceSide,
+.whaleProfitScenario,
+.pcWhaleSettingSummary { border-color: var(--pc-line); background: #f7f8fa; }
+
+.whaleTerminalChrome,
+.whaleRequestTerminal,
+.whaleRequestTerminal * {
+  font-family: "PaperMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.whaleTerminalChrome { border-bottom-color: var(--pc-line); background: #f0f2f6; color: #8d8e99; }
+.whaleRequestTerminal { background: #fbfbfc; color: #5e5e66; }
+
+@media (hover: hover) and (pointer: fine) {
+  .pcMetricCard.pcInteractiveCard:hover {
+    box-shadow: 0 18px 40px rgba(19, 115, 214, 0.2);
+    transform: translate3d(0, -4px, 0);
+  }
+}
+
+@media (min-width: 961px) {
+  .pcSidebar { width: 232px; }
+  .pcMain { margin-left: 232px; }
+  .pcTopbar { height: auto !important; min-height: 72px !important; padding: 12px 30px !important; }
+  .pcContent { gap: 18px !important; padding: 26px 30px 54px !important; }
+  .pcMetricCard { min-height: 136px !important; padding: 20px 20px 18px !important; }
+  .pcPanelHeader { min-height: 72px !important; padding: 16px 20px !important; }
+  .pcStrategyRow { min-height: 84px !important; padding: 14px 20px !important; }
+}
+
+@media (max-width: 960px) {
+  .pcSidebar { width: 232px; }
+  .pcMain { margin-left: 0; }
+  .pcTopbar { min-height: 68px; padding: 11px 20px; }
+  .pcContent { padding: 22px 20px 44px; }
+}
+
+@media (max-width: 640px) {
+  .pcTopbar { min-height: 62px; padding: 9px 14px; }
+  .pcTitleGroup h1 { font-size: 18px; }
+  .pcContent { gap: 14px; padding: 16px 12px 36px; }
+  .pcMetricGrid { gap: 9px; }
+  .pcMetricCard { min-height: 126px; padding: 16px !important; }
+  .pcMetricCard > strong { font-size: 24px !important; }
+  .pcPanelHeader { min-height: 64px; padding: 14px 16px; }
+}
+
+.pcMenuButton {
+  border: 1px solid #dfe0e5;
+  border-radius: 8px;
+  background: #fff;
+  color: #2a2a2e;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, 0.05);
+}
+
+.pcMenuButton:hover { background: #f7f8fa; }
+
+.whalePageError {
+  border: 1px solid #f2cfd1;
+  border-radius: 10px;
+  background: #fff0f0;
+  color: #b83238;
+  box-shadow: none;
+}
+
+.whalePageError button {
+  border: 0;
+  background: transparent;
+  color: #134cff;
+  font-weight: 500;
+}
+
+/* Match the polymarket-whale-monitor connected-state indicator. */
+.pcLiveDot,
+.pcStatusDot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 999px;
+  background: #00ad74;
+  box-shadow: 0 0 0 3px rgba(0, 173, 116, 0.12);
+  animation: pcMonitorDotPulse 2.4s ease-in-out infinite;
+}
+
+.pcStatusDot.error {
+  background: #f1343a;
+  box-shadow: 0 0 0 3px rgba(241, 52, 58, 0.12);
+  animation: none;
+}
+
+@keyframes pcMonitorDotPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(0, 173, 116, 0.1); }
+  50% { box-shadow: 0 0 0 5px rgba(0, 173, 116, 0.04); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pcLiveDot,
+  .pcStatusDot { animation: none; }
+}

@@ -15,7 +15,7 @@ from backend.models import (
     WhaleTrade,
     WhaleWallet,
 )
-from backend.monitor import utcnow
+from backend.time_utils import utcnow
 
 CONDITION_ID = "0x" + "a" * 64
 ASSET_YES = "100000000000000000001"

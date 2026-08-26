@@ -100,11 +100,6 @@ class ExecutionAccount(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    wallet_id: Mapped[int] = mapped_column(
-        ForeignKey("watched_wallets.id", ondelete="RESTRICT"),
-        nullable=False,
-        unique=True,
-    )
     signer_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
     funder_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
     signature_type: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
@@ -132,8 +127,6 @@ class ExecutionAccount(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-
-    wallet: Mapped[WatchedWallet] = relationship()
 
 
 class CopySubscription(Base):
@@ -358,8 +351,8 @@ class CopyLedger(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
-class CopyRedemptionExecution(Base):
-    __tablename__ = "copy_redemption_executions"
+class RedemptionExecution(Base):
+    __tablename__ = "redemption_executions"
     __table_args__ = (
         UniqueConstraint(
             "wallet_address", "condition_id", name="uq_copy_redemption_execution_wallet_condition"
@@ -398,7 +391,7 @@ class CopyRedemption(Base):
         ForeignKey("copy_positions.id", ondelete="RESTRICT"), nullable=False
     )
     execution_id: Mapped[int | None] = mapped_column(
-        ForeignKey("copy_redemption_executions.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("redemption_executions.id", ondelete="SET NULL"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
@@ -409,6 +402,10 @@ class CopyRedemption(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+# Temporary source compatibility while legacy fixed-wallet code is removed.
+CopyRedemptionExecution = RedemptionExecution
 
 
 class CurrentPosition(Base):

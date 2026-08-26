@@ -44,7 +44,6 @@ class GlobalSettingsUpdate(APIModel):
 
 
 class ExecutionAccountRead(APIModel):
-    wallet_id: int
     signer_address: str | None
     funder_address: str | None
     signature_type: int
@@ -66,9 +65,8 @@ class ExecutionAccountRead(APIModel):
 
 
 class ExecutionAccountUpdate(APIModel):
-    wallet_id: int = Field(gt=0)
-    signer_address: str | None = Field(default=None, max_length=42)
-    funder_address: str | None = Field(default=None, max_length=42)
+    signer_address: str = Field(min_length=42, max_length=42)
+    funder_address: str = Field(min_length=42, max_length=42)
     signature_type: Literal[1, 3] = 3
     budget_usdc: Decimal = Field(default=Decimal("400"), ge=0)
     cash_reserve_usdc: Decimal = Field(default=Decimal("240"), ge=0)

@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
-from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from alembic import command
-from alembic.config import Config as AlembicConfig
 from polymarket.models.clob.order_response import AcceptedOrder
 from polymarket.models.clob.orders import SignedOrder
 
@@ -417,50 +412,3 @@ async def test_cached_client_is_closed_explicitly():
 
     assert client.closed is True
     assert adapter._client is None
-
-
-def test_unified_migration_preserves_pending_legacy_order_for_manual_review(tmp_path: Path):
-    database_path = tmp_path / "unified-migration.db"
-    config = AlembicConfig(str(Path("backend/alembic.ini").resolve()))
-    config.attributes["database_url"] = f"sqlite+aiosqlite:///{database_path}"
-    command.upgrade(config, "0018_renormalize_fak_dust")
-    now = datetime.now(UTC).replace(tzinfo=None).isoformat(sep=" ")
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO copy_orders
-            (id, subscription_id, copy_position_id, leader_event_id, idempotency_key,
-             source, signed_order_hash, asset_id, condition_id, side, requested_size,
-             requested_usdc, leader_purchase_usdc, proportional_target_usdc, limit_price,
-             reference_price, filled_size, filled_usdc, fee_usdc, status, reason,
-             external_order_id, external_trade_id, created_at, updated_at)
-            VALUES
-            (99, NULL, NULL, NULL, 'legacy-pending', 'rehearsal', '0xfingerprint',
-             '123', ?, 'BUY', 2, 1, NULL, NULL, 0.5, 0.5, 0, 0, 0,
-             'reconciliation_pending', '原始错误', 'order-legacy', 'trade-legacy', ?, ?)
-            """,
-            (CONDITION, now, now),
-        )
-        connection.commit()
-
-    command.upgrade(config, "head")
-
-    with sqlite3.connect(database_path) as connection:
-        row = connection.execute(
-            """
-            SELECT id, status, execution_provider, external_order_id,
-                   external_trade_id, signed_order_hash, reason
-            FROM copy_orders WHERE id = 99
-            """
-        ).fetchone()
-        assert row is not None
-        assert row[:6] == (
-            99,
-            "manual_review",
-            "legacy",
-            "order-legacy",
-            "trade-legacy",
-            "0xfingerprint",
-        )
-        assert "原始错误" in row[6]
-        assert "转人工检查" in row[6]

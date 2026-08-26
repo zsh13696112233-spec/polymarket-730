@@ -19,7 +19,6 @@ class Settings:
     polygon_rpc_url: str = "https://polygon.drpc.org"
     poll_interval_seconds: float = 15.0
     redemption_poll_interval_seconds: float = 60.0
-    copy_poll_interval_seconds: float = 15.0
     copy_balance_refresh_interval_seconds: float = 10.0
     quiet_window_seconds: float = 15.0
     hard_window_seconds: float = 60.0
@@ -30,7 +29,7 @@ class Settings:
     clob_api_concurrency: int = 10
     max_backoff_seconds: float = 300.0
     start_monitor: bool = True
-    live_copy_enabled: bool = True
+    trading_enabled: bool = True
     whale_enabled: bool = True
     whale_scan_interval_seconds: float = 60.0
     whale_max_scan_pages: int = 20
@@ -62,9 +61,6 @@ class Settings:
             redemption_poll_interval_seconds=float(
                 os.getenv("POLYMARKET_REDEMPTION_POLL_INTERVAL_SECONDS", "60")
             ),
-            copy_poll_interval_seconds=float(
-                os.getenv("POLYMARKET_COPY_POLL_INTERVAL_SECONDS", "15")
-            ),
             copy_balance_refresh_interval_seconds=float(
                 os.getenv("POLYMARKET_COPY_BALANCE_REFRESH_INTERVAL_SECONDS", "10")
             ),
@@ -78,7 +74,10 @@ class Settings:
             max_backoff_seconds=float(os.getenv("POLYMARKET_MAX_BACKOFF_SECONDS", "300")),
             start_monitor=os.getenv("POLYMARKET_START_MONITOR", "1").lower()
             not in {"0", "false", "no"},
-            live_copy_enabled=os.getenv("POLYMARKET_LIVE_COPY_ENABLED", "1").lower()
+            trading_enabled=os.getenv(
+                "POLYMARKET_TRADING_ENABLED",
+                os.getenv("POLYMARKET_LIVE_COPY_ENABLED", "1"),
+            ).lower()
             in {"1", "true", "yes"},
             whale_enabled=os.getenv("POLYMARKET_WHALE_ENABLED", "1").lower()
             in {"1", "true", "yes"},

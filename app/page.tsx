@@ -1,5 +1,5 @@
-import PolyCopyWorkspace from "./components/PolyCopyWorkspace";
+import WhaleDiscoveryWorkspace from "./components/WhaleDiscoveryWorkspace";
 
 export default function Page() {
-  return <PolyCopyWorkspace view="overview" />;
+  return <WhaleDiscoveryWorkspace />;
 }

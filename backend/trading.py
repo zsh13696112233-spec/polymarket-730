@@ -5,7 +5,7 @@ import dataclasses
 import hashlib
 import json
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -16,12 +16,41 @@ from backend.polymarket import OrderBookSnapshot
 ZERO = Decimal("0")
 BASE_UNITS = Decimal("1000000")
 FAK_IGNORABLE_REMAINDER_USDC = Decimal("0.50")
+REDEMPTION_SIZE_TOLERANCE = Decimal("0.000001")
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 COLLATERAL_ADAPTER = "0xAdA100Db00Ca00073811820692005400218FcE1f"
 NEG_RISK_COLLATERAL_ADAPTER = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 V2_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
 V2_NEG_RISK_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
+
+
+def redeemable_position_payout_rate(position: Any) -> Decimal:
+    """Estimate the finalized payout exposed by a redeemable position snapshot."""
+    size = Decimal(str(position.size))
+    current_value = Decimal(str(position.current_value))
+    rate = Decimal(str(position.current_price))
+    if size > ZERO and current_value >= ZERO:
+        rate = current_value / size
+    rate = max(ZERO, min(Decimal("1"), rate))
+    if rate <= Decimal("0.01"):
+        return ZERO
+    return Decimal("1") if rate >= Decimal("0.99") else rate
+
+
+def market_worst_price(
+    reference: Decimal,
+    tick: Decimal,
+    slippage_cents: Decimal,
+    *,
+    side: str,
+) -> Decimal:
+    """Apply a slippage boundary and snap it to a valid market tick."""
+    buffer = slippage_cents / Decimal("100")
+    raw = reference + buffer if side == "BUY" else reference - buffer
+    rounding = ROUND_UP if side == "BUY" else ROUND_DOWN
+    ticks = (raw / tick).to_integral_value(rounding=rounding)
+    return max(tick, min(Decimal("1") - tick, ticks * tick))
 
 
 def error_detail(error: Exception) -> str:

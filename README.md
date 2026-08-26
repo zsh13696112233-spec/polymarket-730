@@ -1,114 +1,42 @@
-# Position Watch｜Polymarket Wallet Position Monitor
+# PolyCopy｜Polymarket 链上资金监测
 
-A local Polymarket wallet position monitor and limited auto copy-trading tool. Public watch focuses only on actual positions:
+本地运行的 Polymarket 链上大额资金监测与交易控制台。
 
-- Switch between multiple labeled wallets
-- Set a global copy ratio to show suggested hold targets on current positions, and compute suggested buy/sell shares plus estimated USDC for later net opens, adds, reduces, or closes
-- Set a read-only “My Wallet” to auto-highlight overlapping positions with watched wallets in the same market and direction
-- Overlapping positions show both sides’ share ratios, and can expand to show each side’s cost, market value, P&L, and buy lots
-- While still co-holding, the other wallet’s adds, reduces, or closes generate markable in-app alerts
-- Positions sorted by current market value, high to low
-- Show average price, current price, shares, cost, market value, and P&L
-- Backfill public trades, and view remaining buy lots by Beijing time for `All` or a specific purchase date
-- Same position bought across days keeps independent share, cost, market value, and P&L; reduces use FIFO
-- Regular positions are checked every 15 seconds; after a change stays stable for 15 seconds (max wait 60 seconds), emit copy-consumable position events
-- Record on-chain redemptions, showing redeemed shares, received USDC, and transaction hash
-- Expand change history to inspect matching fills
-- One-click jump to the Polymarket market page
-- One execution wallet can configure and run live copy-trading for multiple watched wallets at once
-- Auto copy applies to all markets still open for trading, and only handles opens, closes, and redemptions; adds and reduces are monitor-only
+## 当前能力
 
-Public monitoring does not read the target wallet’s open orders. Each wallet must be explicitly confirmed on the page before live trading starts; turning the switch off stops new buys, but continues following closes and redemptions. A separate $1 one-sided FAK dry run spends real funds to verify wallet, fees, and balances. Live private keys never enter the database, API, or logs; they can only be imported into the macOS Keychain via a hidden CLI.
+- 分别监测新号大额买入与全量超大额买入，并永久保留信号历史。
+- 按钱包、市场和 outcome 查看当前链上持仓与资金分歧。
+- 对监测信号进行真实买入预览和二次确认。
+- 查看、卖出和赎回自己的链上跟单仓位，记录费用与盈亏。
+- 使用独立执行钱包；私钥仅保存在 macOS 钥匙串中。
 
-## Three-Event Auto Copy V2
+项目不再轮询手工添加的固定钱包，也不再运行固定钱包自动跟单策略。未来的自动执行应直接消费链上监测信号，并复用现有交易执行器。
 
-Each watched wallet chooses an immutable copy strategy when it is added. Normal mode keeps the existing proportional open and single large-increase threshold. Large-increase mode independently configures a base-entry amount and ratio, two one-shot increase thresholds and ratios, and a per-market-direction exposure cap. A qualifying increase can open the first attributed position when the base entry was skipped; when both increase tiers match, only the higher tier applies. Thresholds use the stable event's net position-cost increase.
+## 配置
 
-The sum of fixed budgets across running wallets cannot exceed the execution wallet’s real-time available capital; budget, cash reserve, daily buy cap, loss circuit breaker, and current-book protection are controlled across all wallets combined.
+复制 `.env.example` 为 `.env`。`POLYMARKET_TRADING_ENABLED=0` 可紧急禁止新的真实买入与卖出；旧变量 `POLYMARKET_LIVE_COPY_ENABLED` 暂时作为兼容回退。
 
-The dashboard shows both current attributed positions and historical cycles. Current positions estimate sellable market value, unrealized P&L, and total P&L from the CLOB best bid; history shows cumulative invested, cumulative sold, and realized P&L. The activity feed combines live orders with completed redemptions, including attributed payout, realized P&L, provider, and settlement hash.
-
-The copy engine only reads stable events from regular position monitoring. In normal mode, `opened` executes one proportional FAK buy and a qualifying `increased` event can add to an existing attributed position. In large-increase mode, `opened` must reach the configured base threshold and `increased` uses the highest matching tier; `decreased` remains monitor-only. `closed` sells the full attributed position once and `redeemed` redeems it once. Opening the same asset again after a close or redemption starts a new cycle. There is no kickoff cutoff; the system only confirms the market is currently open for trading.
-
-The trading client uses the official unified `polymarket-client==0.5.0`, pUSD, and the applicable Exchange or Neg Risk Exchange adapter. It supports Proxy signature type `1` and Deposit Wallet signature type `3`, with new configs defaulting to type `3`. After binding “My Wallet”, enter the signing EOA and Polymarket funding wallet, then import the execution private key from the terminal:
+导入执行钱包私钥：
 
 ```bash
-uv run python -m backend.copy_cli set-key --account 0xYourSigningWalletAddress
+uv run python -m backend.trading_cli set-key --account 0xYourSigningWalletAddress
 ```
 
-Private key input is not echoed. For Proxy wallets that need auto-redemption, also join the Polymarket Builder Program and save Builder credentials to the Keychain:
+私钥输入不会回显，也不会写入数据库、API 或日志。
 
-```bash
-uv run python -m backend.copy_cli set-builder-creds --account 0xYourSigningWalletAddress
-```
-
-Then return to the page to verify the signing address, Proxy address, pUSD balance, and V2 Exchange approvals. The $1 dry run requires a second confirmation, must stay at or under $1 including fees, and only shows success when fills, pUSD, and outcome token balances match; dry-run positions are not included in auto copy. Use a dedicated hot wallet and do not trade that wallet manually.
-
-## Requirements
-
-- Node.js `>=22.13.0`
-- [uv](https://docs.astral.sh/uv/)
-
-## First-time setup
+## 本地运行
 
 ```bash
 npm ci
 UV_CACHE_DIR=.uv-cache uv sync
-```
-
-To change default detection parameters, copy `.env.example` to `.env` and adjust as needed.
-
-## Local run
-
-Development mode:
-
-```bash
 npm run dev:all
 ```
 
-If Polymarket needs to be accessed through the local proxy, use the one-command proxy launcher
-(the default proxy is `http://127.0.0.1:7897`):
+打开 [http://localhost:3000](http://localhost:3000)。
 
-```bash
-npm run dev:proxy
-```
-
-To use a different proxy address:
-
-```bash
-POLYMARKET_PROXY_URL=http://127.0.0.1:7890 npm run dev:proxy
-```
-
-The start script first cleanly stops any old services on ports `3000` or `8730`, then starts new processes.
-
-Open [http://localhost:3000](http://localhost:3000), then add a wallet address or Polymarket profile link on the page.
-
-Stable run:
-
-```bash
-npm run build
-npm run start:local
-```
-
-For a stable run through the proxy, replace the second command with `npm run start:proxy`.
-
-Both commands listen on localhost only. Monitoring stops when the terminal is closed.
-
-## Data
-
-The SQLite database is stored by default at:
-
-```text
-data/polymarket-watch.db
-```
-
-Wallets, current positions, public trades, pending merged changes, and history details are all persisted by the backend. Disabling a wallet does not delete history.
-
-## Verification
+## 验证
 
 ```bash
 npm test
 npm run lint
 ```
-
-Backend API docs are available at [http://127.0.0.1:8730/docs](http://127.0.0.1:8730/docs) after the service starts.

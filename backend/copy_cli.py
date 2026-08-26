@@ -6,11 +6,11 @@ import json
 
 from backend.keychain import KeychainReference, MacOSKeychain
 
-DEFAULT_SERVICE = "polymarket-wallet-monitor.copy-trading"
+DEFAULT_SERVICE = "polymarket-wallet-monitor.execution"
 
 
 def parser() -> argparse.ArgumentParser:
-    cli = argparse.ArgumentParser(description="管理自动跟单执行密钥（仅 macOS 钥匙串）")
+    cli = argparse.ArgumentParser(description="管理链上交易执行密钥（仅 macOS 钥匙串）")
     cli.add_argument(
         "action",
         choices=[

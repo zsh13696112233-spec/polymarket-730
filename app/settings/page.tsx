@@ -1,5 +1,5 @@
-import PolyCopyWorkspace from "../components/PolyCopyWorkspace";
+import ExecutionSettingsWorkspace from "../components/ExecutionSettingsWorkspace";
 
 export default function SettingsPage() {
-  return <PolyCopyWorkspace view="settings" />;
+  return <ExecutionSettingsWorkspace />;
 }

@@ -21,7 +21,6 @@ from backend.models import (
     WhaleTrade,
     WhaleWallet,
 )
-from backend.monitor import utcnow
 from backend.polymarket import (
     LargeTradeSnapshot,
     PositionSnapshot,
@@ -29,6 +28,7 @@ from backend.polymarket import (
     WhaleMarketPositionSnapshot,
     WhaleMarketSnapshot,
 )
+from backend.time_utils import utcnow
 from backend.whale import WhaleDiscoveryScanner
 
 

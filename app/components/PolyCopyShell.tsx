@@ -3,22 +3,15 @@
 import { ReactNode, useState } from "react";
 import Link from "next/link";
 
-export type WorkspaceView =
-  | "overview"
-  | "positions"
-  | "records"
-  | "whales"
-  | "settings";
+export type WorkspaceView = "whales" | "whale-records" | "settings";
 
 const navigation: Array<{
   id: WorkspaceView;
   href: string;
   label: string;
 }> = [
-  { id: "overview", href: "/", label: "总览" },
-  { id: "positions", href: "/positions", label: "持仓" },
-  { id: "records", href: "/records", label: "记录" },
-  { id: "whales", href: "/whales", label: "链上监测" },
+  { id: "whales", href: "/", label: "链上监测" },
+  { id: "whale-records", href: "/whales/records", label: "我的跟单" },
   { id: "settings", href: "/settings", label: "设置" },
 ];
 
@@ -33,13 +26,7 @@ function NavIcon({ id }: { id: WorkspaceView }) {
     "aria-hidden": true,
   };
 
-  if (id === "overview") {
-    return <svg {...common}><rect x="3.75" y="3.75" width="6.5" height="6.5" rx="1.25" /><rect x="13.75" y="3.75" width="6.5" height="6.5" rx="1.25" /><rect x="3.75" y="13.75" width="6.5" height="6.5" rx="1.25" /><rect x="13.75" y="13.75" width="6.5" height="6.5" rx="1.25" /></svg>;
-  }
-  if (id === "positions") {
-    return <svg {...common}><path d="M4 8.25h16v10.5H4z" /><path d="M8.25 8.25V6.5A1.5 1.5 0 0 1 9.75 5h4.5a1.5 1.5 0 0 1 1.5 1.5v1.75" /><path d="M4 12.25h16" /></svg>;
-  }
-  if (id === "records") {
+  if (id === "whale-records") {
     return <svg {...common}><path d="M8.5 6h11" /><path d="M8.5 12h11" /><path d="M8.5 18h11" /><path d="m3.75 6 1 1 1.75-2" /><path d="m3.75 12 1 1 1.75-2" /><path d="m3.75 18 1 1 1.75-2" /></svg>;
   }
   if (id === "whales") {
@@ -80,12 +67,12 @@ export function PolyCopyShell({
           />
           <span>
             <strong>PolyCopy</strong>
-            <small>POLYMARKET COPY TRADING</small>
+            <small>ONCHAIN SIGNAL MONITOR</small>
           </span>
         </Link>
         <nav className="pcNavigation" aria-label="主导航">
           <span className="pcNavLabel">工作台</span>
-          {navigation.slice(0, 4).map((item) => (
+          {navigation.slice(0, 2).map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}
@@ -98,7 +85,7 @@ export function PolyCopyShell({
             </Link>
           ))}
           <span className="pcNavLabel pcNavLabelSecondary">系统</span>
-          {navigation.slice(4).map((item) => (
+          {navigation.slice(2).map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}

@@ -158,7 +158,7 @@ export default function WhaleRecordsWorkspace() {
 
   return (
     <PolyCopyShell
-      active="whales"
+      active="whale-records"
       title="巨鲸跟单记录"
       subtitle="从真实买入到卖出或结算赎回，逐笔还原投入、费用与最终盈亏。"
       actions={

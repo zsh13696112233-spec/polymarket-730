@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Legacy endpoint bodies remain below the retired-route guard for one release so
+# upgrades from older clients receive a deterministic 404 instead of touching
+# removed tables. They are unreachable and will be physically compacted later.
+# ruff: noqa: F821
 import asyncio
 import json
 import secrets
@@ -12,20 +16,12 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
-from backend.broker import EventBroker
 from backend.config import Settings
-from backend.copy_cli import DEFAULT_SERVICE
-from backend.copy_trading import (
-    DAILY_LOSS_CIRCUIT_REASON,
-    CopyTradingEngine,
-    ForceBuyQuote,
-    latest_event_id,
-)
 from backend.db import Database
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
@@ -52,18 +48,11 @@ from backend.models import (
     WhaleSettings,
     WhaleTag,
 )
-from backend.monitor import WalletMonitor, fills_reconcile, utcnow
 from backend.polymarket import (
     InvalidWalletInput,
     PolymarketAPIError,
     PolymarketClient,
     parse_wallet_input,
-)
-from backend.purchase_history import (
-    ActivePositionCycle,
-    active_position_cycle,
-    build_purchase_lots,
-    opened_date,
 )
 from backend.schemas import (
     CopyActivitiesResponse,
@@ -143,6 +132,7 @@ from backend.schemas import (
     WhaleStatisticsSignalListRead,
     WhaleTagRead,
 )
+from backend.time_utils import utcnow
 from backend.trading import (
     V2_EXCHANGE_ADDRESS,
     V2_NEG_RISK_EXCHANGE_ADDRESS,
@@ -150,6 +140,7 @@ from backend.trading import (
     TradingUnavailable,
     UnifiedPolymarketTrader,
 )
+from backend.trading_cli import DEFAULT_SERVICE
 from backend.whale import (
     WhaleDiscoveryScanner,
     WhaleFollowExecutor,
@@ -1370,21 +1361,8 @@ def create_app(
             gamma_api_concurrency=resolved_settings.gamma_api_concurrency,
             clob_api_concurrency=resolved_settings.clob_api_concurrency,
         )
-        broker = EventBroker()
         whale_request_monitor = WhaleRequestMonitor(capacity=100)
-        monitor = WalletMonitor(
-            database=database,
-            client=polymarket_client,
-            broker=broker,
-            settings=resolved_settings,
-        )
         keychain = MacOSKeychain()
-        copy_engine = CopyTradingEngine(
-            database=database,
-            client=polymarket_client,
-            settings=resolved_settings,
-            keychain=keychain,
-        )
         whale_executor = WhaleFollowExecutor(
             database=database,
             client=polymarket_client,
@@ -1401,21 +1379,13 @@ def create_app(
         application.state.settings = resolved_settings
         application.state.database = database
         application.state.polymarket_client = polymarket_client
-        application.state.broker = broker
-        application.state.monitor = monitor
         application.state.keychain = keychain
-        application.state.copy_engine = copy_engine
         application.state.whale_executor = whale_executor
         application.state.whale_scanner = whale_scanner
         application.state.whale_request_monitor = whale_request_monitor
-        application.state.copy_toggle_lock = asyncio.Lock()
-        application.state.rehearsal_previews = {}
-        application.state.force_buy_previews = {}
         application.state.whale_follow_previews = {}
         application.state.whale_sell_previews = {}
         if resolved_settings.start_monitor:
-            monitor.start()
-            copy_engine.start()
             if resolved_settings.whale_enabled:
                 whale_scanner.start()
         try:
@@ -1423,8 +1393,6 @@ def create_app(
         finally:
             await whale_scanner.stop()
             await whale_executor.close()
-            await copy_engine.stop()
-            await monitor.stop()
             if owns_client:
                 await polymarket_client.close()
             await database.close()
@@ -1442,12 +1410,166 @@ def create_app(
         allow_headers=["*"],
     )
 
+    retired_prefixes = (
+        "/api/copy-trading",
+        "/api/wallets",
+        "/api/my-wallet",
+        "/api/positions",
+        "/api/position-events",
+        "/api/position-event-groups",
+        "/api/position-overlaps",
+        "/api/overlap-alerts",
+        "/api/settings",
+        "/api/stream",
+    )
+
+    @application.middleware("http")
+    async def reject_retired_fixed_wallet_api(request: Request, call_next: Any) -> Response:
+        if any(request.url.path.startswith(prefix) for prefix in retired_prefixes):
+            return JSONResponse(status_code=404, content={"detail": "固定钱包监控与跟单功能已移除"})
+        return await call_next(request)
+
+    original_openapi = application.openapi
+
+    def active_openapi() -> dict[str, Any]:
+        schema = original_openapi()
+        schema["paths"] = {
+            path: definition
+            for path, definition in schema.get("paths", {}).items()
+            if not any(path.startswith(prefix) for prefix in retired_prefixes)
+        }
+        return schema
+
+    application.openapi = active_openapi  # type: ignore[method-assign]
+
     @application.get("/healthz", response_model=HealthRead)
     async def health(request: Request) -> HealthRead:
         database: Database = request.app.state.database
         async with database.sessions() as session:
             await session.execute(text("SELECT 1"))
         return HealthRead(status="ok", database="ok")
+
+    async def verify_trade_account(request: Request) -> ExecutionAccount:
+        database: Database = request.app.state.database
+        keychain: MacOSKeychain = request.app.state.keychain
+        async with database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is None or not account.keychain_service or not account.keychain_account:
+                raise HTTPException(status_code=409, detail="请先配置执行账户和钥匙串密钥")
+            trader = UnifiedPolymarketTrader(
+                host=resolved_settings.clob_api_url,
+                keychain=keychain,
+                key_reference=KeychainReference(
+                    service=account.keychain_service,
+                    account=account.keychain_account,
+                ),
+                signature_type=account.signature_type,
+                funder_address=account.funder_address,
+                relayer_url=resolved_settings.relayer_api_url,
+                rpc_url=resolved_settings.polygon_rpc_url,
+            )
+            try:
+                await trader.ensure_ready_approvals()
+                signer_address, wallet_type, balance, allowances = await asyncio.gather(
+                    trader.signer_address(),
+                    trader.wallet_type(),
+                    trader.collateral_balance(),
+                    trader.collateral_allowances(),
+                )
+                if signer_address != (account.signer_address or "").lower():
+                    raise TradingUnavailable("钥匙串私钥与配置的签名地址不一致")
+                expected_wallet_type = {1: "POLY_PROXY", 3: "DEPOSIT_WALLET"}.get(
+                    account.signature_type
+                )
+                if wallet_type != expected_wallet_type:
+                    raise TradingUnavailable("SDK 钱包类型与 signature_type 配置不一致")
+                required_exchanges = {
+                    V2_EXCHANGE_ADDRESS.lower(),
+                    V2_NEG_RISK_EXCHANGE_ADDRESS.lower(),
+                }
+                if any(
+                    allowances.get(address, Decimal("0")) <= 0 for address in required_exchanges
+                ):
+                    raise TradingUnavailable("pUSD 尚未授权给 V2 Exchange 合约")
+            except (KeychainError, TradingUnavailable) as error:
+                account.status = "error"
+                account.last_error = str(error)[:1000]
+                account.updated_at = utcnow()
+                await session.commit()
+                raise HTTPException(status_code=502, detail=str(error)) from error
+            finally:
+                await trader.close()
+            account.collateral_balance = balance
+            account.last_balance_at = utcnow()
+            account.status = (
+                "ready" if balance > account.cash_reserve_usdc else "insufficient_balance"
+            )
+            account.last_error = None
+            account.updated_at = utcnow()
+            await session.commit()
+            return account
+
+    @application.get("/api/execution-account", response_model=ExecutionAccountRead | None)
+    async def get_trade_account(request: Request) -> ExecutionAccountRead | None:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            return execution_account_read(await session.get(ExecutionAccount, 1))
+
+    @application.put("/api/execution-account", response_model=ExecutionAccountRead)
+    async def configure_trade_account(
+        payload: ExecutionAccountUpdate,
+        request: Request,
+    ) -> ExecutionAccountRead:
+        signer = payload.signer_address.lower()
+        funder = payload.funder_address.lower()
+        if any(len(value) != 42 or not value.startswith("0x") for value in (signer, funder)):
+            raise HTTPException(status_code=422, detail="钱包地址无效")
+        reference = KeychainReference(service=DEFAULT_SERVICE, account=signer)
+        try:
+            await asyncio.to_thread(request.app.state.keychain.get_secret, reference)
+            account_status = "configured"
+        except KeychainError:
+            account_status = "missing_key"
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            now = utcnow()
+            if account is None:
+                account = ExecutionAccount(id=1, created_at=now, updated_at=now)
+                session.add(account)
+            for field, value in payload.model_dump().items():
+                setattr(account, field, value)
+            account.signer_address = signer
+            account.funder_address = funder
+            account.keychain_service = reference.service
+            account.keychain_account = reference.account
+            account.status = account_status
+            account.collateral_balance = None
+            account.last_balance_at = None
+            account.last_error = None
+            account.updated_at = now
+            await session.commit()
+            result = execution_account_read(account)
+            assert result is not None
+            return result
+
+    @application.post("/api/execution-account/verify", response_model=ExecutionAccountRead)
+    async def verify_trade_account_endpoint(request: Request) -> ExecutionAccountRead:
+        result = execution_account_read(await verify_trade_account(request))
+        assert result is not None
+        return result
+
+    @application.post("/api/execution-account/balance/refresh", response_model=ExecutionAccountRead)
+    async def refresh_trade_account(request: Request) -> ExecutionAccountRead:
+        try:
+            await request.app.state.whale_executor.refresh_balance()
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            result = execution_account_read(await session.get(ExecutionAccount, 1))
+            assert result is not None
+            return result
 
     def require_whale_module(request: Request) -> None:
         if not request.app.state.settings.whale_enabled:

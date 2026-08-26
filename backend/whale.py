@@ -19,17 +19,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from backend.config import Settings
-from backend.copy_trading import (
-    REDEMPTION_SIZE_TOLERANCE,
-    market_worst_price,
-    redeemable_position_payout_rate,
-)
 from backend.db import Database
 from backend.keychain import KeychainReference, MacOSKeychain
 from backend.models import (
-    CopyPosition,
-    CopyRedemptionExecution,
     ExecutionAccount,
+    RedemptionExecution,
     WhaleEntry,
     WhaleEntryRuleState,
     WhaleExclusion,
@@ -44,20 +38,23 @@ from backend.models import (
     WhaleTrade,
     WhaleWallet,
 )
-from backend.monitor import utcnow
 from backend.polymarket import (
     PolymarketAPIError,
     PolymarketClient,
     WhaleMarketPositionSnapshot,
 )
+from backend.time_utils import utcnow
 from backend.trading import (
+    REDEMPTION_SIZE_TOLERANCE,
     MarketTradeRequest,
     RedemptionSubmissionUnknown,
     TradeFillResult,
     TradeResult,
     TradingUnavailable,
     UnifiedPolymarketTrader,
+    market_worst_price,
     normalize_fak_result,
+    redeemable_position_payout_rate,
 )
 from backend.whale_requests import WhaleRequestMonitor, capture_whale_requests
 
@@ -1595,6 +1592,10 @@ class WhaleFollowExecutor:
         if trader is not None:
             await trader.close()
 
+    async def refresh_balance(self) -> Decimal:
+        """Refresh the shared execution-wallet collateral balance."""
+        return await self._live_balance(await self._account())
+
     async def _account(self) -> ExecutionAccount:
         async with self.database.sessions() as session:
             account = await session.get(ExecutionAccount, 1)
@@ -1687,7 +1688,7 @@ class WhaleFollowExecutor:
         amount_usdc: Decimal,
         entry_id: int,
     ) -> WhaleFollowQuote:
-        if not self.settings.live_copy_enabled:
+        if not self.settings.trading_enabled:
             raise ValueError("自动实盘已被系统紧急停用")
         async with self.database.sessions() as session:
             whale_settings = await session.get(WhaleSettings, 1)
@@ -1824,7 +1825,7 @@ class WhaleFollowExecutor:
 
     async def execute_follow(self, quote: WhaleFollowQuote, confirmation_id: str) -> int:
         async with self._lock:
-            if not self.settings.live_copy_enabled:
+            if not self.settings.trading_enabled:
                 raise ValueError("自动实盘已被系统紧急停用")
             if quote.source_wallet is not None:
                 async with self.database.sessions() as session:
@@ -2171,7 +2172,7 @@ class WhaleFollowExecutor:
         size: Decimal | None,
         sell_all: bool,
     ) -> WhaleSellQuote:
-        if not self.settings.live_copy_enabled:
+        if not self.settings.trading_enabled:
             raise ValueError("自动实盘已被系统紧急停用")
         await self._account()
         async with self.database.sessions() as session:
@@ -2449,33 +2450,24 @@ class WhaleFollowExecutor:
                     )
             return
 
-        copy_collision = ZERO
-        active_execution: CopyRedemptionExecution | None = None
+        active_execution: RedemptionExecution | None = None
         async with self.database.sessions() as session:
-            copy_collision = _decimal(
-                await session.scalar(
-                    select(func.sum(CopyPosition.attributed_size)).where(
-                        CopyPosition.condition_id == condition_id,
-                        CopyPosition.attributed_size > ZERO,
-                    )
-                )
-            )
             active_execution = await session.scalar(
-                select(CopyRedemptionExecution)
+                select(RedemptionExecution)
                 .where(
-                    CopyRedemptionExecution.wallet_address == (account.funder_address or ""),
-                    CopyRedemptionExecution.condition_id == condition_id,
-                    CopyRedemptionExecution.status.in_(
+                    RedemptionExecution.wallet_address == (account.funder_address or ""),
+                    RedemptionExecution.condition_id == condition_id,
+                    RedemptionExecution.status.in_(
                         ["pending", "submitting", "submitted", "manual_review", "completed"]
                     ),
                 )
-                .order_by(CopyRedemptionExecution.id.desc())
+                .order_by(RedemptionExecution.id.desc())
                 .limit(1)
             )
-        if copy_collision > ZERO or active_execution is not None:
+        if active_execution is not None:
             await self._mark_redemption_review(
                 [position.id for position in positions],
-                "同 condition 存在自动策略归因仓位或赎回执行，已阻止整市场赎回",
+                "同 condition 已存在赎回执行，已阻止重复提交",
             )
             return
 

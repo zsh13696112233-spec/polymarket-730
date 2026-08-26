@@ -25,7 +25,7 @@ async function render() {
   );
 }
 
-test("server-renders the PolyCopy workspace and product metadata", async () => {
+test("server-renders the chain-monitoring workspace and product metadata", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -33,13 +33,14 @@ test("server-renders the PolyCopy workspace and product metadata", async () => {
   const html = await response.text();
   assert.match(
     html,
-    /<title>PolyCopy｜专业 Polymarket 交易工具<\/title>/i,
+    /<title>PolyCopy｜Polymarket 链上资金监测<\/title>/i,
   );
   assert.match(html, /PolyCopy/);
-  assert.match(html, /总览/);
-  assert.doesNotMatch(html, /跟单/);
-  assert.match(html, /添加目标/);
-  assert.match(html, /记录/);
+  assert.match(html, /链上监测/);
+  assert.match(html, /我的跟单/);
+  assert.doesNotMatch(html, /添加目标/);
+  assert.doesNotMatch(html, /最近记录/);
+  assert.doesNotMatch(html, />策略</);
   assert.match(html, /property="og:image"/i);
   assert.match(html, /http:\/\/localhost(?::3000)?\/og\.png/i);
   assert.match(
@@ -49,10 +50,11 @@ test("server-renders the PolyCopy workspace and product metadata", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
-test("keeps PolyCopy workspace behavior in the client", async () => {
-  const [page, workspace, layout, css, icon] = await Promise.all([
+test("keeps chain monitoring and execution settings in the client", async () => {
+  const [page, workspace, settings, layout, css, icon] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/components/PolyCopyWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/WhaleDiscoveryWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ExecutionSettingsWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/icon.svg", import.meta.url), "utf8"),
@@ -65,11 +67,12 @@ test("keeps PolyCopy workspace behavior in the client", async () => {
     access(new URL("app/_sites-preview/preview.css", templateRoot)),
   );
 
-  assert.match(page, /PolyCopyWorkspace/);
-  assert.match(workspace, /NEXT_PUBLIC_API_BASE/);
-  assert.match(workspace, /copy-trading\/overview/);
-  assert.match(workspace, /copy-trading\/orders/);
-  assert.match(workspace, /跟单比例/);
+  assert.match(page, /WhaleDiscoveryWorkspace/);
+  assert.match(workspace, /whaleApi/);
+  assert.match(workspace, /api\/whales\/markets/);
+  assert.match(workspace, /api\/whales\/follow\/preview/);
+  assert.match(settings, /api\/execution-account/);
+  assert.doesNotMatch(settings, /copy-trading/);
   assert.match(layout, /lang="zh-CN"/);
   assert.doesNotMatch(layout, /next\/font|Starter Project|codex-preview/);
   assert.match(css, /@media \(max-width: 760px\)/);

@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
-const title = "PolyCopy｜专业 Polymarket 交易工具";
+const title = "PolyCopy｜Polymarket 链上资金监测";
 const description =
-  "专业、高效地管理 Polymarket 自动策略、实盘持仓、资金风险与完整执行记录。";
+  "监测 Polymarket 链上大额资金信号，并安全管理真实下单、持仓与执行记录。";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

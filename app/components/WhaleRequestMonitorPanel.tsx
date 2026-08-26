@@ -129,7 +129,7 @@ export function WhaleRequestMonitorPanel() {
               <div className="whaleTerminalEntry success" key={record.id}>
                 <div className="whaleTerminalLine">
                   <time>{consoleTime(record.finished_at || record.started_at)}</time>
-                  <b className="success">成功</b>
+                  <b className="success">success</b>
                   <code>
                     <span><strong>{record.method}</strong> {record.url}</span>
                     <small>{`HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>

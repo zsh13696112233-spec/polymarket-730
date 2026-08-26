@@ -324,7 +324,7 @@ describe("巨鲸请求监测面板", () => {
 
     render(<WhaleRequestMonitorPanel />);
 
-    expect(await screen.findByText("成功")).toBeInTheDocument();
+    expect(await screen.findByText("success")).toBeInTheDocument();
     expect(screen.getByText("16:00:00")).toBeInTheDocument();
     expect(screen.getByLabelText("Request Monitor")).not.toHaveClass("pcPanel");
     expect(screen.queryByRole("heading", { name: "Request Monitor" })).not.toBeInTheDocument();
@@ -389,7 +389,7 @@ describe("巨鲸请求监测面板", () => {
         }),
       }));
     }
-    await waitFor(() => expect(screen.getAllByText("成功")).toHaveLength(5));
+    await waitFor(() => expect(screen.getAllByText("success")).toHaveLength(5));
     expect(screen.queryByText("16:00:00")).not.toBeInTheDocument();
     expect(screen.getByText("16:00:08")).toBeInTheDocument();
   });

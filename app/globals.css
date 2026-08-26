@@ -11171,15 +11171,22 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 }
 
 .whaleTerminalLine code {
-  display: grid;
+  display: block;
   min-width: 0;
-  gap: 1px;
   color: #5e5e66;
   font-family: "PaperMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10px;
+  font-size: 12px;
 }
 
-.whaleTerminalLine code > span {
+.whaleTerminalLine code > .whaleRequestSummary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.whaleTerminalLine .whaleRequestUrl {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -11187,9 +11194,11 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 
 .whaleTerminalLine code strong { color: #134cff; font-weight: 600; }
 .whaleTerminalLine code small {
+  flex: 0 0 auto;
   color: #8d8e99;
   font-family: inherit;
-  font-size: 9px;
+  font-size: inherit;
+  white-space: nowrap;
 }
 
 .whaleTerminalEmpty {
@@ -11203,6 +11212,7 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 
 @media (max-width: 640px) {
   .whaleTerminalLine { grid-template-columns: 58px 42px minmax(0, 1fr); gap: 7px; }
+  .whaleTerminalLine code { font-size: 11px; }
   .whaleTerminalChrome { grid-template-columns: minmax(0, 1fr) auto; }
   .whaleTerminalChrome b { display: inline-flex !important; }
 }

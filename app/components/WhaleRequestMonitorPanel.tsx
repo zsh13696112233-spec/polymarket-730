@@ -131,8 +131,11 @@ export function WhaleRequestMonitorPanel() {
                   <time>{consoleTime(record.finished_at || record.started_at)}</time>
                   <b className="success">success</b>
                   <code>
-                    <span><strong>{record.method}</strong> {record.url}</span>
-                    <small>{`HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
+                    <span className="whaleRequestSummary">
+                      <strong>{record.method}</strong>
+                      <span className="whaleRequestUrl">{record.url}</span>
+                      <small>{`HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
+                    </span>
                   </code>
                 </div>
               </div>

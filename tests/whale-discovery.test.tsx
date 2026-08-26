@@ -328,8 +328,8 @@ describe("巨鲸请求监测面板", () => {
     expect(screen.getByText("16:00:00")).toBeInTheDocument();
     expect(screen.getByLabelText("Request Monitor")).not.toHaveClass("pcPanel");
     expect(screen.queryByRole("heading", { name: "Request Monitor" })).not.toBeInTheDocument();
-    expect(screen.getByText(/https:\/\/data-api\.polymarket\.com\/trades/)).toHaveTextContent(
-      "GET https://data-api.polymarket.com/trades",
+    expect(screen.getByText(/https:\/\/data-api\.polymarket\.com\/trades/).closest("code")).toHaveTextContent(
+      "GEThttps://data-api.polymarket.com/tradesHTTP 200 · 321ms",
     );
     expect(screen.getByText("HTTP 200 · 321ms")).toBeInTheDocument();
     expect(screen.queryByText("[pending]")).not.toBeInTheDocument();

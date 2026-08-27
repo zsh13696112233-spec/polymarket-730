@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import EmailSettingsPanel from "./EmailSettingsPanel";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8730").replace(/\/$/, "");
 
@@ -103,7 +104,7 @@ export default function ExecutionSettingsWorkspace() {
   }
 
   return (
-    <PolyCopyShell active="settings" title="执行钱包设置" subtitle="链上监测下单共用的签名、资金与安全配置">
+    <PolyCopyShell active="settings" title="系统设置" subtitle="统一管理执行钱包、发件邮箱与系统安全配置">
       <section className="pcPanel pcExecutionAccountPanel">
         <header className="pcPanelHeader"><div><span className="pcEyebrow">EXECUTION WALLET</span><h2>执行钱包</h2><p>仅用于链上监测产生的真实买入、卖出与赎回。</p></div></header>
         {account && <div className="pcAccountSummary"><div><span>状态</span><strong>{account.status}</strong></div><div><span>pUSD 余额</span><strong>{money(account.collateral_balance)}</strong></div><div><span>钥匙串</span><strong>{account.credentials_configured ? "已配置" : "未配置"}</strong></div><div><span>最后更新</span><strong>{account.last_balance_at ? new Date(account.last_balance_at).toLocaleString("zh-CN") : "—"}</strong></div></div>}
@@ -119,6 +120,7 @@ export default function ExecutionSettingsWorkspace() {
           <div className="pcSettingsActions"><button className="pcButton primary" type="submit" disabled={busy}>保存配置</button><button className="pcButton ghost" type="button" disabled={busy || !account} onClick={() => void action("/api/execution-account/verify", "执行钱包验证完成。")}>验证密钥与授权</button><button className="pcButton ghost" type="button" disabled={busy || !account} onClick={() => void action("/api/execution-account/balance/refresh", "余额已刷新。")}>刷新余额</button></div>
         </form>
       </section>
+      <EmailSettingsPanel />
     </PolyCopyShell>
   );
 }

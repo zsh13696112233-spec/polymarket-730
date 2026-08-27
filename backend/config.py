@@ -34,6 +34,13 @@ class Settings:
     whale_scan_interval_seconds: float = 60.0
     whale_max_scan_pages: int = 20
     whale_profile_batch_limit: int = 50
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str = "PolyCopy"
+    smtp_security: str = "starttls"
     cors_origins: tuple[str, ...] = field(
         default=(
             "http://127.0.0.1:3000",
@@ -86,6 +93,23 @@ class Settings:
             ),
             whale_max_scan_pages=int(os.getenv("POLYMARKET_WHALE_MAX_SCAN_PAGES", "20")),
             whale_profile_batch_limit=int(os.getenv("POLYMARKET_WHALE_PROFILE_BATCH_LIMIT", "50")),
+            smtp_host=os.getenv("POLYMARKET_SMTP_HOST") or None,
+            smtp_port=int(os.getenv("POLYMARKET_SMTP_PORT", "587")),
+            smtp_username=os.getenv("POLYMARKET_SMTP_USERNAME") or None,
+            smtp_password=os.getenv("POLYMARKET_SMTP_PASSWORD") or None,
+            smtp_from_email=os.getenv("POLYMARKET_SMTP_FROM_EMAIL") or None,
+            smtp_from_name=os.getenv("POLYMARKET_SMTP_FROM_NAME", "PolyCopy"),
+            smtp_security=os.getenv("POLYMARKET_SMTP_SECURITY", "starttls").lower(),
+        )
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(
+            self.smtp_host
+            and self.smtp_from_email
+            and self.smtp_username
+            and self.smtp_password
+            and self.smtp_security in {"starttls", "ssl", "none"}
         )
 
     def ensure_sqlite_directory(self) -> None:

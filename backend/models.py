@@ -748,6 +748,83 @@ class WhaleSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class EmailSettings(Base):
+    __tablename__ = "email_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_email_settings_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    notifications_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_port: Mapped[int] = mapped_column(Integer, nullable=False, default=465)
+    smtp_security: Mapped[str] = mapped_column(String(20), nullable=False, default="ssl")
+    smtp_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    smtp_from_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    smtp_from_name: Mapped[str] = mapped_column(String(200), nullable=False, default="PolyCopy")
+    smtp_keychain_service: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    smtp_keychain_account: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class EmailRecipient(Base):
+    __tablename__ = "email_recipients"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class WhaleEmailDelivery(Base):
+    __tablename__ = "whale_email_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "entry_id",
+            "rule_key",
+            "recipient_email",
+            name="uq_whale_email_delivery_trigger_recipient",
+        ),
+        UniqueConstraint(
+            "dedupe_key",
+            "recipient_email",
+            name="uq_whale_email_delivery_dedupe_recipient",
+        ),
+        CheckConstraint(
+            "notification_kind IN ('entry','divergence')",
+            name="ck_whale_email_delivery_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending','sending','retrying','sent','failed')",
+            name="ck_whale_email_delivery_status",
+        ),
+        Index("ix_whale_email_delivery_due", "status", "next_attempt_at"),
+        Index("ix_whale_email_delivery_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int | None] = mapped_column(
+        ForeignKey("whale_entries.id", ondelete="RESTRICT"), nullable=True
+    )
+    notification_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="entry")
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    entry_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    rule_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    rules_json: Mapped[str] = mapped_column(Text, nullable=False)
+    recipient_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    market_title: Mapped[str] = mapped_column(Text, nullable=False)
+    wallet_label: Mapped[str] = mapped_column(Text, nullable=False)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class WhaleTrade(Base):
     __tablename__ = "whale_trades"
     __table_args__ = (

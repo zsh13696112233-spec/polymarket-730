@@ -20,6 +20,7 @@ import {
   WhaleSettings,
   WhaleRule,
   formatBeijing,
+  formatCompactSignedUsdc,
   formatCompactUsdc,
   formatPercent,
   formatPrice,
@@ -342,6 +343,21 @@ export default function WhaleDiscoveryWorkspace() {
               setDivergenceOnly(false);
             }}
           >
+            <span className="whaleRuleTabIcon" aria-hidden="true">
+              {item === "new_account" ? (
+                <svg viewBox="0 0 24 24" fill="none" focusable="false">
+                  <circle cx="9" cy="7" r="3.5" />
+                  <path d="M3.5 19c0-3 2.45-5 5.5-5s5.5 2 5.5 5" />
+                  <path d="M18.5 8v6M21.5 11h-6" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" focusable="false">
+                  <ellipse cx="12" cy="6" rx="7" ry="3" />
+                  <path d="M5 6v5c0 1.65 3.13 3 7 3s7-1.35 7-3V6" />
+                  <path d="M5 11v5c0 1.65 3.13 3 7 3s7-1.35 7-3v-5" />
+                </svg>
+              )}
+            </span>
             <strong>{RULE_LABELS[item]}</strong>
             <span>
               当前 {item === "new_account" ? settings?.new_account_active_count ?? 0 : settings?.large_amount_active_count ?? 0}
@@ -358,6 +374,11 @@ export default function WhaleDiscoveryWorkspace() {
             setSettingsVisible(false);
           }}
         >
+          <span className="whaleRuleTabIcon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" focusable="false">
+              <path d="M4 20V11M10 20V5M16 20v-7M22 20H2" />
+            </svg>
+          </span>
           <strong>统计</strong>
           <span>命中率 · 理论收益 · 结算明细</span>
         </button>
@@ -598,7 +619,7 @@ function WhaleRecentHistoryPanel({
                     <time dateTime={item.first_triggered_at}>触发 {formatBeijing(item.first_triggered_at)}</time>
                   </div>
                   <b className={item.hold_to_settlement_pnl_usdc != null && numeric(item.hold_to_settlement_pnl_usdc) >= 0 ? "profit" : "loss"}>
-                    {item.hold_to_settlement_pnl_usdc == null ? "待结算" : formatSigned(item.hold_to_settlement_pnl_usdc, " USDC")}
+                    {item.hold_to_settlement_pnl_usdc == null ? "待结算" : formatCompactSignedUsdc(item.hold_to_settlement_pnl_usdc)}
                   </b>
                 </div>
               </article>
@@ -660,7 +681,7 @@ function WhaleHistoryRow({ item }: { item: WhaleHistory }) {
       <td className="numeric">{formatPrice(item.avg_buy_price)}</td>
       <td><strong>建仓 {formatBeijing(item.first_buy_at)}</strong><small>触发 {formatBeijing(item.first_triggered_at)}</small><small>失效 {formatBeijing(item.inactive_at || item.last_qualified_at)}</small></td>
       <td><span className="pcBadge muted">{reason}</span></td>
-      <td className="numeric"><strong>{item.settlement_price == null ? "待结算" : formatPrice(item.settlement_price)}</strong><small className={item.hold_to_settlement_pnl_usdc != null && numeric(item.hold_to_settlement_pnl_usdc) >= 0 ? "profit" : "loss"}>{item.hold_to_settlement_pnl_usdc == null ? "—" : formatSigned(item.hold_to_settlement_pnl_usdc, " USDC")}</small></td>
+      <td className="numeric"><strong>{item.settlement_price == null ? "待结算" : formatPrice(item.settlement_price)}</strong><small className={item.hold_to_settlement_pnl_usdc != null && numeric(item.hold_to_settlement_pnl_usdc) >= 0 ? "profit" : "loss"}>{item.hold_to_settlement_pnl_usdc == null ? "—" : formatCompactSignedUsdc(item.hold_to_settlement_pnl_usdc)}</small></td>
     </tr>
   );
 }

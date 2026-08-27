@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WhaleDiscoveryWorkspace from "../app/components/WhaleDiscoveryWorkspace";
 import WhaleRecordsWorkspace from "../app/components/WhaleRecordsWorkspace";
+import ExecutionSettingsWorkspace from "../app/components/ExecutionSettingsWorkspace";
+import EmailRecordsWorkspace from "../app/components/EmailRecordsWorkspace";
 import { WhaleRequestMonitorPanel } from "../app/components/WhaleRequestMonitorPanel";
 
 function json(payload: unknown, status = 200) {
@@ -168,6 +170,160 @@ describe("巨鲸页内设置", () => {
     await user.click(screen.getAllByRole("button", { name: "移出" })[0]);
     await waitFor(() => expect(screen.queryByRole("link", { name: "测试账户" })).not.toBeInTheDocument());
     expect(requests.some((request) => request.method === "DELETE" && request.url.endsWith(addedWallet))).toBe(true);
+  });
+});
+
+describe("系统邮件设置", () => {
+  it("在系统设置工作台配置 163 SMTP 并测试连接", async () => {
+    const user = userEvent.setup();
+    const bodies: unknown[] = [];
+    const emailSettings = {
+      notifications_enabled: false,
+      notification_recipients: [],
+      smtp_host: "smtp.163.com",
+      smtp_port: 465,
+      smtp_security: "ssl",
+      smtp_username: null,
+      smtp_from_email: null,
+      smtp_from_name: "PolyCopy",
+      smtp_authorization_code_configured: false,
+      smtp_configured: false,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/execution-account")) return json(null);
+      if (url.endsWith("/api/email-settings") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        bodies.push(body);
+        return json({
+          ...emailSettings,
+          ...body,
+          smtp_authorization_code_configured: true,
+          smtp_configured: true,
+        });
+      }
+      if (url.endsWith("/api/email-settings")) return json(emailSettings);
+      if (url.endsWith("/api/email-settings/test")) return json({
+        status: "ok",
+        connection: "ok",
+        tls: "ok",
+        authentication: "ok",
+        message_sent: false,
+        detail: "163 SMTP 连接及认证成功",
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<ExecutionSettingsWorkspace />);
+    const notificationCheckbox = await screen.findByRole("checkbox", { name: "启用系统邮件通知" });
+    await user.click(screen.getByText("启用系统邮件通知"));
+    expect(notificationCheckbox).not.toBeChecked();
+    await user.click(notificationCheckbox);
+    await user.type(screen.getByRole("textbox", { name: "系统通知收件邮箱" }), "alerts@example.com");
+    await user.type(await screen.findByRole("textbox", { name: "163 发件邮箱" }), "sender@163.com");
+    await user.type(screen.getByLabelText("163 客户端授权码"), "authorization-code");
+    await user.click(screen.getByRole("button", { name: "测试连接" }));
+
+    expect(await screen.findByText("163 SMTP 连接及认证成功")).toBeInTheDocument();
+    expect(bodies).toContainEqual(expect.objectContaining({
+      smtp_host: "smtp.163.com",
+      smtp_port: 465,
+      smtp_security: "ssl",
+      smtp_username: "sender@163.com",
+      smtp_authorization_code: "authorization-code",
+      notifications_enabled: true,
+      notification_recipients: ["alerts@example.com"],
+    }));
+  });
+});
+
+describe("邮件记录工作台", () => {
+  it("独立展示逐收件人投递记录并支持状态筛选", async () => {
+    const requestedUrls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/api/email-notifications?")) return json({
+        total: 1,
+        items: [{
+          id: 12,
+          entry_id: 7,
+          notification_kind: "entry",
+          condition_id: `0x${"c".repeat(64)}`,
+          entry_ids: [7],
+          rules: ["new_account", "large_amount"],
+          recipient_email: "alerts@example.com",
+          market_title: "Will Bitcoin reach $150k?",
+          wallet_label: "Alpha Whale",
+          subject: "[PolyCopy] 新号大额 + 全量超大额提醒",
+          body_text: "命中规则：新号大额 + 全量超大额\n近 24 小时累计买入：600,000 USDC",
+          result: "miss",
+          status: "failed",
+          attempt_count: 5,
+          next_attempt_at: null,
+          last_error: "SMTP authentication failed",
+          created_at: "2026-08-26T01:00:00Z",
+          sent_at: null,
+        }],
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    const user = userEvent.setup();
+    render(<EmailRecordsWorkspace />);
+
+    expect(await screen.findByRole("heading", { name: "发送记录" })).toBeInTheDocument();
+    expect(await screen.findByText("alerts@example.com")).toBeInTheDocument();
+    expect(screen.getByText("新号大额")).toBeInTheDocument();
+    expect(screen.getByText("全量超大额")).toBeInTheDocument();
+    expect(screen.getByText("[PolyCopy] 新号大额 + 全量超大额提醒")).toBeInTheDocument();
+    expect(screen.getByText(/近 24 小时累计买入：600,000 USDC/)).toBeInTheDocument();
+    expect(screen.getByText("未命中")).toBeInTheDocument();
+    expect(screen.getByText("SMTP authentication failed")).toBeInTheDocument();
+    const contentDetails = screen.getByText("查看正文").closest("details");
+    expect(contentDetails).not.toHaveAttribute("open");
+    await user.click(screen.getByText("查看正文"));
+    expect(contentDetails).toHaveAttribute("open");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "邮件状态筛选" }), "failed");
+    await waitFor(() => expect(requestedUrls.some((url) => url.includes("status=failed"))).toBe(true));
+  });
+
+  it("将分歧通知展示为不参与单侧命中统计的市场级提醒", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/email-notifications?")) return json({
+        total: 1,
+        items: [{
+          id: 13,
+          entry_id: null,
+          notification_kind: "divergence",
+          condition_id: `0x${"d".repeat(64)}`,
+          entry_ids: [54, 55],
+          rules: ["large_amount"],
+          recipient_email: "alerts@example.com",
+          market_title: "Real Madrid CF vs. Real Sociedad de Fútbol: O/U 3.5",
+          wallet_label: "2 个钱包 · 2 个方向",
+          subject: "[PolyCopy] 分歧市场提醒｜Real Madrid CF vs. Real Sociedad de Fútbol: O/U 3.5",
+          body_text: "结论：方向高度分歧，不应把任一侧视为明确跟单信号。",
+          result: "not_applicable",
+          status: "sent",
+          attempt_count: 1,
+          next_attempt_at: null,
+          last_error: null,
+          created_at: "2026-08-26T18:29:31Z",
+          sent_at: "2026-08-26T18:29:36Z",
+        }],
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<EmailRecordsWorkspace />);
+
+    expect(await screen.findByText("分歧市场")).toBeInTheDocument();
+    expect(screen.getByText("市场级提醒 · 2 条关联记录")).toBeInTheDocument();
+    expect(screen.getByText("不适用")).toBeInTheDocument();
+    expect(screen.queryByText("待结算")).not.toBeInTheDocument();
   });
 });
 
@@ -480,9 +636,11 @@ describe("巨鲸持仓页", () => {
     expect(screen.getByText(/市场已结算/)).toBeInTheDocument();
     const recentHistory = screen.getByLabelText("新号大额最近历史");
     expect(recentHistory).toHaveTextContent("买入价 0.6");
+    expect(recentHistory).toHaveTextContent("+400.0K USDC");
     expect(recentHistory.querySelector("time")).toHaveTextContent("触发 08/16 16:00");
     await user.click(screen.getByRole("button", { name: "展开完整历史" }));
     expect(await screen.findByLabelText("新号大额历史记录")).toBeInTheDocument();
+    expect(screen.getAllByText("+400.0K USDC")).toHaveLength(2);
     expect(screen.getAllByText(/^建仓 /).length).toBeGreaterThan(0);
     expect(settledWalletLink).toHaveAttribute(
       "href",

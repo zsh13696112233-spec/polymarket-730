@@ -475,6 +475,13 @@ export function formatCompactUsdc(value: Numeric | null | undefined): string {
   return formatUsdc(amount);
 }
 
+export function formatCompactSignedUsdc(value: Numeric | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const amount = numeric(value);
+  const formatted = formatCompactUsdc(amount);
+  return amount > 0 ? `+${formatted}` : formatted;
+}
+
 export function formatPrice(value: Numeric | null | undefined): string {
   if (value === null || value === undefined) return "—";
   // 保留 4 位：0.9995 这类贴顶报价四舍五入到 3 位会显示成 1，看上去像已结算。

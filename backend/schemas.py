@@ -10,6 +10,7 @@ from pydantic import (
     Field,
     PlainSerializer,
     field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -878,6 +879,140 @@ class WhaleSettingsUpdate(APIModel):
         ):
             raise ValueError("退出比例阈值必须低于持有比例阈值")
         return self
+
+
+class EmailDeliveryRead(APIModel):
+    id: int
+    entry_id: int | None
+    notification_kind: Literal["entry", "divergence"]
+    condition_id: str
+    entry_ids: list[int]
+    rules: list[Literal["new_account", "large_amount"]]
+    recipient_email: str
+    market_title: str
+    wallet_label: str
+    subject: str
+    body_text: str
+    result: Literal["pending", "hit", "miss", "special", "not_applicable"]
+    status: Literal["pending", "sending", "retrying", "sent", "failed"]
+    attempt_count: int
+    next_attempt_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    sent_at: datetime | None
+
+    @field_serializer("next_attempt_at", "created_at", "sent_at", when_used="json")
+    def serialize_delivery_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class EmailDeliveryListRead(APIModel):
+    total: int
+    items: list[EmailDeliveryRead]
+
+
+class EmailSettingsRead(APIModel):
+    notifications_enabled: bool = False
+    notification_recipients: list[str] = Field(default_factory=list)
+    smtp_host: str | None = None
+    smtp_port: int = 465
+    smtp_security: Literal["starttls", "ssl", "none"] = "ssl"
+    smtp_username: str | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str = "PolyCopy"
+    smtp_authorization_code_configured: bool = False
+    smtp_configured: bool = False
+
+
+class EmailSettingsUpdate(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notifications_enabled: bool | None = None
+    notification_recipients: list[str] | None = None
+    smtp_host: str | None = Field(default=None, min_length=1, max_length=255)
+    smtp_port: int | None = Field(default=None, ge=1, le=65535)
+    smtp_security: Literal["starttls", "ssl", "none"] | None = None
+    smtp_username: str | None = Field(default=None, min_length=3, max_length=320)
+    smtp_from_email: str | None = Field(default=None, min_length=3, max_length=320)
+    smtp_from_name: str | None = Field(default=None, min_length=1, max_length=200)
+    smtp_authorization_code: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("notification_recipients")
+    @classmethod
+    def validate_notification_recipients(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for raw in value:
+            email = raw.strip().lower()
+            local, separator, domain = email.rpartition("@")
+            if (
+                not separator
+                or not local
+                or "." not in domain
+                or domain.startswith(".")
+                or domain.endswith(".")
+                or any(character.isspace() for character in email)
+                or len(email) > 320
+            ):
+                raise ValueError(f"无效的收件邮箱：{raw}")
+            if email not in normalized:
+                normalized.append(email)
+        return normalized
+
+    @field_validator("smtp_username", "smtp_from_email")
+    @classmethod
+    def validate_smtp_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        email = value.strip().lower()
+        local, separator, domain = email.rpartition("@")
+        if (
+            not separator
+            or not local
+            or "." not in domain
+            or domain.startswith(".")
+            or domain.endswith(".")
+            or any(character.isspace() for character in email)
+        ):
+            raise ValueError(f"无效的邮箱地址：{value}")
+        return email
+
+    @field_validator("smtp_host", "smtp_from_name", "smtp_authorization_code")
+    @classmethod
+    def strip_smtp_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class EmailTestRequest(APIModel):
+    send_email: bool = False
+    recipient_email: str | None = None
+
+    @field_validator("recipient_email")
+    @classmethod
+    def validate_recipient_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        email = value.strip().lower()
+        local, separator, domain = email.rpartition("@")
+        if not separator or not local or "." not in domain or any(c.isspace() for c in email):
+            raise ValueError("测试收件邮箱无效")
+        return email
+
+    @model_validator(mode="after")
+    def require_recipient_for_send(self) -> EmailTestRequest:
+        if self.send_email and not self.recipient_email:
+            raise ValueError("发送测试邮件时必须填写收件邮箱")
+        return self
+
+
+class EmailTestRead(APIModel):
+    status: Literal["ok"]
+    connection: Literal["ok"]
+    tls: Literal["ok", "not_used"]
+    authentication: Literal["ok"]
+    message_sent: bool
+    detail: str
 
 
 class WhaleExclusionCreate(APIModel):

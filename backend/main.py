@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import smtplib
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
@@ -33,6 +34,8 @@ from backend.models import (
     CopyRedemptionExecution,
     CopySubscription,
     CurrentPosition,
+    EmailRecipient,
+    EmailSettings,
     ExecutionAccount,
     GlobalSettings,
     PositionEvent,
@@ -78,6 +81,11 @@ from backend.schemas import (
     CopyWalletSummaryRead,
     CopyWorkspaceOrderRead,
     CopyWorkspacePositionRead,
+    EmailDeliveryListRead,
+    EmailSettingsRead,
+    EmailSettingsUpdate,
+    EmailTestRead,
+    EmailTestRequest,
     EventRead,
     EventsResponse,
     ExecutionAccountRead,
@@ -156,6 +164,11 @@ from backend.whale import (
     whale_settings_read,
     whale_statistics,
 )
+from backend.whale_email import (
+    SMTP_KEYCHAIN_SERVICE,
+    WhaleEmailNotifier,
+    list_whale_email_deliveries,
+)
 from backend.whale_requests import WhaleRequestMonitor
 
 
@@ -166,6 +179,50 @@ def wallet_is_stale(wallet: WatchedWallet, settings: Settings) -> bool:
         or wallet.status == "error"
         or utcnow() - wallet.last_success_at > stale_after
     )
+
+
+def add_smtp_configuration_state(values: dict[str, Any], settings: Settings) -> None:
+    if not values.get("smtp_host") and settings.smtp_host:
+        values.update(
+            {
+                "smtp_host": settings.smtp_host,
+                "smtp_port": settings.smtp_port,
+                "smtp_security": settings.smtp_security,
+                "smtp_username": settings.smtp_username,
+                "smtp_from_email": settings.smtp_from_email,
+                "smtp_from_name": settings.smtp_from_name,
+            }
+        )
+    keychain_configured = bool(
+        values.get("smtp_keychain_service") and values.get("smtp_keychain_account")
+    )
+    authorization_configured = keychain_configured or bool(settings.smtp_password)
+    values["smtp_authorization_code_configured"] = authorization_configured
+    values["smtp_configured"] = bool(
+        (values.get("smtp_host") or settings.smtp_host)
+        and (values.get("smtp_username") or settings.smtp_username)
+        and (values.get("smtp_from_email") or settings.smtp_from_email)
+        and authorization_configured
+    )
+
+
+async def email_settings_read(database: Database, settings: Settings) -> dict[str, Any]:
+    async with database.sessions() as session:
+        row = await session.get(EmailSettings, 1)
+        if row is None:
+            raise ValueError("邮件设置尚未初始化")
+        values = {
+            column.name: getattr(row, column.name) for column in EmailSettings.__table__.columns
+        }
+        values["notification_recipients"] = list(
+            await session.scalars(
+                select(EmailRecipient.email)
+                .where(EmailRecipient.enabled.is_(True))
+                .order_by(EmailRecipient.email)
+            )
+        )
+    add_smtp_configuration_state(values, settings)
+    return values
 
 
 def position_ratio(
@@ -1351,6 +1408,18 @@ def create_app(
     async def lifespan(application: FastAPI):
         database = Database(resolved_settings)
         await database.initialize()
+        async with database.sessions() as session:
+            if await session.get(EmailSettings, 1) is None:
+                now = utcnow()
+                session.add(
+                    EmailSettings(
+                        id=1,
+                        smtp_host=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                await session.commit()
         owns_client = client is None
         polymarket_client = client or PolymarketClient(
             data_api_url=resolved_settings.data_api_url,
@@ -1369,12 +1438,18 @@ def create_app(
             settings=resolved_settings,
             keychain=keychain,
         )
+        whale_email_notifier = WhaleEmailNotifier(
+            database=database,
+            settings=resolved_settings,
+            keychain=keychain,
+        )
         whale_scanner = WhaleDiscoveryScanner(
             database=database,
             client=polymarket_client,
             settings=resolved_settings,
             executor=whale_executor,
             request_monitor=whale_request_monitor,
+            email_notifier=whale_email_notifier,
         )
         application.state.settings = resolved_settings
         application.state.database = database
@@ -1382,16 +1457,19 @@ def create_app(
         application.state.keychain = keychain
         application.state.whale_executor = whale_executor
         application.state.whale_scanner = whale_scanner
+        application.state.whale_email_notifier = whale_email_notifier
         application.state.whale_request_monitor = whale_request_monitor
         application.state.whale_follow_previews = {}
         application.state.whale_sell_previews = {}
         if resolved_settings.start_monitor:
             if resolved_settings.whale_enabled:
                 whale_scanner.start()
+                whale_email_notifier.start()
         try:
             yield
         finally:
             await whale_scanner.stop()
+            await whale_email_notifier.stop()
             await whale_executor.close()
             if owns_client:
                 await polymarket_client.close()
@@ -1596,9 +1674,8 @@ def create_app(
     async def get_whale_settings(request: Request) -> WhaleSettingsRead:
         require_whale_module(request)
         try:
-            return WhaleSettingsRead.model_validate(
-                await whale_settings_read(request.app.state.database)
-            )
+            values = await whale_settings_read(request.app.state.database)
+            return WhaleSettingsRead.model_validate(values)
         except ValueError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -1732,7 +1809,139 @@ def create_app(
             row.updated_at = utcnow()
             await session.commit()
         request.app.state.whale_scanner.wake()
-        return WhaleSettingsRead.model_validate(await whale_settings_read(database))
+        request.app.state.whale_email_notifier.wake()
+        response = await whale_settings_read(database)
+        return WhaleSettingsRead.model_validate(response)
+
+    @application.get(
+        "/api/email-notifications",
+        response_model=EmailDeliveryListRead,
+    )
+    async def get_whale_email_notifications(
+        request: Request,
+        delivery_status: str = Query(
+            default="all",
+            alias="status",
+            pattern="^(all|pending|sending|retrying|sent|failed)$",
+        ),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> EmailDeliveryListRead:
+        return EmailDeliveryListRead.model_validate(
+            await list_whale_email_deliveries(
+                request.app.state.database,
+                status=delivery_status,
+                limit=limit,
+                offset=offset,
+            )
+        )
+
+    @application.get("/api/email-settings", response_model=EmailSettingsRead)
+    async def get_email_settings(request: Request) -> EmailSettingsRead:
+        try:
+            return EmailSettingsRead.model_validate(
+                await email_settings_read(
+                    request.app.state.database,
+                    request.app.state.settings,
+                )
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @application.put("/api/email-settings", response_model=EmailSettingsRead)
+    async def update_email_settings(
+        payload: EmailSettingsUpdate,
+        request: Request,
+    ) -> EmailSettingsRead:
+        values = payload.model_dump(exclude_none=True)
+        authorization_code = values.pop("smtp_authorization_code", None)
+        notification_recipients = values.pop("notification_recipients", None)
+        async with request.app.state.database.sessions() as session:
+            row = await session.get(EmailSettings, 1)
+            if row is None:
+                raise HTTPException(status_code=503, detail="邮件设置尚未初始化")
+            next_username = values.get("smtp_username", row.smtp_username)
+            if (
+                "smtp_username" in values
+                and row.smtp_keychain_account
+                and values["smtp_username"] != row.smtp_keychain_account
+                and authorization_code is None
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="修改发件邮箱时必须同时填写新的客户端授权码",
+                )
+            if authorization_code is not None:
+                if not next_username:
+                    raise HTTPException(status_code=422, detail="请先填写 SMTP 用户名")
+                reference = KeychainReference(
+                    service=SMTP_KEYCHAIN_SERVICE,
+                    account=next_username,
+                )
+                try:
+                    await asyncio.to_thread(
+                        request.app.state.keychain.set_secret,
+                        reference,
+                        authorization_code,
+                    )
+                except KeychainError as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from error
+                row.smtp_keychain_service = reference.service
+                row.smtp_keychain_account = reference.account
+            if "smtp_username" in values and "smtp_from_email" not in values:
+                values["smtp_from_email"] = values["smtp_username"]
+            for key, value in values.items():
+                setattr(row, key, value)
+            if notification_recipients is not None:
+                now = utcnow()
+                existing_recipients = {
+                    item.email: item
+                    for item in (await session.scalars(select(EmailRecipient))).all()
+                }
+                wanted = set(notification_recipients)
+                for email, recipient in existing_recipients.items():
+                    recipient.enabled = email in wanted
+                    recipient.updated_at = now
+                for email in wanted - set(existing_recipients):
+                    session.add(
+                        EmailRecipient(
+                            email=email,
+                            enabled=True,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+            row.updated_at = utcnow()
+            await session.commit()
+        request.app.state.whale_email_notifier.wake()
+        return EmailSettingsRead.model_validate(
+            await email_settings_read(
+                request.app.state.database,
+                request.app.state.settings,
+            )
+        )
+
+    @application.post("/api/email-settings/test", response_model=EmailTestRead)
+    async def test_email_settings(
+        payload: EmailTestRequest,
+        request: Request,
+    ) -> EmailTestRead:
+        recipient = payload.recipient_email if payload.send_email else None
+        try:
+            result = await request.app.state.whale_email_notifier.test_connection(
+                recipient_email=recipient
+            )
+        except smtplib.SMTPAuthenticationError as error:
+            raise HTTPException(
+                status_code=422,
+                detail="163 SMTP 身份认证失败，请检查邮箱账号和客户端授权码",
+            ) from error
+        except (TimeoutError, OSError, smtplib.SMTPException, KeychainError) as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"SMTP 连接失败：{str(error)[:300]}",
+            ) from error
+        return EmailTestRead.model_validate(result)
 
     @application.post("/api/whales/scan", response_model=WhaleScanRead)
     async def scan_whales(request: Request) -> WhaleScanRead:

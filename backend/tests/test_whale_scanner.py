@@ -13,6 +13,9 @@ from sqlalchemy import select
 from backend.config import Settings
 from backend.db import Database
 from backend.models import (
+    EmailRecipient,
+    EmailSettings,
+    WhaleEmailDelivery,
     WhaleEntry,
     WhaleEntryRuleState,
     WhaleExclusion,
@@ -30,6 +33,12 @@ from backend.polymarket import (
 )
 from backend.time_utils import utcnow
 from backend.whale import WhaleDiscoveryScanner
+from backend.whale_email import (
+    WhaleEmailCandidate,
+    WhaleEmailNotifier,
+    enqueue_whale_email_deliveries,
+    list_whale_email_deliveries,
+)
 
 
 @pytest.fixture
@@ -94,6 +103,29 @@ async def current_threshold(database: Database) -> Decimal:
         row = await session.get(WhaleSettings, 1)
         assert row is not None
         return row.cumulative_threshold_usdc
+
+
+async def enable_email_notifications(database: Database) -> None:
+    now = utcnow()
+    async with database.sessions() as session:
+        session.add(
+            EmailSettings(
+                id=1,
+                notifications_enabled=True,
+                smtp_host=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            EmailRecipient(
+                email="alerts@example.com",
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
 
 
 async def test_incremental_trade_collection_discards_provider_rows_before_cursor(database):
@@ -446,6 +478,447 @@ async def test_scanner_finds_recent_large_buyers_and_confirms_current_position(d
     assert settings is not None
     assert settings.last_scan_error is None
     assert client.trade_calls == 1
+
+
+async def test_scanner_enqueues_one_combined_email_per_recipient_for_dual_trigger(database):
+    client = PositionDiscoveryClient()
+    await enable_email_notifications(database)
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        settings.large_amount_threshold_usdc = Decimal("100000")
+        await session.commit()
+
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await scanner.tick() is True
+    assert await scanner.tick() is True
+
+    async with database.sessions() as session:
+        deliveries = list(await session.scalars(select(WhaleEmailDelivery)))
+    assert len(deliveries) == 1
+    assert deliveries[0].rule_key == "new_account,large_amount"
+    assert "新号大额 + 全量超大额" in deliveries[0].body_text
+    assert "买入均价：0.5 USDC（50¢）" in deliveries[0].body_text
+
+    async with database.sessions() as session:
+        entry = await session.get(WhaleEntry, deliveries[0].entry_id)
+        assert entry is not None
+        entry.settlement_price = Decimal("1")
+        await session.commit()
+
+    delivery_log = await list_whale_email_deliveries(
+        database,
+        status="all",
+        limit=50,
+        offset=0,
+    )
+    assert delivery_log["items"][0]["subject"] == deliveries[0].subject
+    assert delivery_log["items"][0]["body_text"] == deliveries[0].body_text
+    assert delivery_log["items"][0]["result"] == "hit"
+
+
+async def seed_email_entry(
+    database: Database,
+    *,
+    condition_id: str,
+    asset_id: str,
+    outcome: str,
+    outcome_index: int,
+    wallet_address: str,
+    wallet_name: str,
+    amount: str,
+    avg_price: str,
+) -> int:
+    now = utcnow()
+    async with database.sessions() as session:
+        if await session.get(WhaleMarket, condition_id) is None:
+            session.add(
+                WhaleMarket(
+                    condition_id=condition_id,
+                    title="Real Madrid CF vs. Real Sociedad de Fútbol: O/U 3.5",
+                    outcomes_json='["Over","Under"]',
+                    outcome_prices_json='["0.51","0.49"]',
+                    clob_token_ids_json='["asset-over","asset-under"]',
+                    refreshed_at=now,
+                )
+            )
+        if await session.get(WhaleWallet, wallet_address) is None:
+            session.add(
+                WhaleWallet(
+                    proxy_wallet=wallet_address,
+                    display_name=wallet_name,
+                    refreshed_at=now,
+                )
+            )
+        entry = WhaleEntry(
+            proxy_wallet=wallet_address,
+            asset_id=asset_id,
+            condition_id=condition_id,
+            outcome=outcome,
+            outcome_index=outcome_index,
+            gross_buy_usdc=Decimal(amount),
+            gross_buy_size=Decimal(amount) / Decimal(avg_price),
+            net_size=Decimal(amount) / Decimal(avg_price),
+            net_ratio=Decimal("100"),
+            avg_buy_price=Decimal(avg_price),
+            max_single_usdc=Decimal(amount),
+            trade_count=1,
+            first_buy_at=now,
+            last_buy_at=now,
+            status="holding",
+            window_start=now - timedelta(hours=24),
+            computed_at=now,
+        )
+        session.add(entry)
+        await session.flush()
+        session.add(
+            WhaleEntryRuleState(
+                entry_id=entry.id,
+                rule_type="large_amount",
+                active=True,
+                first_triggered_at=now,
+                last_qualified_at=now,
+                threshold_usdc_snapshot=Decimal("500000"),
+            )
+        )
+        await session.commit()
+        return entry.id
+
+
+async def test_same_scan_opposite_large_entries_enqueue_only_divergence_per_recipient(database):
+    await enable_email_notifications(database)
+    now = utcnow()
+    async with database.sessions() as session:
+        session.add(
+            EmailRecipient(
+                email="ops@example.com",
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+    condition_id = "0x" + "d" * 64
+    under_id = await seed_email_entry(
+        database,
+        condition_id=condition_id,
+        asset_id="asset-under",
+        outcome="Under",
+        outcome_index=1,
+        wallet_address="0x2222222222222222222222222222222222222222",
+        wallet_name="BreakTheBank",
+        amount="512653.33",
+        avg_price="0.4825",
+    )
+    over_id = await seed_email_entry(
+        database,
+        condition_id=condition_id,
+        asset_id="asset-over",
+        outcome="Over",
+        outcome_index=0,
+        wallet_address="0x3333333333333333333333333333333333333333",
+        wallet_name="ripley86alien",
+        amount="521964.41",
+        avg_price="0.5189",
+    )
+    candidates = [
+        WhaleEmailCandidate(under_id, frozenset({"large_amount"})),
+        WhaleEmailCandidate(over_id, frozenset({"large_amount"})),
+    ]
+
+    async with database.sessions() as session:
+        await enqueue_whale_email_deliveries(
+            session,
+            candidates=candidates,
+            triggered_at=now,
+        )
+        await session.commit()
+    async with database.sessions() as session:
+        await enqueue_whale_email_deliveries(
+            session,
+            candidates=candidates,
+            triggered_at=now,
+        )
+        await session.commit()
+
+    async with database.sessions() as session:
+        deliveries = list(await session.scalars(select(WhaleEmailDelivery)))
+    assert len(deliveries) == 2
+    assert {delivery.recipient_email for delivery in deliveries} == {
+        "alerts@example.com",
+        "ops@example.com",
+    }
+    delivery = deliveries[0]
+    assert delivery.notification_kind == "divergence"
+    assert delivery.entry_id is None
+    assert delivery.dedupe_key == f"divergence:{condition_id}"
+    assert "[PolyCopy] 分歧市场提醒" in delivery.subject
+    assert "Under：512,653.33 USDC（49.55%）" in delivery.body_text
+    assert "Over：521,964.41 USDC（50.45%）" in delivery.body_text
+    assert "方向高度分歧" in delivery.body_text
+
+    delivery_log = await list_whale_email_deliveries(
+        database,
+        status="all",
+        limit=50,
+        offset=0,
+    )
+    assert delivery_log["total"] == 2
+    assert delivery_log["items"][0]["notification_kind"] == "divergence"
+    assert delivery_log["items"][0]["entry_ids"] == sorted([under_id, over_id])
+    assert delivery_log["items"][0]["result"] == "not_applicable"
+
+
+async def test_later_opposite_large_entry_upgrades_prior_single_email(database):
+    await enable_email_notifications(database)
+    now = utcnow()
+    condition_id = "0x" + "e" * 64
+    under_id = await seed_email_entry(
+        database,
+        condition_id=condition_id,
+        asset_id="asset-under",
+        outcome="Under",
+        outcome_index=1,
+        wallet_address="0x4444444444444444444444444444444444444444",
+        wallet_name="Under Whale",
+        amount="510000",
+        avg_price="0.49",
+    )
+    async with database.sessions() as session:
+        await enqueue_whale_email_deliveries(
+            session,
+            candidates=[WhaleEmailCandidate(under_id, frozenset({"large_amount"}))],
+            triggered_at=now,
+        )
+        await session.commit()
+
+    over_id = await seed_email_entry(
+        database,
+        condition_id=condition_id,
+        asset_id="asset-over",
+        outcome="Over",
+        outcome_index=0,
+        wallet_address="0x5555555555555555555555555555555555555555",
+        wallet_name="Over Whale",
+        amount="520000",
+        avg_price="0.51",
+    )
+    async with database.sessions() as session:
+        await enqueue_whale_email_deliveries(
+            session,
+            candidates=[WhaleEmailCandidate(over_id, frozenset({"large_amount"}))],
+            triggered_at=now + timedelta(minutes=10),
+        )
+        await session.commit()
+
+    async with database.sessions() as session:
+        deliveries = list(
+            await session.scalars(select(WhaleEmailDelivery).order_by(WhaleEmailDelivery.id))
+        )
+    assert len(deliveries) == 2
+    assert [delivery.notification_kind for delivery in deliveries] == ["entry", "divergence"]
+    assert "市场状态升级：方向分歧" in deliveries[1].subject
+    assert all(delivery.entry_id != over_id for delivery in deliveries)
+
+
+async def test_same_wallet_two_sides_is_not_treated_as_market_divergence(database):
+    await enable_email_notifications(database)
+    now = utcnow()
+    condition_id = "0x" + "f" * 64
+    wallet = "0x6666666666666666666666666666666666666666"
+    under_id = await seed_email_entry(
+        database,
+        condition_id=condition_id,
+        asset_id="asset-under",
+        outcome="Under",
+        outcome_index=1,
+        wallet_address=wallet,
+        wallet_name="Hedging Whale",
+        amount="510000",
+        avg_price="0.49",
+    )
+    over_id = await seed_email_entry(
+        database,
+        condition_id=condition_id,
+        asset_id="asset-over",
+        outcome="Over",
+        outcome_index=0,
+        wallet_address=wallet,
+        wallet_name="Hedging Whale",
+        amount="520000",
+        avg_price="0.51",
+    )
+    async with database.sessions() as session:
+        await enqueue_whale_email_deliveries(
+            session,
+            candidates=[
+                WhaleEmailCandidate(under_id, frozenset({"large_amount"})),
+                WhaleEmailCandidate(over_id, frozenset({"large_amount"})),
+            ],
+            triggered_at=now,
+        )
+        await session.commit()
+
+    async with database.sessions() as session:
+        deliveries = list(await session.scalars(select(WhaleEmailDelivery)))
+    assert len(deliveries) == 2
+    assert {delivery.notification_kind for delivery in deliveries} == {"entry"}
+
+
+async def test_email_notifier_marks_delivery_sent(database, monkeypatch):
+    client = PositionDiscoveryClient()
+    await enable_email_notifications(database)
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await scanner.tick() is True
+
+    notifier = WhaleEmailNotifier(
+        database=database,
+        settings=replace(
+            database.settings,
+            smtp_host="smtp.example.com",
+            smtp_from_email="sender@example.com",
+            smtp_username="sender@example.com",
+            smtp_password="authorization-code",
+        ),
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(
+        notifier,
+        "_send",
+        lambda delivery, _transport: sent.append(delivery.recipient_email),
+    )
+    assert await notifier.deliver_once() is True
+
+    async with database.sessions() as session:
+        delivery = await session.scalar(select(WhaleEmailDelivery))
+    assert delivery is not None
+    assert delivery.status == "sent"
+    assert delivery.attempt_count == 1
+    assert sent == ["alerts@example.com"]
+
+
+async def test_email_notifier_retries_then_preserves_terminal_failure(database, monkeypatch):
+    client = PositionDiscoveryClient()
+    await enable_email_notifications(database)
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await scanner.tick() is True
+    notifier = WhaleEmailNotifier(
+        database=database,
+        settings=replace(
+            database.settings,
+            smtp_host="smtp.example.com",
+            smtp_from_email="sender@example.com",
+            smtp_username="sender@example.com",
+            smtp_password="authorization-code",
+        ),
+    )
+
+    def fail_send(_: WhaleEmailDelivery, _transport) -> None:
+        raise OSError("SMTP unavailable")
+
+    monkeypatch.setattr(notifier, "_send", fail_send)
+    for attempt in range(1, 6):
+        assert await notifier.deliver_once() is True
+        async with database.sessions() as session:
+            delivery = await session.scalar(select(WhaleEmailDelivery))
+            assert delivery is not None
+            assert delivery.attempt_count == attempt
+            if attempt < 5:
+                assert delivery.status == "retrying"
+                assert delivery.next_attempt_at is not None
+                delivery.next_attempt_at = utcnow()
+                await session.commit()
+    assert delivery.status == "failed"
+    assert delivery.last_error == "SMTP unavailable"
+
+
+async def test_scanner_does_not_notify_when_position_is_already_empty(database):
+    client = PositionDiscoveryClient()
+    client.current_position_size = Decimal("0")
+    await enable_email_notifications(database)
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        assert await session.scalar(select(WhaleEmailDelivery)) is None
+
+
+async def test_163_smtp_connection_uses_keychain_authorization_code(database, monkeypatch):
+    async with database.sessions() as session:
+        now = utcnow()
+        settings = EmailSettings(
+            id=1,
+            smtp_host="smtp.163.com",
+            smtp_port=465,
+            smtp_security="ssl",
+            smtp_username="sender@163.com",
+            smtp_from_email="sender@163.com",
+            smtp_from_name="PolyCopy",
+            smtp_keychain_service="com.polycopy.smtp",
+            smtp_keychain_account="sender@163.com",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(settings)
+        await session.commit()
+
+    calls: list[tuple] = []
+
+    class FakeKeychain:
+        def get_secret(self, reference):
+            calls.append(("secret", reference.service, reference.account))
+            return "authorization-code"
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            calls.append(("connect", host, port, timeout))
+
+        def login(self, username, password):
+            calls.append(("login", username, password))
+
+        def noop(self):
+            calls.append(("noop",))
+            return 250, b"OK"
+
+        def send_message(self, message):
+            calls.append(("send", message["To"], message["Subject"]))
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr("backend.whale_email.smtplib.SMTP_SSL", FakeSMTP)
+    notifier = WhaleEmailNotifier(
+        database=database,
+        settings=database.settings,
+        keychain=FakeKeychain(),  # type: ignore[arg-type]
+    )
+    result = await notifier.test_connection(recipient_email="receiver@example.com")
+
+    assert result["message_sent"] is True
+    assert ("connect", "smtp.163.com", 465, 15) in calls
+    assert ("login", "sender@163.com", "authorization-code") in calls
+    assert ("send", "receiver@example.com", "[PolyCopy] 163 邮件连接测试") in calls
 
 
 async def test_scanner_uses_market_token_mapping_when_trade_outcome_index_is_invalid(database):

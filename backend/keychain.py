@@ -58,10 +58,10 @@ class MacOSKeychain:
             check=False,
         )
         if completed.returncode != 0:
-            raise KeychainError("钥匙串中没有找到执行钱包密钥")
+            raise KeychainError("钥匙串中没有找到对应密钥")
         secret = completed.stdout.strip()
         if not secret:
-            raise KeychainError("钥匙串中的执行钱包密钥为空")
+            raise KeychainError("钥匙串中的密钥为空")
         return secret
 
     def delete_secret(self, reference: KeychainReference) -> None:
@@ -79,4 +79,4 @@ class MacOSKeychain:
             check=False,
         )
         if completed.returncode not in {0, 44}:
-            raise KeychainError("无法从 macOS 钥匙串删除执行钱包密钥")
+            raise KeychainError("无法从 macOS 钥匙串删除密钥")

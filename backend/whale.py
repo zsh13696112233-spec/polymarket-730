@@ -22,6 +22,7 @@ from backend.config import Settings
 from backend.db import Database
 from backend.keychain import KeychainReference, MacOSKeychain
 from backend.models import (
+    EmailSettings,
     ExecutionAccount,
     RedemptionExecution,
     WhaleEntry,
@@ -55,6 +56,11 @@ from backend.trading import (
     market_worst_price,
     normalize_fak_result,
     redeemable_position_payout_rate,
+)
+from backend.whale_email import (
+    WhaleEmailCandidate,
+    WhaleEmailNotifier,
+    enqueue_whale_email_deliveries,
 )
 from backend.whale_requests import WhaleRequestMonitor, capture_whale_requests
 
@@ -459,12 +465,14 @@ class WhaleDiscoveryScanner:
         settings: Settings,
         executor: WhaleFollowExecutor | None = None,
         request_monitor: WhaleRequestMonitor | None = None,
+        email_notifier: WhaleEmailNotifier | None = None,
     ) -> None:
         self.database = database
         self.client = client
         self.settings = settings
         self.executor = executor
         self.request_monitor = request_monitor
+        self.email_notifier = email_notifier
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -572,6 +580,8 @@ class WhaleDiscoveryScanner:
                     round((monotonic() - scan_started) * 1000),
                     warning,
                 )
+                if self.email_notifier is not None:
+                    self.email_notifier.wake()
                 return True
             except asyncio.CancelledError:
                 raise
@@ -1203,6 +1213,7 @@ class WhaleDiscoveryScanner:
         window_start: datetime,
     ) -> None:
         async with self.database.sessions() as session:
+            email_settings = await session.get(EmailSettings, 1)
             existing = {
                 (row.proxy_wallet, row.asset_id): row
                 for row in (await session.scalars(select(WhaleEntry))).all()
@@ -1224,6 +1235,7 @@ class WhaleDiscoveryScanner:
                 (row.entry_id, row.rule_type): row
                 for row in (await session.scalars(select(WhaleEntryRuleState))).all()
             }
+            email_candidates: list[WhaleEmailCandidate] = []
             for aggregate in aggregates:
                 market = markets.get(aggregate.condition_id)
                 outcome_index = (
@@ -1334,9 +1346,11 @@ class WhaleDiscoveryScanner:
                     row.follow_ineligible_reason = reason
 
                 matches = rule_matches[key]
+                new_rules: set[str] = set()
                 for rule_type in matches:
                     state = states.get((row.id, rule_type))
                     if state is None:
+                        new_rules.add(rule_type)
                         threshold = (
                             _decimal(config["new_account_threshold_usdc"])
                             if rule_type == NEW_ACCOUNT_RULE
@@ -1373,6 +1387,21 @@ class WhaleDiscoveryScanner:
                         state.inactive_reason = (
                             "market_closed" if market_terminal else "position_exited"
                         )
+
+                if (
+                    email_settings is not None
+                    and email_settings.notifications_enabled
+                    and new_rules
+                    and not position_failed
+                    and position_present
+                    and not market_terminal
+                ):
+                    email_candidates.append(
+                        WhaleEmailCandidate(
+                            entry_id=row.id,
+                            new_rules=frozenset(new_rules),
+                        )
+                    )
 
             qualified_keys = set(rule_matches)
             entries_by_id = {row.id: row for row in existing.values()}
@@ -1438,6 +1467,12 @@ class WhaleDiscoveryScanner:
                     state.inactive_reason = (
                         "market_closed" if market_terminal else "position_exited"
                     )
+
+            await enqueue_whale_email_deliveries(
+                session,
+                candidates=email_candidates,
+                triggered_at=now,
+            )
 
             active_entry_ids = {entry_id for (entry_id, _), state in states.items() if state.active}
             for row in existing.values():

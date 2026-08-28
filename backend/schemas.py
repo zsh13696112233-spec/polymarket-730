@@ -1222,12 +1222,25 @@ class WhaleStatisticsRead(APIModel):
     range: Literal["all", "7d", "30d", "90d"]
     range_start: datetime | None
     range_end: datetime
+    category: Literal[
+        "all",
+        "esports",
+        "sports",
+        "politics",
+        "crypto",
+        "science_tech",
+        "entertainment",
+        "other",
+    ]
+    subcategory: str
     overall: WhaleStatisticsMetricsRead
     new_account: WhaleStatisticsMetricsRead
     large_amount: WhaleStatisticsMetricsRead
     dual_match: WhaleStatisticsMetricsRead
     trend: list[WhaleStatisticsSliceRead] = Field(default_factory=list)
     amount_bands: list[WhaleStatisticsSliceRead] = Field(default_factory=list)
+    category_breakdown: list[WhaleStatisticsSliceRead] = Field(default_factory=list)
+    subcategory_breakdown: list[WhaleStatisticsSliceRead] = Field(default_factory=list)
 
     @field_serializer(
         "generated_at",
@@ -1255,6 +1268,18 @@ class WhaleStatisticsSignalRead(APIModel):
     market_slug: str | None
     event_slug: str | None
     polymarket_url: str
+    category: Literal[
+        "esports",
+        "sports",
+        "politics",
+        "crypto",
+        "science_tech",
+        "entertainment",
+        "other",
+    ]
+    category_label: str
+    subcategory: str | None
+    subcategory_label: str | None
     gross_buy_usdc: DecimalNumber
     gross_buy_size: DecimalNumber
     avg_buy_price: DecimalNumber
@@ -1557,6 +1582,7 @@ class WhaleLedgerRead(APIModel):
     position_id: int
     order_id: int | None
     type: Literal["buy", "sell", "redeem", "resolved_loss", "dust_writeoff"]
+    source: Literal["follow", "manual", "auto_redeem", "reconciliation"]
     size: DecimalNumber
     price: DecimalNumber | None
     amount_usdc: DecimalNumber

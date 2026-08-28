@@ -742,6 +742,36 @@ def test_whale_statistics_deduplicates_overlap_and_calculates_weighted_metrics(
     assert payload["large_amount"]["hit_rate_percent"] == 100.0
     assert payload["dual_match"]["settled_count"] == 1
     assert payload["dual_match"]["hit_count"] == 1
+    assert payload["category"] == "all"
+    assert payload["subcategory"] == "all"
+    assert sum(item["metrics"]["settled_count"] for item in payload["category_breakdown"]) == 3
+    assert sum(item["metrics"]["pending_count"] for item in payload["category_breakdown"]) == 1
+    assert round(
+        sum(item["metrics"]["theoretical_pnl_usdc"] for item in payload["category_breakdown"]),
+        4,
+    ) == round(payload["overall"]["theoretical_pnl_usdc"], 4)
+    esports = next(item for item in payload["category_breakdown"] if item["key"] == "esports")
+    assert esports["metrics"]["settled_count"] == 3
+    assert esports["metrics"]["pending_count"] == 1
+    assert payload["subcategory_breakdown"] == []
+
+    esports_detail = client.get(
+        "/api/whales/statistics?range=all&category=esports&subcategory=other-esports"
+    )
+    assert esports_detail.status_code == 200, esports_detail.text
+    assert esports_detail.json()["overall"]["settled_count"] == 3
+    assert (
+        next(
+            item
+            for item in esports_detail.json()["subcategory_breakdown"]
+            if item["key"] == "other-esports"
+        )["metrics"]["settled_count"]
+        == 3
+    )
+
+    traditional_sports = client.get("/api/whales/statistics?category=sports")
+    assert traditional_sports.status_code == 200
+    assert traditional_sports.json()["overall"]["settled_count"] == 0
 
     recent = client.get("/api/whales/statistics?range=7d")
     assert recent.status_code == 200
@@ -769,6 +799,15 @@ def test_whale_statistics_signal_filters_sort_and_validate(app_client_factory):
     assert item["theoretical_pnl_usdc"] == 12000.0
     assert item["wallet_age_days_at_trigger"] == 2
     assert item["polymarket_url"].endswith("/event/championship-final")
+    assert item["category"] == "esports"
+    assert item["category_label"] == "电竞"
+    assert item["subcategory"] == "other-esports"
+
+    category_hits = client.get(
+        "/api/whales/statistics/signals?category=esports&subcategory=other-esports"
+    )
+    assert category_hits.status_code == 200
+    assert category_hits.json()["total"] == 3
 
     specials = client.get("/api/whales/statistics/signals?result=special")
     assert specials.status_code == 200
@@ -778,3 +817,10 @@ def test_whale_statistics_signal_filters_sort_and_validate(app_client_factory):
     assert client.get("/api/whales/statistics?range=365d").status_code == 422
     assert client.get("/api/whales/statistics/signals?rule=unknown").status_code == 422
     assert client.get("/api/whales/statistics/signals?amount_band=unknown").status_code == 422
+    assert client.get("/api/whales/statistics?category=all&subcategory=dota-2").status_code == 422
+    assert (
+        client.get(
+            "/api/whales/statistics/signals?category=politics&subcategory=dota-2"
+        ).status_code
+        == 422
+    )

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WhaleDiscoveryWorkspace from "../app/components/WhaleDiscoveryWorkspace";
@@ -836,6 +836,8 @@ describe("巨鲸命中率统计", () => {
       range: "all",
       range_start: null,
       range_end: "2026-08-23T09:00:00Z",
+      category: "all",
+      subcategory: "all",
       overall: metrics,
       new_account: metrics,
       large_amount: { ...metrics, hit_rate_percent: 100, hit_count: 1, miss_count: 0, effective_sample_count: 1 },
@@ -847,6 +849,16 @@ describe("巨鲸命中率统计", () => {
         { key: "500k_1m", label: "50万–100万", metrics: { ...metrics, hit_rate_percent: null, effective_sample_count: 0 } },
         { key: "gte_1m", label: "≥ 100万", metrics: { ...metrics, hit_rate_percent: null, effective_sample_count: 0 } },
       ],
+      category_breakdown: [
+        { key: "esports", label: "电竞", metrics },
+        { key: "sports", label: "传统体育", metrics: { ...metrics, settled_count: 0, effective_sample_count: 0, hit_count: 0, miss_count: 0, pending_count: 0, hit_rate_percent: null } },
+        { key: "politics", label: "政治", metrics: { ...metrics, settled_count: 0, effective_sample_count: 0, hit_count: 0, miss_count: 0, pending_count: 0, hit_rate_percent: null } },
+        { key: "crypto", label: "加密", metrics: { ...metrics, settled_count: 0, effective_sample_count: 0, hit_count: 0, miss_count: 0, pending_count: 0, hit_rate_percent: null } },
+        { key: "science_tech", label: "科学与科技", metrics: { ...metrics, settled_count: 0, effective_sample_count: 0, hit_count: 0, miss_count: 0, pending_count: 0, hit_rate_percent: null } },
+        { key: "entertainment", label: "娱乐", metrics: { ...metrics, settled_count: 0, effective_sample_count: 0, hit_count: 0, miss_count: 0, pending_count: 0, hit_rate_percent: null } },
+        { key: "other", label: "其他", metrics: { ...metrics, settled_count: 0, effective_sample_count: 0, hit_count: 0, miss_count: 0, pending_count: 0, hit_rate_percent: null } },
+      ],
+      subcategory_breakdown: [],
     };
     const signal = {
       entry_id: 19,
@@ -863,6 +875,10 @@ describe("巨鲸命中率统计", () => {
       market_slug: "winning-market",
       event_slug: "winning-market",
       polymarket_url: "https://polymarket.com/event/winning-market",
+      category: "esports",
+      category_label: "电竞",
+      subcategory: "dota-2",
+      subcategory_label: "Dota 2",
       gross_buy_usdc: 120000,
       gross_buy_size: 200000,
       avg_buy_price: 0.6,
@@ -881,7 +897,23 @@ describe("巨鲸命中率统计", () => {
       if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
       if (url.endsWith("/api/whales/request-logs")) return json({ generated_at: "2026-08-23T09:00:00Z", total: 0, items: [] });
       if (url.includes("/api/whales/statistics/signals?")) return json({ total: 1, items: [signal] });
-      if (url.includes("/api/whales/statistics?")) return json({ ...statistics, range: url.includes("range=7d") ? "7d" : "all" });
+      if (url.includes("/api/whales/statistics?")) {
+        const esportsSelected = url.includes("category=esports");
+        return json({
+          ...statistics,
+          range: url.includes("range=7d") ? "7d" : "all",
+          category: esportsSelected ? "esports" : "all",
+          subcategory: url.includes("subcategory=dota-2") ? "dota-2" : "all",
+          subcategory_breakdown: esportsSelected
+            ? [
+              { key: "dota-2", label: "Dota 2", metrics },
+              { key: "counter-strike-2", label: "CS2", metrics: { ...metrics, effective_sample_count: 0, hit_rate_percent: null } },
+              { key: "league-of-legends", label: "英雄联盟", metrics: { ...metrics, effective_sample_count: 0, hit_rate_percent: null } },
+              { key: "other-esports", label: "其他电竞", metrics: { ...metrics, effective_sample_count: 0, hit_rate_percent: null } },
+            ]
+            : [],
+        });
+      }
       return json({ detail: "not found" }, 404);
     }));
 
@@ -889,12 +921,19 @@ describe("巨鲸命中率统计", () => {
     render(<WhaleDiscoveryWorkspace />);
     await user.click(await screen.findByRole("button", { name: /统计/ }));
 
-    expect(await screen.findByRole("heading", { name: "巨鲸信号表现" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "链上信号表现" })).toBeInTheDocument();
     expect(screen.queryByLabelText("巨鲸监测设置")).not.toBeInTheDocument();
     expect(screen.getByLabelText("整体统计")).toHaveTextContent("50.0%");
     expect(screen.getByLabelText("规则表现对比")).toHaveTextContent("样本不足");
     expect(await screen.findByText("Winning Whale ↗")).toBeInTheDocument();
     expect(screen.getByText("持有至结算，未计手续费")).toBeInTheDocument();
+    expect(screen.getByLabelText("分类表现")).toHaveTextContent("样本偏少");
+    expect(screen.getByText("Dota 2")).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("统计分类筛选")).getByRole("button", { name: "电竞" }));
+    await waitFor(() => expect(requests.some((url) => url.includes("category=esports&subcategory=all"))).toBe(true));
+    await user.selectOptions(await screen.findByLabelText("统计子分类筛选"), "dota-2");
+    await waitFor(() => expect(requests.some((url) => url.includes("category=esports&subcategory=dota-2"))).toBe(true));
 
     await user.click(screen.getByRole("button", { name: "近 7 天" }));
     await waitFor(() => expect(requests.some((url) => url.includes("statistics?range=7d"))).toBe(true));

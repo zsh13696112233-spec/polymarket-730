@@ -6,6 +6,7 @@ import {
   WhaleRule,
   WhaleStatistics,
   WhaleStatisticsAmountBand,
+  WhaleStatisticsCategory,
   WhaleStatisticsMetrics,
   WhaleStatisticsRange,
   WhaleStatisticsResult,
@@ -13,6 +14,7 @@ import {
   WhaleStatisticsSignal,
   WhaleStatisticsSignalList,
   WhaleStatisticsSort,
+  WhaleStatisticsSubcategory,
   formatBeijing,
   formatCompactUsdc,
   formatPrice,
@@ -34,6 +36,19 @@ const RULE_LABELS: Record<WhaleRule, string> = {
   new_account: "新号大额",
   large_amount: "全量超大额",
 };
+
+const CATEGORY_LABELS: Record<WhaleStatisticsCategory, string> = {
+  all: "全部分类",
+  esports: "电竞",
+  sports: "传统体育",
+  politics: "政治",
+  crypto: "加密",
+  science_tech: "科学与科技",
+  entertainment: "娱乐",
+  other: "其他",
+};
+
+const CATEGORY_KEYS = Object.keys(CATEGORY_LABELS) as WhaleStatisticsCategory[];
 
 function percent(value: Numeric | null | undefined, signed = false): string {
   if (value === null || value === undefined) return "样本不足";
@@ -58,6 +73,12 @@ function fullBeijingDate(value: string | null): string {
 
 function metricTone(value: Numeric | null | undefined): string {
   return pnlClass(value);
+}
+
+function sampleLabel(metrics: WhaleStatisticsMetrics): string | null {
+  return metrics.effective_sample_count > 0 && metrics.effective_sample_count < 10
+    ? "样本偏少"
+    : null;
 }
 
 function HitRate({ metrics }: { metrics: WhaleStatisticsMetrics }) {
@@ -99,6 +120,37 @@ function CohortCard({
   );
 }
 
+function BreakdownButton({
+  label,
+  metrics,
+  active,
+  onClick,
+}: {
+  label: string;
+  metrics: WhaleStatisticsMetrics;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const warning = sampleLabel(metrics);
+  return (
+    <button
+      type="button"
+      className={`whaleStatsBreakdownCard ${active ? "active" : ""}`}
+      aria-pressed={active}
+      onClick={onClick}
+    >
+      <span className="whaleStatsBreakdownTitle">
+        <strong>{label}</strong>
+        {warning && <em>{warning}</em>}
+      </span>
+      <b>{percent(metrics.hit_rate_percent)}</b>
+      <small>{metrics.hit_count} 胜 / {metrics.miss_count} 负{metrics.special_count ? ` · ${metrics.special_count} 特殊` : ""}</small>
+      <span className={metricTone(metrics.theoretical_pnl_usdc)}>{formatSigned(metrics.theoretical_pnl_usdc, " USDC")}</span>
+      <small className={metricTone(metrics.theoretical_roi_percent)}>ROI {percent(metrics.theoretical_roi_percent, true)} · {metrics.effective_sample_count} 样本</small>
+    </button>
+  );
+}
+
 function RuleBadges({ rules }: { rules: WhaleRule[] }) {
   return (
     <span className="whaleRuleBadges">
@@ -130,6 +182,8 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
   const [rule, setRule] = useState<WhaleStatisticsRule>("all");
   const [result, setResult] = useState<WhaleStatisticsResult>("all");
   const [amountBand, setAmountBand] = useState<WhaleStatisticsAmountBand>("all");
+  const [category, setCategory] = useState<WhaleStatisticsCategory>("all");
+  const [subcategory, setSubcategory] = useState<WhaleStatisticsSubcategory>("all");
   const [sort, setSort] = useState<WhaleStatisticsSort>("settled_desc");
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -139,15 +193,21 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
 
   const loadStatistics = useCallback(async () => {
     setLoading(true);
+    const params = new URLSearchParams({
+      range,
+      category,
+      subcategory,
+      refresh: String(refreshToken),
+    });
     try {
-      setStatistics(await whaleApi<WhaleStatistics>(`/api/whales/statistics?range=${range}&refresh=${refreshToken}`));
+      setStatistics(await whaleApi<WhaleStatistics>(`/api/whales/statistics?${params.toString()}`));
       setError(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "巨鲸统计加载失败");
     } finally {
       setLoading(false);
     }
-  }, [range, refreshToken]);
+  }, [category, range, refreshToken, subcategory]);
 
   const loadSignals = useCallback(async () => {
     setSignalLoading(true);
@@ -156,6 +216,8 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
       rule,
       result,
       amount_band: amountBand,
+      category,
+      subcategory,
       sort,
       limit: String(limit),
       offset: String(offset),
@@ -169,7 +231,7 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
     } finally {
       setSignalLoading(false);
     }
-  }, [amountBand, offset, range, refreshToken, result, rule, sort]);
+  }, [amountBand, category, offset, range, refreshToken, result, rule, sort, subcategory]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadStatistics(), 0);
@@ -185,6 +247,11 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
     setRange(next);
     setOffset(0);
   };
+  const changeCategory = (next: WhaleStatisticsCategory) => {
+    setCategory(next);
+    setSubcategory("all");
+    setOffset(0);
+  };
   const setFilter = <T,>(setter: (value: T) => void, value: T) => {
     setter(value);
     setOffset(0);
@@ -196,7 +263,7 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
       <section className="pcPanel whaleStatsToolbar">
         <div>
           <span className="pcEyebrow">SIGNAL PERFORMANCE</span>
-          <h2>巨鲸信号表现</h2>
+          <h2>链上信号表现</h2>
           <p>统计自 {fullBeijingDate(statistics?.coverage_start ?? null)} · 最后计算 {formatBeijing(statistics?.generated_at, true)}</p>
         </div>
         <div className="whaleStatsRange" aria-label="统计时间范围">
@@ -206,6 +273,41 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="pcPanel whaleStatsCategoryControls" aria-label="统计分类筛选">
+        <div>
+          <span className="pcEyebrow">MARKET CATEGORY</span>
+          <strong>市场分类</strong>
+        </div>
+        <div className="whaleStatsCategoryButtons">
+          {CATEGORY_KEYS.map((item) => (
+            <button
+              type="button"
+              className={category === item ? "active" : ""}
+              aria-pressed={category === item}
+              onClick={() => changeCategory(item)}
+              key={item}
+            >
+              {CATEGORY_LABELS[item]}
+            </button>
+          ))}
+        </div>
+        {(category === "esports" || category === "sports") && (
+          <label>
+            <span>子分类</span>
+            <select
+              aria-label="统计子分类筛选"
+              value={subcategory}
+              onChange={(event) => setFilter(setSubcategory, event.target.value)}
+            >
+              <option value="all">全部{CATEGORY_LABELS[category]}</option>
+              {(statistics?.subcategory_breakdown ?? []).map((slice) => (
+                <option value={slice.key} key={slice.key}>{slice.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
       </section>
 
       {error && <div className="pcAlert danger whalePageError" role="alert"><strong>统计请求未完成</strong><p>{error}</p><button type="button" onClick={() => void Promise.all([loadStatistics(), loadSignals()])}>重试</button></div>}
@@ -225,6 +327,46 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
             <CohortCard title="新号大额" eyebrow="NEW ACCOUNT" metrics={statistics.new_account} />
             <CohortCard title="全量超大额" eyebrow="LARGE AMOUNT" metrics={statistics.large_amount} />
             <CohortCard title="双重命中" eyebrow="DUAL MATCH" metrics={statistics.dual_match} />
+          </section>
+
+          <section className="pcPanel whaleStatsBreakdownPanel" aria-label="分类表现">
+            <header className="pcPanelHeader">
+              <div>
+                <span className="pcEyebrow">CATEGORY PERFORMANCE</span>
+                <h2>分类表现</h2>
+                <p>主分类互斥，电竞不会重复计入传统体育；点击分类可查看完整下钻统计。</p>
+              </div>
+            </header>
+            <div className="whaleStatsBreakdownGrid">
+              {(statistics.category_breakdown ?? []).map((slice) => (
+                <BreakdownButton
+                  key={slice.key}
+                  label={slice.label}
+                  metrics={slice.metrics}
+                  active={category === slice.key}
+                  onClick={() => changeCategory(slice.key as WhaleStatisticsCategory)}
+                />
+              ))}
+            </div>
+            {(statistics.subcategory_breakdown ?? []).length > 0 && (
+              <div className="whaleStatsSubcategoryBlock">
+                <header>
+                  <strong>{CATEGORY_LABELS[category]}细分</strong>
+                  <span>按游戏或运动项目继续下钻</span>
+                </header>
+                <div className="whaleStatsBreakdownGrid compact">
+                  {(statistics.subcategory_breakdown ?? []).map((slice) => (
+                    <BreakdownButton
+                      key={slice.key}
+                      label={slice.label}
+                      metrics={slice.metrics}
+                      active={subcategory === slice.key}
+                      onClick={() => setFilter(setSubcategory, slice.key)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="whaleStatsAnalysisGrid">
@@ -252,7 +394,7 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
           <label><span>金额</span><select aria-label="统计金额筛选" value={amountBand} onChange={(event) => setFilter(setAmountBand, event.target.value as WhaleStatisticsAmountBand)}><option value="all">全部金额</option><option value="lt_100k">小于 10万</option><option value="100k_500k">10万–50万</option><option value="500k_1m">50万–100万</option><option value="gte_1m">100万以上</option></select></label>
           <label><span>排序</span><select aria-label="统计明细排序" value={sort} onChange={(event) => setFilter(setSort, event.target.value as WhaleStatisticsSort)}><option value="settled_desc">最近结算</option><option value="amount_desc">买入金额最高</option><option value="pnl_desc">理论盈利最高</option><option value="pnl_asc">理论亏损最高</option></select></label>
         </div>
-        {signalLoading && !signals ? <div className="pcLoading whaleLoading">正在读取结算明细…</div> : signals?.items.length ? <div className={`whaleStatsTableWrap ${signalLoading ? "refreshing" : ""}`}><table className="whaleStatsTable"><thead><tr><th>结果 / 规则</th><th>钱包</th><th>市场 / 方向</th><th>买入金额 / 均价</th><th>理论盈亏 / ROI</th><th>触发 / 结算</th></tr></thead><tbody>{signals.items.map((signal) => <tr key={signal.entry_id}><td><span className={`pcBadge ${resultTone(signal.result)}`}>{resultLabel(signal.result)}</span><RuleBadges rules={signal.matched_rules} /></td><td><a href={signal.profile_url} target="_blank" rel="noreferrer"><strong>{signal.display_name || shortAddress(signal.proxy_wallet)} ↗</strong><small>{shortAddress(signal.proxy_wallet)}</small><small>触发时账号 {signal.wallet_age_days_at_trigger == null ? "年龄未知" : `${signal.wallet_age_days_at_trigger} 天`}</small></a></td><td><a href={signal.polymarket_url} target="_blank" rel="noreferrer">{signal.title} ↗</a><small>{signal.outcome} · 结算价 {formatPrice(signal.settlement_price)}</small></td><td className="numeric"><strong>{formatCompactUsdc(signal.gross_buy_usdc)}</strong><small>均价 {formatPrice(signal.avg_buy_price)}</small></td><td className={`numeric ${metricTone(signal.theoretical_pnl_usdc)}`}><strong>{formatSigned(signal.theoretical_pnl_usdc, " USDC")}</strong><small>{percent(signal.theoretical_roi_percent, true)}</small></td><td><strong>触发 {formatBeijing(signal.first_triggered_at)}</strong><small>结算 {formatBeijing(signal.settled_at)}</small></td></tr>)}</tbody></table></div> : <div className="whaleHistoryEmpty">当前筛选下暂无已结算信号。</div>}
+        {signalLoading && !signals ? <div className="pcLoading whaleLoading">正在读取结算明细…</div> : signals?.items.length ? <div className={`whaleStatsTableWrap ${signalLoading ? "refreshing" : ""}`}><table className="whaleStatsTable"><thead><tr><th>结果 / 规则</th><th>钱包</th><th>市场 / 方向</th><th>买入金额 / 均价</th><th>理论盈亏 / ROI</th><th>触发 / 结算</th></tr></thead><tbody>{signals.items.map((signal) => <tr key={signal.entry_id}><td><span className={`pcBadge ${resultTone(signal.result)}`}>{resultLabel(signal.result)}</span><RuleBadges rules={signal.matched_rules} /></td><td><a href={signal.profile_url} target="_blank" rel="noreferrer"><strong>{signal.display_name || shortAddress(signal.proxy_wallet)} ↗</strong><small>{shortAddress(signal.proxy_wallet)}</small><small>触发时账号 {signal.wallet_age_days_at_trigger == null ? "年龄未知" : `${signal.wallet_age_days_at_trigger} 天`}</small></a></td><td>{signal.category_label && <span className="whaleStatsSignalCategory"><b>{signal.category_label}</b>{signal.subcategory_label && <em>{signal.subcategory_label}</em>}</span>}<a href={signal.polymarket_url} target="_blank" rel="noreferrer">{signal.title} ↗</a><small>{signal.outcome} · 结算价 {formatPrice(signal.settlement_price)}</small></td><td className="numeric"><strong>{formatCompactUsdc(signal.gross_buy_usdc)}</strong><small>均价 {formatPrice(signal.avg_buy_price)}</small></td><td className={`numeric ${metricTone(signal.theoretical_pnl_usdc)}`}><strong>{formatSigned(signal.theoretical_pnl_usdc, " USDC")}</strong><small>{percent(signal.theoretical_roi_percent, true)}</small></td><td><strong>触发 {formatBeijing(signal.first_triggered_at)}</strong><small>结算 {formatBeijing(signal.settled_at)}</small></td></tr>)}</tbody></table></div> : <div className="whaleHistoryEmpty">当前筛选下暂无已结算信号。</div>}
         <footer className="whaleStatsPagination"><span>第 {signals?.total ? Math.floor(offset / limit) + 1 : 0} 页</span><div><button type="button" disabled={offset === 0 || signalLoading} onClick={() => setOffset(Math.max(0, offset - limit))}>上一页</button><button type="button" disabled={signalLoading || offset + limit >= (signals?.total ?? 0)} onClick={() => setOffset(offset + limit)}>下一页</button></div></footer>
       </section>
     </div>

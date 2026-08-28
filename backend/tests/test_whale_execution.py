@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -10,11 +10,14 @@ from sqlalchemy import select
 from backend.config import Settings
 from backend.db import Database
 from backend.models import (
+    ExecutionAccount,
     WhaleFill,
     WhaleFollowLedger,
     WhaleFollowPosition,
+    WhaleMarket,
     WhaleOrder,
 )
+from backend.polymarket import TradeSnapshot
 from backend.trading import TradeResult
 from backend.whale import WhaleFollowExecutor
 
@@ -51,6 +54,77 @@ def executor(database: Database) -> WhaleFollowExecutor:
         settings=database.settings,
         keychain=SimpleNamespace(),  # type: ignore[arg-type]
     )
+
+
+class ManualTradeClient:
+    def __init__(self, trades: list[TradeSnapshot]) -> None:
+        self.trades = trades
+
+    async def fetch_trades(self, *_: object, **__: object) -> list[TradeSnapshot]:
+        return list(self.trades)
+
+
+class BalanceTrader:
+    def __init__(self, balances: dict[str, Decimal]) -> None:
+        self.balances = balances
+
+    async def onchain_outcome_balance(self, asset_id: str) -> Decimal:
+        return self.balances[asset_id]
+
+
+async def configure_reconciliation(database: Database) -> None:
+    async with database.sessions() as session:
+        session.add(
+            ExecutionAccount(
+                id=1,
+                signer_address=FUNDER_ADDRESS,
+                funder_address=FUNDER_ADDRESS,
+                signature_type=3,
+                keychain_service="test-service",
+                keychain_account="test-account",
+                status="ready",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        session.add(
+            WhaleMarket(
+                condition_id=CONDITION_ID,
+                title="Whale market",
+                outcomes_json='["Yes","No"]',
+                outcome_prices_json='["0.5","0.5"]',
+                clob_token_ids_json=f'["{ASSET_ID}"]',
+                tags_json="[]",
+                fee_rate=Decimal("0.05"),
+                fee_exponent=Decimal("1"),
+                refreshed_at=NOW,
+            )
+        )
+        await session.commit()
+
+
+def reconciliation_executor(
+    database: Database,
+    *,
+    trades: list[TradeSnapshot],
+    balance: str,
+) -> WhaleFollowExecutor:
+    follow_executor = WhaleFollowExecutor(
+        database=database,
+        client=ManualTradeClient(trades),  # type: ignore[arg-type]
+        settings=database.settings,
+        keychain=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+    follow_executor._trader_cache = BalanceTrader(  # type: ignore[assignment]
+        {ASSET_ID: Decimal(balance)}
+    )
+    follow_executor._trader_cache_key = (
+        "test-service",
+        "test-account",
+        3,
+        FUNDER_ADDRESS,
+    )
+    return follow_executor
 
 
 async def insert_position(
@@ -294,3 +368,111 @@ async def test_partial_then_full_sell_moves_proportional_cost_and_closes_positio
     assert [entry.type for entry in ledger] == ["sell", "sell"]
     assert_decimal(ledger[0].realized_pnl, "0.3")
     assert_decimal(ledger[1].realized_pnl, "0.45")
+
+
+@pytest.mark.asyncio
+async def test_manual_buy_and_sell_are_adopted_and_dust_closes_position(
+    database: Database,
+):
+    await configure_reconciliation(database)
+    position_id = await insert_position(
+        database,
+        size="44.272726",
+        cost="20.025429",
+        status="open",
+        lifetime_bought_size="44.272726",
+        lifetime_bought_usdc="19.479999",
+        lifetime_fee_usdc="0.545430",
+    )
+    trades = [
+        TradeSnapshot(
+            asset_id=ASSET_ID,
+            condition_id=CONDITION_ID,
+            side="BUY",
+            size=Decimal("20"),
+            price=Decimal("0.51"),
+            timestamp=NOW - timedelta(seconds=12),
+            transaction_hash="0xmanual-buy",
+        ),
+        TradeSnapshot(
+            asset_id=ASSET_ID,
+            condition_id=CONDITION_ID,
+            side="SELL",
+            size=Decimal("64.27"),
+            price=Decimal("0.96"),
+            timestamp=NOW + timedelta(hours=1),
+            transaction_hash="0xmanual-sell",
+        ),
+    ]
+    follow_executor = reconciliation_executor(database, trades=trades, balance="0.002726")
+
+    assert await follow_executor.reconcile_external_wallet_activity() is None
+    assert await follow_executor.reconcile_external_wallet_activity() is None
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        ledger = list(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger)
+                    .where(WhaleFollowLedger.position_id == position_id)
+                    .order_by(WhaleFollowLedger.timestamp, WhaleFollowLedger.id)
+                )
+            ).all()
+        )
+
+    assert position is not None
+    assert position.size == ZERO
+    assert position.cost_usdc == ZERO
+    assert position.status == "closed"
+    assert [row.type for row in ledger] == ["buy", "sell", "dust_writeoff"]
+    assert [row.source for row in ledger] == ["manual", "manual", "reconciliation"]
+    assert_decimal(ledger[0].size, "20")
+    assert_decimal(ledger[0].amount_usdc, "10.4499")
+    assert_decimal(ledger[1].size, "64.27")
+    assert_decimal(ledger[1].amount_usdc, "61.57581")
+    assert_decimal(position.realized_pnl, "31.100481")
+
+
+@pytest.mark.asyncio
+async def test_manual_buy_after_follow_expands_the_unified_position_once(
+    database: Database,
+):
+    await configure_reconciliation(database)
+    position_id = await insert_position(
+        database,
+        size="10",
+        cost="4",
+        status="open",
+        lifetime_bought_size="10",
+        lifetime_bought_usdc="4",
+    )
+    trade = TradeSnapshot(
+        asset_id=ASSET_ID,
+        condition_id=CONDITION_ID,
+        side="BUY",
+        size=Decimal("5"),
+        price=Decimal("0.50"),
+        timestamp=NOW + timedelta(minutes=2),
+        transaction_hash="0xmanual-later",
+    )
+    follow_executor = reconciliation_executor(database, trades=[trade], balance="15")
+
+    assert await follow_executor.reconcile_external_wallet_activity() is None
+    assert await follow_executor.reconcile_external_wallet_activity() is None
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        ledger = list(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger).where(WhaleFollowLedger.position_id == position_id)
+                )
+            ).all()
+        )
+
+    assert position is not None
+    assert position.size == Decimal("15")
+    assert_decimal(position.cost_usdc, "6.5625")
+    assert len(ledger) == 1
+    assert ledger[0].source == "manual"

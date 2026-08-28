@@ -66,6 +66,7 @@ function recordTypeLabel(type: string) {
     sell: "卖出",
     redeem: "赎回",
     resolved_loss: "结算亏损",
+    dust_writeoff: "尾差核销",
   };
   return labels[type] || type;
 }
@@ -75,6 +76,16 @@ function recordTypeTone(type: string) {
   if (type === "sell") return "sell";
   if (type === "redeem") return "success";
   return "danger";
+}
+
+function recordSourceLabel(source: string) {
+  const labels: Record<string, string> = {
+    follow: "跟单成交",
+    manual: "手动交易",
+    auto_redeem: "自动结算",
+    reconciliation: "自动对账",
+  };
+  return labels[source] || source;
 }
 
 export default function WhaleRecordsWorkspace() {
@@ -235,7 +246,7 @@ export default function WhaleRecordsWorkspace() {
         {records.length ? (
           <div className="pcTableWrap">
             <table className="pcTable whaleLedgerTable">
-              <thead><tr><th>时间</th><th>类型</th><th>市场 / 方向</th><th className="numeric">价格</th><th className="numeric">份额</th><th className="numeric">金额</th><th className="numeric">手续费</th><th className="numeric">本笔盈亏</th><th>交易</th></tr></thead>
+              <thead><tr><th>时间</th><th>来源 / 类型</th><th>市场 / 方向</th><th className="numeric">价格</th><th className="numeric">份额</th><th className="numeric">金额</th><th className="numeric">手续费</th><th className="numeric">本笔盈亏</th><th>交易</th></tr></thead>
               <tbody>{records.map((record) => <LedgerRow key={record.id} record={record} />)}</tbody>
             </table>
           </div>
@@ -312,7 +323,7 @@ function PositionTimeline({ position, ledger }: { position: WhalePosition; ledge
         {ledger.map((record, index) => (
           <div className="whaleTimelineItem" key={record.id}>
             <span className={`whaleTimelineDot ${recordTypeTone(record.type)}`}>{index + 1}</span>
-            <div><strong>{recordTypeLabel(record.type)} · {formatBeijing(record.timestamp, true)}</strong><p>{numeric(record.size).toFixed(4)} 份 × {formatPrice(record.price)} · 金额 {formatUsdc(record.amount_usdc)} · 费用 {formatUsdc(record.fee_usdc)}</p>{record.detail && <small>{record.detail}</small>}</div>
+            <div><strong>{recordSourceLabel(record.source)} · {recordTypeLabel(record.type)} · {formatBeijing(record.timestamp, true)}</strong><p>{numeric(record.size).toFixed(4)} 份 × {formatPrice(record.price)} · 金额 {formatUsdc(record.amount_usdc)} · 费用 {formatUsdc(record.fee_usdc)}</p>{record.detail && <small>{record.detail}</small>}</div>
             <b className={pnlClass(record.realized_pnl)}>{numeric(record.realized_pnl) === 0 ? "—" : formatUsdc(record.realized_pnl)}</b>
           </div>
         ))}
@@ -326,7 +337,7 @@ function LedgerRow({ record }: { record: WhaleRecord }) {
   return (
     <tr>
       <td><strong>{formatBeijing(record.timestamp, true)}</strong></td>
-      <td><span className={`pcBadge ${recordTypeTone(record.type)}`}>{recordTypeLabel(record.type)}</span></td>
+      <td><span className={`pcBadge ${recordTypeTone(record.type)}`}>{recordSourceLabel(record.source)}</span><small>{recordTypeLabel(record.type)}</small></td>
       <td><a className="pcMarketIdentity" href={marketUrl(record.event_slug || record.market_slug)} target="_blank" rel="noreferrer"><strong>{record.title}</strong><span>{record.outcome}</span></a></td>
       <td className="numeric"><strong>{formatPrice(record.price)}</strong></td>
       <td className="numeric"><strong>{numeric(record.size).toFixed(4)}</strong></td>

@@ -11,6 +11,7 @@ from backend.polymarket import LargeTradeSnapshot
 from backend.whale import (
     WhaleDiscoveryScanner,
     WhaleFollowExecutor,
+    _whale_statistics_classification,
     aggregate_whale_trades,
     estimated_market_fee,
     fingerprint_large_trades,
@@ -21,6 +22,36 @@ from backend.whale import (
 BASE_TIME = datetime(2026, 8, 16, 0, 0)
 WALLET_A = "0x" + "a" * 40
 WALLET_B = "0x" + "b" * 40
+
+
+def test_whale_statistics_classification_is_exclusive_and_uses_precedence():
+    esports = _whale_statistics_classification(
+        [
+            {"slug": "Sports"},
+            {"slug": "Esports"},
+            {"slug": "DOTA-2"},
+        ]
+    )
+    assert esports == {
+        "category": "esports",
+        "category_label": "电竞",
+        "subcategory": "dota-2",
+        "subcategory_label": "Dota 2",
+    }
+
+    sports = _whale_statistics_classification(
+        [{"slug": "sports"}, {"slug": "soccer"}, {"slug": "politics"}]
+    )
+    assert sports["category"] == "sports"
+    assert sports["subcategory"] == "soccer"
+
+    politics = _whale_statistics_classification([{"slug": "crypto"}, {"slug": "politics"}])
+    assert politics["category"] == "politics"
+    assert politics["subcategory"] is None
+
+    other = _whale_statistics_classification([{"slug": "unmapped-topic"}])
+    assert other["category"] == "other"
+    assert other["subcategory"] is None
 
 
 def large_trade(

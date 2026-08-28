@@ -1119,6 +1119,7 @@ class WhaleFill(Base):
 class WhaleFollowLedger(Base):
     __tablename__ = "whale_follow_ledger"
     __table_args__ = (
+        UniqueConstraint("external_event_key", name="uq_whale_ledger_external_event"),
         Index("ix_whale_ledger_position_time", "position_id", "timestamp"),
         Index("ix_whale_ledger_time", "timestamp"),
     )
@@ -1131,6 +1132,8 @@ class WhaleFollowLedger(Base):
         ForeignKey("whale_orders.id", ondelete="SET NULL"), nullable=True
     )
     type: Mapped[str] = mapped_column(String(30), nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="follow")
+    external_event_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     size: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)
     price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     amount_usdc: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False, default=0)

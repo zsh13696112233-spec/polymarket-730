@@ -200,6 +200,8 @@ export type WhaleStatisticsRule = "all" | "new_account" | "large_amount" | "both
 export type WhaleStatisticsResult = "all" | "hit" | "miss" | "special";
 export type WhaleStatisticsAmountBand = "all" | "lt_100k" | "100k_500k" | "500k_1m" | "gte_1m";
 export type WhaleStatisticsSort = "settled_desc" | "amount_desc" | "pnl_desc" | "pnl_asc";
+export type WhaleStatisticsCategory = "all" | "esports" | "sports" | "politics" | "crypto" | "science_tech" | "entertainment" | "other";
+export type WhaleStatisticsSubcategory = string;
 
 export type WhaleStatisticsMetrics = {
   settled_count: number;
@@ -232,12 +234,16 @@ export type WhaleStatistics = {
   range: WhaleStatisticsRange;
   range_start: string | null;
   range_end: string;
+  category: WhaleStatisticsCategory;
+  subcategory: WhaleStatisticsSubcategory;
   overall: WhaleStatisticsMetrics;
   new_account: WhaleStatisticsMetrics;
   large_amount: WhaleStatisticsMetrics;
   dual_match: WhaleStatisticsMetrics;
   trend: WhaleStatisticsSlice[];
   amount_bands: WhaleStatisticsSlice[];
+  category_breakdown: WhaleStatisticsSlice[];
+  subcategory_breakdown: WhaleStatisticsSlice[];
 };
 
 export type WhaleStatisticsSignal = {
@@ -255,6 +261,10 @@ export type WhaleStatisticsSignal = {
   market_slug: string | null;
   event_slug: string | null;
   polymarket_url: string;
+  category: Exclude<WhaleStatisticsCategory, "all">;
+  category_label: string;
+  subcategory: string | null;
+  subcategory_label: string | null;
   gross_buy_usdc: Numeric;
   gross_buy_size: Numeric;
   avg_buy_price: Numeric;
@@ -366,6 +376,7 @@ export type WhaleRecord = {
   position_id: number;
   order_id: number | null;
   type: "buy" | "sell" | "redeem" | "resolved_loss" | string;
+  source: "follow" | "manual" | "auto_redeem" | "reconciliation" | string;
   title: string;
   outcome: string;
   market_slug?: string | null;

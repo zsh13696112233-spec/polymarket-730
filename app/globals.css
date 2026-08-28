@@ -8601,6 +8601,15 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleStatsRange button:last-child { border-right: 0; }
 .whaleStatsRange button:hover { color: #e8e3bd; }
 .whaleStatsRange button.active { background: #f2c319; color: #111006; font-weight: 800; }
+.whaleStatsCategoryControls { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 13px 16px; }
+.whaleStatsCategoryControls > div:first-child { display: grid; gap: 3px; }
+.whaleStatsCategoryControls > div:first-child > strong { color: #eee9c8; font-size: 14px; }
+.whaleStatsCategoryButtons { display: flex; min-width: 0; overflow-x: auto; }
+.whaleStatsCategoryButtons button { min-height: 36px; flex: 0 0 auto; padding: 0 12px; border: 1px solid #514b23; border-right: 0; background: #0d0e08; color: #8d896a; cursor: pointer; }
+.whaleStatsCategoryButtons button:last-child { border-right: 1px solid #514b23; }
+.whaleStatsCategoryButtons button.active { border-color: #f2c319; background: #f2c319; color: #111006; font-weight: 800; }
+.whaleStatsCategoryControls > label { display: grid; min-width: 160px; gap: 5px; color: #817c5f; font-size: 11px; }
+.whaleStatsCategoryControls select { height: 36px; padding: 0 9px; border: 1px solid #514b23; background: #0d0e08; color: #ddd8b6; outline: none; }
 .whaleStatsHero { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .whaleStatsHeroCard { display: grid; min-height: 156px; align-content: center; gap: 7px; padding: 17px; border: 1px solid #403b1f; background: linear-gradient(145deg, #121309, #090a06); }
 .whaleStatsHeroCard.primary { border-color: #8a7521; box-shadow: inset 3px 0 #f2c319; }
@@ -8628,6 +8637,24 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleStatsCohortCard dl > div { display: grid; min-height: 72px; align-content: center; gap: 5px; padding: 10px; background: #0b0c07; }
 .whaleStatsCohortCard dt { color: #777358; font-size: 11px; }
 .whaleStatsCohortCard dd { overflow: hidden; margin: 0; color: #dcd6b5; font-family: "Courier New", Consolas, monospace; font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.whaleStatsBreakdownPanel { overflow: hidden; }
+.whaleStatsBreakdownGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: #34321d; }
+.whaleStatsBreakdownGrid.compact { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.whaleStatsBreakdownCard { display: grid; min-height: 142px; align-content: center; justify-items: start; gap: 5px; padding: 13px; border: 0; background: #0b0c07; color: inherit; cursor: pointer; text-align: left; }
+.whaleStatsBreakdownCard:hover { background: #14150c; }
+.whaleStatsBreakdownCard.active { box-shadow: inset 3px 0 #f2c319; background: #15160c; }
+.whaleStatsBreakdownTitle { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; }
+.whaleStatsBreakdownTitle strong { color: #e8e3bd; font-size: 13px; }
+.whaleStatsBreakdownTitle em { padding: 2px 5px; border: 1px solid #735d22; color: #d8ae32; font-size: 9px; font-style: normal; }
+.whaleStatsBreakdownCard > b { color: #ffe052; font-family: "Courier New", Consolas, monospace; font-size: 22px; }
+.whaleStatsBreakdownCard > span:not(.whaleStatsBreakdownTitle) { font-family: "Courier New", Consolas, monospace; font-size: 12px; font-weight: 800; }
+.whaleStatsBreakdownCard > small { color: #817c5f; font-size: 10px; line-height: 1.4; }
+.whaleStatsBreakdownCard .profit { color: #3be6a1; }
+.whaleStatsBreakdownCard .loss { color: #ff7186; }
+.whaleStatsSubcategoryBlock { border-top: 1px solid #403b1f; }
+.whaleStatsSubcategoryBlock > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: #090a06; }
+.whaleStatsSubcategoryBlock > header strong { color: #e8e3bd; font-size: 13px; }
+.whaleStatsSubcategoryBlock > header span { color: #777358; font-size: 11px; }
 .whaleStatsAnalysisGrid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(360px, .65fr); gap: 10px; }
 .whaleStatsTrendPanel,
 .whaleStatsBandsPanel,
@@ -8667,6 +8694,10 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleStatsTable td > a > small { margin-top: 5px; color: #777358; font-weight: 400; }
 .whaleStatsTable td.numeric { font-family: "Courier New", Consolas, monospace; font-variant-numeric: tabular-nums; }
 .whaleStatsTable .whaleRuleBadges { display: flex; margin-top: 7px; }
+.whaleStatsSignalCategory { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
+.whaleStatsSignalCategory b,
+.whaleStatsSignalCategory em { padding: 2px 5px; border: 1px solid #514b23; color: #a69f77; font-size: 9px; font-style: normal; font-weight: 700; }
+.whaleStatsSignalCategory b { border-color: #735d22; color: #d8ae32; }
 .whaleStatsPagination { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-top: 1px solid #34321d; background: #090a06; }
 .whaleStatsPagination > span { color: #777358; font-size: 12px; }
 .whaleStatsPagination > div { display: flex; gap: 6px; }
@@ -11240,6 +11271,44 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   font-weight: 600;
 }
 
+.whaleStatsCategoryControls > div:first-child > strong { color: #1f2328; font-weight: 600; }
+.whaleStatsCategoryButtons button {
+  border-color: #dfe0e5;
+  background: #fff;
+  color: #696e7b;
+  font-weight: 500;
+}
+.whaleStatsCategoryButtons button:last-child { border-right-color: #dfe0e5; }
+.whaleStatsCategoryButtons button:hover { background: #f7f8fa; color: #1f2328; }
+.whaleStatsCategoryButtons button.active {
+  border-color: #134cff;
+  background: #134cff;
+  color: #fff;
+}
+.whaleStatsCategoryControls > label { color: #696e7b; }
+.whaleStatsCategoryControls select {
+  border-color: #dfe0e5;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2328;
+}
+.whaleStatsCategoryControls select:focus { border-color: #4a6cf7; box-shadow: 0 0 0 3px rgba(19, 76, 255, 0.1); }
+.whaleStatsBreakdownGrid { background: var(--pc-line); }
+.whaleStatsBreakdownCard { background: #fff; }
+.whaleStatsBreakdownCard:hover { background: #f7f8fa; }
+.whaleStatsBreakdownCard.active { background: #f7f9ff; box-shadow: inset 3px 0 #134cff; }
+.whaleStatsBreakdownTitle strong { color: #1f2328; font-weight: 600; }
+.whaleStatsBreakdownTitle em { border-color: #eedba9; border-radius: 999px; background: #fff9e9; color: #9b6b00; }
+.whaleStatsBreakdownCard > b { color: #134cff; font-family: var(--pc-data-font); font-weight: 600; }
+.whaleStatsBreakdownCard > span:not(.whaleStatsBreakdownTitle) { font-family: var(--pc-data-font); }
+.whaleStatsBreakdownCard > small { color: #8d8e99; }
+.whaleStatsBreakdownCard .profit { color: #008f62; }
+.whaleStatsBreakdownCard .loss { color: #d8454b; }
+.whaleStatsSubcategoryBlock { border-top-color: var(--pc-line); }
+.whaleStatsSubcategoryBlock > header { background: #fbfbfc; }
+.whaleStatsSubcategoryBlock > header strong { color: #1f2328; }
+.whaleStatsSubcategoryBlock > header span { color: #8d8e99; }
+
 .whaleStatsTrendRow { border-bottom-color: var(--pc-line); }
 .whaleStatsTrendRow > span,
 .whaleStatsTrendRow > small { color: #8d8e99; }
@@ -11304,6 +11373,9 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .whaleStatsTable td > small,
 .whaleStatsTable td > a > small { color: #8d8e99; }
 .whaleStatsTable td.numeric { font-family: var(--pc-data-font); }
+.whaleStatsSignalCategory b,
+.whaleStatsSignalCategory em { border-color: #dfe0e5; border-radius: 999px; background: #f7f8fa; color: #696e7b; }
+.whaleStatsSignalCategory b { border-color: #d7defa; background: #f2f5ff; color: #5267e3; }
 .whaleStatsPagination {
   border-top: 1px solid var(--pc-line);
   background: #fbfbfc;
@@ -11362,12 +11434,18 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 
 @media (max-width: 1280px) {
   .whaleStatsHero { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleStatsBreakdownGrid,
+  .whaleStatsBreakdownGrid.compact { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 900px) {
   .whaleStatsCohorts,
   .whaleStatsAnalysisGrid { grid-template-columns: 1fr; }
   .whaleStatsFilters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleStatsCategoryControls { grid-template-columns: 1fr; }
+  .whaleStatsCategoryControls > label { max-width: 260px; }
+  .whaleStatsBreakdownGrid,
+  .whaleStatsBreakdownGrid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -11375,6 +11453,9 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   .whaleStatsFilters { grid-template-columns: 1fr; }
   .whaleStatsRange { width: 100%; overflow-x: auto; }
   .whaleStatsRange button { flex: 1 0 auto; }
+  .whaleStatsToolbar { align-items: stretch; flex-direction: column; }
+  .whaleStatsBreakdownGrid,
+  .whaleStatsBreakdownGrid.compact { grid-template-columns: 1fr; }
   .whalePositionTimeline { grid-template-columns: 1fr; }
 }
 

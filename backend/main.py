@@ -2018,12 +2018,22 @@ def create_app(
             alias="range",
             pattern="^(all|7d|30d|90d)$",
         ),
+        category: str = Query(
+            default="all",
+            pattern="^(all|esports|sports|politics|crypto|science_tech|entertainment|other)$",
+        ),
+        subcategory: str = Query(default="all", max_length=100),
     ) -> WhaleStatisticsRead:
         require_whale_module(request)
-        payload = await whale_statistics(
-            request.app.state.database,
-            range_name=range_name,
-        )
+        try:
+            payload = await whale_statistics(
+                request.app.state.database,
+                range_name=range_name,
+                category=category,
+                subcategory=subcategory,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         return WhaleStatisticsRead.model_validate(payload)
 
     @application.get(
@@ -2043,6 +2053,11 @@ def create_app(
             default="all",
             pattern="^(all|lt_100k|100k_500k|500k_1m|gte_1m)$",
         ),
+        category: str = Query(
+            default="all",
+            pattern="^(all|esports|sports|politics|crypto|science_tech|entertainment|other)$",
+        ),
+        subcategory: str = Query(default="all", max_length=100),
         sort: str = Query(
             default="settled_desc",
             pattern="^(settled_desc|amount_desc|pnl_desc|pnl_asc)$",
@@ -2051,16 +2066,21 @@ def create_app(
         offset: int = Query(default=0, ge=0),
     ) -> WhaleStatisticsSignalListRead:
         require_whale_module(request)
-        payload = await list_whale_statistics_signals(
-            request.app.state.database,
-            range_name=range_name,
-            rule=rule,
-            result=result,
-            amount_band=amount_band,
-            sort=sort,
-            limit=limit,
-            offset=offset,
-        )
+        try:
+            payload = await list_whale_statistics_signals(
+                request.app.state.database,
+                range_name=range_name,
+                rule=rule,
+                result=result,
+                amount_band=amount_band,
+                category=category,
+                subcategory=subcategory,
+                sort=sort,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         return WhaleStatisticsSignalListRead.model_validate(payload)
 
     @application.get("/api/whales/markets", response_model=WhaleMarketListRead)

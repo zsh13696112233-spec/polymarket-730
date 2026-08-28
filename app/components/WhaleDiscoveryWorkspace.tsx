@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
 import { WhaleSettingsPanel } from "./WhaleSettingsWorkspace";
 import { WhaleRequestMonitorPanel } from "./WhaleRequestMonitorPanel";
@@ -34,6 +41,34 @@ import {
 } from "./WhaleShared";
 
 type WalletSort = "value" | "recent";
+
+function moveRuleTabEffect(event: ReactPointerEvent<HTMLButtonElement>) {
+  if (event.pointerType === "touch" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  const button = event.currentTarget;
+  const bounds = button.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+
+  const x = Math.min(Math.max(event.clientX - bounds.left, 0), bounds.width);
+  const y = Math.min(Math.max(event.clientY - bounds.top, 0), bounds.height);
+  const horizontal = (x / bounds.width - 0.5) * 2;
+  const vertical = (y / bounds.height - 0.5) * 2;
+  const angleOffset = Number(button.dataset.effectAngle ?? 0);
+  const angle = Math.atan2(vertical, horizontal) * (180 / Math.PI) + 90 + angleOffset;
+
+  button.style.setProperty("--effect-x", `${((x / bounds.width) * 100).toFixed(2)}%`);
+  button.style.setProperty("--effect-y", `${((y / bounds.height) * 100).toFixed(2)}%`);
+  button.style.setProperty("--effect-angle", `${angle.toFixed(2)}deg`);
+  button.style.setProperty("--tilt-x", `${(-vertical * 2.2).toFixed(2)}deg`);
+  button.style.setProperty("--tilt-y", `${(horizontal * 2.2).toFixed(2)}deg`);
+}
+
+function resetRuleTabEffect(event: ReactPointerEvent<HTMLButtonElement>) {
+  const button = event.currentTarget;
+  ["--effect-x", "--effect-y", "--effect-angle", "--tilt-x", "--tilt-y"].forEach((property) => {
+    button.style.removeProperty(property);
+  });
+}
 
 const RULE_LABELS: Record<WhaleRule, string> = {
   new_account: "新号大额",
@@ -334,8 +369,12 @@ export default function WhaleDiscoveryWorkspace() {
           <button
             key={item}
             type="button"
+            data-effect-angle={item === "new_account" ? -12 : 24}
             className={!statisticsVisible && rule === item ? "active" : ""}
             aria-pressed={!statisticsVisible && rule === item}
+            onPointerMove={moveRuleTabEffect}
+            onPointerLeave={resetRuleTabEffect}
+            onPointerCancel={resetRuleTabEffect}
             onClick={() => {
               setRule(item);
               setStatisticsVisible(false);
@@ -367,8 +406,12 @@ export default function WhaleDiscoveryWorkspace() {
         ))}
         <button
           type="button"
+          data-effect-angle={-38}
           className={statisticsVisible ? "active" : ""}
           aria-pressed={statisticsVisible}
+          onPointerMove={moveRuleTabEffect}
+          onPointerLeave={resetRuleTabEffect}
+          onPointerCancel={resetRuleTabEffect}
           onClick={() => {
             setStatisticsVisible(true);
             setSettingsVisible(false);

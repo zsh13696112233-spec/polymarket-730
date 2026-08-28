@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from backend.models import (
+    WhaleAutoFollowDecision,
     WhaleEntry,
     WhaleEntryRuleState,
     WhaleMarket,
@@ -455,6 +456,16 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     assert initial.json()["new_account_threshold_usdc"] == 100000.0
     assert initial.json()["large_amount_threshold_usdc"] == 500000.0
     assert initial.json()["registration_window_days"] == 7
+    assert initial.json()["new_account_auto_follow_enabled"] is False
+    assert initial.json()["new_account_auto_follow_amount_usdc"] == 5.0
+    assert initial.json()["new_account_auto_follow_min_price"] == 0.65
+    assert initial.json()["new_account_auto_follow_max_price"] == 0.8
+    assert initial.json()["new_account_auto_follow_categories"] == ["sports"]
+    assert initial.json()["large_amount_auto_follow_enabled"] is False
+    assert initial.json()["large_amount_auto_follow_amount_usdc"] == 10.0
+    assert initial.json()["large_amount_auto_follow_min_price"] == 0.6
+    assert initial.json()["large_amount_auto_follow_max_price"] == 0.8
+    assert initial.json()["large_amount_auto_follow_categories"] == ["sports"]
     assert "smtp_configured" not in initial.json()
     global_email_settings = client.get("/api/email-settings").json()
     assert global_email_settings["smtp_configured"] is False
@@ -591,6 +602,49 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     assert invalid_amounts.status_code == 422
     assert "默认买入金额" in invalid_amounts.text
 
+    auto_settings = client.put(
+        "/api/whales/settings",
+        json={
+            "new_account_auto_follow_enabled": True,
+            "new_account_auto_follow_amount_usdc": 12,
+            "new_account_auto_follow_min_price": 0.66,
+            "new_account_auto_follow_max_price": 0.79,
+            "new_account_auto_follow_categories": ["sports", "politics"],
+            "large_amount_auto_follow_enabled": True,
+            "large_amount_auto_follow_amount_usdc": 25,
+            "large_amount_auto_follow_categories": ["crypto"],
+        },
+    )
+    assert auto_settings.status_code == 200, auto_settings.text
+    assert auto_settings.json()["new_account_auto_follow_categories"] == [
+        "sports",
+        "politics",
+    ]
+    assert auto_settings.json()["large_amount_auto_follow_categories"] == ["crypto"]
+
+    invalid_auto_price = client.put(
+        "/api/whales/settings",
+        json={
+            "new_account_auto_follow_min_price": 0.81,
+            "new_account_auto_follow_max_price": 0.8,
+        },
+    )
+    assert invalid_auto_price.status_code == 422
+    assert "最低买价" in invalid_auto_price.text
+
+    invalid_auto_amount = client.put(
+        "/api/whales/settings",
+        json={"large_amount_auto_follow_amount_usdc": 301},
+    )
+    assert invalid_auto_amount.status_code == 422
+    assert "单笔买入上限" in invalid_auto_amount.text
+
+    invalid_auto_category = client.put(
+        "/api/whales/settings",
+        json={"large_amount_auto_follow_categories": ["weather"]},
+    )
+    assert invalid_auto_category.status_code == 422
+
     below_collection = client.put(
         "/api/whales/settings",
         json={"cumulative_threshold_usdc": 500},
@@ -616,6 +670,58 @@ def test_whale_markets_empty_response_has_stable_shape(app_client_factory):
     assert payload["stale"] is True
     assert payload["generated_at"].endswith("Z")
     assert payload["window_start"].endswith("Z")
+
+
+async def seed_auto_decision(database) -> None:
+    now = utcnow()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry).order_by(WhaleEntry.id))
+        assert entry is not None
+        session.add(
+            WhaleAutoFollowDecision(
+                entry_id=entry.id,
+                proxy_wallet=entry.proxy_wallet,
+                asset_id=entry.asset_id,
+                condition_id=entry.condition_id,
+                outcome=entry.outcome,
+                outcome_index=entry.outcome_index,
+                matched_rules_json='["new_account", "large_amount"]',
+                selected_rule="large_amount",
+                category="esports",
+                configured_amount_usdc=Decimal("10"),
+                configured_min_price=Decimal("0.60"),
+                configured_max_price=Decimal("0.80"),
+                observed_best_ask=Decimal("0.61"),
+                status="bought",
+                reason=("实际买价 0.85000000000000000000 高于策略最高价 0.75000000000000000000"),
+                buy_order_id=None,
+                latest_sell_order_id=None,
+                processed_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+
+def test_whale_auto_decisions_support_rule_and_status_filters(app_client_factory):
+    client, _ = app_client_factory([[]])
+    client.portal.call(seed_two_sided_whale_market, client.app.state.database)
+    client.portal.call(seed_auto_decision, client.app.state.database)
+
+    response = client.get(
+        "/api/whales/auto-decisions?rule=large_amount&status=bought&limit=10&offset=0"
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["selected_rule"] == "large_amount"
+    assert payload["items"][0]["category_label"] == "电竞"
+    assert payload["items"][0]["observed_best_ask"] == 0.61
+    assert payload["items"][0]["market_slug"] == "championship-winner"
+    assert payload["items"][0]["event_slug"] == "championship-final"
+    assert payload["items"][0]["reason"] == "实际买价 0.85 高于策略最高价 0.75"
+    assert client.get("/api/whales/auto-decisions?rule=invalid").status_code == 422
 
 
 def test_whale_market_api_merges_both_sides_and_returns_entry_trades(app_client_factory):

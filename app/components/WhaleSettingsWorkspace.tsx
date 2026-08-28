@@ -5,12 +5,23 @@ import { PolyCopyShell } from "./PolyCopyShell";
 import {
   WhaleExclusion,
   WhaleExclusionList,
+  WhaleMarketCategory,
   WhaleSettings,
   formatBeijing,
   formatCompactUsdc,
   numeric,
   whaleApi,
 } from "./WhaleShared";
+
+const AUTO_CATEGORIES: Array<{ key: WhaleMarketCategory; label: string }> = [
+  { key: "sports", label: "传统体育" },
+  { key: "esports", label: "电竞" },
+  { key: "politics", label: "政治" },
+  { key: "crypto", label: "加密" },
+  { key: "science_tech", label: "科学与科技" },
+  { key: "entertainment", label: "娱乐" },
+  { key: "other", label: "其他" },
+];
 
 function shortWallet(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -306,6 +317,287 @@ export function WhaleSettingsPanel({
         </form>
         <WhaleExclusionManager onReload={onReload} />
       </section>
+  );
+}
+
+function AutoStrategyCard({
+  title,
+  enabled,
+  amount,
+  minPrice,
+  maxPrice,
+  categories,
+  busy,
+  onEnabled,
+  onAmount,
+  onMinPrice,
+  onMaxPrice,
+  onCategories,
+}: {
+  title: string;
+  enabled: boolean;
+  amount: string;
+  minPrice: string;
+  maxPrice: string;
+  categories: WhaleMarketCategory[];
+  busy: boolean;
+  onEnabled: (value: boolean) => void;
+  onAmount: (value: string) => void;
+  onMinPrice: (value: string) => void;
+  onMaxPrice: (value: string) => void;
+  onCategories: (value: WhaleMarketCategory[]) => void;
+}) {
+  const toggleCategory = (category: WhaleMarketCategory) => {
+    onCategories(
+      categories.includes(category)
+        ? categories.filter((item) => item !== category)
+        : [...categories, category],
+    );
+  };
+  return (
+    <section className={`whaleAutoStrategyCard ${enabled ? "enabled" : ""}`}>
+      <header>
+        <div><span>REAL AUTO FOLLOW</span><h3>{title}</h3></div>
+        <label className="whaleAutoToggle">
+          <input
+            type="checkbox"
+            aria-label={`开启${title}`}
+            checked={enabled}
+            disabled={busy}
+            onChange={(event) => onEnabled(event.target.checked)}
+          />
+          <b>{enabled ? "已开启" : "已关闭"}</b>
+        </label>
+      </header>
+      <div className="whaleAutoFields">
+        <label className="pcField"><span>单笔金额</span><div className="pcUnitInput"><input aria-label={`${title}单笔金额`} type="number" min="0.01" step="0.01" value={amount} disabled={busy} onChange={(event) => onAmount(event.target.value)} /><b>USDC</b></div></label>
+        <label className="pcField"><span>实际最低买价</span><input aria-label={`${title}最低买价`} type="number" min="0.01" max="0.99" step="0.01" value={minPrice} disabled={busy} onChange={(event) => onMinPrice(event.target.value)} /></label>
+        <label className="pcField"><span>实际最高买价</span><input aria-label={`${title}最高买价`} type="number" min="0.01" max="0.99" step="0.01" value={maxPrice} disabled={busy} onChange={(event) => onMaxPrice(event.target.value)} /></label>
+      </div>
+      <fieldset className="whaleAutoCategories">
+        <legend>允许的市场分类</legend>
+        {AUTO_CATEGORIES.map((item) => (
+          <label key={item.key}>
+            <input type="checkbox" checked={categories.includes(item.key)} disabled={busy} onChange={() => toggleCategory(item.key)} />
+            <span>{item.label}</span>
+          </label>
+        ))}
+      </fieldset>
+    </section>
+  );
+}
+
+export function WhaleAutoSettingsPanel({
+  settings,
+  onSettingsChange,
+  onReload,
+}: {
+  settings: WhaleSettings | null;
+  onSettingsChange: (settings: WhaleSettings) => void;
+  onReload: () => Promise<void>;
+}) {
+  const [newAutoEnabled, setNewAutoEnabled] = useState<boolean | null>(null);
+  const [newAutoAmount, setNewAutoAmount] = useState<string | null>(null);
+  const [newAutoMinPrice, setNewAutoMinPrice] = useState<string | null>(null);
+  const [newAutoMaxPrice, setNewAutoMaxPrice] = useState<string | null>(null);
+  const [newAutoCategories, setNewAutoCategories] = useState<WhaleMarketCategory[] | null>(null);
+  const [largeAutoEnabled, setLargeAutoEnabled] = useState<boolean | null>(null);
+  const [largeAutoAmount, setLargeAutoAmount] = useState<string | null>(null);
+  const [largeAutoMinPrice, setLargeAutoMinPrice] = useState<string | null>(null);
+  const [largeAutoMaxPrice, setLargeAutoMaxPrice] = useState<string | null>(null);
+  const [largeAutoCategories, setLargeAutoCategories] = useState<WhaleMarketCategory[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [riskVisible, setRiskVisible] = useState(true);
+  const [riskNoticeVersion, setRiskNoticeVersion] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [activeStrategy, setActiveStrategy] = useState<"new_account" | "large_amount">("new_account");
+
+  const resolvedNewAutoEnabled = newAutoEnabled ?? settings?.new_account_auto_follow_enabled ?? false;
+  const resolvedNewAutoAmount = newAutoAmount ?? String(settings?.new_account_auto_follow_amount_usdc ?? 5);
+  const resolvedNewAutoMinPrice = newAutoMinPrice ?? String(settings?.new_account_auto_follow_min_price ?? 0.65);
+  const resolvedNewAutoMaxPrice = newAutoMaxPrice ?? String(settings?.new_account_auto_follow_max_price ?? 0.8);
+  const resolvedNewAutoCategories = newAutoCategories ?? settings?.new_account_auto_follow_categories ?? ["sports"];
+  const resolvedLargeAutoEnabled = largeAutoEnabled ?? settings?.large_amount_auto_follow_enabled ?? false;
+  const resolvedLargeAutoAmount = largeAutoAmount ?? String(settings?.large_amount_auto_follow_amount_usdc ?? 10);
+  const resolvedLargeAutoMinPrice = largeAutoMinPrice ?? String(settings?.large_amount_auto_follow_min_price ?? 0.6);
+  const resolvedLargeAutoMaxPrice = largeAutoMaxPrice ?? String(settings?.large_amount_auto_follow_max_price ?? 0.8);
+  const resolvedLargeAutoCategories = largeAutoCategories ?? settings?.large_amount_auto_follow_categories ?? ["sports"];
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setRiskVisible(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [riskNoticeVersion]);
+
+  const updateEnabled = (setter: (value: boolean) => void, value: boolean) => {
+    setter(value);
+    if (value) {
+      setRiskVisible(true);
+      setRiskNoticeVersion((current) => current + 1);
+    }
+  };
+
+  const resetDraft = () => {
+    setNewAutoEnabled(null);
+    setNewAutoAmount(null);
+    setNewAutoMinPrice(null);
+    setNewAutoMaxPrice(null);
+    setNewAutoCategories(null);
+    setLargeAutoEnabled(null);
+    setLargeAutoAmount(null);
+    setLargeAutoMinPrice(null);
+    setLargeAutoMaxPrice(null);
+    setLargeAutoCategories(null);
+  };
+
+  const categorySummary = (categories: WhaleMarketCategory[]) => categories
+    .map((category) => AUTO_CATEGORIES.find((item) => item.key === category)?.label || category)
+    .join("、");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const newAutoAmountValue = Number(resolvedNewAutoAmount);
+    const newAutoMinValue = Number(resolvedNewAutoMinPrice);
+    const newAutoMaxValue = Number(resolvedNewAutoMaxPrice);
+    const largeAutoAmountValue = Number(resolvedLargeAutoAmount);
+    const largeAutoMinValue = Number(resolvedLargeAutoMinPrice);
+    const largeAutoMaxValue = Number(resolvedLargeAutoMaxPrice);
+    for (const [label, amount, minPrice, maxPrice, categories] of [
+      ["新号大额", newAutoAmountValue, newAutoMinValue, newAutoMaxValue, resolvedNewAutoCategories],
+      ["全量超大额", largeAutoAmountValue, largeAutoMinValue, largeAutoMaxValue, resolvedLargeAutoCategories],
+    ] as const) {
+      if (!Number.isFinite(amount) || amount <= 0 || amount > numeric(settings?.max_follow_amount_usdc ?? 200)) {
+        setError(`${label}自动跟单金额必须大于 0，且不能超过单笔买入上限。`);
+        return;
+      }
+      if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice) || minPrice <= 0 || maxPrice >= 1 || minPrice > maxPrice) {
+        setError(`${label}实际买价必须满足 0 < 最低价 ≤ 最高价 < 1。`);
+        return;
+      }
+      if (!categories.length) {
+        setError(`${label}自动跟单至少需要选择一个市场分类。`);
+        return;
+      }
+    }
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const next = await whaleApi<WhaleSettings>("/api/whales/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          new_account_auto_follow_enabled: resolvedNewAutoEnabled,
+          new_account_auto_follow_amount_usdc: newAutoAmountValue,
+          new_account_auto_follow_min_price: newAutoMinValue,
+          new_account_auto_follow_max_price: newAutoMaxValue,
+          new_account_auto_follow_categories: resolvedNewAutoCategories,
+          large_amount_auto_follow_enabled: resolvedLargeAutoEnabled,
+          large_amount_auto_follow_amount_usdc: largeAutoAmountValue,
+          large_amount_auto_follow_min_price: largeAutoMinValue,
+          large_amount_auto_follow_max_price: largeAutoMaxValue,
+          large_amount_auto_follow_categories: resolvedLargeAutoCategories,
+        }),
+      });
+      onSettingsChange(next);
+      resetDraft();
+      const scan = await whaleApi<{ status: string }>("/api/whales/scan", { method: "POST" });
+      setMessage(scan.status === "ok" ? "自动跟单策略已保存，数据已重新扫描。" : "自动跟单策略已保存，扫描将在后台更新。");
+      setEditing(false);
+      await onReload();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "保存自动跟单策略失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="pcPanel whaleInlineSettingsPanel" aria-label="巨鲸自动跟单设置">
+      <header className="pcPanelHeader whaleAutoCompactHeader">
+        <div>
+          <span className="pcEyebrow">REAL AUTO FOLLOW</span>
+          <h2>自动跟单策略</h2>
+          <p>默认显示当前配置；需要调整时再展开编辑。</p>
+        </div>
+        <button
+          className="pcButton ghost"
+          type="button"
+          aria-expanded={editing}
+          aria-controls="whale-auto-strategy-editor"
+          onClick={() => {
+            setError(null);
+            setEditing((current) => !current);
+          }}
+        >
+          {editing ? "收起设置" : "编辑策略"}
+        </button>
+      </header>
+      <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={submit}>
+        <div className="whaleAutoOverviewGrid" aria-label="自动跟单策略概览">
+          <article className="whaleAutoOverviewCard">
+            <header><strong>新号大额</strong><span className={resolvedNewAutoEnabled ? "enabled" : "disabled"}>{resolvedNewAutoEnabled ? "已开启" : "已关闭"}</span></header>
+            <dl><div><dt>单笔</dt><dd>{resolvedNewAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedNewAutoMinPrice}–{resolvedNewAutoMaxPrice}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedNewAutoCategories)}>{categorySummary(resolvedNewAutoCategories)}</dd></div></dl>
+          </article>
+          <article className="whaleAutoOverviewCard">
+            <header><strong>全量超大额</strong><span className={resolvedLargeAutoEnabled ? "enabled" : "disabled"}>{resolvedLargeAutoEnabled ? "已开启" : "已关闭"}</span></header>
+            <dl><div><dt>单笔</dt><dd>{resolvedLargeAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedLargeAutoMinPrice}–{resolvedLargeAutoMaxPrice}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedLargeAutoCategories)}>{categorySummary(resolvedLargeAutoCategories)}</dd></div></dl>
+          </article>
+        </div>
+
+        {editing && (
+          <div className="whaleAutoEditor" id="whale-auto-strategy-editor">
+            <div className="whaleAutoEditorTabs" role="tablist" aria-label="选择要编辑的自动跟单策略">
+              <button type="button" role="tab" aria-selected={activeStrategy === "new_account"} onClick={() => setActiveStrategy("new_account")}>新号大额</button>
+              <button type="button" role="tab" aria-selected={activeStrategy === "large_amount"} onClick={() => setActiveStrategy("large_amount")}>全量超大额</button>
+            </div>
+            {activeStrategy === "new_account" ? (
+              <AutoStrategyCard
+                title="新号大额自动跟单"
+                enabled={resolvedNewAutoEnabled}
+                amount={resolvedNewAutoAmount}
+                minPrice={resolvedNewAutoMinPrice}
+                maxPrice={resolvedNewAutoMaxPrice}
+                categories={resolvedNewAutoCategories}
+                busy={!settings || busy}
+                onEnabled={(value) => updateEnabled(setNewAutoEnabled, value)}
+                onAmount={setNewAutoAmount}
+                onMinPrice={setNewAutoMinPrice}
+                onMaxPrice={setNewAutoMaxPrice}
+                onCategories={setNewAutoCategories}
+              />
+            ) : (
+              <AutoStrategyCard
+                title="全量超大额自动跟单"
+                enabled={resolvedLargeAutoEnabled}
+                amount={resolvedLargeAutoAmount}
+                minPrice={resolvedLargeAutoMinPrice}
+                maxPrice={resolvedLargeAutoMaxPrice}
+                categories={resolvedLargeAutoCategories}
+                busy={!settings || busy}
+                onEnabled={(value) => updateEnabled(setLargeAutoEnabled, value)}
+                onAmount={setLargeAutoAmount}
+                onMinPrice={setLargeAutoMinPrice}
+                onMaxPrice={setLargeAutoMaxPrice}
+                onCategories={setLargeAutoCategories}
+              />
+            )}
+            {riskVisible && (
+              <div className="pcFormHint whaleAutoRiskHint" role="status">
+                <span>真实资金功能：同一钱包同一资产只判断一次；不同钱包同方向可继续买入且不设数量上限。分歧市场禁止买入，持仓后出现反向大额信号会卖出原方向全部份额，包括混合人工份额。</span>
+                <button type="button" aria-label="关闭真实资金风险提示" onClick={() => setRiskVisible(false)}>知道了</button>
+              </div>
+            )}
+            {error && <p className="pcFormError" role="alert">{error}</p>}
+            <div className="pcSettingsActions whaleAutoEditorActions">
+              <button className="pcButton ghost" type="button" disabled={busy} onClick={() => { resetDraft(); setError(null); setEditing(false); }}>取消</button>
+              <button className="pcButton primary" type="submit" disabled={!settings || busy}>{busy ? "保存并扫描中…" : "保存自动跟单策略"}</button>
+            </div>
+          </div>
+        )}
+        {message && <p className="pcFormSuccess">{message}</p>}
+      </form>
+    </section>
   );
 }
 

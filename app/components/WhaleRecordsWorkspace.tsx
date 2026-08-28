@@ -82,6 +82,8 @@ function recordSourceLabel(source: string) {
   const labels: Record<string, string> = {
     follow: "跟单成交",
     manual: "手动交易",
+    auto_follow: "自动跟单",
+    conflict_exit: "分歧风控",
     auto_redeem: "自动结算",
     reconciliation: "自动对账",
   };

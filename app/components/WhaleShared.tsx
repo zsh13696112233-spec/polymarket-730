@@ -8,6 +8,7 @@ export const API_BASE = (
 
 export type Numeric = number | string;
 export type WhaleRule = "new_account" | "large_amount";
+export type WhaleMarketCategory = "esports" | "sports" | "politics" | "crypto" | "science_tech" | "entertainment" | "other";
 
 export type WhaleSettings = {
   enabled: boolean;
@@ -15,6 +16,16 @@ export type WhaleSettings = {
   registration_window_days: number;
   new_account_threshold_usdc: Numeric;
   large_amount_threshold_usdc: Numeric;
+  new_account_auto_follow_enabled: boolean;
+  new_account_auto_follow_amount_usdc: Numeric;
+  new_account_auto_follow_min_price: Numeric;
+  new_account_auto_follow_max_price: Numeric;
+  new_account_auto_follow_categories: WhaleMarketCategory[];
+  large_amount_auto_follow_enabled: boolean;
+  large_amount_auto_follow_amount_usdc: Numeric;
+  large_amount_auto_follow_min_price: Numeric;
+  large_amount_auto_follow_max_price: Numeric;
+  large_amount_auto_follow_categories: WhaleMarketCategory[];
   collect_filter_amount_usdc: Numeric;
   cumulative_threshold_usdc: Numeric;
   single_trade_threshold_usdc: Numeric;
@@ -324,6 +335,7 @@ export type WhaleOrder = {
   title: string;
   outcome: string;
   side: "BUY" | "SELL" | string;
+  source?: string;
   requested_size: Numeric;
   requested_usdc: Numeric;
   reference_price: Numeric | null;
@@ -376,7 +388,7 @@ export type WhaleRecord = {
   position_id: number;
   order_id: number | null;
   type: "buy" | "sell" | "redeem" | "resolved_loss" | string;
-  source: "follow" | "manual" | "auto_redeem" | "reconciliation" | string;
+  source: "follow" | "manual" | "auto_follow" | "conflict_exit" | "auto_redeem" | "reconciliation" | string;
   title: string;
   outcome: string;
   market_slug?: string | null;
@@ -410,6 +422,39 @@ export type WhaleRecordList = {
   items: WhaleRecord[];
   total?: number;
   summary: WhaleRecordSummary;
+};
+
+export type WhaleAutoDecision = {
+  id: number;
+  entry_id: number;
+  proxy_wallet: string;
+  asset_id: string;
+  condition_id: string;
+  title: string;
+  market_slug: string | null;
+  event_slug: string | null;
+  outcome: string;
+  matched_rules: WhaleRule[];
+  selected_rule: WhaleRule | null;
+  category: WhaleMarketCategory;
+  category_label: string;
+  configured_amount_usdc: Numeric | null;
+  configured_min_price: Numeric | null;
+  configured_max_price: Numeric | null;
+  observed_best_ask: Numeric | null;
+  status: string;
+  reason: string | null;
+  buy_order_id: number | null;
+  latest_sell_order_id: number | null;
+  followed_wallet_count: number;
+  processed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WhaleAutoDecisionList = {
+  total: number;
+  items: WhaleAutoDecision[];
 };
 
 export type WhalePositionList = {

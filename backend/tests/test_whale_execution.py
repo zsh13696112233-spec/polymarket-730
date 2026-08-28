@@ -72,6 +72,16 @@ class BalanceTrader:
         return self.balances[asset_id]
 
 
+class PendingOrderTrader:
+    def __init__(self, result: TradeResult) -> None:
+        self.result = result
+        self.order_ids: list[str] = []
+
+    async def order_status(self, external_order_id: str) -> TradeResult:
+        self.order_ids.append(external_order_id)
+        return self.result
+
+
 async def configure_reconciliation(database: Database) -> None:
     async with database.sessions() as session:
         session.add(
@@ -212,6 +222,69 @@ async def insert_order(
         session.add(order)
         await session.commit()
         return order.id
+
+
+@pytest.mark.asyncio
+async def test_pending_sell_is_reconciled_before_conflict_retry(database: Database):
+    await configure_reconciliation(database)
+    position_id = await insert_position(
+        database,
+        size="10",
+        cost="5",
+        status="open",
+        lifetime_bought_size="10",
+        lifetime_bought_usdc="5",
+    )
+    order_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="10",
+        requested_usdc="6",
+        key="whale:pending-conflict-exit",
+    )
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        order = await session.get(WhaleOrder, order_id)
+        assert position is not None and order is not None
+        position.status = "closing"
+        order.source = "conflict_exit"
+        order.status = "submitted"
+        order.external_order_id = "external-pending-order"
+        await session.commit()
+
+    trader = PendingOrderTrader(
+        TradeResult(
+            status="partially_filled",
+            external_order_id="external-pending-order",
+            filled_size=Decimal("4"),
+            filled_usdc=Decimal("2.4"),
+            average_price=Decimal("0.6"),
+        )
+    )
+    follow_executor = executor(database)
+    follow_executor._trader_cache = trader  # type: ignore[assignment]
+    follow_executor._trader_cache_key = (
+        "test-service",
+        "test-account",
+        3,
+        FUNDER_ADDRESS,
+    )
+
+    assert await follow_executor.reconcile_pending_orders() is None
+    assert trader.order_ids == ["external-pending-order"]
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        order = await session.get(WhaleOrder, order_id)
+        ledger = list(
+            await session.scalars(
+                select(WhaleFollowLedger).where(WhaleFollowLedger.order_id == order_id)
+            )
+        )
+    assert position is not None and position.size == Decimal("6")
+    assert position.status == "open"
+    assert order is not None and order.status == "partially_filled"
+    assert len(ledger) == 1 and ledger[0].source == "conflict_exit"
 
 
 @pytest.mark.asyncio

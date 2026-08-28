@@ -8231,7 +8231,8 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleFilterField select,
 .whaleAmountInput input,
 .whaleConfirmation input,
-.whaleDateFilters input {
+.whaleDateFilters input,
+.whaleDateFilters select {
   width: 100%;
   height: 42px;
   min-width: 0;
@@ -8250,7 +8251,8 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleFilterField select:focus,
 .whaleAmountInput input:focus,
 .whaleConfirmation input:focus,
-.whaleDateFilters input:focus { border-color: #f2c319; box-shadow: 0 0 0 2px rgba(242, 195, 25, 0.12); }
+.whaleDateFilters input:focus,
+.whaleDateFilters select:focus { border-color: #f2c319; box-shadow: 0 0 0 2px rgba(242, 195, 25, 0.12); }
 .whaleFilterField b,
 .whaleAmountInput b { padding-right: 9px; color: #878163; font-size: 13px; white-space: nowrap; }
 .whaleAmountFilter > div button { align-self: stretch; padding: 0 12px; border: 0; border-left: 1px solid #75682a; background: #f2c319; color: #111204; cursor: pointer; font-size: 14px; font-weight: 850; }
@@ -8449,6 +8451,62 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleSettingsStatus > div { display: grid; min-height: 67px; align-content: center; gap: 5px; padding: 10px 12px; background: #0c0d08; }
 .whaleSettingsStatus span { color: #817c5f; font-size: 12px; }
 .whaleSettingsStatus strong { color: #e8e3bd; font-size: 15px; font-variant-numeric: tabular-nums; }
+.whaleAutoStrategyGrid { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.whaleAutoWorkspace .pcContent {
+  width: min(100%, 1680px);
+  grid-template-columns: minmax(0, 1fr);
+}
+.whaleAutoCompactHeader { min-height: 74px; }
+.whaleAutoOverviewGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.whaleAutoOverviewCard { min-width: 0; padding: 11px 12px; border: 1px solid #34331f; border-radius: 8px; background: #0c0d08; }
+.whaleAutoOverviewCard > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.whaleAutoOverviewCard > header strong { color: #e8e3bd; font-size: 14px; }
+.whaleAutoOverviewCard > header span { display: inline-flex; align-items: center; gap: 6px; color: #8d896a; font-size: 12px; white-space: nowrap; }
+.whaleAutoOverviewCard > header span::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ""; }
+.whaleAutoOverviewCard > header span.enabled { color: #ffe052; }
+.whaleAutoOverviewCard dl { display: grid; grid-template-columns: .8fr 1fr 1.65fr; gap: 12px; margin: 10px 0 0; }
+.whaleAutoOverviewCard dl > div { min-width: 0; }
+.whaleAutoOverviewCard dt { color: #777358; font-size: 11px; }
+.whaleAutoOverviewCard dd { overflow: hidden; margin: 3px 0 0; color: #c9c3a2; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.whaleAutoEditor { margin-top: 14px; padding-top: 14px; border-top: 1px solid #302d1c; }
+.whaleAutoEditorTabs { display: flex; gap: 7px; margin-bottom: 10px; }
+.whaleAutoEditorTabs button { min-height: 34px; padding: 0 12px; border: 1px solid #403b1f; border-radius: 7px; background: #0c0d08; color: #8d896a; cursor: pointer; font: inherit; font-size: 13px; }
+.whaleAutoEditorTabs button[aria-selected="true"] { border-color: #a98b17; background: rgba(242, 195, 25, .12); color: #ffe052; }
+.whaleAutoEditor .whaleAutoStrategyCard > header { min-height: 56px; padding-block: 10px; }
+.whaleAutoEditor .whaleAutoFields { padding-block: 14px; }
+.whaleAutoEditor .whaleAutoCategories { padding-bottom: 14px; }
+.whaleAutoEditor .whaleAutoRiskHint { margin-top: 10px !important; }
+.whaleAutoEditorActions { justify-content: flex-end; gap: 8px; margin-top: 12px; padding: 12px 0 0; }
+.whaleAutoStrategyCard { overflow: hidden; border: 1px solid #403b1f; background: #090a06; transition: border-color 140ms ease, box-shadow 140ms ease; }
+.whaleAutoStrategyCard.enabled { border-color: #756728; box-shadow: 0 8px 24px rgba(0, 0, 0, .16); }
+.whaleAutoStrategyCard > header { display: flex; min-height: 70px; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #302d1c; background: #0c0d08; }
+.whaleAutoStrategyCard > header > div { display: grid; min-width: 0; gap: 3px; }
+.whaleAutoStrategyCard > header span { color: #777358; font-size: 10px; font-weight: 800; letter-spacing: .09em; }
+.whaleAutoStrategyCard > header h3 { margin: 0; color: #e8e3bd; font-size: 16px; }
+.whaleAutoToggle { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; color: #8d896a; cursor: pointer; font-size: 12px; }
+.whaleAutoToggle input { width: 38px; height: 21px; margin: 0; appearance: none; border: 1px solid #514b28; border-radius: 999px; background: #17170f; cursor: pointer; transition: border-color 140ms ease, background 140ms ease; }
+.whaleAutoToggle input::before { display: block; width: 15px; height: 15px; margin: 2px; border-radius: 50%; background: #777358; content: ""; transition: transform 140ms ease, background 140ms ease; }
+.whaleAutoToggle input:checked { border-color: #a98b17; background: rgba(242, 195, 25, .18); }
+.whaleAutoToggle input:checked::before { background: #f2c319; transform: translateX(17px); }
+.whaleAutoToggle input:focus { outline: none; }
+.whaleAutoToggle input:focus-visible { box-shadow: 0 0 0 3px rgba(242, 195, 25, .22); }
+.whaleAutoToggle input:disabled { cursor: not-allowed; opacity: .5; }
+.whaleAutoToggle b { display: inline-flex; align-items: center; gap: 6px; color: inherit; white-space: nowrap; }
+.whaleAutoToggle b::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ""; opacity: .75; }
+.whaleAutoStrategyCard.enabled .whaleAutoToggle b { color: #ffe052; }
+.whaleAutoFields { display: grid; grid-template-columns: minmax(260px, 1.15fr) repeat(2, minmax(220px, 1fr)); gap: 16px; padding: 18px; }
+.whaleAutoFields .pcField { min-width: 0; }
+.whaleAutoFields .pcUnitInput input { width: auto; min-width: 0; flex: 1 1 auto; }
+.whaleAutoFields .pcUnitInput b { flex: 0 0 auto; }
+.whaleAutoCategories { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 3px 18px 18px; border: 0; }
+.whaleAutoCategories legend { width: 100%; margin-bottom: 5px; color: #817c5f; font-size: 12px; }
+.whaleAutoCategories label { display: flex; min-height: 30px; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #34331f; background: #0c0d08; color: #aaa581; cursor: pointer; font-size: 12px; }
+.whaleAutoCategories label:has(input:checked) { border-color: #7e6b21; background: rgba(242, 195, 25, .08); color: #e7da8f; }
+.whaleAutoCategories input { margin: 0; accent-color: #f2c319; }
+.whaleAutoRiskHint { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 16px; margin: 0 !important; padding: 11px 13px; border: 1px solid #7e342e; background: rgba(255, 94, 77, .055); color: #d7a49d !important; line-height: 1.6; }
+.whaleAutoRiskHint span { flex: 1 1 auto; }
+.whaleAutoRiskHint button { min-width: 66px; flex: 0 0 auto; padding: 5px 9px; border: 1px solid #8f4941; border-radius: 6px; background: rgba(255, 255, 255, .04); color: inherit; cursor: pointer; font: inherit; font-weight: 750; }
+.whaleAutoRiskHint button:hover { border-color: #c67168; background: rgba(255, 255, 255, .08); }
 .whaleExclusionManager { display: grid; gap: 14px; margin: 0 14px 14px; padding: 18px; border: 1px solid #403b1f; background: #090a06; }
 .emailNotificationGrid { display: grid; grid-template-columns: minmax(180px, .4fr) minmax(280px, 1fr); gap: 14px; }
 .emailNotificationToggle { align-content: start; }
@@ -9056,6 +9114,38 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleRecordMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
 .whaleRecordMetrics .pcMetricCard > strong { margin: 10px 0 8px !important; padding: 6px 8px !important; font-size: clamp(26px, 2.8vw, 38px) !important; }
 .whalePositionTable { min-width: 1360px; }
+.whaleAutoDecisionTable { min-width: 1360px; table-layout: fixed; }
+.whaleDecisionTimeColumn { width: 150px; }
+.whaleDecisionWalletColumn { width: 180px; }
+.whaleDecisionCategoryColumn { width: 80px; }
+.whaleDecisionAmountColumn { width: 120px; }
+.whaleDecisionPriceColumn { width: 145px; }
+.whaleDecisionReasonColumn { width: 320px; }
+.whaleAutoDecisionTable th { text-align: center !important; }
+.whaleAutoDecisionTable td { height: 88px; padding: 14px 16px; }
+.whaleAutoDecisionTable td:nth-child(1),
+.whaleAutoDecisionTable td:nth-child(2),
+.whaleAutoDecisionTable td:nth-child(3),
+.whaleAutoDecisionTable td:nth-child(4),
+.whaleAutoDecisionTable td:nth-child(5),
+.whaleAutoDecisionTable td:nth-child(6),
+.whaleAutoDecisionTable td:nth-child(7) { text-align: center; }
+.whaleAutoDecisionTable td:nth-child(7) { white-space: normal; overflow-wrap: anywhere; }
+.whaleAutoDecisionTable td strong,
+.whaleAutoDecisionTable td small { display: block; }
+.whaleAutoDecisionTable td small { margin-top: 5px; color: #817c5f; line-height: 1.45; }
+.whaleAutoDecisionLink { display: block; min-width: 0; color: inherit; text-decoration: none; }
+.whaleAutoDecisionTable td:nth-child(2) .whaleAutoDecisionLink,
+.whaleAutoDecisionTable td:nth-child(3) .whaleAutoDecisionLink { text-align: center; }
+.whaleAutoDecisionTable td:nth-child(3) .whaleAutoDecisionLink strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.45;
+  white-space: normal;
+}
+.whaleAutoDecisionLink:hover strong { color: #ffe35d; }
 .whaleLedgerTable { min-width: 1200px; }
 .whalePositionTable td:first-child { min-width: 260px; }
 .whalePositionToggle { display: block; margin-top: 7px; }
@@ -9066,7 +9156,66 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleRecordsHeader { flex-wrap: wrap; }
 .whaleDateFilters { flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .whaleDateFilters label { gap: 5px; color: #8d896a; font-size: 13px; }
-.whaleDateFilters input { width: 148px; height: 38px; padding-inline: 8px; color-scheme: dark; font-size: 13px; }
+.whaleDateFilters input,
+.whaleDateFilters select { width: 148px; height: 38px; padding-inline: 8px; color-scheme: dark; font-size: 13px; }
+.whaleDecisionFilters { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.whaleDecisionFilter { display: grid; min-width: 156px; gap: 6px; color: #8d896a; font-size: 13px; }
+.whaleDecisionSelect { position: relative; }
+.whaleDecisionSelect > button {
+  display: flex;
+  width: 100%;
+  height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 11px;
+  border: 1px solid #75682a;
+  border-radius: 7px;
+  background: #050604;
+  color: #f0edcf;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  outline: none;
+}
+.whaleDecisionSelect > button svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; transition: transform 140ms ease; }
+.whaleDecisionSelect.open > button { border-color: #f2c319; box-shadow: 0 0 0 3px rgba(242, 195, 25, .12); }
+.whaleDecisionSelect.open > button svg { transform: rotate(180deg); }
+.whaleDecisionSelectMenu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  min-width: 100%;
+  overflow: hidden;
+  padding: 5px;
+  border: 1px solid #514b28;
+  border-radius: 9px;
+  background: #11120c;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .35);
+}
+.whaleDecisionSelectMenu > button {
+  display: flex;
+  width: 100%;
+  min-width: 150px;
+  height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #aaa581;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.whaleDecisionSelectMenu > button:hover,
+.whaleDecisionSelectMenu > button.active { background: rgba(242, 195, 25, .1); color: #f0e6a6; }
+.whaleDecisionSelectMenu > button[aria-selected="true"] { color: #ffe052; font-weight: 750; }
+.whaleDecisionSelectMenu > button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .whaleClearDates { color: #aaa37c; }
 .whalePositionTimeline { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; padding: 16px 18px; }
 .whaleTimelineList { display: grid; }
@@ -9113,6 +9262,9 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .whaleStatsCohorts { grid-template-columns: 1fr; }
   .whaleStatsFilters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .whaleInlineSettingsBody { grid-template-columns: 1fr; }
+  .whaleAutoStrategyGrid { grid-template-columns: 1fr; }
+  .whaleAutoFields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .whaleAutoFields .pcField:first-child { grid-column: 1 / -1; }
   .whaleExclusionForm { grid-template-columns: 1fr 1fr; }
   .whaleExclusionForm .pcButton { grid-column: 1 / -1; }
   .whaleExclusionItem { grid-template-columns: minmax(180px, 1fr) minmax(240px, 1fr) auto; }
@@ -9220,7 +9372,8 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .whaleRecordsHeader { align-items: flex-start; }
   .whaleDateFilters { width: 100%; justify-content: flex-start; }
   .whaleDateFilters label { flex: 1; align-items: flex-start; flex-direction: column; }
-  .whaleDateFilters input { width: 100%; }
+  .whaleDateFilters input,
+  .whaleDateFilters select { width: 100%; }
   .whaleDateFilters .pcButton { align-self: flex-end; }
   .whaleRequestMonitorHeader { padding: 12px; }
   .whaleRequestMonitorControls { width: 100%; }
@@ -11134,6 +11287,46 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .whaleSettingsStatus > div { background: #fff; }
 .whaleSettingsStatus span { color: #8d8e99; }
 .whaleSettingsStatus strong { color: #1f2328; font-weight: 600; }
+.whaleAutoStrategyCard { border-color: var(--pc-line); border-radius: 10px; background: #fff; }
+.whaleAutoOverviewCard { border-color: var(--pc-line); background: #fbfbfc; }
+.whaleAutoOverviewCard > header strong { color: #1f2328; font-weight: 600; }
+.whaleAutoOverviewCard > header span { color: #8d8e99; }
+.whaleAutoOverviewCard > header span.enabled { color: #134cff; }
+.whaleAutoOverviewCard dt { color: #92959d; }
+.whaleAutoOverviewCard dd { color: #40454d; }
+.whaleAutoEditor { border-top-color: var(--pc-line); }
+.whaleAutoEditorTabs button { border-color: var(--pc-line); background: #fbfbfc; color: #696e7b; }
+.whaleAutoEditorTabs button:hover { border-color: #b8c6ef; background: #f7f9ff; }
+.whaleAutoEditorTabs button[aria-selected="true"] { border-color: #b8c6ff; background: #f2f5ff; color: #134cff; }
+.whaleAutoStrategyCard.enabled { border-color: #cbd3ed; box-shadow: 0 8px 24px rgba(31, 45, 92, .06); }
+.whaleAutoStrategyCard > header { border-bottom-color: var(--pc-line); background: #fbfbfc; }
+.whaleAutoStrategyCard > header span { color: #92959d; }
+.whaleAutoStrategyCard > header h3 { color: #1f2328; font-weight: 600; }
+.whaleAutoToggle { color: #8d8e99; }
+.whaleAutoToggle input { border-color: #d5d8df; background: #eceef2; }
+.whaleAutoToggle input::before { background: #9b9ea7; }
+.whaleAutoToggle input:checked { border-color: #134cff; background: #dfe6ff; }
+.whaleAutoToggle input:checked::before { background: #134cff; }
+.whaleAutoToggle input:focus-visible { box-shadow: 0 0 0 3px rgba(19, 76, 255, .16); }
+.whaleAutoStrategyCard.enabled .whaleAutoToggle b { color: #134cff; }
+.whaleAutoCategories legend { color: #8d8e99; }
+.whaleAutoCategories label { border-color: var(--pc-line); border-radius: 7px; background: #fbfbfc; color: #696e7b; }
+.whaleAutoCategories label:has(input:checked) { border-color: #b8c6ff; background: #f2f5ff; color: #2747b8; }
+.whaleAutoCategories input { accent-color: #134cff; }
+.whaleAutoRiskHint { border-color: #f2cfd1; border-radius: 8px; background: #fff5f5; color: #a94348 !important; }
+.whaleAutoRiskHint button { border-color: #e7bfc2; background: #fff; color: #a94348; }
+.whaleAutoRiskHint button:hover { border-color: #d9989d; background: #fffafa; }
+.whaleDecisionFilter { color: #8d8e99; }
+.whaleDecisionSelect > button { border-color: #d9dce4; background: #fff; color: #30343b; }
+.whaleDecisionSelect > button:hover { border-color: #b8c6ef; background: #fbfcff; }
+.whaleDecisionSelect.open > button { border-color: #134cff; box-shadow: 0 0 0 3px rgba(19, 76, 255, .12); }
+.whaleDecisionSelectMenu { border-color: #dfe2e9; background: #fff; box-shadow: 0 16px 36px rgba(31, 37, 55, .16); }
+.whaleDecisionSelectMenu > button { color: #5e6470; }
+.whaleDecisionSelectMenu > button:hover,
+.whaleDecisionSelectMenu > button.active { background: #f2f5ff; color: #2747b8; }
+.whaleDecisionSelectMenu > button[aria-selected="true"] { background: #e9eeff; color: #134cff; }
+.whaleAutoDecisionTable td small { color: #8d8e99; }
+.whaleAutoDecisionLink:hover strong { color: #5367d9; }
 
 .whaleExclusionManager {
   border-color: var(--pc-line);
@@ -11615,6 +11808,13 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 }
 
 @media (max-width: 640px) {
+  .whaleAutoOverviewGrid { grid-template-columns: 1fr; }
+  .whaleAutoCompactHeader { align-items: flex-start; }
+  .whaleAutoCompactHeader .pcButton { width: 100%; }
+  .whaleAutoFields { grid-template-columns: 1fr; }
+  .whaleAutoFields .pcField:first-child { grid-column: auto; }
+  .whaleDecisionFilters,
+  .whaleDecisionFilter { width: 100%; }
   .whaleTerminalLine { grid-template-columns: 58px 42px minmax(0, 1fr); gap: 7px; }
   .whaleTerminalLine code { font-size: 11px; }
   .whaleTerminalChrome { grid-template-columns: minmax(0, 1fr) auto; }

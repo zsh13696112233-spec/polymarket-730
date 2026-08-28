@@ -19,6 +19,16 @@ DecimalNumber = Annotated[
     PlainSerializer(lambda value: float(value), return_type=float, when_used="json"),
 ]
 
+WhaleMarketCategory = Literal[
+    "esports",
+    "sports",
+    "politics",
+    "crypto",
+    "science_tech",
+    "entertainment",
+    "other",
+]
+
 
 def _as_utc_iso(value: datetime | None) -> str | None:
     if value is None:
@@ -786,6 +796,16 @@ class WhaleSettingsRead(APIModel):
     registration_window_days: int
     new_account_threshold_usdc: DecimalNumber
     large_amount_threshold_usdc: DecimalNumber
+    new_account_auto_follow_enabled: bool
+    new_account_auto_follow_amount_usdc: DecimalNumber
+    new_account_auto_follow_min_price: DecimalNumber
+    new_account_auto_follow_max_price: DecimalNumber
+    new_account_auto_follow_categories: list[WhaleMarketCategory]
+    large_amount_auto_follow_enabled: bool
+    large_amount_auto_follow_amount_usdc: DecimalNumber
+    large_amount_auto_follow_min_price: DecimalNumber
+    large_amount_auto_follow_max_price: DecimalNumber
+    large_amount_auto_follow_categories: list[WhaleMarketCategory]
     collect_filter_amount_usdc: DecimalNumber
     single_trade_threshold_usdc: DecimalNumber
     cumulative_threshold_usdc: DecimalNumber
@@ -828,6 +848,16 @@ class WhaleSettingsUpdate(APIModel):
     registration_window_days: int | None = Field(default=None, ge=1, le=30)
     new_account_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_threshold_usdc: Decimal | None = Field(default=None, gt=0)
+    new_account_auto_follow_enabled: bool | None = None
+    new_account_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
+    new_account_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
+    new_account_auto_follow_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
+    new_account_auto_follow_categories: list[WhaleMarketCategory] | None = None
+    large_amount_auto_follow_enabled: bool | None = None
+    large_amount_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
+    large_amount_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
+    large_amount_auto_follow_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
+    large_amount_auto_follow_categories: list[WhaleMarketCategory] | None = None
     collect_filter_amount_usdc: Decimal | None = Field(default=None, gt=0)
     single_trade_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     cumulative_threshold_usdc: Decimal | None = Field(default=None, gt=0)
@@ -844,6 +874,19 @@ class WhaleSettingsUpdate(APIModel):
     follow_slippage_cents: Decimal | None = Field(default=None, ge=0, le=50)
     sell_slippage_cents: Decimal | None = Field(default=None, ge=0, le=50)
     auto_redeem: bool | None = None
+
+    @field_validator(
+        "new_account_auto_follow_categories",
+        "large_amount_auto_follow_categories",
+    )
+    @classmethod
+    def validate_auto_categories(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        unique = list(dict.fromkeys(value))
+        if not unique:
+            raise ValueError("自动跟单至少需要选择一个市场分类")
+        return unique
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> WhaleSettingsUpdate:
@@ -878,7 +921,58 @@ class WhaleSettingsUpdate(APIModel):
             and self.exited_ratio_threshold >= self.holding_ratio_threshold
         ):
             raise ValueError("退出比例阈值必须低于持有比例阈值")
+        for label, minimum, maximum in (
+            (
+                "新号大额",
+                self.new_account_auto_follow_min_price,
+                self.new_account_auto_follow_max_price,
+            ),
+            (
+                "全量超大额",
+                self.large_amount_auto_follow_min_price,
+                self.large_amount_auto_follow_max_price,
+            ),
+        ):
+            if minimum is not None and maximum is not None and minimum > maximum:
+                raise ValueError(f"{label}自动跟单最低买价不能高于最高买价")
         return self
+
+
+class WhaleAutoDecisionRead(APIModel):
+    id: int
+    entry_id: int
+    proxy_wallet: str
+    asset_id: str
+    condition_id: str
+    title: str
+    market_slug: str | None
+    event_slug: str | None
+    outcome: str
+    matched_rules: list[Literal["new_account", "large_amount"]]
+    selected_rule: Literal["new_account", "large_amount"] | None
+    category: WhaleMarketCategory
+    category_label: str
+    configured_amount_usdc: DecimalNumber | None
+    configured_min_price: DecimalNumber | None
+    configured_max_price: DecimalNumber | None
+    observed_best_ask: DecimalNumber | None
+    status: str
+    reason: str | None
+    buy_order_id: int | None
+    latest_sell_order_id: int | None
+    followed_wallet_count: int
+    processed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("processed_at", "created_at", "updated_at", when_used="json")
+    def serialize_auto_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class WhaleAutoDecisionListRead(APIModel):
+    total: int
+    items: list[WhaleAutoDecisionRead] = Field(default_factory=list)
 
 
 class EmailDeliveryRead(APIModel):
@@ -1483,6 +1577,7 @@ class WhaleOrderRead(APIModel):
     id: int
     position_id: int | None
     entry_id: int | None
+    source: str
     source_wallet: str | None
     asset_id: str
     condition_id: str
@@ -1582,7 +1677,14 @@ class WhaleLedgerRead(APIModel):
     position_id: int
     order_id: int | None
     type: Literal["buy", "sell", "redeem", "resolved_loss", "dust_writeoff"]
-    source: Literal["follow", "manual", "auto_redeem", "reconciliation"]
+    source: Literal[
+        "follow",
+        "manual",
+        "auto_follow",
+        "conflict_exit",
+        "auto_redeem",
+        "reconciliation",
+    ]
     size: DecimalNumber
     price: DecimalNumber | None
     amount_usdc: DecimalNumber

@@ -115,6 +115,7 @@ from backend.schemas import (
     WalletRead,
     WalletRecordedPnlRead,
     WalletUpdate,
+    WhaleAutoDecisionListRead,
     WhaleExclusionCreate,
     WhaleExclusionListRead,
     WhaleExclusionRead,
@@ -152,6 +153,7 @@ from backend.trading_cli import DEFAULT_SERVICE
 from backend.whale import (
     WhaleDiscoveryScanner,
     WhaleFollowExecutor,
+    list_whale_auto_decisions,
     list_whale_exclusions,
     list_whale_history,
     list_whale_markets,
@@ -1679,6 +1681,30 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
+    @application.get(
+        "/api/whales/auto-decisions",
+        response_model=WhaleAutoDecisionListRead,
+    )
+    async def get_whale_auto_decisions(
+        request: Request,
+        rule: str = Query(default="all", pattern="^(all|new_account|large_amount)$"),
+        status_name: str = Query(default="all", alias="status", max_length=30),
+        limit: int = Query(default=100, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> WhaleAutoDecisionListRead:
+        require_whale_module(request)
+        try:
+            payload = await list_whale_auto_decisions(
+                request.app.state.database,
+                rule=rule,
+                status=status_name,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return WhaleAutoDecisionListRead.model_validate(payload)
+
     @application.get("/api/whales/exclusions", response_model=WhaleExclusionListRead)
     async def get_whale_exclusions(request: Request) -> WhaleExclusionListRead:
         require_whale_module(request)
@@ -1770,6 +1796,19 @@ def create_app(
         require_whale_module(request)
         database: Database = request.app.state.database
         values = payload.model_dump(exclude_none=True)
+        for public_key, storage_key in (
+            (
+                "new_account_auto_follow_categories",
+                "new_account_auto_follow_categories_json",
+            ),
+            (
+                "large_amount_auto_follow_categories",
+                "large_amount_auto_follow_categories_json",
+            ),
+        ):
+            categories = values.pop(public_key, None)
+            if categories is not None:
+                values[storage_key] = json.dumps(categories, separators=(",", ":"))
         # The page exposes one “重仓阈值”.  Keep single and cumulative gates in
         # lockstep when only the cumulative value is supplied, otherwise raising
         # the visible threshold would not necessarily narrow results.
@@ -1804,6 +1843,23 @@ def create_app(
                 raise HTTPException(status_code=422, detail="退出比例阈值必须低于持有比例阈值")
             if merged["default_follow_amount_usdc"] > merged["max_follow_amount_usdc"]:
                 raise HTTPException(status_code=422, detail="默认买入金额不能超过单笔买入上限")
+            for label, prefix in (
+                ("新号大额", "new_account"),
+                ("全量超大额", "large_amount"),
+            ):
+                amount = merged[f"{prefix}_auto_follow_amount_usdc"]
+                minimum = merged[f"{prefix}_auto_follow_min_price"]
+                maximum = merged[f"{prefix}_auto_follow_max_price"]
+                if amount > merged["max_follow_amount_usdc"]:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"{label}自动跟单金额不能超过单笔买入上限",
+                    )
+                if minimum > maximum:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"{label}自动跟单最低买价不能高于最高买价",
+                    )
             for key, value in values.items():
                 setattr(row, key, value)
             row.updated_at = utcnow()

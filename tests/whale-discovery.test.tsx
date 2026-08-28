@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WhaleDiscoveryWorkspace from "../app/components/WhaleDiscoveryWorkspace";
 import WhaleRecordsWorkspace from "../app/components/WhaleRecordsWorkspace";
+import WhaleAutoFollowWorkspace from "../app/components/WhaleAutoFollowWorkspace";
 import ExecutionSettingsWorkspace from "../app/components/ExecutionSettingsWorkspace";
 import EmailRecordsWorkspace from "../app/components/EmailRecordsWorkspace";
 import { WhaleRequestMonitorPanel } from "../app/components/WhaleRequestMonitorPanel";
@@ -28,6 +29,16 @@ const settings = {
   max_price_delta_cents: 5,
   max_follow_amount_usdc: 200,
   default_follow_amount_usdc: 20,
+  new_account_auto_follow_enabled: false,
+  new_account_auto_follow_amount_usdc: 5,
+  new_account_auto_follow_min_price: 0.65,
+  new_account_auto_follow_max_price: 0.8,
+  new_account_auto_follow_categories: ["sports"],
+  large_amount_auto_follow_enabled: false,
+  large_amount_auto_follow_amount_usdc: 10,
+  large_amount_auto_follow_min_price: 0.6,
+  large_amount_auto_follow_max_price: 0.8,
+  large_amount_auto_follow_categories: ["sports"],
   scan_interval_seconds: 60,
   last_scan_at: "2026-08-16T09:00:00Z",
   last_scan_error: null,
@@ -83,14 +94,123 @@ describe("巨鲸页内设置", () => {
     await user.type(threshold, "25000");
     await user.clear(largeThreshold);
     await user.type(largeThreshold, "600000");
-    await user.click(screen.getByRole("button", { name: "保存监测条件" }));
+    const saveButton = screen.getByRole("button", { name: "保存监测条件" });
+    const form = saveButton.closest("form");
+    expect(form).not.toBeNull();
+    expect(Array.from(form!.querySelectorAll("input")).filter((input) => !input.checkValidity()).map((input) => input.getAttribute("aria-label"))).toEqual([]);
+    await user.click(saveButton);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
-    await waitFor(() => expect(bodies).toContainEqual({
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({
       registration_window_days: 7,
       new_account_threshold_usdc: 25000,
       large_amount_threshold_usdc: 600000,
-    }));
+    });
+    expect(bodies[0]).not.toHaveProperty("new_account_auto_follow_enabled");
     expect(await screen.findByText("巨鲸监测条件已保存，数据已重新扫描。")).toBeInTheDocument();
+  });
+
+  it("分别保存两套真实自动跟单策略和分类", async () => {
+    const user = userEvent.setup();
+    let saved: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/whales/settings") && init?.method === "PUT") {
+        saved = JSON.parse(String(init.body));
+        return json({ ...settings, ...saved });
+      }
+      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.includes("/api/whales/auto-decisions?")) return json({ total: 0, items: [] });
+      if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<WhaleAutoFollowWorkspace />);
+    expect(await screen.findByLabelText("自动跟单策略概览")).toHaveTextContent("5 USDC");
+    expect(screen.queryByRole("checkbox", { name: "开启新号大额自动跟单" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "编辑策略" }));
+    await user.click(await screen.findByRole("checkbox", { name: "开启新号大额自动跟单" }));
+    expect(screen.getByRole("status")).toHaveTextContent("真实资金功能");
+    await user.click(screen.getByRole("button", { name: "关闭真实资金风险提示" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "开启新号大额自动跟单" }));
+    await user.click(screen.getByRole("checkbox", { name: "开启新号大额自动跟单" }));
+    expect(screen.getByRole("status")).toHaveTextContent("真实资金功能");
+    const newStrategy = screen.getByRole("heading", { name: "新号大额自动跟单" }).closest("section");
+    expect(newStrategy).not.toBeNull();
+    await user.click(within(newStrategy!).getByText("政治"));
+    await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
+
+    await waitFor(() => expect(saved).not.toBeNull());
+    expect(saved).toMatchObject({
+      new_account_auto_follow_enabled: true,
+      new_account_auto_follow_categories: ["sports", "politics"],
+      large_amount_auto_follow_enabled: false,
+    });
+    expect(screen.queryByText(/模拟/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "自动跟单" })).toHaveClass("active");
+
+    const ruleFilter = screen.getByRole("combobox", { name: "命中规则" });
+    expect(ruleFilter.tagName).toBe("BUTTON");
+    await user.click(ruleFilter);
+    await user.click(screen.getByRole("option", { name: "新号大额" }));
+    expect(ruleFilter).toHaveTextContent("新号大额");
+
+    const statusFilter = screen.getByRole("combobox", { name: "决策状态" });
+    statusFilter.focus();
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(statusFilter).toHaveTextContent("等待处理");
+  });
+
+  it("自动决策的钱包与市场信息均可打开对应页面", async () => {
+    const wallet = "0x1111111111111111111111111111111111111111";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.includes("/api/whales/auto-decisions?")) return json({
+        total: 1,
+        items: [{
+          id: 1,
+          entry_id: 2,
+          proxy_wallet: wallet,
+          asset_id: "asset-yes",
+          condition_id: `0x${"c".repeat(64)}`,
+          title: "Championship winner",
+          market_slug: "championship-winner",
+          event_slug: "championship-final",
+          outcome: "Yes",
+          matched_rules: ["large_amount"],
+          selected_rule: "large_amount",
+          category: "esports",
+          category_label: "电竞",
+          configured_amount_usdc: 10,
+          configured_min_price: 0.5,
+          configured_max_price: 0.75,
+          observed_best_ask: 0.7,
+          status: "bought",
+          reason: "实际买价 0.85000000000000000000 高于策略最高价 0.75000000000000000000",
+          buy_order_id: 3,
+          latest_sell_order_id: null,
+          followed_wallet_count: 1,
+          processed_at: "2026-08-28T10:00:00Z",
+          created_at: "2026-08-28T10:00:00Z",
+          updated_at: "2026-08-28T10:00:00Z",
+        }],
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<WhaleAutoFollowWorkspace />);
+
+    const walletLink = await screen.findByRole("link", { name: /0x11111…11111.*全量/ });
+    expect(walletLink).toHaveAttribute("href", `https://polymarket.com/profile/${wallet}`);
+    expect(walletLink).toHaveAttribute("target", "_blank");
+    const marketLink = screen.getByRole("link", { name: /Championship winner.*Yes/ });
+    expect(marketLink).toHaveAttribute("href", "https://polymarket.com/event/championship-final");
+    expect(marketLink).toHaveAttribute("target", "_blank");
+    expect(screen.getByText("实际买价 0.85 高于策略最高价 0.75")).toBeInTheDocument();
+    expect(screen.queryByText(/0\.75000000000000000000/)).not.toBeInTheDocument();
   });
 
   it("展示默认排除账户，并支持用个人页新增和移出", async () => {
@@ -993,6 +1113,7 @@ describe("巨鲸跟单记录页", () => {
           average_profit_ratio_percent: null,
         },
       });
+      if (url.includes("/api/whales/auto-decisions?")) return json({ total: 0, items: [] });
       if (url.includes("/sell/preview")) return json({
         confirmation_id: "sell-token",
         expires_at: "2026-08-16T09:05:00Z",
@@ -1013,6 +1134,7 @@ describe("巨鲸跟单记录页", () => {
     render(<WhaleRecordsWorkspace />);
 
     expect(await screen.findByText("无法估值")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "自动跟单决策" })).not.toBeInTheDocument();
     expect(screen.getAllByText("20.40 USDC").length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: "一键卖出" }));

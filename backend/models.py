@@ -691,6 +691,26 @@ class WhaleSettings(Base):
             "large_amount_threshold_usdc >= collect_filter_amount_usdc",
             name="ck_whale_settings_large_amount_threshold",
         ),
+        CheckConstraint(
+            "new_account_auto_follow_amount_usdc > 0",
+            name="ck_whale_settings_new_auto_amount",
+        ),
+        CheckConstraint(
+            "new_account_auto_follow_min_price > 0 "
+            "AND new_account_auto_follow_min_price <= new_account_auto_follow_max_price "
+            "AND new_account_auto_follow_max_price < 1",
+            name="ck_whale_settings_new_auto_prices",
+        ),
+        CheckConstraint(
+            "large_amount_auto_follow_amount_usdc > 0",
+            name="ck_whale_settings_large_auto_amount",
+        ),
+        CheckConstraint(
+            "large_amount_auto_follow_min_price > 0 "
+            "AND large_amount_auto_follow_min_price <= large_amount_auto_follow_max_price "
+            "AND large_amount_auto_follow_max_price < 1",
+            name="ck_whale_settings_large_auto_prices",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
@@ -711,6 +731,36 @@ class WhaleSettings(Base):
     )
     large_amount_threshold_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("500000")
+    )
+    new_account_auto_follow_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    new_account_auto_follow_amount_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("5")
+    )
+    new_account_auto_follow_min_price: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("0.65")
+    )
+    new_account_auto_follow_max_price: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("0.80")
+    )
+    new_account_auto_follow_categories_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default='["sports"]'
+    )
+    large_amount_auto_follow_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    large_amount_auto_follow_amount_usdc: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("10")
+    )
+    large_amount_auto_follow_min_price: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("0.60")
+    )
+    large_amount_auto_follow_max_price: Mapped[Decimal] = mapped_column(
+        DECIMAL_TYPE, nullable=False, default=Decimal("0.80")
+    )
+    large_amount_auto_follow_categories_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default='["sports"]'
     )
     min_liquidity_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("5000")
@@ -1004,6 +1054,67 @@ class WhaleEntryRuleState(Base):
     entry: Mapped[WhaleEntry] = relationship(back_populates="rule_states")
 
 
+class WhaleAutoFollowDecision(Base):
+    __tablename__ = "whale_auto_follow_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_id",
+            "proxy_wallet",
+            name="uq_whale_auto_decision_asset_wallet",
+        ),
+        Index("ix_whale_auto_decision_status_created", "status", "created_at"),
+        Index("ix_whale_auto_decision_condition", "condition_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("whale_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    proxy_wallet: Mapped[str] = mapped_column(String(42), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(200), nullable=False)
+    outcome_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    matched_rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    selected_rule: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    configured_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    configured_min_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    configured_max_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    observed_best_ask: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    buy_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("whale_orders.id", ondelete="SET NULL"), nullable=True
+    )
+    latest_sell_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("whale_orders.id", ondelete="SET NULL"), nullable=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class WhaleAutoMarketLock(Base):
+    __tablename__ = "whale_auto_market_locks"
+    __table_args__ = (Index("ix_whale_auto_market_lock_exit", "exit_status", "updated_at"),)
+
+    condition_id: Mapped[str] = mapped_column(String(66), primary_key=True)
+    trigger_entry_id: Mapped[int | None] = mapped_column(
+        ForeignKey("whale_entries.id", ondelete="SET NULL"), nullable=True
+    )
+    trigger_wallet: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    trigger_asset_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    trigger_outcome: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    trigger_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    trigger_rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    exit_status: Mapped[str] = mapped_column(String(30), nullable=False, default="not_required")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class WhaleFollowPosition(Base):
     __tablename__ = "whale_follow_positions"
     __table_args__ = (
@@ -1060,6 +1171,7 @@ class WhaleOrder(Base):
     )
     entry_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="follow")
     source_wallet: Mapped[str | None] = mapped_column(String(42), nullable=True)
     asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
     condition_id: Mapped[str] = mapped_column(String(66), nullable=False)

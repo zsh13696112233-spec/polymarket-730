@@ -38,6 +38,7 @@ test("server-renders the chain-monitoring workspace and product metadata", async
   assert.match(html, /PolyCopy/);
   assert.match(html, /链上监测/);
   assert.match(html, /我的跟单/);
+  assert.match(html, /自动跟单/);
   assert.doesNotMatch(html, /添加目标/);
   assert.doesNotMatch(html, /最近记录/);
   assert.doesNotMatch(html, />策略</);

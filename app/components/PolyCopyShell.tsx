@@ -3,7 +3,7 @@
 import { ReactNode, useState } from "react";
 import Link from "next/link";
 
-export type WorkspaceView = "whales" | "whale-records" | "email-records" | "settings";
+export type WorkspaceView = "whales" | "auto-follow" | "whale-records" | "email-records" | "settings";
 
 const navigation: Array<{
   id: WorkspaceView;
@@ -11,6 +11,7 @@ const navigation: Array<{
   label: string;
 }> = [
   { id: "whales", href: "/", label: "链上监测" },
+  { id: "auto-follow", href: "/whales/auto-follow", label: "自动跟单" },
   { id: "whale-records", href: "/whales/records", label: "我的跟单" },
   { id: "email-records", href: "/email-records", label: "邮件记录" },
   { id: "settings", href: "/settings", label: "设置" },
@@ -29,6 +30,9 @@ function NavIcon({ id }: { id: WorkspaceView }) {
 
   if (id === "whale-records") {
     return <svg {...common}><path d="M8.5 6h11" /><path d="M8.5 12h11" /><path d="M8.5 18h11" /><path d="m3.75 6 1 1 1.75-2" /><path d="m3.75 12 1 1 1.75-2" /><path d="m3.75 18 1 1 1.75-2" /></svg>;
+  }
+  if (id === "auto-follow") {
+    return <svg {...common}><path d="M8 7h8" /><path d="m14 4 3 3-3 3" /><path d="M16 17H8" /><path d="m10 14-3 3 3 3" /><circle cx="12" cy="12" r="9" /></svg>;
   }
   if (id === "whales") {
     return <svg {...common}><path d="M3.5 12h3l1.8-4.25 3.1 8.5 2.25-5.25 1.35 3h5.5" /><circle cx="12" cy="12" r="9" /></svg>;
@@ -76,7 +80,7 @@ export function PolyCopyShell({
         </Link>
         <nav className="pcNavigation" aria-label="主导航">
           <span className="pcNavLabel">工作台</span>
-          {navigation.slice(0, 3).map((item) => (
+          {navigation.slice(0, 4).map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}
@@ -89,7 +93,7 @@ export function PolyCopyShell({
             </Link>
           ))}
           <span className="pcNavLabel pcNavLabelSecondary">系统</span>
-          {navigation.slice(3).map((item) => (
+          {navigation.slice(4).map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}
@@ -110,7 +114,7 @@ export function PolyCopyShell({
           </span>
         </div>
       </aside>
-      <div className={`pcMain${active === "whales" ? " whaleWorkspace" : ""}`}>
+      <div className={`pcMain${active === "whales" ? " whaleWorkspace" : ""}${active === "auto-follow" ? " whaleAutoWorkspace" : ""}`}>
         <header className="pcTopbar">
           <div className="pcTitleGroup">
             <button

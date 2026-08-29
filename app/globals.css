@@ -12288,3 +12288,109 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
     border-top: 0;
   }
 }
+
+/* Execution wallet: fixed Deposit Wallet mode and a balanced settings layout. */
+.pcExecutionWalletHeader {
+  flex-wrap: wrap;
+}
+
+.pcExecutionWalletMode {
+  display: grid !important;
+  min-width: 190px;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid #dfe4f5;
+  border-radius: 10px;
+  background: #f7f9ff;
+}
+
+.pcExecutionWalletMode > span,
+.pcExecutionWalletMode > strong {
+  grid-column: 1;
+}
+
+.pcExecutionWalletMode > span {
+  color: #8b90a0;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.pcExecutionWalletMode > strong {
+  color: #243d9f;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pcExecutionAccountPanel .pcAccountSummary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+  padding: 15px 18px;
+  border-bottom: 1px solid #eceef2;
+  background: #fbfbfc;
+}
+
+.pcExecutionAccountPanel .pcSettingsForm {
+  padding: 20px 18px 18px;
+}
+
+.pcExecutionAddressGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.pcExecutionFormFooter {
+  display: grid;
+  align-items: end;
+  grid-template-columns: minmax(320px, 520px) minmax(0, 1fr);
+  gap: 24px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid #eceef2;
+}
+
+.pcExecutionFormFooter .pcSettingsActions {
+  align-self: end;
+  flex-wrap: wrap;
+  margin-top: 0;
+}
+
+.pcExecutionAccountPanel .pcCommandHint {
+  padding: 16px 0 0;
+}
+
+@media (max-width: 960px) {
+  .pcExecutionFormFooter {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .pcExecutionFormFooter .pcSettingsActions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .pcExecutionWalletHeader {
+    align-items: stretch;
+  }
+
+  .pcExecutionWalletMode {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .pcExecutionAccountPanel .pcAccountSummary,
+  .pcExecutionAddressGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .pcExecutionAccountPanel .pcAccountSummary {
+    gap: 12px;
+  }
+
+  .pcExecutionFormFooter .pcSettingsActions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}

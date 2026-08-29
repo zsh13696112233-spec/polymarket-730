@@ -2368,7 +2368,7 @@ class WhaleFollowExecutor:
             if (
                 account is None
                 or account.status not in {"ready", "insufficient_balance"}
-                or account.signature_type not in {1, 3}
+                or account.signature_type != 3
                 or not account.keychain_service
                 or not account.keychain_account
                 or not account.funder_address
@@ -3278,7 +3278,7 @@ class WhaleFollowExecutor:
                 account is None
                 or account.status not in {"ready", "insufficient_balance"}
                 or not account.funder_address
-                or account.signature_type not in {1, 3}
+                or account.signature_type != 3
                 or not account.keychain_service
                 or not account.keychain_account
             ):
@@ -3788,7 +3788,7 @@ class WhaleFollowExecutor:
                 or account is None
                 or account.status not in {"ready", "insufficient_balance"}
                 or not account.funder_address
-                or account.signature_type not in {1, 3}
+                or account.signature_type != 3
                 or not account.keychain_service
                 or not account.keychain_account
             ):

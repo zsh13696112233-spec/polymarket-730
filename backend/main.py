@@ -316,6 +316,11 @@ def create_app(
             account = await session.get(ExecutionAccount, 1)
             if account is None or not account.keychain_service or not account.keychain_account:
                 raise HTTPException(status_code=409, detail="请先配置执行账户和钥匙串密钥")
+            if account.signature_type != 3:
+                raise HTTPException(
+                    status_code=409,
+                    detail="执行钱包仅支持 Deposit Wallet（signature_type=3），请重新保存配置",
+                )
             trader = UnifiedPolymarketTrader(
                 host=resolved_settings.clob_api_url,
                 keychain=keychain,
@@ -338,10 +343,7 @@ def create_app(
                 )
                 if signer_address != (account.signer_address or "").lower():
                     raise TradingUnavailable("钥匙串私钥与配置的签名地址不一致")
-                expected_wallet_type = {1: "POLY_PROXY", 3: "DEPOSIT_WALLET"}.get(
-                    account.signature_type
-                )
-                if wallet_type != expected_wallet_type:
+                if wallet_type != "DEPOSIT_WALLET":
                     raise TradingUnavailable("SDK 钱包类型与 signature_type 配置不一致")
                 required_exchanges = {
                     V2_EXCHANGE_ADDRESS.lower(),

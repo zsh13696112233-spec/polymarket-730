@@ -294,6 +294,62 @@ describe("巨鲸页内设置", () => {
 });
 
 describe("系统邮件设置", () => {
+  it("执行钱包验证成功后显示成功状态", async () => {
+    const user = userEvent.setup();
+    const savedAccounts: unknown[] = [];
+    const account = {
+      signer_address: "0x1111111111111111111111111111111111111111",
+      funder_address: "0x2222222222222222222222222222222222222222",
+      signature_type: 3,
+      credentials_configured: true,
+      status: "ready",
+      budget_usdc: 400,
+      cash_reserve_usdc: 240,
+      max_total_exposure_usdc: 160,
+      daily_buy_limit_usdc: 80,
+      daily_loss_limit_usdc: 40,
+      auto_redeem: true,
+      collateral_balance: 300,
+      last_balance_at: "2026-08-29T16:00:00Z",
+      last_error: null,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/execution-account")) {
+        if (init?.method === "PUT") savedAccounts.push(JSON.parse(String(init.body)));
+        return json(account);
+      }
+      if (url.endsWith("/api/email-settings")) return json({
+        notifications_enabled: false,
+        notification_recipients: [],
+        smtp_host: "smtp.163.com",
+        smtp_port: 465,
+        smtp_security: "ssl",
+        smtp_username: null,
+        smtp_from_email: null,
+        smtp_from_name: "PolyCopy",
+        smtp_authorization_code_configured: false,
+        smtp_configured: false,
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<ExecutionSettingsWorkspace />);
+    expect(await screen.findByLabelText("钱包模式：Deposit Wallet")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "钱包类型" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Poly Proxy/)).not.toBeInTheDocument();
+    await screen.findByDisplayValue(account.signer_address);
+
+    await user.click(screen.getByRole("button", { name: "保存配置" }));
+    expect(savedAccounts).toContainEqual(expect.objectContaining({ signature_type: 3 }));
+
+    await user.click(await screen.findByRole("button", { name: "验证密钥与授权" }));
+
+    const notice = await screen.findByText("执行钱包验证完成。");
+    expect(notice).toHaveClass("pcFormSuccess");
+    expect(notice).not.toHaveClass("pcFormError");
+  });
+
   it("在系统设置工作台配置 163 SMTP 并测试连接", async () => {
     const user = userEvent.setup();
     const bodies: unknown[] = [];

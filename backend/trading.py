@@ -248,8 +248,8 @@ class UnifiedPolymarketTrader:
             from polymarket import AsyncSecureClient, BuilderApiKey
         except ImportError as error:
             raise TradingUnavailable("缺少 polymarket-client==0.5.0，实盘功能不可用") from error
-        if self.signature_type not in {1, 3} or not self.funder_address:
-            raise TradingUnavailable("统一 SDK 实盘只允许 Proxy 或 Deposit Wallet")
+        if self.signature_type != 3 or not self.funder_address:
+            raise TradingUnavailable("统一 SDK 实盘仅允许 Deposit Wallet（signature_type=3）")
         private_key = self.keychain.get_secret(self.key_reference)
         api_key = None
         builder_reference = KeychainReference(
@@ -277,11 +277,10 @@ class UnifiedPolymarketTrader:
             )
         except Exception as error:
             raise TradingUnavailable(f"统一 SDK 客户端创建失败：{error_detail(error)}") from error
-        expected_type = {1: "POLY_PROXY", 3: "DEPOSIT_WALLET"}[self.signature_type]
         if str(client.wallet).lower() != self.funder_address.lower():
             await client.close()
             raise TradingUnavailable("SDK 资金钱包与配置地址不一致")
-        if str(client.wallet_type) != expected_type:
+        if str(client.wallet_type) != "DEPOSIT_WALLET":
             await client.close()
             raise TradingUnavailable(f"SDK 钱包类型 {client.wallet_type} 与 signature_type 不一致")
         return client

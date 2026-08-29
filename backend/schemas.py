@@ -66,7 +66,7 @@ class ExecutionAccountRead(APIModel):
 class ExecutionAccountUpdate(APIModel):
     signer_address: str = Field(min_length=42, max_length=42)
     funder_address: str = Field(min_length=42, max_length=42)
-    signature_type: Literal[1, 3] = 3
+    signature_type: Literal[3] = 3
     budget_usdc: Decimal = Field(default=Decimal("400"), ge=0)
     cash_reserve_usdc: Decimal = Field(default=Decimal("240"), ge=0)
     max_total_exposure_usdc: Decimal = Field(default=Decimal("160"), ge=0)

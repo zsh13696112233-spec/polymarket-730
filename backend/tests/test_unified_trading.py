@@ -6,8 +6,10 @@ from types import SimpleNamespace
 import pytest
 from polymarket.models.clob.order_response import AcceptedOrder
 from polymarket.models.clob.orders import SignedOrder
+from pydantic import ValidationError
 
 from backend.keychain import KeychainReference
+from backend.schemas import ExecutionAccountUpdate
 from backend.trading import (
     COLLATERAL_ADAPTER,
     CTF_ADDRESS,
@@ -16,6 +18,7 @@ from backend.trading import (
     V2_NEG_RISK_EXCHANGE_ADDRESS,
     MarketTradeRequest,
     TradeFillResult,
+    TradingUnavailable,
     UnifiedPolymarketTrader,
 )
 
@@ -83,6 +86,28 @@ def trader(client: FakeClient) -> UnifiedPolymarketTrader:
     )
     result._client = client
     return result
+
+
+def test_execution_account_update_rejects_retired_proxy_wallet_type():
+    with pytest.raises(ValidationError):
+        ExecutionAccountUpdate(
+            signer_address=SIGNER,
+            funder_address=FUNDER,
+            signature_type=1,
+        )
+
+
+async def test_unified_trader_rejects_retired_proxy_wallet_type():
+    adapter = UnifiedPolymarketTrader(
+        host="https://clob.test",
+        keychain=SimpleNamespace(),
+        key_reference=KeychainReference(service="test", account="test"),
+        signature_type=1,
+        funder_address=FUNDER,
+    )
+
+    with pytest.raises(TradingUnavailable, match="仅允许 Deposit Wallet"):
+        await adapter._build_client()
 
 
 @pytest.mark.parametrize(

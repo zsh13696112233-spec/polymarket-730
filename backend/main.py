@@ -43,6 +43,7 @@ from backend.models import (
     PositionOverlapPeriod,
     WalletTrade,
     WatchedWallet,
+    WhaleEmailDelivery,
     WhaleEntry,
     WhaleEntryRuleState,
     WhaleExclusion,
@@ -170,6 +171,7 @@ from backend.whale_email import (
     SMTP_KEYCHAIN_SERVICE,
     WhaleEmailNotifier,
     list_whale_email_deliveries,
+    next_weekly_summary_run,
 )
 from backend.whale_requests import WhaleRequestMonitor
 
@@ -222,6 +224,15 @@ async def email_settings_read(database: Database, settings: Settings) -> dict[st
                 .where(EmailRecipient.enabled.is_(True))
                 .order_by(EmailRecipient.email)
             )
+        )
+        values["weekly_summary_last_sent_at"] = await session.scalar(
+            select(func.max(WhaleEmailDelivery.sent_at)).where(
+                WhaleEmailDelivery.notification_kind == "weekly_summary",
+                WhaleEmailDelivery.status == "sent",
+            )
+        )
+        values["weekly_summary_next_run_at"] = (
+            next_weekly_summary_run(utcnow()) if row.weekly_summary_enabled else None
         )
     add_smtp_configuration_state(values, settings)
     return values
@@ -1464,9 +1475,9 @@ def create_app(
         application.state.whale_follow_previews = {}
         application.state.whale_sell_previews = {}
         if resolved_settings.start_monitor:
+            whale_email_notifier.start()
             if resolved_settings.whale_enabled:
                 whale_scanner.start()
-                whale_email_notifier.start()
         try:
             yield
         finally:
@@ -1916,6 +1927,11 @@ def create_app(
             row = await session.get(EmailSettings, 1)
             if row is None:
                 raise HTTPException(status_code=503, detail="邮件设置尚未初始化")
+            weekly_summary_enabled = values.get("weekly_summary_enabled")
+            if weekly_summary_enabled is True and not row.weekly_summary_enabled:
+                row.weekly_summary_enabled_at = utcnow()
+            elif weekly_summary_enabled is False:
+                row.weekly_summary_enabled_at = None
             next_username = values.get("smtp_username", row.smtp_username)
             if (
                 "smtp_username" in values

@@ -358,6 +358,69 @@ describe("系统邮件设置", () => {
 });
 
 describe("邮件记录工作台", () => {
+  it("在邮件记录页启用每周汇总并展示周报发送记录", async () => {
+    const user = userEvent.setup();
+    const bodies: unknown[] = [];
+    const settings = {
+      notifications_enabled: true,
+      weekly_summary_enabled: false,
+      weekly_summary_enabled_at: null,
+      weekly_summary_last_sent_at: "2026-08-17T16:00:05Z",
+      weekly_summary_next_run_at: null,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/email-settings") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        bodies.push(body);
+        return json({
+          ...settings,
+          ...body,
+          weekly_summary_enabled_at: "2026-08-29T02:00:00Z",
+          weekly_summary_next_run_at: "2026-08-30T16:00:00Z",
+        });
+      }
+      if (url.endsWith("/api/email-settings")) return json(settings);
+      if (url.includes("/api/email-notifications?")) return json({
+        total: 1,
+        items: [{
+          id: 20,
+          entry_id: null,
+          notification_kind: "weekly_summary",
+          condition_id: "weekly-summary",
+          entry_ids: [],
+          rules: [],
+          recipient_email: "alerts@example.com",
+          market_title: "每周邮件命中率｜2026-08-17 至 2026-08-23",
+          wallet_label: "命中 6 · 未命中 4 · 待结算 3",
+          market_summaries: [],
+          subject: "[PolyCopy] 每周邮件命中率｜08-17 至 08-23",
+          body_text: "有效样本：10\n命中：6\n未命中：4\n有效命中率：60%",
+          result: "not_applicable",
+          status: "sent",
+          attempt_count: 1,
+          next_attempt_at: null,
+          last_error: null,
+          created_at: "2026-08-23T16:00:00Z",
+          sent_at: "2026-08-23T16:00:05Z",
+        }],
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<EmailRecordsWorkspace />);
+
+    const checkbox = await screen.findByRole("checkbox", { name: "启用每周命中率汇总" });
+    expect(checkbox).not.toBeChecked();
+    expect(await screen.findByText("每周汇总")).toBeInTheDocument();
+    expect(screen.getByText("命中 6 · 未命中 4 · 待结算 3")).toBeInTheDocument();
+    expect(screen.queryByText("买入摘要")).not.toBeInTheDocument();
+    await user.click(checkbox);
+    await waitFor(() => expect(bodies).toContainEqual({ weekly_summary_enabled: true }));
+    expect(await screen.findByText("每周命中率汇总已启用，将从下一个周一开始发送。")).toBeInTheDocument();
+    expect(checkbox).toBeChecked();
+  });
+
   it("独立展示逐收件人投递记录并支持状态筛选", async () => {
     const requestedUrls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {

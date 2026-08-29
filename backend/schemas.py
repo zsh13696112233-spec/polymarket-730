@@ -985,7 +985,7 @@ class EmailDeliveryMarketSummaryRead(APIModel):
 class EmailDeliveryRead(APIModel):
     id: int
     entry_id: int | None
-    notification_kind: Literal["entry", "divergence"]
+    notification_kind: Literal["entry", "divergence", "weekly_summary"]
     condition_id: str
     entry_ids: list[int]
     rules: list[Literal["new_account", "large_amount"]]
@@ -1015,6 +1015,10 @@ class EmailDeliveryListRead(APIModel):
 
 class EmailSettingsRead(APIModel):
     notifications_enabled: bool = False
+    weekly_summary_enabled: bool = False
+    weekly_summary_enabled_at: datetime | None = None
+    weekly_summary_last_sent_at: datetime | None = None
+    weekly_summary_next_run_at: datetime | None = None
     notification_recipients: list[str] = Field(default_factory=list)
     smtp_host: str | None = None
     smtp_port: int = 465
@@ -1025,11 +1029,21 @@ class EmailSettingsRead(APIModel):
     smtp_authorization_code_configured: bool = False
     smtp_configured: bool = False
 
+    @field_serializer(
+        "weekly_summary_enabled_at",
+        "weekly_summary_last_sent_at",
+        "weekly_summary_next_run_at",
+        when_used="json",
+    )
+    def serialize_weekly_summary_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
 
 class EmailSettingsUpdate(APIModel):
     model_config = ConfigDict(extra="forbid")
 
     notifications_enabled: bool | None = None
+    weekly_summary_enabled: bool | None = None
     notification_recipients: list[str] | None = None
     smtp_host: str | None = Field(default=None, min_length=1, max_length=255)
     smtp_port: int | None = Field(default=None, ge=1, le=65535)

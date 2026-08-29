@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -48,8 +48,11 @@ from backend.whale import (
 from backend.whale_email import (
     WhaleEmailCandidate,
     WhaleEmailNotifier,
+    enqueue_due_weekly_summary,
     enqueue_whale_email_deliveries,
     list_whale_email_deliveries,
+    weekly_email_summary_metrics,
+    weekly_summary_period,
 )
 
 
@@ -838,6 +841,175 @@ async def test_email_notifier_marks_delivery_sent(database, monkeypatch):
     assert delivery.status == "sent"
     assert delivery.attempt_count == 1
     assert sent == ["alerts@example.com"]
+
+
+async def test_weekly_summary_deduplicates_recipients_and_enqueues_once(database):
+    await enable_email_notifications(database)
+    report_time = datetime(2026, 8, 23, 16, 0)  # 周一 00:00，北京时间
+    period_start = datetime(2026, 8, 16, 16, 0)
+    hit_id = await seed_email_entry(
+        database,
+        condition_id="0x" + "1" * 64,
+        asset_id="weekly-hit",
+        outcome="Yes",
+        outcome_index=0,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        wallet_name="Hit Wallet",
+        amount="100000",
+        avg_price="0.50",
+    )
+    miss_id = await seed_email_entry(
+        database,
+        condition_id="0x" + "2" * 64,
+        asset_id="weekly-miss",
+        outcome="No",
+        outcome_index=1,
+        wallet_address="0x2222222222222222222222222222222222222222",
+        wallet_name="Miss Wallet",
+        amount="100000",
+        avg_price="0.50",
+    )
+    special_id = await seed_email_entry(
+        database,
+        condition_id="0x" + "3" * 64,
+        asset_id="weekly-special",
+        outcome="Yes",
+        outcome_index=0,
+        wallet_address="0x3333333333333333333333333333333333333333",
+        wallet_name="Special Wallet",
+        amount="100000",
+        avg_price="0.50",
+    )
+    pending_id = await seed_email_entry(
+        database,
+        condition_id="0x" + "4" * 64,
+        asset_id="weekly-pending",
+        outcome="Yes",
+        outcome_index=0,
+        wallet_address="0x4444444444444444444444444444444444444444",
+        wallet_name="Pending Wallet",
+        amount="100000",
+        avg_price="0.50",
+    )
+
+    async with database.sessions() as session:
+        settings = await session.get(EmailSettings, 1)
+        assert settings is not None
+        settings.weekly_summary_enabled = True
+        settings.weekly_summary_enabled_at = period_start
+        session.add(
+            EmailRecipient(
+                email="ops@example.com",
+                enabled=True,
+                created_at=period_start,
+                updated_at=period_start,
+            )
+        )
+        for entry_id, settlement_price, settled_at in (
+            (hit_id, Decimal("1"), datetime(2026, 8, 18, 4, 0)),
+            (miss_id, Decimal("0"), datetime(2026, 8, 19, 4, 0)),
+            (special_id, Decimal("0.5"), datetime(2026, 8, 20, 4, 0)),
+        ):
+            entry = await session.get(WhaleEntry, entry_id)
+            assert entry is not None
+            entry.settlement_price = settlement_price
+            entry.settled_at = settled_at
+        for entry_id in (hit_id, miss_id, special_id, pending_id):
+            entry = await session.get(WhaleEntry, entry_id)
+            assert entry is not None
+            for recipient in ("alerts@example.com", "ops@example.com"):
+                session.add(
+                    WhaleEmailDelivery(
+                        entry_id=entry_id,
+                        notification_kind="entry",
+                        condition_id=entry.condition_id,
+                        entry_ids_json=json.dumps([entry_id]),
+                        dedupe_key=f"weekly-source:{entry_id}",
+                        rule_key="large_amount",
+                        rules_json='["large_amount"]',
+                        recipient_email=recipient,
+                        market_title="Weekly source",
+                        wallet_label="Weekly wallet",
+                        subject="Source alert",
+                        body_text="Source alert body",
+                        status="sent",
+                        attempt_count=1,
+                        created_at=period_start - timedelta(days=1),
+                        sent_at=period_start - timedelta(days=1),
+                    )
+                )
+        await session.commit()
+
+    scheduled_for, computed_start, computed_end = weekly_summary_period(report_time)
+    assert scheduled_for == report_time
+    assert computed_start == period_start
+    assert computed_end == report_time
+    metrics = await weekly_email_summary_metrics(
+        database,
+        period_start=computed_start,
+        period_end=computed_end,
+    )
+    assert metrics == {
+        "settled_count": 3,
+        "effective_count": 2,
+        "hit_count": 1,
+        "miss_count": 1,
+        "special_count": 1,
+        "pending_count": 1,
+        "hit_rate_percent": Decimal("50"),
+    }
+
+    assert await enqueue_due_weekly_summary(database, now=report_time) == 2
+    assert await enqueue_due_weekly_summary(database, now=report_time + timedelta(hours=1)) == 0
+    async with database.sessions() as session:
+        reports = list(
+            await session.scalars(
+                select(WhaleEmailDelivery).where(
+                    WhaleEmailDelivery.notification_kind == "weekly_summary"
+                )
+            )
+        )
+    assert {report.recipient_email for report in reports} == {
+        "alerts@example.com",
+        "ops@example.com",
+    }
+    assert all("有效命中率：50%" in report.body_text for report in reports)
+    assert all("特殊结算：1" in report.body_text for report in reports)
+    assert all("仍待结算：1" in report.body_text for report in reports)
+    delivery_log = await list_whale_email_deliveries(
+        database,
+        status="pending",
+        limit=10,
+        offset=0,
+    )
+    weekly_items = [
+        item for item in delivery_log["items"] if item["notification_kind"] == "weekly_summary"
+    ]
+    assert len(weekly_items) == 2
+    assert all(item["result"] == "not_applicable" for item in weekly_items)
+    assert all(item["market_summaries"] == [] for item in weekly_items)
+
+
+async def test_weekly_summary_waits_until_next_monday_after_midweek_enable(database):
+    await enable_email_notifications(database)
+    midweek = datetime(2026, 8, 19, 4, 0)
+    async with database.sessions() as session:
+        settings = await session.get(EmailSettings, 1)
+        assert settings is not None
+        settings.weekly_summary_enabled = True
+        settings.weekly_summary_enabled_at = midweek
+        await session.commit()
+
+    assert await enqueue_due_weekly_summary(database, now=midweek) == 0
+    assert await enqueue_due_weekly_summary(database, now=datetime(2026, 8, 23, 16, 0)) == 1
+    async with database.sessions() as session:
+        report = await session.scalar(
+            select(WhaleEmailDelivery).where(
+                WhaleEmailDelivery.notification_kind == "weekly_summary"
+            )
+        )
+    assert report is not None
+    assert "有效命中率：暂无有效样本" in report.body_text
 
 
 async def test_email_notifier_retries_then_preserves_terminal_failure(database, monkeypatch):

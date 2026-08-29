@@ -804,6 +804,8 @@ class EmailSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     notifications_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    weekly_summary_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    weekly_summary_enabled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     smtp_port: Mapped[int] = mapped_column(Integer, nullable=False, default=465)
     smtp_security: Mapped[str] = mapped_column(String(20), nullable=False, default="ssl")
@@ -840,7 +842,7 @@ class WhaleEmailDelivery(Base):
             name="uq_whale_email_delivery_dedupe_recipient",
         ),
         CheckConstraint(
-            "notification_kind IN ('entry','divergence')",
+            "notification_kind IN ('entry','divergence','weekly_summary')",
             name="ck_whale_email_delivery_kind",
         ),
         CheckConstraint(

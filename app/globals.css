@@ -8552,6 +8552,17 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .emailSettingsStatus { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #403b1f; background: #090a06; }
 .emailSettingsStatus span, .emailSettingsStatus small { color: #817c5f; }
 .emailSettingsStatus strong { color: #e8e3bd; }
+.weeklyEmailSummaryPanel { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; margin-bottom: 18px; padding: 20px; }
+.weeklyEmailSummaryCopy { display: grid; gap: 5px; }
+.weeklyEmailSummaryCopy h2, .weeklyEmailSummaryCopy p { margin: 0; }
+.weeklyEmailSummaryCopy h2 { color: #e8e3bd; font-size: 18px; }
+.weeklyEmailSummaryCopy p, .weeklyEmailSummaryCopy small { color: #817c5f; }
+.weeklyEmailSummaryCopy small { display: block; font-size: 11px; }
+.weeklyEmailSummaryCopy .weeklyEmailSummaryPaused { color: #d1a955; }
+.weeklyEmailSummaryToggle { display: flex; align-items: center; gap: 10px; color: #b9b493; font-size: 12px; font-weight: 700; }
+.weeklyEmailSummaryToggle input { width: 42px; height: 22px; accent-color: #5367d9; cursor: pointer; }
+.weeklyEmailSummaryToggle input:disabled { cursor: not-allowed; opacity: .55; }
+.weeklyEmailSummaryMessage { grid-column: 1 / -1; margin: 0; }
 .emailDeliveryHeading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .emailDeliveryHeading h2, .emailDeliveryHeading h3 { margin: 0; }
 .emailDeliveryHeading p { margin: 4px 0 0; color: #817c5f; }
@@ -9330,6 +9341,8 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .emailDeliveryHeading { align-items: flex-start; flex-direction: column; }
   .emailRecordsFilter, .emailRecordsFilter select { width: 100%; }
   .emailRecordList { padding: 8px; }
+  .weeklyEmailSummaryPanel { grid-template-columns: 1fr; padding: 16px; }
+  .weeklyEmailSummaryToggle { justify-content: space-between; }
   .emailRecordCardHeader { flex-direction: column; gap: 13px; padding: 15px; }
   .emailRecordStatusBlock { width: 100%; justify-items: start; }
   .emailRecordMarketGrid { padding: 13px 15px 15px; }
@@ -11419,6 +11432,10 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .emailRecordsFilter select { color: #4b4f58; border-color: var(--pc-line); background: #fff; }
 .emailRecordCard { border-color: var(--pc-line); background: #fff; box-shadow: 0 2px 10px rgba(31, 35, 40, .035); }
 .emailRecordLead h3 { color: #24272d; font-weight: 650; }
+.weeklyEmailSummaryCopy h2 { color: #24272d; }
+.weeklyEmailSummaryCopy p, .weeklyEmailSummaryCopy small { color: #8d8e99; }
+.weeklyEmailSummaryCopy .weeklyEmailSummaryPaused { color: #9a6900; }
+.weeklyEmailSummaryToggle { color: #626670; }
 .emailRecordLead p { color: #92959d; }
 .emailRecordLead p strong { color: #626670; }
 .emailRecordMarketGrid { border-color: var(--pc-line); background: #f7f8fa; }

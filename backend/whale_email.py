@@ -5,7 +5,7 @@ import json
 import smtplib
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -62,6 +62,7 @@ RETRY_DELAYS = (
 )
 MAX_ATTEMPTS = 5
 SMTP_KEYCHAIN_SERVICE = "com.polycopy.smtp"
+WEEKLY_SUMMARY_CONDITION_ID = "weekly-summary"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,40 @@ class SMTPTransport:
 class WhaleEmailCandidate:
     entry_id: int
     new_rules: frozenset[str]
+
+
+def _as_utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def weekly_summary_period(now: datetime) -> tuple[datetime, datetime, datetime]:
+    """Return scheduled time and previous Beijing calendar week as naive UTC values."""
+    aware_now = _as_utc_naive(now).replace(tzinfo=UTC)
+    local_now = aware_now.astimezone(BEIJING)
+    current_week_start_local = datetime.combine(
+        local_now.date() - timedelta(days=local_now.weekday()),
+        time.min,
+        tzinfo=BEIJING,
+    )
+    period_end = current_week_start_local.astimezone(UTC).replace(tzinfo=None)
+    period_start = (
+        (current_week_start_local - timedelta(days=7)).astimezone(UTC).replace(tzinfo=None)
+    )
+    return period_end, period_start, period_end
+
+
+def next_weekly_summary_run(now: datetime) -> datetime:
+    aware_now = _as_utc_naive(now).replace(tzinfo=UTC)
+    local_now = aware_now.astimezone(BEIJING)
+    days_until_monday = 7 - local_now.weekday()
+    next_local = datetime.combine(
+        local_now.date() + timedelta(days=days_until_monday),
+        time.min,
+        tzinfo=BEIJING,
+    )
+    return next_local.astimezone(UTC).replace(tzinfo=None)
 
 
 def _ordered_rules(rules: set[str] | frozenset[str]) -> list[str]:
@@ -377,6 +412,180 @@ async def enqueue_whale_email_deliveries(
                 )
 
 
+async def weekly_email_summary_metrics(
+    database: Database,
+    *,
+    period_start: datetime,
+    period_end: datetime,
+) -> dict[str, int | Decimal | None]:
+    """Summarize unique emailed signals that settled in the requested Beijing week."""
+    async with database.sessions() as session:
+        settled_entries = list(
+            await session.scalars(
+                select(WhaleEntry)
+                .join(WhaleEmailDelivery, WhaleEmailDelivery.entry_id == WhaleEntry.id)
+                .where(
+                    WhaleEmailDelivery.notification_kind == "entry",
+                    WhaleEmailDelivery.status == "sent",
+                    WhaleEmailDelivery.sent_at.is_not(None),
+                    WhaleEmailDelivery.sent_at <= WhaleEntry.settled_at,
+                    WhaleEntry.settled_at >= period_start,
+                    WhaleEntry.settled_at < period_end,
+                )
+                .distinct()
+            )
+        )
+        pending_count = int(
+            await session.scalar(
+                select(func.count(func.distinct(WhaleEmailDelivery.entry_id)))
+                .join(WhaleEntry, WhaleEntry.id == WhaleEmailDelivery.entry_id)
+                .where(
+                    WhaleEmailDelivery.notification_kind == "entry",
+                    WhaleEmailDelivery.status == "sent",
+                    WhaleEmailDelivery.sent_at.is_not(None),
+                    WhaleEmailDelivery.sent_at < period_end,
+                    or_(
+                        WhaleEntry.settled_at.is_(None),
+                        WhaleEntry.settled_at > period_end,
+                    ),
+                )
+            )
+            or 0
+        )
+
+    hit_count = sum(entry.settlement_price == 1 for entry in settled_entries)
+    miss_count = sum(entry.settlement_price == 0 for entry in settled_entries)
+    special_count = len(settled_entries) - hit_count - miss_count
+    effective_count = hit_count + miss_count
+    hit_rate_percent = (
+        Decimal(hit_count) / Decimal(effective_count) * Decimal("100") if effective_count else None
+    )
+    return {
+        "settled_count": len(settled_entries),
+        "effective_count": effective_count,
+        "hit_count": hit_count,
+        "miss_count": miss_count,
+        "special_count": special_count,
+        "pending_count": pending_count,
+        "hit_rate_percent": hit_rate_percent,
+    }
+
+
+def _weekly_summary_content(
+    *,
+    period_start: datetime,
+    period_end: datetime,
+    metrics: dict[str, int | Decimal | None],
+) -> tuple[str, str, str]:
+    local_start = period_start.replace(tzinfo=UTC).astimezone(BEIJING).date()
+    local_end = (period_end.replace(tzinfo=UTC).astimezone(BEIJING) - timedelta(days=1)).date()
+    period_label = f"{local_start:%Y-%m-%d} 至 {local_end:%Y-%m-%d}"
+    hit_rate = metrics["hit_rate_percent"]
+    hit_rate_text = (
+        f"{_decimal_text(hit_rate)}%" if isinstance(hit_rate, Decimal) else "暂无有效样本"
+    )
+    subject = f"[PolyCopy] 每周邮件命中率｜{local_start:%m-%d} 至 {local_end:%m-%d}"
+    body = "\n".join(
+        (
+            "PolyCopy 每周邮件命中率汇总",
+            f"统计周期：{period_label}（北京时间）",
+            "统计口径：统计周期内新结算，且结算前已成功发送提醒的唯一信号",
+            "",
+            f"有效样本：{metrics['effective_count']}",
+            f"命中：{metrics['hit_count']}",
+            f"未命中：{metrics['miss_count']}",
+            f"特殊结算：{metrics['special_count']}（不计入命中率）",
+            f"有效命中率：{hit_rate_text}",
+            "",
+            f"截止本周期末仍待结算：{metrics['pending_count']}",
+        )
+    )
+    return subject, body, period_label
+
+
+async def enqueue_due_weekly_summary(
+    database: Database,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Enqueue the most recent weekly report once per active recipient."""
+    current = _as_utc_naive(now or utcnow())
+    scheduled_for, period_start, period_end = weekly_summary_period(current)
+    if current < scheduled_for:
+        return 0
+
+    async with database.sessions() as session:
+        settings = await session.get(EmailSettings, 1)
+        if (
+            settings is None
+            or not settings.notifications_enabled
+            or not settings.weekly_summary_enabled
+            or settings.weekly_summary_enabled_at is None
+            or settings.weekly_summary_enabled_at > scheduled_for
+        ):
+            return 0
+        recipients = list(
+            await session.scalars(
+                select(EmailRecipient.email)
+                .where(EmailRecipient.enabled.is_(True))
+                .order_by(EmailRecipient.email)
+            )
+        )
+        if not recipients:
+            return 0
+        local_period_start = period_start.replace(tzinfo=UTC).astimezone(BEIJING).date()
+        dedupe_key = f"weekly-summary:{local_period_start.isoformat()}"
+        existing_recipients = set(
+            await session.scalars(
+                select(WhaleEmailDelivery.recipient_email).where(
+                    WhaleEmailDelivery.dedupe_key == dedupe_key,
+                    WhaleEmailDelivery.recipient_email.in_(recipients),
+                )
+            )
+        )
+        missing_recipients = [email for email in recipients if email not in existing_recipients]
+        if not missing_recipients:
+            return 0
+
+    metrics = await weekly_email_summary_metrics(
+        database,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    subject, body, period_label = _weekly_summary_content(
+        period_start=period_start,
+        period_end=period_end,
+        metrics=metrics,
+    )
+    async with database.sessions() as session:
+        for recipient in missing_recipients:
+            session.add(
+                WhaleEmailDelivery(
+                    entry_id=None,
+                    notification_kind="weekly_summary",
+                    condition_id=WEEKLY_SUMMARY_CONDITION_ID,
+                    entry_ids_json="[]",
+                    dedupe_key=dedupe_key,
+                    rule_key="weekly_summary",
+                    rules_json="[]",
+                    recipient_email=recipient,
+                    market_title=f"每周邮件命中率｜{period_label}",
+                    wallet_label=(
+                        f"命中 {metrics['hit_count']} · 未命中 {metrics['miss_count']} · "
+                        f"待结算 {metrics['pending_count']}"
+                    ),
+                    subject=subject,
+                    body_text=body,
+                    status="pending",
+                    attempt_count=0,
+                    next_attempt_at=current,
+                    created_at=current,
+                )
+            )
+        await session.commit()
+    return len(missing_recipients)
+
+
 class WhaleEmailNotifier:
     def __init__(
         self,
@@ -412,6 +621,7 @@ class WhaleEmailNotifier:
         await self.recover_stale_deliveries()
         while True:
             try:
+                await enqueue_due_weekly_summary(self.database)
                 sent = await self.deliver_once()
             except asyncio.CancelledError:
                 raise

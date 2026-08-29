@@ -470,6 +470,10 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     global_email_settings = client.get("/api/email-settings").json()
     assert global_email_settings["smtp_configured"] is False
     assert global_email_settings["notifications_enabled"] is False
+    assert global_email_settings["weekly_summary_enabled"] is False
+    assert global_email_settings["weekly_summary_enabled_at"] is None
+    assert global_email_settings["weekly_summary_last_sent_at"] is None
+    assert global_email_settings["weekly_summary_next_run_at"] is None
     assert global_email_settings["notification_recipients"] == []
 
     saved_secrets: list[tuple[str, str, str]] = []
@@ -528,6 +532,7 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
         "/api/email-settings",
         json={
             "notifications_enabled": True,
+            "weekly_summary_enabled": True,
             "notification_recipients": [
                 " Alerts@Example.com ",
                 "alerts@example.com",
@@ -537,10 +542,20 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     )
     assert email_settings.status_code == 200, email_settings.text
     assert email_settings.json()["notifications_enabled"] is True
+    assert email_settings.json()["weekly_summary_enabled"] is True
+    assert email_settings.json()["weekly_summary_enabled_at"] is not None
+    assert email_settings.json()["weekly_summary_next_run_at"] is not None
     assert email_settings.json()["notification_recipients"] == [
         "alerts@example.com",
         "ops@example.com",
     ]
+    disabled_summary = client.put(
+        "/api/email-settings",
+        json={"weekly_summary_enabled": False},
+    )
+    assert disabled_summary.status_code == 200, disabled_summary.text
+    assert disabled_summary.json()["weekly_summary_enabled"] is False
+    assert disabled_summary.json()["weekly_summary_enabled_at"] is None
     assert (
         client.put(
             "/api/email-settings",

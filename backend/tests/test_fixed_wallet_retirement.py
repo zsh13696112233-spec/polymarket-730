@@ -68,9 +68,13 @@ def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_p
         whale_settings_after = connection.execute("SELECT COUNT(*) FROM whale_settings").fetchone()[
             0
         ]
+        email_settings_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(email_settings)")
+        }
 
     assert account == (address, address, "ready")
     assert whale_settings_after == whale_settings_before
+    assert {"weekly_summary_enabled", "weekly_summary_enabled_at"} <= email_settings_columns
     assert "redemption_executions" in tables
     assert "copy_subscriptions" not in tables
     assert "copy_orders" not in tables

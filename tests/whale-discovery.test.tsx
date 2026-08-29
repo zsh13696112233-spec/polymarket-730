@@ -375,6 +375,12 @@ describe("邮件记录工作台", () => {
           recipient_email: "alerts@example.com",
           market_title: "Will Bitcoin reach $150k?",
           wallet_label: "Alpha Whale",
+          market_summaries: [{
+            category_label: "加密",
+            outcome: "Yes",
+            avg_buy_price: 0.5,
+            gross_buy_usdc: 600000,
+          }],
           subject: "[PolyCopy] 新号大额 + 全量超大额提醒",
           body_text: "命中规则：新号大额 + 全量超大额\n近 24 小时累计买入：600,000 USDC",
           result: "miss",
@@ -394,12 +400,17 @@ describe("邮件记录工作台", () => {
 
     expect(await screen.findByRole("heading", { name: "发送记录" })).toBeInTheDocument();
     expect(await screen.findByText("alerts@example.com")).toBeInTheDocument();
-    expect(screen.getByText("新号大额")).toBeInTheDocument();
-    expect(screen.getByText("全量超大额")).toBeInTheDocument();
+    expect(screen.getByText("新号大额 / 全量超大额")).toBeInTheDocument();
     expect(screen.getByText("[PolyCopy] 新号大额 + 全量超大额提醒")).toBeInTheDocument();
     expect(screen.getByText(/近 24 小时累计买入：600,000 USDC/)).toBeInTheDocument();
     expect(screen.getByText("未命中")).toBeInTheDocument();
     expect(screen.getByText("SMTP authentication failed")).toBeInTheDocument();
+    expect(screen.getByText("市场种类")).toBeInTheDocument();
+    expect(screen.getByText("买入均价")).toBeInTheDocument();
+    expect(screen.getByText("买入总额")).toBeInTheDocument();
+    expect(screen.getByText("加密")).toBeInTheDocument();
+    expect(screen.getByText("Yes")).toBeInTheDocument();
+    expect(screen.getByText("600.0K USDC")).toHaveAttribute("title", "600,000.00 USDC");
     const contentDetails = screen.getByText("查看正文").closest("details");
     expect(contentDetails).not.toHaveAttribute("open");
     await user.click(screen.getByText("查看正文"));
@@ -424,6 +435,10 @@ describe("邮件记录工作台", () => {
           recipient_email: "alerts@example.com",
           market_title: "Real Madrid CF vs. Real Sociedad de Fútbol: O/U 3.5",
           wallet_label: "2 个钱包 · 2 个方向",
+          market_summaries: [
+            { category_label: "传统体育", outcome: "Over", avg_buy_price: 0.5189, gross_buy_usdc: 521964.41 },
+            { category_label: "传统体育", outcome: "Under", avg_buy_price: 0.4825, gross_buy_usdc: 512653.33 },
+          ],
           subject: "[PolyCopy] 分歧市场提醒｜Real Madrid CF vs. Real Sociedad de Fútbol: O/U 3.5",
           body_text: "结论：方向高度分歧，不应把任一侧视为明确跟单信号。",
           result: "not_applicable",
@@ -443,6 +458,9 @@ describe("邮件记录工作台", () => {
     expect(await screen.findByText("分歧市场")).toBeInTheDocument();
     expect(screen.getByText("市场级提醒 · 2 条关联记录")).toBeInTheDocument();
     expect(screen.getByText("不适用")).toBeInTheDocument();
+    expect(screen.getAllByText("传统体育")).toHaveLength(2);
+    expect(screen.getByText("Over")).toBeInTheDocument();
+    expect(screen.getByText("Under")).toBeInTheDocument();
     expect(screen.queryByText("待结算")).not.toBeInTheDocument();
   });
 });

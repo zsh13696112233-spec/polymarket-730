@@ -975,6 +975,13 @@ class WhaleAutoDecisionListRead(APIModel):
     items: list[WhaleAutoDecisionRead] = Field(default_factory=list)
 
 
+class EmailDeliveryMarketSummaryRead(APIModel):
+    category_label: str
+    outcome: str
+    avg_buy_price: DecimalNumber
+    gross_buy_usdc: DecimalNumber
+
+
 class EmailDeliveryRead(APIModel):
     id: int
     entry_id: int | None
@@ -985,6 +992,7 @@ class EmailDeliveryRead(APIModel):
     recipient_email: str
     market_title: str
     wallet_label: str
+    market_summaries: list[EmailDeliveryMarketSummaryRead] = Field(default_factory=list)
     subject: str
     body_text: str
     result: Literal["pending", "hit", "miss", "special", "not_applicable"]

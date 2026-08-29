@@ -8569,9 +8569,25 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .emailRecordLead p { display: flex; flex-wrap: wrap; gap: 7px 12px; margin: 6px 0 0; color: #817c5f; font-size: 12px; }
 .emailRecordLead p strong { color: #b9b493; }
 .emailRecordStatusBlock { display: grid; flex: 0 0 auto; justify-items: end; padding-top: 2px; }
-.emailRecordMetaGrid { display: grid; grid-template-columns: 1.2fr 1fr .8fr; border-block: 1px solid #302d1c; background: #080905; }
-.emailRecordMetaGrid > div { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 12px 20px; border-right: 1px solid #302d1c; }
-.emailRecordMetaGrid > div:last-child { border-right: 0; }
+.emailRecordMarketGrid { display: grid; gap: 10px; padding: 14px 20px 16px; border-top: 1px solid #302d1c; background: #0c0d08; }
+.emailRecordSectionHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.emailRecordSectionHeading strong { color: #d8d3ad; font-size: 12px; }
+.emailRecordSectionHeading span { color: #66634f; font-size: 10px; }
+.emailRecordMarketList { display: grid; gap: 8px; }
+.emailRecordMarketRow { display: grid; grid-template-columns: minmax(140px, .85fr) minmax(140px, 1.15fr) minmax(120px, .8fr) minmax(150px, 1fr); align-items: stretch; overflow: hidden; border: 1px solid #302d1c; border-radius: 8px; background: #090a06; }
+.emailRecordMarketRow > div { display: grid; align-content: center; gap: 5px; min-width: 0; padding: 11px 14px; }
+.emailRecordMarketRow > div + div { border-left: 1px solid #302d1c; }
+.emailRecordMarketRow span { color: #66634f; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.emailRecordMarketRow strong { min-width: 0; color: #c9c4a3; font-size: 13px; overflow-wrap: anywhere; }
+.emailRecordOutcome strong { font-size: 14px; }
+.emailRecordOutcome small { color: #817c5f; font-size: 10px; }
+.emailRecordOutcome small b { color: inherit; font-weight: 600; }
+.emailRecordMarketMetric strong { font-variant-numeric: tabular-nums; }
+.emailRecordMarketMetric.total strong { color: #f1df76; font-size: 15px; }
+.emailRecordMarketRow small { color: #817c5f; font-size: 10px; font-weight: 500; }
+.emailRecordMarketEmpty { padding: 13px 14px; border: 1px dashed #403b1f; border-radius: 8px; color: #817c5f; font-size: 12px; text-align: center; }
+.emailRecordMetaGrid { display: grid; grid-template-columns: 1.2fr 1fr .8fr; gap: 10px; padding: 12px 20px; border-top: 1px solid #302d1c; background: #080905; }
+.emailRecordMetaGrid > div { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 11px 13px; border: 1px solid #302d1c; border-radius: 8px; background: #0c0d08; }
 .emailRecordMetaGrid span, .emailRecordContent summary small { color: #66634f; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
 .emailRecordMetaGrid strong { overflow-wrap: anywhere; color: #c9c4a3; font-size: 12px; }
 .emailRecordMetaGrid small { color: #817c5f; font-size: 11px; }
@@ -9316,9 +9332,12 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .emailRecordList { padding: 8px; }
   .emailRecordCardHeader { flex-direction: column; gap: 13px; padding: 15px; }
   .emailRecordStatusBlock { width: 100%; justify-items: start; }
+  .emailRecordMarketGrid { padding: 13px 15px 15px; }
+  .emailRecordMarketRow { grid-template-columns: 1fr 1fr; }
+  .emailRecordMarketRow > div:nth-child(3) { border-left: 0; border-top: 1px solid #302d1c; }
+  .emailRecordMarketRow > div:nth-child(4) { border-top: 1px solid #302d1c; }
   .emailRecordMetaGrid { grid-template-columns: 1fr; }
-  .emailRecordMetaGrid > div { padding: 11px 15px; border-right: 0; border-bottom: 1px solid #302d1c; }
-  .emailRecordMetaGrid > div:last-child { border-bottom: 0; }
+  .emailRecordMetaGrid > div { padding: 11px 13px; }
   .emailRecordContent summary, .emailRecordContent pre { padding-inline: 15px; }
   .emailRecordsPagination { align-items: flex-start; flex-direction: column; }
   .whaleExclusionHeading { flex-direction: column; gap: 10px; }
@@ -11402,8 +11421,20 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .emailRecordLead h3 { color: #24272d; font-weight: 650; }
 .emailRecordLead p { color: #92959d; }
 .emailRecordLead p strong { color: #626670; }
-.emailRecordMetaGrid { border-color: var(--pc-line); background: #fafbfc; }
-.emailRecordMetaGrid > div { border-color: var(--pc-line); }
+.emailRecordMarketGrid { border-color: var(--pc-line); background: #f7f8fa; }
+.emailRecordSectionHeading strong { color: #4b4f58; font-weight: 600; }
+.emailRecordSectionHeading span { color: #9a9da5; }
+.emailRecordMarketRow { border-color: #e1e4ea; background: #fff; box-shadow: 0 1px 2px rgba(31, 35, 40, .025); }
+.emailRecordMarketRow > div + div { border-color: #eceef2; }
+.emailRecordMarketRow span { color: #9a9da5; }
+.emailRecordMarketRow strong { color: #4b4f58; }
+.emailRecordOutcome strong { color: #30343b; font-weight: 600; }
+.emailRecordOutcome small { color: #8d8e99; }
+.emailRecordMarketMetric.total strong { color: #134cff; font-family: var(--pc-data-font); font-weight: 650; }
+.emailRecordMarketRow small, .emailRecordMarketEmpty { color: #8d8e99; }
+.emailRecordMarketEmpty { border-color: #d9dce4; background: #fff; }
+.emailRecordMetaGrid { border-color: var(--pc-line); background: #f7f8fa; }
+.emailRecordMetaGrid > div { border-color: #e1e4ea; background: #fff; }
 .emailRecordMetaGrid span, .emailRecordContent summary small { color: #9a9da5; }
 .emailRecordMetaGrid strong { color: #4b4f58; }
 .emailRecordMetaGrid small { color: #8d8e99; }

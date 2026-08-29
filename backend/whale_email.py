@@ -6,6 +6,7 @@ import smtplib
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from email.message import EmailMessage
 from email.utils import formataddr
 from zoneinfo import ZoneInfo
@@ -29,6 +30,30 @@ from backend.time_utils import utcnow
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 RULE_LABELS = {"new_account": "新号大额", "large_amount": "全量超大额"}
+MARKET_CATEGORY_LABELS = {
+    "esports": "电竞",
+    "sports": "传统体育",
+    "politics": "政治",
+    "crypto": "加密",
+    "science_tech": "科学与科技",
+    "entertainment": "娱乐",
+    "other": "其他",
+}
+SCIENCE_TECH_TAGS = frozenset(
+    {"science", "spacex", "space-exploration", "software-updates", "climate", "weather"}
+)
+ENTERTAINMENT_TAGS = frozenset(
+    {
+        "movies",
+        "music",
+        "awards",
+        "box-office",
+        "celebrity-events",
+        "new-releases",
+        "gaming",
+        "video-games",
+    }
+)
 RETRY_DELAYS = (
     timedelta(minutes=1),
     timedelta(minutes=5),
@@ -68,6 +93,33 @@ def _wallet_label(wallet: WhaleWallet | None, entry: WhaleEntry) -> str:
     return (
         (wallet.display_name or wallet.pseudonym) if wallet is not None else None
     ) or entry.proxy_wallet
+
+
+def _market_category_label(tags_json: str | None) -> str:
+    try:
+        tags = json.loads(tags_json or "[]")
+    except (TypeError, ValueError):
+        tags = []
+    slugs = {
+        str(tag.get("slug") or "").strip().lower()
+        for tag in tags
+        if isinstance(tag, dict) and tag.get("slug")
+    }
+    if "esports" in slugs:
+        category = "esports"
+    elif "sports" in slugs:
+        category = "sports"
+    elif "politics" in slugs:
+        category = "politics"
+    elif "crypto" in slugs:
+        category = "crypto"
+    elif slugs & SCIENCE_TECH_TAGS:
+        category = "science_tech"
+    elif slugs & ENTERTAINMENT_TAGS:
+        category = "entertainment"
+    else:
+        category = "other"
+    return MARKET_CATEGORY_LABELS[category]
 
 
 def _add_entry_delivery(
@@ -557,22 +609,27 @@ async def list_whale_email_deliveries(
                 .offset(offset)
             )
         )
-        entry_ids = list(dict.fromkeys(row.entry_id for row in rows if row.entry_id is not None))
-        settlement_prices = {
-            entry_id: settlement_price
-            for entry_id, settlement_price in (
-                await session.execute(
-                    select(WhaleEntry.id, WhaleEntry.settlement_price).where(
-                        WhaleEntry.id.in_(entry_ids)
-                    )
-                )
-            ).all()
-        }
+        row_entry_ids = {row.id: json.loads(row.entry_ids_json) for row in rows}
+        entry_ids = list(
+            dict.fromkeys(entry_id for ids in row_entry_ids.values() for entry_id in ids)
+        )
+        entries = list(
+            await session.scalars(select(WhaleEntry).where(WhaleEntry.id.in_(entry_ids)))
+        )
+        entries_by_id = {entry.id: entry for entry in entries}
+        condition_ids = {row.condition_id for row in rows}
+        markets = list(
+            await session.scalars(
+                select(WhaleMarket).where(WhaleMarket.condition_id.in_(condition_ids))
+            )
+        )
+        markets_by_condition = {market.condition_id: market for market in markets}
 
     def result_for(row: WhaleEmailDelivery) -> str:
         if row.notification_kind == "divergence" or row.entry_id is None:
             return "not_applicable"
-        settlement_price = settlement_prices.get(row.entry_id)
+        entry = entries_by_id.get(row.entry_id)
+        settlement_price = entry.settlement_price if entry is not None else None
         if settlement_price is None:
             return "pending"
         if settlement_price == 1:
@@ -580,6 +637,37 @@ async def list_whale_email_deliveries(
         if settlement_price == 0:
             return "miss"
         return "special"
+
+    def market_summaries_for(row: WhaleEmailDelivery) -> list[dict]:
+        market = markets_by_condition.get(row.condition_id)
+        category_label = _market_category_label(market.tags_json if market is not None else None)
+        grouped: dict[str, list[WhaleEntry]] = defaultdict(list)
+        for entry_id in row_entry_ids[row.id]:
+            entry = entries_by_id.get(entry_id)
+            if entry is not None:
+                grouped[entry.asset_id].append(entry)
+
+        summaries = []
+        for grouped_entries in grouped.values():
+            gross_buy_usdc = sum(
+                (entry.gross_buy_usdc for entry in grouped_entries), start=Decimal("0")
+            ).quantize(Decimal("0.01"))
+            gross_buy_size = sum(
+                (entry.gross_buy_size for entry in grouped_entries), start=Decimal("0")
+            )
+            summaries.append(
+                {
+                    "category_label": category_label,
+                    "outcome": grouped_entries[0].outcome,
+                    "avg_buy_price": (
+                        gross_buy_usdc / gross_buy_size
+                        if gross_buy_size > 0
+                        else grouped_entries[0].avg_buy_price
+                    ).quantize(Decimal("0.0001")),
+                    "gross_buy_usdc": gross_buy_usdc,
+                }
+            )
+        return sorted(summaries, key=lambda item: item["gross_buy_usdc"], reverse=True)
 
     return {
         "total": total,
@@ -589,11 +677,12 @@ async def list_whale_email_deliveries(
                 "entry_id": row.entry_id,
                 "notification_kind": row.notification_kind,
                 "condition_id": row.condition_id,
-                "entry_ids": json.loads(row.entry_ids_json),
+                "entry_ids": row_entry_ids[row.id],
                 "rules": json.loads(row.rules_json),
                 "recipient_email": row.recipient_email,
                 "market_title": row.market_title,
                 "wallet_label": row.wallet_label,
+                "market_summaries": market_summaries_for(row),
                 "subject": row.subject,
                 "body_text": row.body_text,
                 "result": result_for(row),

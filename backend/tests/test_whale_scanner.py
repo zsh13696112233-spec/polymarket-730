@@ -41,6 +41,8 @@ from backend.whale import (
     AutoFollowQuoteRejected,
     WhaleAggregate,
     WhaleDiscoveryScanner,
+    _auto_follow_price,
+    _auto_follow_reason_display,
     _decimal_display,
 )
 from backend.whale_email import (
@@ -528,6 +530,14 @@ async def test_scanner_enqueues_one_combined_email_per_recipient_for_dual_trigge
     )
     assert delivery_log["items"][0]["subject"] == deliveries[0].subject
     assert delivery_log["items"][0]["body_text"] == deliveries[0].body_text
+    assert delivery_log["items"][0]["market_summaries"] == [
+        {
+            "category_label": "其他",
+            "outcome": "Yes",
+            "avg_buy_price": Decimal("0.50"),
+            "gross_buy_usdc": Decimal("150000"),
+        }
+    ]
     assert delivery_log["items"][0]["result"] == "hit"
 
 
@@ -550,6 +560,7 @@ async def seed_email_entry(
                 WhaleMarket(
                     condition_id=condition_id,
                     title="Real Madrid CF vs. Real Sociedad de Fútbol: O/U 3.5",
+                    tags_json='[{"slug":"sports"}]',
                     outcomes_json='["Over","Under"]',
                     outcome_prices_json='["0.51","0.49"]',
                     clob_token_ids_json='["asset-over","asset-under"]',
@@ -680,6 +691,20 @@ async def test_same_scan_opposite_large_entries_enqueue_only_divergence_per_reci
     assert delivery_log["total"] == 2
     assert delivery_log["items"][0]["notification_kind"] == "divergence"
     assert delivery_log["items"][0]["entry_ids"] == sorted([under_id, over_id])
+    assert delivery_log["items"][0]["market_summaries"] == [
+        {
+            "category_label": "传统体育",
+            "outcome": "Over",
+            "avg_buy_price": Decimal("0.5189"),
+            "gross_buy_usdc": Decimal("521964.41"),
+        },
+        {
+            "category_label": "传统体育",
+            "outcome": "Under",
+            "avg_buy_price": Decimal("0.4825"),
+            "gross_buy_usdc": Decimal("512653.33"),
+        },
+    ]
     assert delivery_log["items"][0]["result"] == "not_applicable"
 
 
@@ -1429,7 +1454,9 @@ async def test_auto_follow_price_rejection_records_observed_book_once(database):
     )
 
     class PriceRejectedExecutor:
-        async def quote_follow(self, **_: Any):
+        async def quote_follow(self, **kwargs: Any):
+            assert kwargs["minimum_price"] == Decimal("0.60")
+            assert kwargs["maximum_price"] == Decimal("0.80")
             raise AutoFollowQuoteRejected(
                 "实际买价 0.55 低于策略最低价 0.60",
                 observed_best_ask=Decimal("0.55"),
@@ -1457,6 +1484,19 @@ async def test_auto_follow_price_rejection_records_observed_book_once(database):
 )
 def test_decimal_display_removes_only_insignificant_zeroes(value: str, expected: str):
     assert _decimal_display(Decimal(value)) == expected
+
+
+def test_auto_follow_price_removes_sqlite_float_tail_at_strategy_boundary():
+    maximum = _auto_follow_price(Decimal("0.699999999999999956"))
+
+    assert maximum == Decimal("0.70")
+    assert not Decimal("0.70") > maximum
+
+
+def test_auto_follow_reason_display_repairs_legacy_sqlite_float_tails():
+    reason = "实际买价 0.998999999999999999 高于策略最高价 0.699999999999999956"
+
+    assert _auto_follow_reason_display(reason) == "实际买价 0.999 高于策略最高价 0.7"
 
 
 async def test_same_scan_opposite_auto_signals_lock_both_sides_before_buy(database):

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import { formatCompactUsdc, formatPrice, formatUsdc } from "./WhaleShared";
+import type { Numeric } from "./WhaleShared";
 
 const API_BASE = (
   process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8730"
@@ -22,6 +24,12 @@ type EmailDelivery = {
   recipient_email: string;
   market_title: string;
   wallet_label: string;
+  market_summaries: Array<{
+    category_label: string;
+    outcome: string;
+    avg_buy_price: Numeric;
+    gross_buy_usdc: Numeric;
+  }>;
   subject: string;
   body_text: string;
   result: SignalResult;
@@ -147,11 +155,6 @@ export default function EmailRecordsWorkspace() {
                     {item.notification_kind === "divergence" && (
                       <span className="pcBadge danger">分歧市场</span>
                     )}
-                    {item.rules.map((rule) => (
-                      <span className={`pcBadge ${rule === "new_account" ? "warning" : "danger"}`} key={rule}>
-                        {rule === "new_account" ? "新号大额" : "全量超大额"}
-                      </span>
-                    ))}
                     <span className={`pcBadge ${resultTones[item.result]}`}>{resultLabels[item.result]}</span>
                   </div>
                   <h3>{item.market_title}</h3>
@@ -168,6 +171,40 @@ export default function EmailRecordsWorkspace() {
                   <strong className={`emailStatus ${item.status}`}>{statusLabels[item.status]}</strong>
                 </div>
               </header>
+
+              <div className="emailRecordMarketGrid" aria-label="买入摘要">
+                <div className="emailRecordSectionHeading">
+                  <strong>买入摘要</strong>
+                  <span>{item.market_summaries.length > 0 ? `${item.market_summaries.length} 个市场方向` : "暂无市场方向"}</span>
+                </div>
+                {item.market_summaries.length > 0 ? (
+                  <div className="emailRecordMarketList">
+                    {item.market_summaries.map((summary) => (
+                      <div className="emailRecordMarketRow" key={`${summary.outcome}-${summary.avg_buy_price}-${summary.gross_buy_usdc}`}>
+                        <div className="emailRecordRuleCell">
+                          <span>买入类别</span>
+                          <strong>{item.rules.map((rule) => rule === "new_account" ? "新号大额" : "全量超大额").join(" / ")}</strong>
+                        </div>
+                        <div className="emailRecordOutcome">
+                          <span>市场种类</span>
+                          <strong>{summary.category_label}</strong>
+                          <small>买入方向 · <b>{summary.outcome}</b></small>
+                        </div>
+                        <div className="emailRecordMarketMetric">
+                          <span>买入均价</span>
+                          <strong>{formatPrice(summary.avg_buy_price)} <small>USDC</small></strong>
+                        </div>
+                        <div className="emailRecordMarketMetric total">
+                          <span>买入总额</span>
+                          <strong title={formatUsdc(summary.gross_buy_usdc)}>{formatCompactUsdc(summary.gross_buy_usdc)}</strong>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="emailRecordMarketEmpty">暂无关联买入数据</div>
+                )}
+              </div>
 
               <div className="emailRecordMetaGrid">
                 <div><span>收件人</span><strong>{item.recipient_email}</strong></div>

@@ -72,6 +72,8 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 HUNDRED = Decimal("100")
 SETTLED_PRICE_THRESHOLD = Decimal("0.999")
+AUTO_FOLLOW_PRICE_QUANTUM = Decimal("0.01")
+MARKET_PRICE_QUANTUM = Decimal("0.0001")
 PROFILE_MISSING_CACHE = timedelta(days=7)
 TAG_CACHE = timedelta(hours=24)
 MARKET_CACHE = timedelta(seconds=120)
@@ -181,14 +183,26 @@ def _decimal_display(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
+def _auto_follow_price(value: Any) -> Decimal:
+    """Normalize strategy prices after SQLite NUMERIC values are read back as floats."""
+    return _decimal(value).quantize(AUTO_FOLLOW_PRICE_QUANTUM)
+
+
+def _market_price(value: Any) -> Decimal:
+    """Normalize displayed market prices while preserving supported sub-cent ticks."""
+    return _decimal(value).quantize(MARKET_PRICE_QUANTUM)
+
+
 def _auto_follow_reason_display(reason: str | None) -> str | None:
     """Normalize prices embedded in both new and already-persisted decision reasons."""
     if not reason:
         return reason
-    return AUTO_FOLLOW_PRICE_REASON_PATTERN.sub(
-        lambda match: f"{match.group(1)} {_decimal_display(Decimal(match.group(2)))}",
-        reason,
-    )
+
+    def replace_price(match: re.Match[str]) -> str:
+        normalizer = _market_price if match.group(1) == "实际买价" else _auto_follow_price
+        return f"{match.group(1)} {_decimal_display(normalizer(match.group(2)))}"
+
+    return AUTO_FOLLOW_PRICE_REASON_PATTERN.sub(replace_price, reason)
 
 
 def _json_list(value: str | list[Any] | tuple[Any, ...] | None) -> list[Any]:
@@ -1777,8 +1791,8 @@ class WhaleDiscoveryScanner:
                         selected = (
                             rule_type,
                             _decimal(config[f"{prefix}_auto_follow_amount_usdc"]),
-                            _decimal(config[f"{prefix}_auto_follow_min_price"]),
-                            _decimal(config[f"{prefix}_auto_follow_max_price"]),
+                            _auto_follow_price(config[f"{prefix}_auto_follow_min_price"]),
+                            _auto_follow_price(config[f"{prefix}_auto_follow_max_price"]),
                         )
                         break
                 if selected is None:
@@ -1850,8 +1864,8 @@ class WhaleDiscoveryScanner:
                         await session.commit()
                         continue
                     amount = _decimal(decision.configured_amount_usdc)
-                    minimum = _decimal(decision.configured_min_price)
-                    maximum = _decimal(decision.configured_max_price)
+                    minimum = _auto_follow_price(decision.configured_min_price)
+                    maximum = _auto_follow_price(decision.configured_max_price)
                     entry_id = decision.entry_id
                     asset_id = decision.asset_id
                 quote = await self.executor.quote_follow(
@@ -2373,6 +2387,10 @@ class WhaleFollowExecutor:
     ) -> WhaleFollowQuote:
         if not self.settings.trading_enabled:
             raise ValueError("自动实盘已被系统紧急停用")
+        if minimum_price is not None:
+            minimum_price = _auto_follow_price(minimum_price)
+        if maximum_price is not None:
+            maximum_price = _auto_follow_price(maximum_price)
         async with self.database.sessions() as session:
             whale_settings = await session.get(WhaleSettings, 1)
             if whale_settings is None:

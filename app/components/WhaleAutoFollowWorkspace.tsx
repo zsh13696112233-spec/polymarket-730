@@ -4,6 +4,7 @@ import Link from "next/link";
 import { type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
 import { WhaleAutoSettingsPanel } from "./WhaleSettingsWorkspace";
+import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import {
   WhaleAutoDecision,
   WhaleAutoDecisionList,
@@ -17,6 +18,8 @@ import {
   shortAddress,
   whaleApi,
 } from "./WhaleShared";
+
+const AUTO_REFRESH_INTERVAL_MS = 10_000;
 
 const STATUS_OPTIONS = [
   ["", "全部状态"],
@@ -184,8 +187,8 @@ export default function WhaleAutoFollowWorkspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     const params = new URLSearchParams({ limit: "200", offset: "0" });
     if (rule) params.set("rule", rule);
@@ -201,7 +204,7 @@ export default function WhaleAutoFollowWorkspace() {
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "自动跟单工作台加载失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [rule, status]);
 
@@ -209,6 +212,11 @@ export default function WhaleAutoFollowWorkspace() {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useVisibleAutoRefresh(async () => {
+    if (loading) return;
+    await load(true);
+  }, AUTO_REFRESH_INTERVAL_MS);
 
   return (
     <PolyCopyShell

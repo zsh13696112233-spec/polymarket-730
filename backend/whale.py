@@ -2991,6 +2991,27 @@ class WhaleFollowExecutor:
         )
         return hashlib.sha256(f"manual-trade|{position_id}|{identity}".encode()).hexdigest()
 
+    @staticmethod
+    def _external_redemption_key(position_id: int, redemption: Any) -> str:
+        identity = redemption.transaction_hash or (
+            f"{redemption.condition_id}|{redemption.asset_id}|"
+            f"{redemption.outcome_index}|{redemption.size}|{redemption.usdc_size}|"
+            f"{redemption.timestamp.isoformat(timespec='microseconds')}"
+        )
+        return hashlib.sha256(f"external-redemption|{position_id}|{identity}".encode()).hexdigest()
+
+    @staticmethod
+    def _redemption_matches_position(redemption: Any, position: WhaleFollowPosition) -> bool:
+        if redemption.condition_id != position.condition_id:
+            return False
+        if redemption.asset_id:
+            return redemption.asset_id == position.asset_id
+        if redemption.outcome_index is not None and position.outcome_index is not None:
+            return redemption.outcome_index == position.outcome_index
+        return bool(redemption.outcome) and (
+            redemption.outcome.strip().casefold() == position.outcome.strip().casefold()
+        )
+
     async def reconcile_external_wallet_activity(self) -> str | None:
         if self._lock.locked():
             return None
@@ -2998,7 +3019,7 @@ class WhaleFollowExecutor:
             return await self._reconcile_external_wallet_activity()
 
     async def _reconcile_external_wallet_activity(self) -> str | None:
-        """Adopt manual trades for assets that already belong to an active follow cycle."""
+        """Adopt manual trades and Polymarket auto-redemptions for active follow cycles."""
 
         async with self.database.sessions() as session:
             account = await session.get(ExecutionAccount, 1)
@@ -3081,6 +3102,16 @@ class WhaleFollowExecutor:
             start=start,
             end=cutoff,
         )
+        redemption_fetch_error: str | None = None
+        try:
+            redemptions = await self.client.fetch_redemptions(
+                funder_address,
+                start=start,
+                end=cutoff,
+            )
+        except PolymarketAPIError as error:
+            redemptions = []
+            redemption_fetch_error = str(error)
         trader = await self._trader(account)
         balances = {
             position.asset_id: await trader.onchain_outcome_balance(position.asset_id)
@@ -3091,8 +3122,20 @@ class WhaleFollowExecutor:
             trades_by_asset[trade.asset_id].append(trade)
         for asset_trades in trades_by_asset.values():
             asset_trades.sort(key=lambda trade: (trade.timestamp, trade.transaction_hash or ""))
+        redemptions_by_condition: dict[str, list[Any]] = defaultdict(list)
+        for redemption in redemptions:
+            redemptions_by_condition[redemption.condition_id].append(redemption)
+        for condition_redemptions in redemptions_by_condition.values():
+            condition_redemptions.sort(
+                key=lambda redemption: (
+                    redemption.timestamp,
+                    redemption.transaction_hash or "",
+                )
+            )
 
         warnings: list[str] = []
+        if redemption_fetch_error:
+            warnings.append(f"Polymarket 自动赎回流水读取失败：{redemption_fetch_error}")
         async with self.database.sessions() as session:
             for snapshot in positions:
                 position = await session.get(WhaleFollowPosition, snapshot.id)
@@ -3202,11 +3245,55 @@ class WhaleFollowExecutor:
                     position.updated_at = max(position.updated_at, trade.timestamp)
 
                 chain_balance = balances[position.asset_id]
+                if chain_balance <= REDEMPTION_SIZE_TOLERANCE:
+                    matching_redemption = None
+                    matching_event_key = None
+                    for redemption in redemptions_by_condition.get(position.condition_id, []):
+                        if redemption.timestamp < position.created_at:
+                            continue
+                        if not self._redemption_matches_position(redemption, position):
+                            continue
+                        if redemption.size <= ZERO:
+                            continue
+                        if redemption.size + REDEMPTION_SIZE_TOLERANCE < position.size:
+                            continue
+                        event_key = self._external_redemption_key(position.id, redemption)
+                        if event_key in known_event_keys:
+                            continue
+                        matching_redemption = redemption
+                        matching_event_key = event_key
+                        break
+                    if matching_redemption is not None and matching_event_key is not None:
+                        payout_rate = max(
+                            ZERO,
+                            min(ONE, matching_redemption.usdc_size / matching_redemption.size),
+                        )
+                        await self._apply_redeemed_position(
+                            session,
+                            position,
+                            payout_usdc=position.size * payout_rate,
+                            transaction_hash=matching_redemption.transaction_hash,
+                            detail="Polymarket 自动赎回已完成，官方 REDEEM 流水自动对账",
+                            external_event_key=matching_event_key,
+                            redeemed_at=matching_redemption.timestamp,
+                        )
+                        known_event_keys.add(matching_event_key)
+                        continue
                 if abs(chain_balance - position.size) > REDEMPTION_SIZE_TOLERANCE:
-                    warnings.append(
-                        f"{position.title} / {position.outcome} 本地 {position.size} 份，"
-                        f"链上 {chain_balance} 份，等待外部成交数据补齐"
-                    )
+                    if (
+                        chain_balance <= REDEMPTION_SIZE_TOLERANCE
+                        and market is not None
+                        and (market.closed or market_price_is_settled(market))
+                    ):
+                        warnings.append(
+                            f"{position.title} / {position.outcome} 本地 {position.size} 份，"
+                            "链上已归零，尚未获取到对应的自动赎回流水"
+                        )
+                    else:
+                        warnings.append(
+                            f"{position.title} / {position.outcome} 本地 {position.size} 份，"
+                            f"链上 {chain_balance} 份，等待外部成交数据补齐"
+                        )
                     continue
                 if position.size <= ZERO:
                     position.status = "closed"
@@ -3683,57 +3770,82 @@ class WhaleFollowExecutor:
         payout_usdc: Decimal,
         transaction_hash: str | None,
         detail: str,
+        external_event_key: str | None = None,
+        redeemed_at: datetime | None = None,
     ) -> None:
         async with self.database.sessions() as session:
             position = await session.get(WhaleFollowPosition, position_id)
             if position is None or position.size <= ZERO:
                 return
-            redemption = await session.scalar(
-                select(WhaleRedemption).where(WhaleRedemption.position_id == position_id)
+            await self._apply_redeemed_position(
+                session,
+                position,
+                payout_usdc=payout_usdc,
+                transaction_hash=transaction_hash,
+                detail=detail,
+                external_event_key=external_event_key,
+                redeemed_at=redeemed_at,
             )
-            if redemption is None:
-                redemption = WhaleRedemption(
-                    position_id=position.id,
-                    size=position.size,
-                    attempts=0,
-                    created_at=utcnow(),
-                    updated_at=utcnow(),
-                )
-                session.add(redemption)
-            cost = position.cost_usdc
-            size = position.size
-            pnl = payout_usdc - cost
-            kind = "resolved_loss" if payout_usdc <= ZERO else "redeem"
-            session.add(
-                WhaleFollowLedger(
-                    position_id=position.id,
-                    order_id=None,
-                    type=kind,
-                    source="auto_redeem",
-                    external_event_key=None,
-                    size=size,
-                    price=None,
-                    amount_usdc=payout_usdc,
-                    fee_usdc=ZERO,
-                    realized_pnl=pnl,
-                    transaction_hash=transaction_hash,
-                    detail=detail,
-                    timestamp=utcnow(),
-                )
-            )
-            position.realized_pnl += pnl
-            position.size = ZERO
-            position.cost_usdc = ZERO
-            position.status = "resolved_loss" if payout_usdc <= ZERO else "redeemed"
-            position.closed_at = utcnow()
-            position.updated_at = utcnow()
-            redemption.status = "completed"
-            redemption.size = size
-            redemption.payout_usdc = payout_usdc
-            redemption.transaction_hash = transaction_hash
-            redemption.last_error = None
-            redemption.updated_at = utcnow()
             await session.commit()
+
+    async def _apply_redeemed_position(
+        self,
+        session: Any,
+        position: WhaleFollowPosition,
+        *,
+        payout_usdc: Decimal,
+        transaction_hash: str | None,
+        detail: str,
+        external_event_key: str | None = None,
+        redeemed_at: datetime | None = None,
+    ) -> None:
+        redemption = await session.scalar(
+            select(WhaleRedemption).where(WhaleRedemption.position_id == position.id)
+        )
+        now = utcnow()
+        ledger_time = redeemed_at or now
+        if redemption is None:
+            redemption = WhaleRedemption(
+                position_id=position.id,
+                size=position.size,
+                attempts=0,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(redemption)
+        cost = position.cost_usdc
+        size = position.size
+        pnl = payout_usdc - cost
+        kind = "resolved_loss" if payout_usdc <= ZERO else "redeem"
+        session.add(
+            WhaleFollowLedger(
+                position_id=position.id,
+                order_id=None,
+                type=kind,
+                source="auto_redeem",
+                external_event_key=external_event_key,
+                size=size,
+                price=None,
+                amount_usdc=payout_usdc,
+                fee_usdc=ZERO,
+                realized_pnl=pnl,
+                transaction_hash=transaction_hash,
+                detail=detail,
+                timestamp=ledger_time,
+            )
+        )
+        position.realized_pnl += pnl
+        position.size = ZERO
+        position.cost_usdc = ZERO
+        position.status = "resolved_loss" if payout_usdc <= ZERO else "redeemed"
+        position.closed_at = ledger_time
+        position.updated_at = max(position.updated_at, ledger_time)
+        redemption.status = "completed"
+        redemption.size = size
+        redemption.payout_usdc = payout_usdc
+        redemption.transaction_hash = transaction_hash
+        redemption.last_error = None
+        redemption.updated_at = now
 
 
 def _market_url(market: WhaleMarket) -> str:

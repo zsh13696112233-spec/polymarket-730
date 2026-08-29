@@ -1,5 +1,5 @@
-import WhaleDiscoveryWorkspace from "./components/WhaleDiscoveryWorkspace";
+import HomeWorkspace from "./components/HomeWorkspace";
 
 export default function Page() {
-  return <WhaleDiscoveryWorkspace />;
+  return <HomeWorkspace />;
 }

@@ -25,7 +25,7 @@ async function render() {
   );
 }
 
-test("server-renders the chain-monitoring workspace and product metadata", async () => {
+test("server-renders the home workspace and product metadata", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -51,9 +51,11 @@ test("server-renders the chain-monitoring workspace and product metadata", async
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
-test("keeps chain monitoring and execution settings in the client", async () => {
-  const [page, workspace, settings, layout, css, icon] = await Promise.all([
+test("keeps home, chain monitoring and execution settings in the client", async () => {
+  const [page, whalePage, home, workspace, settings, layout, css, icon] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/whales/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/HomeWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/WhaleDiscoveryWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/ExecutionSettingsWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -68,7 +70,9 @@ test("keeps chain monitoring and execution settings in the client", async () => 
     access(new URL("app/_sites-preview/preview.css", templateRoot)),
   );
 
-  assert.match(page, /WhaleDiscoveryWorkspace/);
+  assert.match(page, /HomeWorkspace/);
+  assert.match(home, /api\/home\/overview/);
+  assert.match(whalePage, /WhaleDiscoveryWorkspace/);
   assert.match(workspace, /whaleApi/);
   assert.match(workspace, /api\/whales\/markets/);
   assert.match(workspace, /api\/whales\/follow\/preview/);

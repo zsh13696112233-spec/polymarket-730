@@ -11,8 +11,8 @@ import {
 } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
 import { WhaleSettingsPanel } from "./WhaleSettingsWorkspace";
-import { WhaleRequestMonitorPanel } from "./WhaleRequestMonitorPanel";
 import { WhaleStatisticsPanel } from "./WhaleStatisticsPanel";
+import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import {
   ApiError,
   ModalShell,
@@ -41,6 +41,8 @@ import {
 } from "./WhaleShared";
 
 type WalletSort = "value" | "recent";
+
+const AUTO_REFRESH_INTERVAL_MS = 30_000;
 
 function moveRuleTabEffect(event: ReactPointerEvent<HTMLButtonElement>) {
   if (event.pointerType === "touch" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -247,11 +249,11 @@ export function buildWhaleDivergences(markets: WhaleMarket[]): WhaleDivergence[]
 
 export default function WhaleDiscoveryWorkspace() {
   const [settings, setSettings] = useState<WhaleSettings | null>(null);
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const [markets, setMarkets] = useState<WhaleMarketList | null>(null);
   const [history, setHistory] = useState<WhaleHistoryList | null>(null);
   const [rule, setRule] = useState<WhaleRule>("new_account");
   const [statisticsVisible, setStatisticsVisible] = useState(false);
-  const [settingsVisible, setSettingsVisible] = useState(false);
   const [fullHistoryVisible, setFullHistoryVisible] = useState(false);
   const [divergenceOnly, setDivergenceOnly] = useState(false);
   const [statisticsRefreshToken, setStatisticsRefreshToken] = useState(0);
@@ -273,8 +275,8 @@ export default function WhaleDiscoveryWorkspace() {
     }
   }, []);
 
-  const loadMarkets = useCallback(async () => {
-    setLoading(true);
+  const loadMarkets = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const nextMarkets = await whaleApi<WhaleMarketList>(
@@ -285,7 +287,7 @@ export default function WhaleDiscoveryWorkspace() {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "巨鲸持仓加载失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [rule]);
 
@@ -300,6 +302,17 @@ export default function WhaleDiscoveryWorkspace() {
   useEffect(() => {
     const timer = window.setTimeout(() => void Promise.all([loadSettings(), loadMarkets(), loadHistory()]), 0);
     return () => window.clearTimeout(timer);
+  }, [loadHistory, loadMarkets, loadSettings]);
+
+  useVisibleAutoRefresh(async () => {
+    if (loading || refreshing) return;
+    await Promise.all([loadSettings(), loadMarkets(true), loadHistory()]);
+    setStatisticsRefreshToken((current) => current + 1);
+  }, AUTO_REFRESH_INTERVAL_MS);
+
+  const reloadWorkspace = useCallback(async () => {
+    await Promise.all([loadSettings(), loadMarkets(), loadHistory()]);
+    setStatisticsRefreshToken((current) => current + 1);
   }, [loadHistory, loadMarkets, loadSettings]);
 
   const scanNow = async () => {
@@ -320,11 +333,6 @@ export default function WhaleDiscoveryWorkspace() {
       setRefreshing(false);
     }
   };
-
-  const reloadWorkspace = useCallback(async () => {
-    await Promise.all([loadSettings(), loadMarkets(), loadHistory()]);
-    setStatisticsRefreshToken((current) => current + 1);
-  }, [loadHistory, loadMarkets, loadSettings]);
 
   const divergences = useMemo(
     () => buildWhaleDivergences(markets?.items ?? []),
@@ -357,6 +365,7 @@ export default function WhaleDiscoveryWorkspace() {
       actions={
         <>
           <Link className="pcButton ghost" href="/whales/records">我的跟单</Link>
+          <button className="pcButton ghost" type="button" onClick={() => setSettingsVisible(true)}>打开监测设置</button>
           <button className="pcButton primary" type="button" onClick={scanNow} disabled={refreshing}>
             <span className={refreshing ? "spinning" : ""}>↻</span>
             {refreshing ? "刷新中" : "刷新数据"}
@@ -414,7 +423,6 @@ export default function WhaleDiscoveryWorkspace() {
           onPointerCancel={resetRuleTabEffect}
           onClick={() => {
             setStatisticsVisible(true);
-            setSettingsVisible(false);
           }}
         >
           <span className="whaleRuleTabIcon" aria-hidden="true">
@@ -426,17 +434,6 @@ export default function WhaleDiscoveryWorkspace() {
           <span>命中率 · 理论收益 · 结算明细</span>
         </button>
       </nav>
-
-      {Boolean(settings?.last_scan_error || settings?.consecutive_failures) && (
-        <div className="whaleHealthBanner danger">
-          <span aria-hidden="true">!</span>
-          <div>
-            <strong>最近刷新未完成</strong>
-            <p>{settings?.last_scan_error || "当前展示的是最后一次成功获取的数据。"}</p>
-          </div>
-          <button type="button" onClick={scanNow} disabled={refreshing}>重试</button>
-        </div>
-      )}
 
       {statisticsVisible ? (
         <WhaleStatisticsPanel refreshToken={statisticsRefreshToken} />
@@ -498,16 +495,9 @@ export default function WhaleDiscoveryWorkspace() {
                 <p>刷新数据后，新发现的大额持仓会出现在这里。</p>
               </section>
             )}
-
-            <WhaleRequestMonitorPanel />
           </section>
 
           <aside className="whaleDashboardRail" aria-label="巨鲸运行状态与最近历史">
-            <WhaleOperationsPanel
-              settings={settings}
-              rule={rule}
-              onOpenSettings={() => setSettingsVisible(true)}
-            />
             <WhaleRecentHistoryPanel
               rule={rule}
               history={history}
@@ -537,6 +527,7 @@ export default function WhaleDiscoveryWorkspace() {
             />
           </ModalShell>
         )}
+
       </>}
 
       {!statisticsVisible && followTarget && (
@@ -571,46 +562,6 @@ function WhaleRuleBadges({ rules }: { rules: WhaleRule[] }) {
     <span className="whaleRuleBadges">
       {rules.map((item) => <span className={`pcBadge ${item === "new_account" ? "warning" : "danger"}`} key={item}>{RULE_LABELS[item]}</span>)}
     </span>
-  );
-}
-
-function WhaleOperationsPanel({
-  settings,
-  rule,
-  onOpenSettings,
-}: {
-  settings: WhaleSettings | null;
-  rule: WhaleRule;
-  onOpenSettings: () => void;
-}) {
-  const activeCount = rule === "new_account"
-    ? settings?.new_account_active_count ?? 0
-    : settings?.large_amount_active_count ?? 0;
-  const threshold = rule === "new_account"
-    ? settings?.new_account_threshold_usdc
-    : settings?.large_amount_threshold_usdc;
-
-  return (
-    <section className="pcPanel whaleOperationsPanel" aria-label="巨鲸运行概览">
-      <header>
-        <div>
-          <span className="pcEyebrow">LIVE OVERVIEW</span>
-          <h2>运行概览</h2>
-        </div>
-        <span className={`whaleRunState ${settings?.consecutive_failures ? "danger" : "healthy"}`}>
-          {settings?.consecutive_failures ? `${settings.consecutive_failures} 次失败` : "运行正常"}
-        </span>
-      </header>
-      <dl>
-        <div><dt>当前规则</dt><dd>{RULE_LABELS[rule]}</dd></div>
-        <div><dt>活跃钱包</dt><dd>{activeCount}</dd></div>
-        <div><dt>24 小时门槛</dt><dd>{formatCompactUsdc(threshold)}</dd></div>
-        <div><dt>最后扫描</dt><dd>{formatBeijing(settings?.last_scan_at, true)}</dd></div>
-      </dl>
-      <button className="pcButton ghost whaleOpenSettings" type="button" onClick={onOpenSettings}>
-        打开监测设置
-      </button>
-    </section>
   );
 }
 

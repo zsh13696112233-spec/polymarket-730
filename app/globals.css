@@ -8570,23 +8570,23 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .emailRecordsFilter select { min-width: 140px; height: 38px; padding: 0 10px; color: #e8e3bd; border: 1px solid #403b1f; background: #0c0d08; }
 .whaleEmailTableWrap { overflow-x: auto; }
 .emailRecordsPanel { overflow: hidden; }
-.emailRecordList { display: grid; min-height: 160px; padding: 16px; gap: 12px; transition: opacity 140ms ease; }
+.emailRecordList { display: grid; min-height: 160px; padding: 12px; gap: 8px; transition: opacity 140ms ease; }
 .emailRecordList.loading { opacity: .45; }
 .emailRecordCard { overflow: hidden; border: 1px solid #302d1c; border-radius: 10px; background: #0a0b07; }
-.emailRecordCardHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 18px 20px 15px; }
-.emailRecordLead { min-width: 0; }
-.emailRecordBadges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
-.emailRecordLead h3 { margin: 0; color: #e8e3bd; font-size: 16px; line-height: 1.4; }
-.emailRecordLead p { display: flex; flex-wrap: wrap; gap: 7px 12px; margin: 6px 0 0; color: #817c5f; font-size: 12px; }
+.emailRecordCardHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 16px 10px; }
+.emailRecordLead { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 3px 8px; }
+.emailRecordBadges { display: flex; flex-wrap: wrap; grid-row: 1; grid-column: 1; align-items: center; gap: 5px; }
+.emailRecordLead h3 { grid-row: 1; grid-column: 2; margin: 0; color: #e8e3bd; font-size: 15px; line-height: 1.35; }
+.emailRecordLead p { display: flex; flex-wrap: wrap; grid-column: 2; gap: 4px 10px; margin: 0; color: #817c5f; font-size: 11px; }
 .emailRecordLead p strong { color: #b9b493; }
-.emailRecordStatusBlock { display: grid; flex: 0 0 auto; justify-items: end; padding-top: 2px; }
-.emailRecordMarketGrid { display: grid; gap: 10px; padding: 14px 20px 16px; border-top: 1px solid #302d1c; background: #0c0d08; }
+.emailRecordStatusBlock { display: grid; flex: 0 0 auto; justify-items: end; }
+.emailRecordMarketGrid { display: grid; gap: 7px; padding: 9px 16px 10px; border-top: 1px solid #302d1c; background: #0c0d08; }
 .emailRecordSectionHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .emailRecordSectionHeading strong { color: #d8d3ad; font-size: 12px; }
 .emailRecordSectionHeading span { color: #66634f; font-size: 10px; }
-.emailRecordMarketList { display: grid; gap: 8px; }
+.emailRecordMarketList { display: grid; gap: 6px; }
 .emailRecordMarketRow { display: grid; grid-template-columns: minmax(140px, .85fr) minmax(140px, 1.15fr) minmax(120px, .8fr) minmax(150px, 1fr); align-items: stretch; overflow: hidden; border: 1px solid #302d1c; border-radius: 8px; background: #090a06; }
-.emailRecordMarketRow > div { display: grid; align-content: center; gap: 5px; min-width: 0; padding: 11px 14px; }
+.emailRecordMarketRow > div { display: grid; align-content: center; gap: 2px; min-width: 0; padding: 7px 10px; }
 .emailRecordMarketRow > div + div { border-left: 1px solid #302d1c; }
 .emailRecordMarketRow span { color: #66634f; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
 .emailRecordMarketRow strong { min-width: 0; color: #c9c4a3; font-size: 13px; overflow-wrap: anywhere; }
@@ -8596,21 +8596,13 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .emailRecordMarketMetric strong { font-variant-numeric: tabular-nums; }
 .emailRecordMarketMetric.total strong { color: #f1df76; font-size: 15px; }
 .emailRecordMarketRow small { color: #817c5f; font-size: 10px; font-weight: 500; }
-.emailRecordMarketEmpty { padding: 13px 14px; border: 1px dashed #403b1f; border-radius: 8px; color: #817c5f; font-size: 12px; text-align: center; }
-.emailRecordMetaGrid { display: grid; grid-template-columns: 1.2fr 1fr .8fr; gap: 10px; padding: 12px 20px; border-top: 1px solid #302d1c; background: #080905; }
-.emailRecordMetaGrid > div { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 11px 13px; border: 1px solid #302d1c; border-radius: 8px; background: #0c0d08; }
-.emailRecordMetaGrid span, .emailRecordContent summary small { color: #66634f; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.emailRecordMarketEmpty { padding: 9px 12px; border: 1px dashed #403b1f; border-radius: 8px; color: #817c5f; font-size: 12px; text-align: center; }
+.emailRecordMetaGrid { display: grid; grid-template-columns: 1.2fr 1fr .8fr; padding: 7px 16px 8px; border-top: 1px solid #302d1c; background: #080905; }
+.emailRecordMetaGrid > div { display: flex; align-content: start; align-items: baseline; flex-wrap: wrap; gap: 2px 7px; min-width: 0; padding: 3px 10px; }
+.emailRecordMetaGrid > div + div { border-left: 1px solid #302d1c; }
+.emailRecordMetaGrid span { color: #66634f; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
 .emailRecordMetaGrid strong { overflow-wrap: anywhere; color: #c9c4a3; font-size: 12px; }
-.emailRecordMetaGrid small { color: #817c5f; font-size: 11px; }
-.emailRecordContent { background: #0c0d08; }
-.emailRecordContent summary { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 20px; cursor: pointer; list-style: none; }
-.emailRecordContent summary::-webkit-details-marker { display: none; }
-.emailRecordContent summary > span { display: grid; min-width: 0; gap: 4px; }
-.emailRecordContent summary strong { overflow: hidden; color: #d8d3ad; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.emailRecordContent summary em { flex: 0 0 auto; color: #817c5f; font-size: 11px; font-style: normal; }
-.emailRecordContent summary em::after { display: inline-block; margin-left: 7px; content: "⌄"; transition: transform 150ms ease; }
-.emailRecordContent[open] summary em::after { transform: rotate(180deg); }
-.emailRecordContent pre { overflow-x: auto; margin: 0; padding: 16px 20px 18px; border-top: 1px solid #302d1c; background: #090a06; color: #aaa581; font: 12px/1.65 "Courier New", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.emailRecordMetaGrid small { color: #817c5f; font-size: 10px; }
 .whaleEmailTable { width: 100%; min-width: 1460px; border-collapse: collapse; font-size: 12px; }
 .whaleEmailTable th, .whaleEmailTable td { padding: 9px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #302d1c; }
 .whaleEmailTable th { color: #817c5f; font-weight: 600; }
@@ -9343,15 +9335,15 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .emailRecordList { padding: 8px; }
   .weeklyEmailSummaryPanel { grid-template-columns: 1fr; padding: 16px; }
   .weeklyEmailSummaryToggle { justify-content: space-between; }
-  .emailRecordCardHeader { flex-direction: column; gap: 13px; padding: 15px; }
-  .emailRecordStatusBlock { width: 100%; justify-items: start; }
-  .emailRecordMarketGrid { padding: 13px 15px 15px; }
+  .emailRecordCardHeader { gap: 10px; padding: 11px 12px 9px; }
+  .emailRecordMarketGrid { padding: 9px 12px 10px; }
   .emailRecordMarketRow { grid-template-columns: 1fr 1fr; }
   .emailRecordMarketRow > div:nth-child(3) { border-left: 0; border-top: 1px solid #302d1c; }
   .emailRecordMarketRow > div:nth-child(4) { border-top: 1px solid #302d1c; }
-  .emailRecordMetaGrid { grid-template-columns: 1fr; }
-  .emailRecordMetaGrid > div { padding: 11px 13px; }
-  .emailRecordContent summary, .emailRecordContent pre { padding-inline: 15px; }
+  .emailRecordMetaGrid { grid-template-columns: 1fr; padding: 5px 12px 6px; }
+  .emailRecordMetaGrid > div { grid-template-columns: 68px minmax(0, 1fr); gap: 2px 8px; padding: 5px 0; }
+  .emailRecordMetaGrid > div + div { border-top: 1px solid #302d1c; border-left: 0; }
+  .emailRecordMetaGrid > div > span { grid-row: 1 / span 2; }
   .emailRecordsPagination { align-items: flex-start; flex-direction: column; }
   .whaleExclusionHeading { flex-direction: column; gap: 10px; }
   .whaleExclusionForm { grid-template-columns: 1fr; }
@@ -9508,6 +9500,272 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
     border-top: 1px solid #242316;
   }
   .whaleDashboardMain .whaleHoldingAction .pcButton { min-height: 36px !important; }
+}
+
+/* Home dashboard */
+.homeWorkspace .pcContent { gap: 16px; }
+.homeLoadAlert,
+.homeAlert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid #f0cbc8;
+  border-radius: 11px;
+  background: #fff5f4;
+  color: #8e3531;
+}
+.homeLoadAlert { padding: 13px 15px; }
+.homeLoadAlert strong,
+.homeAlert strong { display: block; color: #8e3531; font-size: 12px; font-weight: 600; }
+.homeLoadAlert p,
+.homeAlert p { margin: 3px 0 0; color: #a4544f; font-size: 11px; line-height: 1.45; }
+.homeLoadAlert button { border: 0; background: transparent; color: #8e3531; cursor: pointer; font-size: 12px; font-weight: 600; }
+.homeAlertStack { display: grid; gap: 8px; }
+.homeAlert { justify-content: flex-start; padding: 11px 14px; }
+.homeAlert > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #e36a63;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.homeLoading { min-height: 320px; }
+.homeStatusBar {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 16px;
+  border: 1px solid var(--pc-line);
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, .035);
+}
+.homeStatusBar > div { display: flex; align-items: center; gap: 9px; }
+.homeStatusBar > div strong { color: #2a2a2e; font-size: 12px; font-weight: 600; }
+.homeStatusDot,
+.homeRuleDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b5b8c0;
+}
+.homeStatusDot.healthy,
+.homeRuleDot.enabled { background: #18a36f; box-shadow: 0 0 0 4px rgba(24, 163, 111, .1); }
+.homeStatusDot.error { background: #dc514b; box-shadow: 0 0 0 4px rgba(220, 81, 75, .1); }
+.homeStatusDot.disabled { background: #e09a31; box-shadow: 0 0 0 4px rgba(224, 154, 49, .1); }
+.homeStatusBar dl { display: flex; margin: 0; gap: 24px; }
+.homeStatusBar dl > div { display: grid; grid-template-columns: auto auto; gap: 7px; }
+.homeStatusBar dt { color: #9a9da5; font-size: 10px; }
+.homeStatusBar dd { margin: 0; color: #5e626c; font-family: var(--pc-data-font); font-size: 11px; }
+.homeMetrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 11px; }
+.homeMetricCard {
+  min-width: 0;
+  min-height: 126px;
+  padding: 17px 18px;
+  border: 1px solid var(--pc-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(11, 12, 14, .035);
+}
+.homeMetricCard > span { display: block; color: #7f838d; font-size: 11px; font-weight: 500; }
+.homeMetricCard > strong {
+  display: block;
+  overflow: hidden;
+  margin: 14px 0 9px;
+  color: #111216;
+  font-family: var(--pc-data-font);
+  font-size: clamp(19px, 1.6vw, 27px);
+  font-weight: 650;
+  letter-spacing: -.035em;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+.homeMetricCard > small { display: block; color: #9a9da5; font-size: 10px; line-height: 1.4; }
+.homeMetricCard.profit > strong,
+.homeWalletMetrics dd.profit { color: #0b8a5c; }
+.homeMetricCard.loss > strong,
+.homeWalletMetrics dd.loss { color: #ca4843; }
+.homePortfolioGrid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); gap: 14px; }
+.homeTrendPanel,
+.homeWalletPanel,
+.homeDecisionsPanel,
+.homeRuntimePanel { overflow: hidden; }
+.homeTrendPanel { display: flex; flex-direction: column; }
+.homeSectionHeader {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 18px;
+  border-bottom: 1px solid #eceef2;
+}
+.homeSectionHeader > div:first-child { min-width: 0; }
+.homeSectionHeader span { color: #9a9da5; font-size: 9px; font-weight: 650; letter-spacing: .09em; }
+.homeSectionHeader h2 { margin: 3px 0 0; color: #17181c; font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
+.homeSectionHeader p { margin: 3px 0 0; color: #9a9da5; font-size: 10px; }
+.homeRangeSwitch { display: flex; flex: 0 0 auto; padding: 3px; border: 1px solid #e1e3e8; border-radius: 8px; background: #f7f8fa; }
+.homeRangeSwitch button { min-height: 28px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #777b85; cursor: pointer; font-size: 10px; }
+.homeRangeSwitch button.active { background: #fff; color: #134cff; box-shadow: 0 1px 3px rgba(11, 12, 14, .11); font-weight: 600; }
+.homeTrendChart { position: relative; display: flex; min-height: 300px; flex: 1; flex-direction: column; padding: 38px 10px 8px; }
+.homeTrendPlot { width: 100%; min-height: 264px; flex: 1; }
+.homeChartLegend { position: absolute; top: 15px; right: 20px; display: flex; gap: 15px; color: #747984; font-size: 9px; }
+.homeChartLegend span { display: inline-flex; align-items: center; gap: 6px; }
+.homeChartLegend span::before { width: 9px; height: 7px; border-radius: 3px; background: linear-gradient(180deg, #6487f6, #c9d7ff); content: ""; }
+.homeChartLegend .pnl::before { width: 13px; height: 2px; border-radius: 999px; background: linear-gradient(90deg, #109568 0 58%, #d4514b 58%); }
+.homeTrendDot { fill: #109568; stroke: #fff; stroke-width: 1.8px; }
+.homeTrendDot.loss { fill: #d4514b; }
+.homeTrendActiveDot { fill: #109568; stroke: #fff; stroke-width: 2.5px; filter: drop-shadow(0 2px 3px rgba(16, 149, 104, .28)); }
+.homeTrendActiveDot.loss { fill: #d4514b; filter: drop-shadow(0 2px 3px rgba(212, 81, 75, .28)); }
+.homeTrendTooltip { min-width: 208px; overflow: hidden; border: 1px solid rgba(220, 223, 230, .94); border-radius: 11px; background: rgba(255, 255, 255, .96); box-shadow: 0 12px 30px rgba(26, 31, 43, .13), 0 2px 7px rgba(26, 31, 43, .06); backdrop-filter: blur(10px); }
+.homeTrendTooltip header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 12px; border-bottom: 1px solid #eceef2; }
+.homeTrendTooltip header strong { color: #292c32; font-size: 11px; font-weight: 650; }
+.homeTrendTooltip header span { color: #9498a2; font-size: 9px; }
+.homeTrendTooltip dl { display: grid; margin: 0; padding: 8px 12px; gap: 7px; }
+.homeTrendTooltip dl > div,
+.homeTrendTooltip footer { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.homeTrendTooltip dt { display: flex; align-items: center; gap: 6px; color: #7b808a; font-size: 9px; }
+.homeTrendTooltip dt i { width: 7px; height: 7px; border-radius: 2px; background: #6487f6; }
+.homeTrendTooltip dt i.profit { border-radius: 50%; background: #109568; }
+.homeTrendTooltip dt i.loss { border-radius: 50%; background: #d4514b; }
+.homeTrendTooltip dd { margin: 0; color: #333740; font-family: var(--pc-data-font); font-size: 10px; font-weight: 650; }
+.homeTrendTooltip .profit { color: #0b8a5c; }
+.homeTrendTooltip .loss { color: #ca4843; }
+.homeTrendTooltip footer { padding: 8px 12px; border-top: 1px solid #eceef2; background: #fafbfc; color: #8b8f99; font-size: 9px; }
+.homeTrendTooltip footer strong { font-family: var(--pc-data-font); font-size: 10px; font-weight: 650; }
+.homeWalletState { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; background: #eaf7f2; color: #0b8058 !important; font-size: 9px !important; letter-spacing: 0 !important; }
+.homeWalletState.danger { background: #fff0ef; color: #ba443f !important; }
+.homeWalletHero { padding: 22px 18px 18px; background: linear-gradient(145deg, #f4f7ff, #fff); }
+.homeWalletHero span,
+.homeWalletHero small { display: block; color: #888c96; font-size: 10px; }
+.homeWalletHero strong { display: block; margin: 9px 0 7px; color: #111216; font-family: var(--pc-data-font); font-size: 25px; font-weight: 650; letter-spacing: -.035em; }
+.homeWalletMetrics { display: grid; grid-template-columns: 1fr 1fr; margin: 0; padding: 10px; gap: 7px; }
+.homeWalletMetrics > div { min-width: 0; padding: 10px; border: 1px solid #eceef2; border-radius: 8px; background: #fafbfc; }
+.homeWalletMetrics > div:last-child { grid-column: 1 / -1; }
+.homeWalletMetrics dt { color: #9699a2; font-size: 9px; }
+.homeWalletMetrics dd { overflow: hidden; margin: 5px 0 0; color: #34373e; font-family: var(--pc-data-font); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.homeSectionLinks { display: flex; flex: 0 0 auto; gap: 12px; }
+.homeSectionLinks a { color: #134cff; font-size: 10px; font-weight: 550; text-decoration: none; }
+.homeSectionLinks a:hover { text-decoration: underline; }
+.homeDecisionList { display: grid; }
+.homeDecisionRow {
+  display: grid;
+  grid-template-columns: 100px 125px minmax(180px, 1.3fr) 120px 110px minmax(170px, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 72px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #eff0f3;
+}
+.homeDecisionRow:last-child { border-bottom: 0; }
+.homeDecisionRow time { color: #888c96; font-family: var(--pc-data-font); font-size: 10px; }
+.homeDecisionRow > div,
+.homeDecisionRow > a { display: grid; min-width: 0; gap: 4px; text-decoration: none; }
+.homeDecisionRow strong { overflow: hidden; color: #353840; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.homeDecisionRow small { color: #999ca5; font-size: 9px; }
+.homeDecisionRow > a:hover strong { color: #134cff; }
+.homeDecisionRow > p { overflow: hidden; margin: 0; color: #727680; font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.homeDecisionStatus { justify-self: start; padding: 5px 7px; border-radius: 999px; background: #f0f1f4; color: #747780; font-size: 9px; font-weight: 600; white-space: nowrap; }
+.homeDecisionStatus.success { background: #eaf7f2; color: #0a8057; }
+.homeDecisionStatus.processing { background: #eef3ff; color: #315dd1; }
+.homeDecisionStatus.danger { background: #fff0ef; color: #bc443f; }
+.homeDecisionStatus.risk { background: #fff5e7; color: #a36513; }
+.homeEmpty { min-height: 120px; display: grid; place-items: center; color: #9699a2; font-size: 11px; }
+.homeRuntimeBody { display: grid; grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr); align-items: stretch; }
+.homeRuleCards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; }
+.homeRuleCards article,
+.homeScannerCard { min-height: 84px; padding: 11px; border: 1px solid #e9ebef; border-radius: 9px; background: #fafbfc; }
+.homeRuleCards article > div,
+.homeScannerHeading { display: flex; align-items: center; gap: 9px; }
+.homeRuleCards article > div strong,
+.homeScannerHeading strong { color: #292c32; font-size: 12px; }
+.homeRuleCards dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 10px 0 0; gap: 8px; }
+.homeRuleCards dl > div,
+.homeRuntimeMeta > div { display: flex; justify-content: space-between; gap: 10px; }
+.homeRuleCards dl > div { display: grid; justify-content: start; gap: 4px; }
+.homeRuleCards dt,
+.homeRuntimeMeta dt { color: #9699a2; font-size: 9px; }
+.homeRuleCards dd,
+.homeRuntimeMeta dd { margin: 0; color: #555962; font-family: var(--pc-data-font); font-size: 10px; font-weight: 600; }
+.homeScannerCard { min-width: 0; margin: 10px 10px 10px 0; }
+.homeRuntimeMeta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; margin: 10px 0 0; }
+.homeRuntimeMeta > div { display: flex; min-width: 0; flex-direction: column; justify-content: center; gap: 4px; padding: 0 11px; }
+.homeRuntimeMeta > div:first-child { padding-left: 0; }
+.homeRuntimeMeta > div:last-child { padding-right: 0; }
+.homeRuntimeMeta > div + div { border-left: 1px solid #e4e7ec; }
+.homeRuntimeMeta dd { overflow-wrap: anywhere; }
+.homeRuntimeMeta .healthy dd { color: #0b8a5c; }
+.homeRuntimeMeta .danger dd { color: #ca4843; }
+.homeRequestSection .whaleRequestMonitor { min-width: 0; }
+.whaleTerminalEntry.failed .whaleTerminalLine { background: #fff5f4; }
+.whaleTerminalLine > b.failed { color: #c84843; }
+.whaleTerminalLine > b.pending { color: #a36513; }
+
+@media (max-width: 1180px) {
+  .homeMetrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .homePortfolioGrid { grid-template-columns: minmax(0, 1.3fr) minmax(300px, .8fr); }
+  .homeDecisionRow { grid-template-columns: 90px 110px minmax(170px, 1fr) 100px 100px; }
+  .homeDecisionRow > p { grid-column: 3 / -1; }
+  .homeRuntimeBody { grid-template-columns: minmax(0, 1fr) 320px; }
+}
+
+@media (max-width: 900px) {
+  .homePortfolioGrid { grid-template-columns: 1fr; }
+  .homeRuntimeBody { grid-template-columns: 1fr; }
+  .homeScannerCard { margin: 0 10px 10px; }
+  .homeWalletPanel { order: -1; }
+  .homeDecisionRow { grid-template-columns: 90px 110px minmax(150px, 1fr) 100px; }
+  .homeDecisionStatus { grid-column: 2; }
+  .homeDecisionRow > p { grid-column: 3 / -1; }
+}
+
+@media (max-width: 640px) {
+  .homeWorkspace .pcTopActions { width: auto; }
+  .homeWorkspace .pcTopActions .pcButton { width: auto; }
+  .homeWorkspace .pcContent { display: flex; flex-direction: column; gap: 12px; }
+  .homeStatusBar { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .homeStatusBar dl { width: 100%; justify-content: space-between; gap: 10px; }
+  .homeStatusBar dl > div { grid-template-columns: 1fr; gap: 3px; }
+  .homeAlertStack { order: 0; }
+  .homeStatusBar { order: 1; }
+  .homeRuntimeFront { order: 2; }
+  .homePortfolioGrid { display: contents; }
+  .homeWalletPanel { order: 3; }
+  .homeMetrics { order: 4; grid-template-columns: 1fr 1fr; }
+  .homeTrendPanel { order: 5; }
+  .homeDecisionsPanel { order: 6; }
+  .homeRequestSection { order: 7; }
+  .homeMetricCard { min-height: 112px; padding: 14px; }
+  .homeMetricCard > strong { margin-block: 11px 7px; font-size: 20px; }
+  .homeSectionHeader { align-items: flex-start; flex-direction: column; min-height: 0; padding: 14px; }
+  .homeRuntimeFront .homeSectionHeader { align-items: center; flex-direction: row; }
+  .homeRangeSwitch,
+  .homeSectionLinks { width: 100%; }
+  .homeRangeSwitch button { flex: 1; }
+  .homeSectionLinks { justify-content: space-between; }
+  .homeTrendChart { min-height: 270px; padding: 38px 2px 4px; }
+  .homeTrendPlot { min-height: 236px; flex: 0 0 236px; }
+  .homeChartLegend { left: 14px; right: auto; }
+  .homeWalletMetrics { grid-template-columns: 1fr 1fr; }
+  .homeDecisionRow { grid-template-columns: 1fr auto; gap: 8px 12px; padding: 12px 14px; }
+  .homeDecisionRow time { grid-column: 1; }
+  .homeDecisionRule { grid-column: 1; }
+  .homeDecisionRow > a { grid-column: 1 / -1; }
+  .homeDecisionFill { grid-column: 1; }
+  .homeDecisionStatus { grid-row: 1; grid-column: 2; }
+  .homeDecisionRow > p { grid-column: 1 / -1; white-space: normal; }
+  .homeRuntimeFront .homeRuleCards dl { grid-template-columns: 1fr; }
+  .homeRuntimeBody { grid-template-columns: 1fr; }
+  .homeScannerCard { margin: 0 10px 10px; }
 }
 
 @media (max-width: 1239px) {
@@ -11451,14 +11709,10 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .emailRecordMarketRow small, .emailRecordMarketEmpty { color: #8d8e99; }
 .emailRecordMarketEmpty { border-color: #d9dce4; background: #fff; }
 .emailRecordMetaGrid { border-color: var(--pc-line); background: #f7f8fa; }
-.emailRecordMetaGrid > div { border-color: #e1e4ea; background: #fff; }
-.emailRecordMetaGrid span, .emailRecordContent summary small { color: #9a9da5; }
+.emailRecordMetaGrid > div + div { border-color: #e1e4ea; }
+.emailRecordMetaGrid span { color: #9a9da5; }
 .emailRecordMetaGrid strong { color: #4b4f58; }
 .emailRecordMetaGrid small { color: #8d8e99; }
-.emailRecordContent { background: #fff; }
-.emailRecordContent summary strong { color: #4b4f58; }
-.emailRecordContent summary em { color: #8d8e99; }
-.emailRecordContent pre { border-color: var(--pc-line); background: #fafbfc; color: #626670; }
 .whaleEmailTable th, .whaleEmailTable td { border-bottom-color: var(--pc-line); }
 .whaleEmailTable th, .whaleEmailTable td small { color: #8d8e99; }
 .whaleEmailTable td { color: #4b4f58; }

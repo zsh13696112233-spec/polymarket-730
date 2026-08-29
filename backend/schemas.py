@@ -1189,6 +1189,111 @@ class WhaleRequestLogListRead(APIModel):
         return _as_utc_iso(value) or ""
 
 
+class HomeSystemRuleRead(APIModel):
+    rule: Literal["new_account", "large_amount"]
+    enabled: bool
+    auto_follow_enabled: bool
+    active_wallet_count: int
+
+
+class HomeSystemRead(APIModel):
+    status: Literal["healthy", "error", "disabled"]
+    enabled: bool
+    last_scan_at: datetime | None
+    last_scan_error: str | None
+    consecutive_failures: int
+    scan_interval_seconds: int
+    rules: list[HomeSystemRuleRead] = Field(default_factory=list)
+
+    @field_serializer("last_scan_at", when_used="json")
+    def serialize_last_scan_at(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class HomeTodayRead(APIModel):
+    date: date
+    buy_amount_usdc: DecimalNumber
+    buy_count: int
+    realized_pnl_usdc: DecimalNumber
+    realized_cost_usdc: DecimalNumber
+    realized_roi_percent: DecimalNumber | None
+    unrealized_pnl_usdc: DecimalNumber | None
+    win_count: int
+    loss_count: int
+    flat_count: int
+    win_rate_percent: DecimalNumber | None
+
+
+class HomeWalletRead(APIModel):
+    status: str
+    available: bool
+    cash_balance_usdc: DecimalNumber | None
+    open_cost_usdc: DecimalNumber
+    market_value_usdc: DecimalNumber | None
+    total_assets_usdc: DecimalNumber | None
+    unrealized_pnl_usdc: DecimalNumber | None
+    cash_reserve_usdc: DecimalNumber
+    available_cash_usdc: DecimalNumber | None
+    open_position_count: int
+    last_balance_at: datetime | None
+    balance_stale: bool
+    valuation_complete: bool
+    unpriced_position_count: int
+    last_error: str | None
+
+    @field_serializer("last_balance_at", when_used="json")
+    def serialize_last_balance_at(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class HomeDailyRead(APIModel):
+    date: date
+    buy_amount_usdc: DecimalNumber
+    buy_count: int
+    realized_pnl_usdc: DecimalNumber
+    realized_cost_usdc: DecimalNumber
+    realized_roi_percent: DecimalNumber | None
+    win_count: int
+    loss_count: int
+    flat_count: int
+
+
+class HomeAutoDecisionRead(APIModel):
+    id: int
+    created_at: datetime
+    selected_rule: Literal["new_account", "large_amount"] | None
+    matched_rules: list[Literal["new_account", "large_amount"]]
+    title: str
+    outcome: str
+    market_slug: str | None
+    event_slug: str | None
+    configured_amount_usdc: DecimalNumber | None
+    filled_usdc: DecimalNumber
+    status: str
+    reason: str | None
+    is_risk_exit: bool
+
+    @field_serializer("created_at", when_used="json")
+    def serialize_created_at(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class HomeOverviewRead(APIModel):
+    as_of: datetime
+    timezone: Literal["Asia/Shanghai"]
+    range_start: date
+    range_end: date
+    system: HomeSystemRead
+    today: HomeTodayRead
+    wallet: HomeWalletRead
+    daily: list[HomeDailyRead] = Field(default_factory=list)
+    recent_auto_decisions: list[HomeAutoDecisionRead] = Field(default_factory=list)
+
+    @field_serializer("as_of", when_used="json")
+    def serialize_as_of(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
 class WhaleTagRead(APIModel):
     id: str
     slug: str

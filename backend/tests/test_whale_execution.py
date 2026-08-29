@@ -16,8 +16,9 @@ from backend.models import (
     WhaleFollowPosition,
     WhaleMarket,
     WhaleOrder,
+    WhaleRedemption,
 )
-from backend.polymarket import TradeSnapshot
+from backend.polymarket import RedemptionSnapshot, TradeSnapshot
 from backend.trading import TradeResult
 from backend.whale import WhaleFollowExecutor
 
@@ -57,11 +58,23 @@ def executor(database: Database) -> WhaleFollowExecutor:
 
 
 class ManualTradeClient:
-    def __init__(self, trades: list[TradeSnapshot]) -> None:
+    def __init__(
+        self,
+        trades: list[TradeSnapshot],
+        redemptions: list[RedemptionSnapshot] | None = None,
+    ) -> None:
         self.trades = trades
+        self.redemptions = redemptions or []
 
     async def fetch_trades(self, *_: object, **__: object) -> list[TradeSnapshot]:
         return list(self.trades)
+
+    async def fetch_redemptions(
+        self,
+        *_: object,
+        **__: object,
+    ) -> list[RedemptionSnapshot]:
+        return list(self.redemptions)
 
 
 class BalanceTrader:
@@ -118,10 +131,11 @@ def reconciliation_executor(
     *,
     trades: list[TradeSnapshot],
     balance: str,
+    redemptions: list[RedemptionSnapshot] | None = None,
 ) -> WhaleFollowExecutor:
     follow_executor = WhaleFollowExecutor(
         database=database,
-        client=ManualTradeClient(trades),  # type: ignore[arg-type]
+        client=ManualTradeClient(trades, redemptions),  # type: ignore[arg-type]
         settings=database.settings,
         keychain=SimpleNamespace(),  # type: ignore[arg-type]
     )
@@ -549,3 +563,131 @@ async def test_manual_buy_after_follow_expands_the_unified_position_once(
     assert_decimal(position.cost_usdc, "6.5625")
     assert len(ledger) == 1
     assert ledger[0].source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_polymarket_auto_redemption_reconciles_zero_chain_balance_once(
+    database: Database,
+):
+    await configure_reconciliation(database)
+    position_id = await insert_position(
+        database,
+        size="10",
+        cost="4.1",
+        status="open",
+        lifetime_bought_size="10",
+        lifetime_bought_usdc="4",
+        lifetime_fee_usdc="0.1",
+    )
+    redeemed_at = NOW + timedelta(minutes=5)
+    redemption = RedemptionSnapshot(
+        asset_id="",
+        condition_id=CONDITION_ID,
+        title="Whale market",
+        outcome="Yes",
+        outcome_index=0,
+        event_slug="whale-event",
+        market_slug="whale-market",
+        size=Decimal("10"),
+        usdc_size=Decimal("10"),
+        timestamp=redeemed_at,
+        transaction_hash="0xpolymarket-auto-redeem",
+    )
+    follow_executor = reconciliation_executor(
+        database,
+        trades=[],
+        balance="0",
+        redemptions=[redemption],
+    )
+
+    assert await follow_executor.reconcile_external_wallet_activity() is None
+    assert await follow_executor.reconcile_external_wallet_activity() is None
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        redemption_row = await session.scalar(
+            select(WhaleRedemption).where(WhaleRedemption.position_id == position_id)
+        )
+        ledger = list(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger).where(WhaleFollowLedger.position_id == position_id)
+                )
+            ).all()
+        )
+
+    assert position is not None
+    assert position.size == ZERO
+    assert position.cost_usdc == ZERO
+    assert_decimal(position.realized_pnl, "5.9")
+    assert position.status == "redeemed"
+    assert position.closed_at == redeemed_at
+    assert redemption_row is not None
+    assert redemption_row.status == "completed"
+    assert_decimal(redemption_row.size, "10")
+    assert_decimal(redemption_row.payout_usdc or ZERO, "10")
+    assert redemption_row.transaction_hash == "0xpolymarket-auto-redeem"
+    assert len(ledger) == 1
+    assert ledger[0].type == "redeem"
+    assert ledger[0].source == "auto_redeem"
+    assert ledger[0].external_event_key is not None
+    assert ledger[0].transaction_hash == "0xpolymarket-auto-redeem"
+    assert ledger[0].timestamp == redeemed_at
+    assert "官方 REDEEM" in (ledger[0].detail or "")
+
+
+@pytest.mark.asyncio
+async def test_unmatched_redemption_does_not_close_position(
+    database: Database,
+):
+    await configure_reconciliation(database)
+    async with database.sessions() as session:
+        market = await session.get(WhaleMarket, CONDITION_ID)
+        assert market is not None
+        market.closed = True
+        market.outcome_prices_json = '["1","0"]'
+        await session.commit()
+    position_id = await insert_position(
+        database,
+        size="10",
+        cost="4.1",
+        status="open",
+    )
+    redemption = RedemptionSnapshot(
+        asset_id="",
+        condition_id=CONDITION_ID,
+        title="Whale market",
+        outcome="No",
+        outcome_index=1,
+        event_slug="whale-event",
+        market_slug="whale-market",
+        size=Decimal("10"),
+        usdc_size=Decimal("10"),
+        timestamp=NOW + timedelta(minutes=5),
+        transaction_hash="0xother-outcome-redeem",
+    )
+    follow_executor = reconciliation_executor(
+        database,
+        trades=[],
+        balance="0",
+        redemptions=[redemption],
+    )
+
+    warning = await follow_executor.reconcile_external_wallet_activity()
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        ledger = list(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger).where(WhaleFollowLedger.position_id == position_id)
+                )
+            ).all()
+        )
+
+    assert warning is not None
+    assert "链上已归零，尚未获取到对应的自动赎回流水" in warning
+    assert position is not None
+    assert position.status == "open"
+    assert position.size == Decimal("10")
+    assert ledger == []

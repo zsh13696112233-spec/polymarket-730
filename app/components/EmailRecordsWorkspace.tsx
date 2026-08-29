@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import { formatCompactUsdc, formatPrice, formatUsdc } from "./WhaleShared";
 import type { Numeric } from "./WhaleShared";
 
@@ -154,12 +155,13 @@ export default function EmailRecordsWorkspace() {
 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
-    const refresh = window.setInterval(() => void load(), 30000);
-    return () => {
-      window.clearTimeout(initial);
-      window.clearInterval(refresh);
-    };
+    return () => window.clearTimeout(initial);
   }, [load]);
+
+  useVisibleAutoRefresh(async () => {
+    if (loading) return;
+    await load();
+  }, 30_000);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadSummarySettings(), 0);
@@ -310,13 +312,6 @@ export default function EmailRecordsWorkspace() {
                 </div>
               </div>
 
-              <details className="emailRecordContent">
-                <summary>
-                  <span><small>发送内容</small><strong>{item.subject}</strong></span>
-                  <em>查看正文</em>
-                </summary>
-                <pre>{item.body_text}</pre>
-              </details>
             </article>
           ))}
         </div>

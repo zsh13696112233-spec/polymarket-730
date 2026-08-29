@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import {
   ApiError,
   ModalShell,
@@ -24,6 +25,8 @@ import {
   transactionUrl,
   whaleApi,
 } from "./WhaleShared";
+
+const AUTO_REFRESH_INTERVAL_MS = 10_000;
 
 const EMPTY_SUMMARY: WhaleRecordSummary = {
   total_invested_usdc: 0,
@@ -105,8 +108,8 @@ export default function WhaleRecordsWorkspace() {
   const [detailLoading, setDetailLoading] = useState<Set<number>>(new Set());
   const [sellTarget, setSellTarget] = useState<WhalePosition | null>(null);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     const params = new URLSearchParams({ limit: "200", offset: "0" });
     if (appliedStart) params.set("start_date", appliedStart);
@@ -122,7 +125,7 @@ export default function WhaleRecordsWorkspace() {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "巨鲸跟单记录加载失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [appliedEnd, appliedStart]);
 
@@ -130,6 +133,11 @@ export default function WhaleRecordsWorkspace() {
     const timer = window.setTimeout(() => void loadData(), 0);
     return () => window.clearTimeout(timer);
   }, [loadData]);
+
+  useVisibleAutoRefresh(async () => {
+    if (loading) return;
+    await loadData(true);
+  }, AUTO_REFRESH_INTERVAL_MS);
 
   const openPositions = useMemo(
     () => positions.filter((position) => ["opening", "open", "closing", "redeeming"].includes(position.status)),

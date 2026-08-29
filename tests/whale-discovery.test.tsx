@@ -464,8 +464,9 @@ describe("邮件记录工作台", () => {
     expect(await screen.findByRole("heading", { name: "发送记录" })).toBeInTheDocument();
     expect(await screen.findByText("alerts@example.com")).toBeInTheDocument();
     expect(screen.getByText("新号大额 / 全量超大额")).toBeInTheDocument();
-    expect(screen.getByText("[PolyCopy] 新号大额 + 全量超大额提醒")).toBeInTheDocument();
-    expect(screen.getByText(/近 24 小时累计买入：600,000 USDC/)).toBeInTheDocument();
+    expect(screen.queryByText("发送内容")).not.toBeInTheDocument();
+    expect(screen.queryByText("[PolyCopy] 新号大额 + 全量超大额提醒")).not.toBeInTheDocument();
+    expect(screen.queryByText(/近 24 小时累计买入：600,000 USDC/)).not.toBeInTheDocument();
     expect(screen.getByText("未命中")).toBeInTheDocument();
     expect(screen.getByText("SMTP authentication failed")).toBeInTheDocument();
     expect(screen.getByText("市场种类")).toBeInTheDocument();
@@ -474,11 +475,6 @@ describe("邮件记录工作台", () => {
     expect(screen.getByText("加密")).toBeInTheDocument();
     expect(screen.getByText("Yes")).toBeInTheDocument();
     expect(screen.getByText("600.0K USDC")).toHaveAttribute("title", "600,000.00 USDC");
-    const contentDetails = screen.getByText("查看正文").closest("details");
-    expect(contentDetails).not.toHaveAttribute("open");
-    await user.click(screen.getByText("查看正文"));
-    expect(contentDetails).toHaveAttribute("open");
-
     await user.selectOptions(screen.getByRole("combobox", { name: "邮件状态筛选" }), "failed");
     await waitFor(() => expect(requestedUrls.some((url) => url.includes("status=failed"))).toBe(true));
   });
@@ -633,7 +629,7 @@ const whaleMarket = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("巨鲸请求监测面板", () => {
-  it("只显示最近一条成功请求并用新的成功请求替换", async () => {
+  it("展示成功、失败与进行中请求，并让失败请求优先可见", async () => {
     class FakeEventSource {
       static instance: FakeEventSource | null = null;
       onopen: ((event: Event) => void) | null = null;
@@ -685,11 +681,11 @@ describe("巨鲸请求监测面板", () => {
     expect(screen.getByText("16:00:00")).toBeInTheDocument();
     expect(screen.getByLabelText("Request Monitor")).not.toHaveClass("pcPanel");
     expect(screen.queryByRole("heading", { name: "Request Monitor" })).not.toBeInTheDocument();
-    expect(screen.getByText(/https:\/\/data-api\.polymarket\.com\/trades/).closest("code")).toHaveTextContent(
+    expect(screen.getByText("HTTP 200 · 321ms").closest("code")).toHaveTextContent(
       "GEThttps://data-api.polymarket.com/tradesHTTP 200 · 321ms",
     );
     expect(screen.getByText("HTTP 200 · 321ms")).toBeInTheDocument();
-    expect(screen.queryByText("[pending]")).not.toBeInTheDocument();
+    expect(screen.getByText("pending")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "仅失败" })).not.toBeInTheDocument();
     FakeEventSource.instance?.onopen?.(new Event("open"));
     expect(await screen.findByLabelText("请求监控状态：实时连接")).toBeInTheDocument();
@@ -707,7 +703,8 @@ describe("巨鲸请求监测面板", () => {
       }),
     }));
     expect(screen.getByText("16:00:00")).toBeInTheDocument();
-    expect(screen.queryByText(/HTTPError/)).not.toBeInTheDocument();
+    expect(await screen.findByText("failed")).toBeInTheDocument();
+    expect(screen.getByText(/Polymarket 接口返回 503/)).toBeInTheDocument();
 
     FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
       data: JSON.stringify({
@@ -746,8 +743,8 @@ describe("巨鲸请求监测面板", () => {
         }),
       }));
     }
-    await waitFor(() => expect(screen.getAllByText("success")).toHaveLength(5));
-    expect(screen.queryByText("16:00:00")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("success")).toHaveLength(6));
+    expect(screen.getByText("16:00:00")).toBeInTheDocument();
     expect(screen.getByText("16:00:08")).toBeInTheDocument();
   });
 
@@ -775,7 +772,7 @@ describe("巨鲸请求监测面板", () => {
     render(<WhaleRequestMonitorPanel />);
 
     expect(await screen.findByLabelText("请求监控状态：正在重连")).toBeInTheDocument();
-    expect(screen.getByText("暂无成功请求，收到新数据后会自动更新。")).toBeInTheDocument();
+    expect(screen.getByText("暂无请求，收到新数据后会自动更新。")).toBeInTheDocument();
     FailedEventSource.instance?.onopen?.(new Event("open"));
     expect(await screen.findByLabelText("请求监控状态：实时连接")).toBeInTheDocument();
   });
@@ -926,9 +923,7 @@ describe("巨鲸持仓页", () => {
     const { container } = render(<WhaleDiscoveryWorkspace />);
 
     expect(await screen.findByRole("heading", { name: "链上大额资金监测" })).toBeInTheDocument();
-    const requestMonitor = screen.getByLabelText("Request Monitor");
-    expect(requestMonitor.closest(".whaleDashboardMain")).not.toBeNull();
-    expect(requestMonitor.closest(".whaleDashboardRail")).toBeNull();
+    expect(screen.queryByLabelText("Request Monitor")).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "分歧市场" })).toBeInTheDocument();
     expect(screen.getByLabelText("巨鲸分歧市场")).toHaveTextContent("1 个市场");
     expect(screen.getByLabelText("Movistar KOI方向")).toHaveTextContent("16.0K USDC");

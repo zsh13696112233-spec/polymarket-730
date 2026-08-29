@@ -24,6 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.config import Settings
 from backend.db import Database
+from backend.home import home_overview
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
     CopyFill,
@@ -96,6 +97,7 @@ from backend.schemas import (
     GlobalSettingsRead,
     GlobalSettingsUpdate,
     HealthRead,
+    HomeOverviewRead,
     PositionCycleTradeRead,
     PositionEventCycleRead,
     PositionEventGroupRead,
@@ -1691,6 +1693,16 @@ def create_app(
             return WhaleSettingsRead.model_validate(values)
         except ValueError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @application.get("/api/home/overview", response_model=HomeOverviewRead)
+    async def get_home_overview(request: Request) -> HomeOverviewRead:
+        require_whale_module(request)
+        return HomeOverviewRead.model_validate(
+            await home_overview(
+                request.app.state.database,
+                request.app.state.polymarket_client,
+            )
+        )
 
     @application.get(
         "/api/whales/auto-decisions",

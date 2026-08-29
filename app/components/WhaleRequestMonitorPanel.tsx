@@ -9,24 +9,27 @@ import {
 } from "./WhaleShared";
 
 type ConnectionState = "connecting" | "connected" | "disconnected";
-const MAX_RECENT_SUCCESSES = 5;
+const MAX_RECENT_REQUESTS = 8;
 
-function successTimestamp(record: WhaleRequestLog): number {
+function requestTimestamp(record: WhaleRequestLog): number {
   const timestamp = Date.parse(record.finished_at || record.started_at);
   return Number.isFinite(timestamp) ? timestamp : record.id;
 }
 
-function mergeRecentSuccesses(
+function mergeRecentRequests(
   current: WhaleRequestLog[],
   candidates: WhaleRequestLog[],
 ): WhaleRequestLog[] {
   const records = new Map(current.map((record) => [record.id, record]));
   for (const record of candidates) {
-    if (record.status === "success") records.set(record.id, record);
+    records.set(record.id, record);
   }
   return Array.from(records.values())
-    .sort((left, right) => successTimestamp(right) - successTimestamp(left) || right.id - left.id)
-    .slice(0, MAX_RECENT_SUCCESSES);
+    .sort((left, right) => {
+      const failurePriority = Number(right.status === "failed") - Number(left.status === "failed");
+      return failurePriority || requestTimestamp(right) - requestTimestamp(left) || right.id - left.id;
+    })
+    .slice(0, MAX_RECENT_REQUESTS);
 }
 
 function consoleTime(value: string): string {
@@ -41,23 +44,31 @@ function consoleTime(value: string): string {
   }).format(date);
 }
 
-export function WhaleRequestMonitorPanel() {
-  const [recentSuccesses, setRecentSuccesses] = useState<WhaleRequestLog[]>([]);
+export function WhaleRequestMonitorPanel({
+  onConnectionChange,
+}: {
+  onConnectionChange?: (state: ConnectionState) => void;
+} = {}) {
+  const [recentRequests, setRecentRequests] = useState<WhaleRequestLog[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
 
-  const acceptSuccesses = useCallback((records: WhaleRequestLog[]) => {
-    setRecentSuccesses((current) => mergeRecentSuccesses(current, records));
+  const acceptRequests = useCallback((records: WhaleRequestLog[]) => {
+    setRecentRequests((current) => mergeRecentRequests(current, records));
   }, []);
 
   const loadSnapshot = useCallback(async () => {
     try {
       const snapshot = await whaleApi<WhaleRequestLogList>("/api/whales/request-logs");
-      acceptSuccesses(snapshot.items);
+      acceptRequests(Array.isArray(snapshot.items) ? snapshot.items : []);
     } catch {
       // The live stream reconnects automatically; keep the last known success visible.
       return;
     }
-  }, [acceptSuccesses]);
+  }, [acceptRequests]);
+
+  useEffect(() => {
+    onConnectionChange?.(connection);
+  }, [connection, onConnectionChange]);
 
   useEffect(() => {
     let active = true;
@@ -85,7 +96,7 @@ export function WhaleRequestMonitorPanel() {
       if (!active) return;
       try {
         const record = JSON.parse(event.data) as WhaleRequestLog;
-        if (record.status === "success") acceptSuccesses([record]);
+        acceptRequests([record]);
       } catch {
         return;
       }
@@ -99,7 +110,7 @@ export function WhaleRequestMonitorPanel() {
       window.clearTimeout(snapshotTimer);
       stream?.close();
     };
-  }, [acceptSuccesses, loadSnapshot]);
+  }, [acceptRequests, loadSnapshot]);
 
   const connectionLabel = connection === "connected"
     ? "实时连接"
@@ -113,7 +124,7 @@ export function WhaleRequestMonitorPanel() {
         <div className="whaleTerminalChrome">
           <span>
             <strong>请求监控</strong>
-            <small>最近成功请求</small>
+            <small>当前进程最近请求 · 失败优先</small>
           </span>
           <b
             className={`whaleTerminalLive ${connection}`}
@@ -124,17 +135,17 @@ export function WhaleRequestMonitorPanel() {
           </b>
         </div>
         <div className="whaleRequestTerminal recent" aria-live="polite" role="status">
-          {recentSuccesses.length ? (
-            recentSuccesses.map((record) => (
-              <div className="whaleTerminalEntry success" key={record.id}>
+          {recentRequests.length ? (
+            recentRequests.map((record) => (
+              <div className={`whaleTerminalEntry ${record.status}`} key={record.id}>
                 <div className="whaleTerminalLine">
                   <time>{consoleTime(record.finished_at || record.started_at)}</time>
-                  <b className="success">success</b>
+                  <b className={record.status}>{record.status}</b>
                   <code>
                     <span className="whaleRequestSummary">
                       <strong>{record.method}</strong>
                       <span className="whaleRequestUrl">{record.url}</span>
-                      <small>{`HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
+                      <small>{record.status === "failed" ? `${record.error_message || record.error_type || "请求失败"} · ${record.duration_ms ?? 0}ms` : `HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
                     </span>
                   </code>
                 </div>
@@ -142,7 +153,7 @@ export function WhaleRequestMonitorPanel() {
             ))
           ) : (
             <div className="whaleTerminalEmpty">
-              暂无成功请求，收到新数据后会自动更新。
+              暂无请求，收到新数据后会自动更新。
             </div>
           )}
         </div>

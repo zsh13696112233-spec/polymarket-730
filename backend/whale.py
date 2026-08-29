@@ -77,6 +77,7 @@ MARKET_PRICE_QUANTUM = Decimal("0.0001")
 PROFILE_MISSING_CACHE = timedelta(days=7)
 TAG_CACHE = timedelta(hours=24)
 MARKET_CACHE = timedelta(seconds=120)
+ACTIVE_POSITION_CACHE_SECONDS = 300.0
 WHALE_TRADE_WINDOW = timedelta(hours=24)
 WHALE_MANUAL_ADOPTION_LOOKBACK = timedelta(hours=24)
 WHALE_EXTERNAL_RECONCILIATION_DELAY = timedelta(seconds=15)
@@ -576,7 +577,8 @@ class WhaleDiscoveryScanner:
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
-        self._last_trade_timestamp: datetime | None = None
+        self._last_trade_cursor_at: datetime | None = None
+        self._position_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
         self._last_history_refresh_at: datetime | None = None
         self._running_config_at: datetime | None = None
         self._auto_pending_recovered = False
@@ -666,6 +668,7 @@ class WhaleDiscoveryScanner:
                     await self._recover_interrupted_auto_decisions()
                     self._auto_pending_recovered = True
                 if self.executor is not None:
+                    await self.executor.reconcile_terminal_sell_remainders()
                     pending_order_warning = await self.executor.reconcile_pending_orders()
                 with capture_whale_requests(self.request_monitor, uuid4().hex):
                     scan_warning = await self._scan(values)
@@ -758,28 +761,37 @@ class WhaleDiscoveryScanner:
         now = utcnow()
         window_start = now - timedelta(hours=max(1, int(config["window_hours"])))
         incremental_start = window_start
-        if self._last_trade_timestamp is None:
+        if self._last_trade_cursor_at is None:
             async with self.database.sessions() as session:
-                self._last_trade_timestamp = await session.scalar(
-                    select(func.max(WhaleTrade.timestamp))
+                settings_row = await session.get(WhaleSettings, 1)
+                self._last_trade_cursor_at = (
+                    settings_row.last_trade_cursor_at if settings_row is not None else None
                 )
-        if self._last_trade_timestamp is not None:
-            incremental_start = max(
-                window_start,
-                self._last_trade_timestamp - timedelta(seconds=120),
+                if self._last_trade_cursor_at is None:
+                    self._last_trade_cursor_at = await session.scalar(
+                        select(func.max(WhaleTrade.timestamp))
+                    )
+        if self._last_trade_cursor_at is not None:
+            incremental_start = min(
+                now,
+                max(
+                    window_start,
+                    self._last_trade_cursor_at - timedelta(seconds=120),
+                ),
             )
         trades, hit_page_limit = await self._collect_trades(
             start=incremental_start,
+            end=now,
             amount=_decimal(config["collect_filter_amount_usdc"]),
         )
         await self._persist_trades(trades)
-        timestamps = [
-            _attribute(item, "timestamp")
-            for item in trades
-            if isinstance(_attribute(item, "timestamp"), datetime)
-        ]
-        if timestamps:
-            self._last_trade_timestamp = max(timestamps)
+        if not hit_page_limit:
+            async with self.database.sessions() as session:
+                settings_row = await session.get(WhaleSettings, 1)
+                if settings_row is not None:
+                    settings_row.last_trade_cursor_at = now
+                    await session.commit()
+            self._last_trade_cursor_at = now
 
         async with self.database.sessions() as session:
             window_trades = list(
@@ -872,10 +884,10 @@ class WhaleDiscoveryScanner:
                 rule_matches[key] = matches
                 qualified.append(aggregate)
         async with self.database.sessions() as session:
-            active_wallets = list(
+            active_rows = list(
                 (
-                    await session.scalars(
-                        select(WhaleEntry.proxy_wallet)
+                    await session.execute(
+                        select(WhaleEntry.proxy_wallet, WhaleEntry.condition_id)
                         .join(
                             WhaleEntryRuleState,
                             WhaleEntryRuleState.entry_id == WhaleEntry.id,
@@ -886,9 +898,13 @@ class WhaleDiscoveryScanner:
                     )
                 ).all()
             )
+        active_targets: dict[str, set[str]] = defaultdict(set)
+        for wallet, condition_id in active_rows:
+            if condition_id:
+                active_targets[wallet].add(condition_id)
         positions_by_wallet, failed_wallets = await self._fetch_current_positions(
             qualified,
-            additional_wallets=active_wallets,
+            additional_targets=active_targets,
         )
         auto_decision_ids = await self._persist_entries(
             qualified,
@@ -982,34 +998,84 @@ class WhaleDiscoveryScanner:
         self,
         aggregates: list[WhaleAggregate],
         *,
-        additional_wallets: Iterable[str] = (),
+        additional_targets: dict[str, set[str]] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], set[str]]:
-        """Fetch complete current positions without turning provider failures into exits."""
+        """Fetch only relevant positions without turning provider failures into exits."""
 
-        wallets = list(
-            dict.fromkeys([item.proxy_wallet for item in aggregates] + list(additional_wallets))
-        )
+        candidate_targets: dict[str, set[str]] = defaultdict(set)
+        for item in aggregates:
+            if item.condition_id:
+                candidate_targets[item.proxy_wallet].add(item.condition_id)
+        targets: dict[str, set[str]] = defaultdict(set)
+        for wallet, condition_ids in (additional_targets or {}).items():
+            targets[wallet].update(condition_ids)
+        for wallet, condition_ids in candidate_targets.items():
+            targets[wallet].update(condition_ids)
+        wallets = list(targets)
         positions_by_wallet: dict[str, dict[str, Any]] = {}
         failed_wallets: set[str] = set()
         for offset in range(0, len(wallets), 5):
             batch = wallets[offset : offset + 5]
+            requested_by_wallet: dict[str, list[str]] = {}
+            cached_by_wallet: dict[str, dict[str, Any]] = {}
+            cache_now = monotonic()
+            for wallet in batch:
+                cached_positions: dict[str, Any] = {}
+                requested: list[str] = []
+                force_fresh = wallet in candidate_targets
+                for condition_id in sorted(targets[wallet]):
+                    cache_key = (wallet.lower(), condition_id)
+                    cached = self._position_cache.get(cache_key)
+                    if not force_fresh and cached is not None and cached[0] > cache_now:
+                        cached_positions.update(cached[1])
+                    else:
+                        if cached is not None and cached[0] <= cache_now:
+                            self._position_cache.pop(cache_key, None)
+                        requested.append(condition_id)
+                cached_by_wallet[wallet] = cached_positions
+                requested_by_wallet[wallet] = requested
+
+            async def fetch_wallet(wallet: str, requested: list[str]) -> list[Any]:
+                if not requested:
+                    return []
+                return await self._retry(
+                    self.client.fetch_active_positions,
+                    user=wallet,
+                    condition_ids=requested,
+                )
+
             results = await asyncio.gather(
-                *(self._retry(self.client.fetch_active_positions, user=wallet) for wallet in batch),
+                *(fetch_wallet(wallet, requested_by_wallet[wallet]) for wallet in batch),
                 return_exceptions=True,
             )
             for wallet, result in zip(batch, results, strict=True):
                 if isinstance(result, Exception):
                     failed_wallets.add(wallet)
                     continue
-                positions_by_wallet[wallet] = {
-                    position.asset_id: position for position in result if position.size > ZERO
+                positions = dict(cached_by_wallet[wallet])
+                requested = requested_by_wallet[wallet]
+                fetched_by_condition: dict[str, dict[str, Any]] = {
+                    condition_id: {} for condition_id in requested
                 }
+                for position in result:
+                    if position.size <= ZERO or position.condition_id not in fetched_by_condition:
+                        continue
+                    fetched_by_condition[position.condition_id][position.asset_id] = position
+                expires_at = monotonic() + ACTIVE_POSITION_CACHE_SECONDS
+                for condition_id, condition_positions in fetched_by_condition.items():
+                    self._position_cache[(wallet.lower(), condition_id)] = (
+                        expires_at,
+                        condition_positions,
+                    )
+                    positions.update(condition_positions)
+                positions_by_wallet[wallet] = positions
         return positions_by_wallet, failed_wallets
 
     async def _collect_trades(
         self,
         *,
         start: datetime,
+        end: datetime,
         amount: Decimal,
     ) -> tuple[list[Any], bool]:
         limit = 500
@@ -1020,6 +1086,7 @@ class WhaleDiscoveryScanner:
                 self.client.fetch_large_trades,
                 filter_amount_usdc=amount,
                 start=start,
+                end=end,
                 limit=limit,
                 offset=offset,
             )
@@ -1029,14 +1096,13 @@ class WhaleDiscoveryScanner:
                 for item in page_items
                 if isinstance(_attribute(item, "timestamp"), datetime)
             ]
-            # The provider ignores its undocumented start parameter. Bound the
-            # returned page locally so the overlap page is not reprocessed and
-            # rechecked against SQLite on every incremental scan.
+            # Keep a defensive local bound even though the provider supports the
+            # range, since the overlap window is intentionally re-read and deduped.
             results.extend(
                 item
                 for item in page_items
                 if not isinstance(_attribute(item, "timestamp"), datetime)
-                or _attribute(item, "timestamp") >= start
+                or start <= _attribute(item, "timestamp") <= end
             )
             if len(page_items) < limit or (timestamps and min(timestamps) < start):
                 return results, False
@@ -1049,7 +1115,11 @@ class WhaleDiscoveryScanner:
             except PolymarketAPIError as error:
                 if attempt >= 2:
                     raise
-                await asyncio.sleep(max(0.05, float(error.retry_after or (attempt + 1))))
+                # A 429 is the only API error carrying Retry-After.  When the
+                # provider omits it, use a slightly wider exponential fallback
+                # instead of immediately repeating the same burst.
+                fallback = 2 ** (attempt + 1) if error.rate_limited else attempt + 1
+                await asyncio.sleep(max(0.05, float(error.retry_after or fallback)))
         raise AssertionError("unreachable")
 
     async def _persist_trades(self, trades: Iterable[Any]) -> None:
@@ -2029,6 +2099,8 @@ class WhaleDiscoveryScanner:
                 pending = False
                 latest_order_by_asset: dict[str, int] = {}
                 for position in positions:
+                    if await self.executor.write_off_terminal_sell_remainder(position.id):
+                        continue
                     if position.status == "closing":
                         pending = True
                         continue
@@ -2923,6 +2995,7 @@ class WhaleFollowExecutor:
                     )
                 else:
                     before_size = position.size
+                    full_exit_requested = order.requested_size >= before_size
                     sold = min(before_size, new_size)
                     cost = position.cost_usdc * sold / before_size if before_size > ZERO else ZERO
                     gross_for_sold = new_amount * sold / new_size
@@ -2966,6 +3039,21 @@ class WhaleFollowExecutor:
                             timestamp=now,
                         )
                     )
+                    if full_exit_requested:
+                        await self._write_off_terminal_sell_remainder(
+                            session,
+                            position,
+                            order,
+                            now=now,
+                            transaction_hash=next(
+                                (
+                                    fill.transaction_hash
+                                    for fill in new_fills
+                                    if fill.transaction_hash
+                                ),
+                                None,
+                            ),
+                        )
                 position.updated_at = now
             elif position is not None and new_size <= ZERO:
                 pending_status = order.status in {
@@ -2982,6 +3070,169 @@ class WhaleFollowExecutor:
                     position.status = "closing" if pending_status else "open"
                     position.updated_at = now
             await session.commit()
+
+    async def write_off_terminal_sell_remainder(self, position_id: int) -> bool:
+        """Close a tiny remainder left by an already-terminal sell-all order."""
+
+        async with self.database.sessions() as session:
+            position = await session.get(WhaleFollowPosition, position_id)
+            if position is None:
+                return False
+            order = await session.scalar(
+                select(WhaleOrder)
+                .where(
+                    WhaleOrder.position_id == position_id,
+                    WhaleOrder.side == "SELL",
+                )
+                .order_by(WhaleOrder.created_at.desc(), WhaleOrder.id.desc())
+                .limit(1)
+            )
+            if order is None:
+                return False
+            transaction_hash = await session.scalar(
+                select(WhaleFill.transaction_hash)
+                .where(
+                    WhaleFill.order_id == order.id,
+                    WhaleFill.transaction_hash.is_not(None),
+                )
+                .order_by(WhaleFill.timestamp.desc(), WhaleFill.id.desc())
+                .limit(1)
+            )
+            written_off = await self._write_off_terminal_sell_remainder(
+                session,
+                position,
+                order,
+                now=utcnow(),
+                transaction_hash=transaction_hash,
+            )
+            if written_off:
+                await self._complete_conflict_exit_if_flat(
+                    session,
+                    condition_id=position.condition_id,
+                    now=position.updated_at,
+                )
+                await session.commit()
+            return written_off
+
+    async def reconcile_terminal_sell_remainders(self) -> int:
+        """Sweep restart-safe low-value remainders before market lifecycle work."""
+
+        async with self.database.sessions() as session:
+            position_ids = list(
+                (
+                    await session.scalars(
+                        select(WhaleFollowPosition.id).where(
+                            WhaleFollowPosition.size > ZERO,
+                            WhaleFollowPosition.size <= FAK_IGNORABLE_REMAINDER_USDC,
+                            WhaleFollowPosition.status.in_(["opening", "open", "closing"]),
+                        )
+                    )
+                ).all()
+            )
+        written_off = 0
+        for position_id in position_ids:
+            if await self.write_off_terminal_sell_remainder(position_id):
+                written_off += 1
+        return written_off
+
+    @staticmethod
+    async def _complete_conflict_exit_if_flat(
+        session: Any,
+        *,
+        condition_id: str,
+        now: datetime,
+    ) -> None:
+        remaining = await session.scalar(
+            select(func.count(WhaleFollowPosition.id)).where(
+                WhaleFollowPosition.condition_id == condition_id,
+                WhaleFollowPosition.size > ZERO,
+                WhaleFollowPosition.status.in_(["opening", "open", "closing"]),
+            )
+        )
+        if int(remaining or 0) > 0:
+            return
+        market_lock = await session.get(WhaleAutoMarketLock, condition_id)
+        if market_lock is None or market_lock.exit_status == "not_required":
+            return
+        market_lock.exit_status = "completed"
+        market_lock.last_error = None
+        market_lock.updated_at = now
+        decisions = list(
+            (
+                await session.scalars(
+                    select(WhaleAutoFollowDecision)
+                    .join(WhaleOrder, WhaleOrder.id == WhaleAutoFollowDecision.buy_order_id)
+                    .where(
+                        WhaleAutoFollowDecision.condition_id == condition_id,
+                        WhaleOrder.filled_size > ZERO,
+                    )
+                )
+            ).all()
+        )
+        for decision in decisions:
+            decision.status = "exit_completed"
+            decision.reason = "分歧市场风控退出已完成"
+            decision.updated_at = now
+
+    @staticmethod
+    async def _write_off_terminal_sell_remainder(
+        session: Any,
+        position: WhaleFollowPosition,
+        order: WhaleOrder,
+        *,
+        now: datetime,
+        transaction_hash: str | None,
+    ) -> bool:
+        pending_statuses = {
+            "submitted",
+            "reconciliation_pending",
+            "live",
+            "matched",
+            "planned",
+            "signed",
+        }
+        if (
+            order.side != "SELL"
+            or order.status in pending_statuses
+            or order.filled_size <= ZERO
+            or position.size <= ZERO
+            or position.status not in {"opening", "open", "closing"}
+            or position.size * ONE > FAK_IGNORABLE_REMAINDER_USDC
+            or order.requested_size + REDEMPTION_SIZE_TOLERANCE < order.filled_size + position.size
+        ):
+            return False
+        dust_key = hashlib.sha256(f"dust|order|{order.id}".encode()).hexdigest()
+        existing = await session.scalar(
+            select(WhaleFollowLedger.id).where(WhaleFollowLedger.external_event_key == dust_key)
+        )
+        if existing is not None:
+            return False
+        dust_size = position.size
+        dust_cost = position.cost_usdc
+        session.add(
+            WhaleFollowLedger(
+                position_id=position.id,
+                order_id=order.id,
+                type="dust_writeoff",
+                source=order.source,
+                external_event_key=dust_key,
+                size=dust_size,
+                price=None,
+                amount_usdc=ZERO,
+                fee_usdc=ZERO,
+                realized_pnl=-dust_cost,
+                transaction_hash=transaction_hash,
+                detail="卖出全部后的不可交易尾差核销",
+                timestamp=now,
+            )
+        )
+        position.realized_pnl -= dust_cost
+        position.size = ZERO
+        position.cost_usdc = ZERO
+        position.status = "closed"
+        position.closed_at = now
+        position.updated_at = now
+        return True
 
     @staticmethod
     def _external_trade_key(position_id: int, trade: Any) -> str:

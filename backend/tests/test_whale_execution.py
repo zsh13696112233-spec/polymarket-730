@@ -11,6 +11,7 @@ from backend.config import Settings
 from backend.db import Database
 from backend.models import (
     ExecutionAccount,
+    WhaleAutoMarketLock,
     WhaleFill,
     WhaleFollowLedger,
     WhaleFollowPosition,
@@ -455,6 +456,165 @@ async def test_partial_then_full_sell_moves_proportional_cost_and_closes_positio
     assert [entry.type for entry in ledger] == ["sell", "sell"]
     assert_decimal(ledger[0].realized_pnl, "0.3")
     assert_decimal(ledger[1].realized_pnl, "0.45")
+
+
+@pytest.mark.asyncio
+async def test_sell_all_writes_off_small_fak_remainder_once(database: Database):
+    position_id = await insert_position(
+        database,
+        size="10",
+        cost="5",
+        status="open",
+        lifetime_bought_size="10",
+        lifetime_bought_usdc="5",
+    )
+    order_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="10",
+        requested_usdc="6",
+        key="whale:sell-all-dust",
+    )
+    result = TradeResult(
+        status="partially_filled",
+        external_order_id="sell-all-dust-order",
+        external_trade_id="sell-all-dust-trade",
+        filled_size=Decimal("9.99"),
+        filled_usdc=Decimal("5.994"),
+        average_price=Decimal("0.6"),
+    )
+    follow_executor = executor(database)
+
+    await follow_executor.apply_result(order_id, result)
+    await follow_executor.apply_result(order_id, result)
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        ledger = list(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger)
+                    .where(WhaleFollowLedger.position_id == position_id)
+                    .order_by(WhaleFollowLedger.id)
+                )
+            ).all()
+        )
+
+    assert position is not None
+    assert position.size == ZERO
+    assert position.cost_usdc == ZERO
+    assert position.status == "closed"
+    assert [row.type for row in ledger] == ["sell", "dust_writeoff"]
+    assert_decimal(ledger[1].size, "0.01")
+    assert_decimal(ledger[1].realized_pnl, "-0.005")
+
+
+@pytest.mark.asyncio
+async def test_terminal_sell_remainder_is_written_off_after_restart(database: Database):
+    position_id = await insert_position(
+        database,
+        size="0.002141",
+        cost="0.0012253365",
+        status="open",
+        lifetime_bought_size="34.982141",
+        lifetime_bought_usdc="19.589999",
+    )
+    order_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="34.982141",
+        requested_usdc="18.54",
+        key="whale:legacy-sell-all-dust",
+    )
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        assert order is not None
+        order.source = "conflict_exit"
+        order.filled_size = Decimal("34.98")
+        order.filled_usdc = Decimal("19.5888")
+        order.status = "filled"
+        session.add(
+            WhaleAutoMarketLock(
+                condition_id=CONDITION_ID,
+                trigger_entry_id=None,
+                trigger_wallet=None,
+                trigger_asset_id=ASSET_ID,
+                trigger_outcome="Yes",
+                trigger_amount_usdc=Decimal("500000"),
+                trigger_rules_json='["large_amount"]',
+                reason="反向大额信号",
+                exit_status="market_closed",
+                last_error="市场当前已不再开放交易",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await session.commit()
+
+    follow_executor = executor(database)
+    assert await follow_executor.reconcile_terminal_sell_remainders() == 1
+    assert await follow_executor.reconcile_terminal_sell_remainders() == 0
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        market_lock = await session.get(WhaleAutoMarketLock, CONDITION_ID)
+        ledger = list(
+            await session.scalars(
+                select(WhaleFollowLedger).where(WhaleFollowLedger.position_id == position_id)
+            )
+        )
+
+    assert position is not None
+    assert position.size == ZERO
+    assert position.cost_usdc == ZERO
+    assert position.status == "closed"
+    assert market_lock is not None
+    assert market_lock.exit_status == "completed"
+    assert market_lock.last_error is None
+    assert [row.type for row in ledger] == ["dust_writeoff"]
+    assert ledger[0].source == "conflict_exit"
+    assert_decimal(ledger[0].size, "0.002141")
+    assert_decimal(ledger[0].realized_pnl, "-0.001225")
+
+
+@pytest.mark.asyncio
+async def test_sell_all_keeps_material_remainder_open(database: Database):
+    position_id = await insert_position(database, size="10", cost="5", status="open")
+    order_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="10",
+        requested_usdc="6",
+        key="whale:sell-all-material-remainder",
+    )
+
+    await executor(database).apply_result(
+        order_id,
+        TradeResult(
+            status="partially_filled",
+            external_order_id="sell-material-order",
+            external_trade_id="sell-material-trade",
+            filled_size=Decimal("9"),
+            filled_usdc=Decimal("5.4"),
+            average_price=Decimal("0.6"),
+        ),
+    )
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        ledger = list(
+            await session.scalars(
+                select(WhaleFollowLedger).where(WhaleFollowLedger.position_id == position_id)
+            )
+        )
+
+    assert position is not None
+    assert position.size == Decimal("1")
+    assert position.status == "open"
+    assert [row.type for row in ledger] == ["sell"]
 
 
 @pytest.mark.asyncio

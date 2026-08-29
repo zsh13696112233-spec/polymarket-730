@@ -112,19 +112,30 @@ class FakePolymarketClient:
             label=(requested_label or "jjavi").strip() or "jjavi",
         )
 
-    async def fetch_active_positions(self, user: str) -> list[PositionSnapshot]:
+    async def fetch_active_positions(
+        self,
+        user: str,
+        *,
+        condition_ids: Iterable[str] | None = None,
+    ) -> list[PositionSnapshot]:
         if self.snapshots:
             value = self.snapshots.pop(0)
             if isinstance(value, Exception):
                 raise value
             self.last_snapshot = value
-        return list(self.last_snapshot)
+        conditions = set(condition_ids or [])
+        results: list[PositionSnapshot] = []
+        for item in self.last_snapshot:
+            if not conditions or item.condition_id in conditions:
+                results.append(item)
+        return results
 
     async def fetch_large_trades(
         self,
         *,
         filter_amount_usdc: Decimal,
         start: datetime,
+        end: datetime,
         limit: int = 500,
         offset: int = 0,
     ) -> list[LargeTradeSnapshot]:
@@ -132,6 +143,7 @@ class FakePolymarketClient:
             {
                 "filter_amount_usdc": filter_amount_usdc,
                 "start": start,
+                "end": end,
                 "limit": limit,
                 "offset": offset,
             }
@@ -141,7 +153,7 @@ class FakePolymarketClient:
         eligible = [
             trade
             for trade in self.large_trades
-            if trade.amount >= filter_amount_usdc and trade.timestamp >= start
+            if trade.amount >= filter_amount_usdc and start <= trade.timestamp <= end
         ]
         eligible.sort(key=lambda trade: trade.timestamp, reverse=True)
         return eligible[offset : offset + limit]

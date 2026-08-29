@@ -16,6 +16,15 @@ function requestTimestamp(record: WhaleRequestLog): number {
   return Number.isFinite(timestamp) ? timestamp : record.id;
 }
 
+function requestKey(record: WhaleRequestLog): string {
+  return JSON.stringify([
+    record.scan_id,
+    record.method,
+    record.url,
+    Object.entries(record.query_params).sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+}
+
 function mergeRecentRequests(
   current: WhaleRequestLog[],
   candidates: WhaleRequestLog[],
@@ -24,7 +33,18 @@ function mergeRecentRequests(
   for (const record of candidates) {
     records.set(record.id, record);
   }
-  return Array.from(records.values())
+  const chronological = Array.from(records.values())
+    .sort((left, right) => requestTimestamp(right) - requestTimestamp(left) || right.id - left.id);
+  const recovered = new Set<string>();
+  const unresolved = chronological.filter((record) => {
+    const key = requestKey(record);
+    if (record.status === "success") {
+      recovered.add(key);
+      return true;
+    }
+    return record.status !== "failed" || !recovered.has(key);
+  });
+  return unresolved
     .sort((left, right) => {
       const failurePriority = Number(right.status === "failed") - Number(left.status === "failed");
       return failurePriority || requestTimestamp(right) - requestTimestamp(left) || right.id - left.id;

@@ -791,6 +791,7 @@ class WhaleSettings(Base):
         DECIMAL_TYPE, nullable=False, default=Decimal("3")
     )
     auto_redeem: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_trade_cursor_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_scan_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

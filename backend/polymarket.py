@@ -23,9 +23,16 @@ ZERO = Decimal("0")
 
 
 class PolymarketAPIError(RuntimeError):
-    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: float | None = None,
+        rate_limited: bool = False,
+    ) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        self.rate_limited = rate_limited
 
 
 class InvalidWalletInput(ValueError):
@@ -345,6 +352,7 @@ class PolymarketClient:
     POSITION_PAGE_SIZE = 500
     TRADE_MARKET_BATCH_SIZE = 100
     MARKET_RESOLUTION_BATCH_SIZE = 100
+    LARGE_TRADE_REQUEST_INTERVAL_SECONDS = 0.5
 
     def __init__(
         self,
@@ -367,6 +375,8 @@ class PolymarketClient:
         self._http = self._new_http_client()
         self._retired_http_clients: set[httpx.AsyncClient] = set()
         self._retired_close_tasks: set[asyncio.Task[None]] = set()
+        self._large_trade_request_lock = asyncio.Lock()
+        self._last_large_trade_request_at: float | None = None
         self._request_semaphores = {
             urlparse(self.data_api_url).netloc: asyncio.Semaphore(max(1, data_api_concurrency)),
             urlparse(self.gamma_api_url).netloc: asyncio.Semaphore(max(1, gamma_api_concurrency)),
@@ -500,7 +510,11 @@ class PolymarketClient:
                     error_message=message,
                     response_excerpt=response.text.strip(),
                 )
-            raise PolymarketAPIError(message, retry_after=retry_after)
+            raise PolymarketAPIError(
+                message,
+                retry_after=retry_after,
+                rate_limited=True,
+            )
         if response.status_code == 404 and not_found_none:
             if capture is not None and request_record_id is not None:
                 await capture.monitor.complete(
@@ -550,10 +564,18 @@ class PolymarketClient:
         *,
         filter_amount_usdc: Decimal,
         start: datetime,
+        end: datetime,
         limit: int = 500,
         offset: int = 0,
     ) -> list[LargeTradeSnapshot]:
-        """Fetch one descending Data API page for the whale scanner."""
+        """Fetch one descending Data API page for the whale scanner.
+
+        The public trades endpoint does not support a lower time boundary.  The
+        scanner therefore applies ``start`` locally and stops descending pages
+        once they cross it.  ``end`` remains in the request as a freshness key:
+        without a changing query value Cloudflare can serve the same trades page
+        for five minutes, which is too stale for automatic-follow discovery.
+        """
 
         if filter_amount_usdc <= ZERO:
             raise ValueError("大额成交采集金额必须大于 0")
@@ -561,20 +583,28 @@ class PolymarketClient:
             raise ValueError("大额成交单页数量必须在 1 到 500 之间")
         if offset < 0:
             raise ValueError("大额成交分页偏移不能为负数")
-        # The Data API currently ignores an undocumented `start` query parameter.
-        # Keep the boundary in the method contract for caller-side pagination only.
-        _ = start
-        payload = await self._get_json(
-            f"{self.data_api_url}/trades",
-            params={
-                "filterType": "CASH",
-                "filterAmount": str(filter_amount_usdc),
-                "limit": limit,
-                "offset": offset,
-                "takerOnly": "false",
-                "side": "BUY",
-            },
-        )
+        if end < start:
+            raise ValueError("大额成交查询结束时间不能早于开始时间")
+        async with self._large_trade_request_lock:
+            if self._last_large_trade_request_at is not None:
+                delay = self.LARGE_TRADE_REQUEST_INTERVAL_SECONDS - (
+                    monotonic() - self._last_large_trade_request_at
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            self._last_large_trade_request_at = monotonic()
+            payload = await self._get_json(
+                f"{self.data_api_url}/trades",
+                params={
+                    "filterType": "CASH",
+                    "filterAmount": str(filter_amount_usdc),
+                    "limit": limit,
+                    "offset": offset,
+                    "takerOnly": "false",
+                    "side": "BUY",
+                    "end": int(end.replace(tzinfo=UTC).timestamp()),
+                },
+            )
         if not isinstance(payload, list):
             raise PolymarketAPIError("大额成交接口返回格式无效")
 
@@ -1294,12 +1324,28 @@ class PolymarketClient:
             label=label[:100],
         )
 
-    async def fetch_active_positions(self, user: str) -> list[PositionSnapshot]:
+    async def fetch_active_positions(
+        self,
+        user: str,
+        *,
+        condition_ids: Iterable[str] | None = None,
+    ) -> list[PositionSnapshot]:
         # `mergeable` is a filter, not an output toggle. Both complete result sets are
         # required before this method returns a snapshot that is safe for absence checks.
+        conditions = list(dict.fromkeys(condition_ids or []))
         non_mergeable, mergeable = await asyncio.gather(
-            self._fetch_positions_variant(user, redeemable=False, mergeable=False),
-            self._fetch_positions_variant(user, redeemable=False, mergeable=True),
+            self._fetch_positions_variant(
+                user,
+                redeemable=False,
+                mergeable=False,
+                condition_ids=conditions,
+            ),
+            self._fetch_positions_variant(
+                user,
+                redeemable=False,
+                mergeable=True,
+                condition_ids=conditions,
+            ),
         )
         by_asset: dict[str, PositionSnapshot] = {}
         for position in [*non_mergeable, *mergeable]:

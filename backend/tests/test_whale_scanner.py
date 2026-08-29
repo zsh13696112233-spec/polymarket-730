@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -31,6 +32,7 @@ from backend.models import (
 )
 from backend.polymarket import (
     LargeTradeSnapshot,
+    PolymarketAPIError,
     PositionSnapshot,
     WhaleHolderSnapshot,
     WhaleMarketPositionSnapshot,
@@ -184,11 +186,33 @@ async def test_incremental_trade_collection_discards_provider_rows_before_cursor
     )
     trades, hit_page_limit = await scanner._collect_trades(
         start=start,
+        end=start + timedelta(minutes=10),
         amount=Decimal("1000"),
     )
 
     assert [trade.transaction_hash for trade in trades] == ["0xnew"]
     assert hit_page_limit is False
+
+
+async def test_rate_limit_retry_uses_exponential_fallback(database, monkeypatch):
+    scanner = build_scanner(database)
+    attempts = 0
+    delays: list[float] = []
+
+    async def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PolymarketAPIError("Polymarket 接口请求过于频繁", rate_limited=True)
+        return "ok"
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("backend.whale.asyncio.sleep", record_sleep)
+
+    assert await scanner._retry(operation) == "ok"
+    assert delays == [2.0, 4.0]
 
 
 async def test_background_tick_skips_while_another_round_is_running(database, monkeypatch):
@@ -431,13 +455,18 @@ class PositionDiscoveryClient:
             )
         ]
 
-    async def fetch_active_positions(self, user: str) -> list[PositionSnapshot]:
+    async def fetch_active_positions(
+        self,
+        user: str,
+        *,
+        condition_ids: Iterable[str] | None = None,
+    ) -> list[PositionSnapshot]:
         assert user == self.wallet
         if self.position_error:
             raise RuntimeError("positions unavailable")
         if not self.position_available:
             return []
-        return [
+        positions = [
             PositionSnapshot(
                 asset_id=self.asset_id,
                 condition_id=self.condition_id,
@@ -459,6 +488,8 @@ class PositionDiscoveryClient:
                 end_date=utcnow() + timedelta(hours=4),
             )
         ]
+        conditions = set(condition_ids or [])
+        return [item for item in positions if not conditions or item.condition_id in conditions]
 
 
 async def test_scanner_finds_recent_large_buyers_and_confirms_current_position(database):
@@ -1157,6 +1188,11 @@ async def test_scanner_restores_incremental_watermark_from_persisted_trades(
         settings=database.settings,
     )
     assert await first_scanner.tick() is True
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        persisted_cursor = settings.last_trade_cursor_at
+    assert persisted_cursor is not None
 
     starts = []
 
@@ -1171,7 +1207,56 @@ async def test_scanner_restores_incremental_watermark_from_persisted_trades(
         settings=database.settings,
     )
     assert await restarted_scanner.tick() is True
-    assert starts == [client.trade_timestamp - timedelta(seconds=120)]
+    assert starts == [persisted_cursor - timedelta(seconds=120)]
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        assert settings.last_trade_cursor_at is not None
+        assert settings.last_trade_cursor_at > persisted_cursor
+
+
+async def test_scanner_does_not_advance_trade_cursor_after_collection_failure(
+    database,
+    monkeypatch,
+):
+    client = PositionDiscoveryClient()
+
+    async def fail_collection(**_: Any) -> list[Any]:
+        raise RuntimeError("trade collection failed")
+
+    monkeypatch.setattr(client, "fetch_large_trades", fail_collection)
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+
+    assert await scanner.tick() is False
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        assert settings.last_trade_cursor_at is None
+
+
+async def test_scanner_does_not_advance_trade_cursor_at_page_limit(database, monkeypatch):
+    client = PositionDiscoveryClient()
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+
+    async def page_limited(**_: Any) -> tuple[list[Any], bool]:
+        return [], True
+
+    monkeypatch.setattr(scanner, "_collect_trades", page_limited)
+
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        assert settings.last_trade_cursor_at is None
+        assert "分页上限" in (settings.last_scan_error or "")
 
 
 async def test_profile_refresh_honors_per_scan_limit(database):
@@ -1356,7 +1441,7 @@ async def test_monitored_build_time_is_frozen_when_rolling_window_moves(database
             trade.timestamp = utcnow() - timedelta(hours=25)
         await session.commit()
 
-    client.trade_timestamp = utcnow() - timedelta(minutes=5)
+    client.trade_timestamp = utcnow() - timedelta(minutes=1)
     client.transaction_hash = "0xnew-add"
     assert await scanner.tick() is True
 
@@ -1529,6 +1614,65 @@ def _auto_aggregate(
         last_buy_at=now,
         status="holding",
     )
+
+
+async def test_active_position_cache_skips_only_stored_wallet_checks(database):
+    wallet = "0x7777777777777777777777777777777777777777"
+    condition_id = "0x" + "7" * 64
+    second_condition_id = "0x" + "8" * 64
+
+    class PositionClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+        async def fetch_active_positions(
+            self,
+            user: str,
+            *,
+            condition_ids: Iterable[str] | None = None,
+        ) -> list[PositionSnapshot]:
+            self.calls.append((user, tuple(condition_ids or [])))
+            return []
+
+    client = PositionClient()
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    active_targets = {wallet: {condition_id}}
+
+    first, failed = await scanner._fetch_current_positions(
+        [],
+        additional_targets=active_targets,
+    )
+    second, failed_again = await scanner._fetch_current_positions(
+        [],
+        additional_targets=active_targets,
+    )
+    expanded_targets = {wallet: {condition_id, second_condition_id}}
+    third, expanded_failed = await scanner._fetch_current_positions(
+        [],
+        additional_targets=expanded_targets,
+    )
+    fourth, candidate_failed = await scanner._fetch_current_positions(
+        [
+            _auto_aggregate(
+                wallet=wallet,
+                asset_id="asset-yes",
+                condition_id=condition_id,
+            )
+        ],
+        additional_targets=expanded_targets,
+    )
+
+    assert first == second == third == fourth == {wallet: {}}
+    assert failed == failed_again == expanded_failed == candidate_failed == set()
+    assert client.calls == [
+        (wallet, (condition_id,)),
+        (wallet, (second_condition_id,)),
+        (wallet, (condition_id, second_condition_id)),
+    ]
 
 
 async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(database):
@@ -1832,6 +1976,10 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
     calls: list[tuple[str, Any]] = []
 
     class ConflictExecutor:
+        async def write_off_terminal_sell_remainder(self, position_id: int) -> bool:
+            calls.append(("dust_check", position_id))
+            return False
+
         async def quote_sell(self, *, position_id: int, size: Any, sell_all: bool):
             calls.append(("quote", (position_id, size, sell_all)))
             return SimpleNamespace(position_id=position_id, asset_id="asset-yes")
@@ -1852,9 +2000,10 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
     scanner.executor = ConflictExecutor()  # type: ignore[assignment]
     await scanner._process_conflict_exits()
 
-    assert calls[0] == ("quote", (position_id, None, True))
-    assert calls[1][0] == "execute"
-    assert calls[1][1][1] == "conflict_exit"
+    assert calls[0] == ("dust_check", position_id)
+    assert calls[1] == ("quote", (position_id, None, True))
+    assert calls[2][0] == "execute"
+    assert calls[2][1][1] == "conflict_exit"
     async with database.sessions() as session:
         decision = await session.get(WhaleAutoFollowDecision, pending[0])
         market_lock = await session.get(WhaleAutoMarketLock, condition_id)

@@ -629,7 +629,7 @@ const whaleMarket = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("巨鲸请求监测面板", () => {
-  it("展示成功、失败与进行中请求，并让失败请求优先可见", async () => {
+  it("展示成功、失败与进行中请求，并在同一次请求重试成功后隐藏旧失败", async () => {
     class FakeEventSource {
       static instance: FakeEventSource | null = null;
       onopen: ((event: Event) => void) | null = null;
@@ -718,6 +718,8 @@ describe("巨鲸请求监测面板", () => {
     }));
     expect(await screen.findByText("16:00:03")).toBeInTheDocument();
     expect(screen.getByText("16:00:00")).toBeInTheDocument();
+    expect(screen.queryByText("failed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Polymarket 接口返回 503/)).not.toBeInTheDocument();
 
     FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
       data: JSON.stringify({

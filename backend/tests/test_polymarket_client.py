@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
+from time import monotonic
 
 import httpx
 import pytest
@@ -14,6 +16,7 @@ from backend.tests.conftest import TEST_ADDRESS
 @pytest.mark.asyncio
 async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
     start = datetime(2026, 8, 16, 1, 2, 3)
+    end = datetime(2026, 8, 16, 2, 3, 4)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "data.test"
@@ -21,6 +24,7 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
         assert request.url.params["filterType"] == "CASH"
         assert request.url.params["filterAmount"] == "1000.00"
         assert "start" not in request.url.params
+        assert request.url.params["end"] == str(int(end.replace(tzinfo=UTC).timestamp()))
         assert request.url.params["limit"] == "123"
         assert request.url.params["offset"] == "456"
         assert request.url.params["takerOnly"] == "false"
@@ -68,6 +72,7 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
         trades = await client.fetch_large_trades(
             filter_amount_usdc=Decimal("1000.00"),
             start=start,
+            end=end,
             limit=123,
             offset=456,
         )
@@ -84,6 +89,50 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
     assert trade.timestamp == datetime.fromtimestamp(1786886550, tz=UTC).replace(tzinfo=None)
     assert trade.display_name == "SineNooneEI"
     assert trade.outcome_index == 0
+
+
+@pytest.mark.asyncio
+async def test_large_trade_requests_are_serialized_and_paced():
+    started_at: list[float] = []
+    active_requests = 0
+    max_active_requests = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal active_requests, max_active_requests
+        started_at.append(monotonic())
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
+        await asyncio.sleep(0.01)
+        active_requests -= 1
+        return httpx.Response(200, json=[])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    client.LARGE_TRADE_REQUEST_INTERVAL_SECONDS = 0.05
+    now = datetime(2026, 8, 16, 2, 3, 4)
+    try:
+        await asyncio.gather(
+            client.fetch_large_trades(
+                filter_amount_usdc=Decimal("1000"),
+                start=now,
+                end=now,
+            ),
+            client.fetch_large_trades(
+                filter_amount_usdc=Decimal("1000"),
+                start=now,
+                end=now,
+            ),
+        )
+    finally:
+        await client.close()
+
+    assert max_active_requests == 1
+    assert len(started_at) == 2
+    assert started_at[1] - started_at[0] >= 0.04
 
 
 @pytest.mark.asyncio
@@ -754,7 +803,10 @@ async def test_active_snapshot_requires_both_complete_mergeable_pages():
         transport=httpx.MockTransport(handler),
     )
     try:
-        positions = await client.fetch_active_positions(TEST_ADDRESS)
+        positions = await client.fetch_active_positions(
+            TEST_ADDRESS,
+            condition_ids=["0x" + "9" * 64],
+        )
     finally:
         await client.close()
 
@@ -766,6 +818,7 @@ async def test_active_snapshot_requires_both_complete_mergeable_pages():
         assert call["limit"] == "500"
         assert call["sortBy"] == "CURRENT"
         assert call["sortDirection"] == "DESC"
+        assert call["market"] == "0x" + "9" * 64
 
 
 @pytest.mark.asyncio

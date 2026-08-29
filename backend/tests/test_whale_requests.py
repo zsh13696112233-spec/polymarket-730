@@ -104,6 +104,7 @@ async def test_polymarket_request_capture_records_http_and_json_failures(
                 await client.fetch_large_trades(
                     filter_amount_usdc=Decimal("1000"),
                     start=datetime(2026, 8, 23),
+                    end=datetime(2026, 8, 24),
                 )
     finally:
         await client.close()

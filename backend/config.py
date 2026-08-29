@@ -17,12 +17,6 @@ class Settings:
     clob_api_url: str = "https://clob.polymarket.com"
     relayer_api_url: str = "https://relayer-v2.polymarket.com"
     polygon_rpc_url: str = "https://polygon.drpc.org"
-    poll_interval_seconds: float = 15.0
-    redemption_poll_interval_seconds: float = 60.0
-    copy_balance_refresh_interval_seconds: float = 10.0
-    quiet_window_seconds: float = 15.0
-    hard_window_seconds: float = 60.0
-    max_wallet_concurrency: int = 3
     request_timeout_seconds: float = 12.0
     data_api_concurrency: int = 10
     gamma_api_concurrency: int = 6
@@ -64,16 +58,6 @@ class Settings:
                 "POLYMARKET_RELAYER_API_URL", "https://relayer-v2.polymarket.com"
             ),
             polygon_rpc_url=os.getenv("POLYMARKET_POLYGON_RPC_URL", "https://polygon.drpc.org"),
-            poll_interval_seconds=float(os.getenv("POLYMARKET_POLL_INTERVAL_SECONDS", "15")),
-            redemption_poll_interval_seconds=float(
-                os.getenv("POLYMARKET_REDEMPTION_POLL_INTERVAL_SECONDS", "60")
-            ),
-            copy_balance_refresh_interval_seconds=float(
-                os.getenv("POLYMARKET_COPY_BALANCE_REFRESH_INTERVAL_SECONDS", "10")
-            ),
-            quiet_window_seconds=float(os.getenv("POLYMARKET_SETTLE_QUIET_SECONDS", "15")),
-            hard_window_seconds=float(os.getenv("POLYMARKET_SETTLE_HARD_SECONDS", "60")),
-            max_wallet_concurrency=int(os.getenv("POLYMARKET_MAX_CONCURRENCY", "3")),
             request_timeout_seconds=float(os.getenv("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "12")),
             data_api_concurrency=int(os.getenv("POLYMARKET_DATA_API_CONCURRENCY", "10")),
             gamma_api_concurrency=int(os.getenv("POLYMARKET_GAMMA_API_CONCURRENCY", "6")),
@@ -81,10 +65,7 @@ class Settings:
             max_backoff_seconds=float(os.getenv("POLYMARKET_MAX_BACKOFF_SECONDS", "300")),
             start_monitor=os.getenv("POLYMARKET_START_MONITOR", "1").lower()
             not in {"0", "false", "no"},
-            trading_enabled=os.getenv(
-                "POLYMARKET_TRADING_ENABLED",
-                os.getenv("POLYMARKET_LIVE_COPY_ENABLED", "1"),
-            ).lower()
+            trading_enabled=os.getenv("POLYMARKET_TRADING_ENABLED", "1").lower()
             in {"1", "true", "yes"},
             whale_enabled=os.getenv("POLYMARKET_WHALE_ENABLED", "1").lower()
             in {"1", "true", "yes"},

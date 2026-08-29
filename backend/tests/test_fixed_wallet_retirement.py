@@ -1,10 +1,72 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config as AlembicConfig
+
+from backend.config import Settings
+from backend.db import Database
+from backend.models import Base
+
+ALEMBIC_CONFIG_PATH = str(Path("backend/alembic.ini").resolve())
+
+
+RETIRED_TABLES = {
+    "copy_subscriptions",
+    "copy_orders",
+    "copy_positions",
+    "copy_fills",
+    "copy_ledger",
+    "copy_redemptions",
+    "watched_wallets",
+    "current_positions",
+    "position_change_candidates",
+    "position_events",
+    "position_event_fills",
+    "position_overlap_periods",
+    "position_overlap_alerts",
+    "wallet_trades",
+    "global_settings",
+}
+
+
+def test_retired_tables_are_absent_from_runtime_metadata():
+    assert RETIRED_TABLES.isdisjoint(Base.metadata.tables)
+
+
+@pytest.mark.asyncio
+async def test_pre_migration_database_replays_from_its_actual_revision(tmp_path: Path):
+    database_path = tmp_path / "pre-migration.db"
+    config = AlembicConfig(ALEMBIC_CONFIG_PATH)
+    database_url = f"sqlite+aiosqlite:///{database_path}"
+    config.attributes["database_url"] = database_url
+    await asyncio.to_thread(command.upgrade, config, "0001_initial")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE alembic_version")
+        connection.commit()
+
+    database = Database(Settings(database_url=database_url, start_monitor=False))
+    try:
+        await database.initialize()
+    finally:
+        await database.close()
+
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+
+    assert revision == "0038_whale_trade_cursor"
+    assert RETIRED_TABLES.isdisjoint(tables)
+    assert set(Base.metadata.tables) == tables - {"alembic_version"}
 
 
 def test_fixed_wallet_apis_are_retired_and_chain_runtime_remains(app_client_factory):
@@ -28,7 +90,7 @@ def test_fixed_wallet_apis_are_retired_and_chain_runtime_remains(app_client_fact
 
 def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_path: Path):
     database_path = tmp_path / "retirement.db"
-    config = AlembicConfig(str(Path("backend/alembic.ini").resolve()))
+    config = AlembicConfig(ALEMBIC_CONFIG_PATH)
     config.attributes["database_url"] = f"sqlite+aiosqlite:///{database_path}"
     command.upgrade(config, "0029_wallet_trade_reconciliation_index")
 
@@ -60,7 +122,9 @@ def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_p
     with sqlite3.connect(database_path) as connection:
         tables = {
             row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
         }
         account = connection.execute(
             "SELECT signer_address,funder_address,status FROM execution_accounts WHERE id=1"
@@ -76,7 +140,5 @@ def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_p
     assert whale_settings_after == whale_settings_before
     assert {"weekly_summary_enabled", "weekly_summary_enabled_at"} <= email_settings_columns
     assert "redemption_executions" in tables
-    assert "copy_subscriptions" not in tables
-    assert "copy_orders" not in tables
-    assert "watched_wallets" not in tables
-    assert "position_events" not in tables
+    assert RETIRED_TABLES.isdisjoint(tables)
+    assert set(Base.metadata.tables) == tables - {"alembic_version"}

@@ -14,7 +14,7 @@
 
 ## 配置
 
-复制 `.env.example` 为 `.env`。`POLYMARKET_TRADING_ENABLED=0` 可紧急禁止新的真实买入与卖出；旧变量 `POLYMARKET_LIVE_COPY_ENABLED` 暂时作为兼容回退。
+复制 `.env.example` 为 `.env`。`POLYMARKET_TRADING_ENABLED=0` 可紧急禁止新的真实买入与卖出。
 
 导入执行钱包私钥：
 

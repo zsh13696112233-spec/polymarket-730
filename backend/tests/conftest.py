@@ -278,9 +278,6 @@ def settings_factory(tmp_path: Path):
         values: dict[str, Any] = {
             "database_url": f"sqlite+aiosqlite:///{tmp_path / 'monitor.db'}",
             "start_monitor": False,
-            "quiet_window_seconds": 0.0,
-            "hard_window_seconds": 180.0,
-            "poll_interval_seconds": 15.0,
         }
         values.update(overrides)
         return Settings(**values)

@@ -2424,8 +2424,8 @@ class WhaleFollowExecutor:
                 current.last_balance_at = utcnow()
                 current.last_error = None
                 current.updated_at = utcnow()
-                # Deliberately do not mutate status: cash reserve is a warning for
-                # manual whale orders, while CopyTradingEngine owns its status rule.
+                # Deliberately do not mutate status: cash reserve is an order-time
+                # warning and must not overwrite credential verification state.
                 await session.commit()
         return balance
 
@@ -3775,8 +3775,8 @@ class WhaleFollowExecutor:
         """Safely redeem condition-wide balances only when every token is attributed.
 
         The SDK operation is condition-wide.  A separate SQL table does not isolate
-        on-chain balances, so any copy-trading position, in-flight copy redemption,
-        or manually held token turns the operation into manual review.
+        on-chain balances, so any non-whale position, in-flight redemption, or
+        manually held token turns the operation into manual review.
         """
 
         async with self.database.sessions() as session:

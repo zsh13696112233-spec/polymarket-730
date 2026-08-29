@@ -58,8 +58,9 @@ class Database:
         alembic_config.attributes["database_url"] = self.settings.database_url
         # Compatibility for databases briefly created by the pre-migration development
         # build: those tables exactly match 0001 but have no alembic_version row.
+        # Stamp their actual schema revision, then replay every later migration.
         if "watched_wallets" in table_names and "alembic_version" not in table_names:
-            await asyncio.to_thread(command.stamp, alembic_config, "head")
+            await asyncio.to_thread(command.stamp, alembic_config, "0001_initial")
         await asyncio.to_thread(command.upgrade, alembic_config, "head")
 
     async def close(self) -> None:

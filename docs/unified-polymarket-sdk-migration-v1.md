@@ -63,7 +63,7 @@ SDK 只能替代协议接入层，不能替代本项目的业务完成判定。�
 - `backend/models.py`
   - `CopyOrder` 保存 `idempotency_key`、`signed_order_hash`、外部订单/成交 ID 和成交结果；
   - `CopyRedemption` 对 `copy_position_id` 有唯一约束。
-- `backend/keychain.py`、`backend/copy_cli.py`
+- `backend/keychain.py`、`backend/trading_cli.py`
   - 私钥和 Builder 凭证只存在 macOS Keychain。
 
 ### 3.2 当前必须保留的产品语义

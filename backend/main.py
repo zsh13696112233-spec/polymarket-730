@@ -689,6 +689,7 @@ def create_app(
             await home_overview(
                 request.app.state.database,
                 request.app.state.polymarket_client,
+                scanner_running=request.app.state.whale_scanner.is_running,
             )
         )
 

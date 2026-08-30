@@ -86,6 +86,7 @@ async def home_overview(
     client: PolymarketClient,
     *,
     now: datetime | None = None,
+    scanner_running: bool | None = None,
 ) -> dict[str, Any]:
     generated_at = now or utcnow()
     today_date = _beijing_date(generated_at)
@@ -267,12 +268,26 @@ async def home_overview(
             }
         )
 
-    scan_failed = settings is None or bool(
-        settings.last_scan_error or settings.consecutive_failures
-    )
-    system_status = (
-        "error" if scan_failed else "disabled" if settings and not settings.enabled else "healthy"
-    )
+    scan_error = settings.last_scan_error if settings is not None else "巨鲸模块尚未初始化"
+    if settings is None:
+        system_status = "error"
+    elif not settings.enabled:
+        system_status = "disabled"
+    elif scan_error or settings.consecutive_failures:
+        system_status = "error"
+    elif scanner_running is False:
+        system_status = "error"
+        scan_error = "后台扫描任务未运行"
+    elif settings.last_scan_at is None:
+        system_status = "error"
+        scan_error = "后台扫描尚未完成首次扫描"
+    elif generated_at - settings.last_scan_at > timedelta(
+        seconds=settings.scan_interval_seconds * 3
+    ):
+        system_status = "error"
+        scan_error = "最后扫描时间已过期"
+    else:
+        system_status = "healthy"
     return {
         "as_of": generated_at,
         "timezone": "Asia/Shanghai",
@@ -282,9 +297,7 @@ async def home_overview(
             "status": system_status,
             "enabled": settings.enabled if settings is not None else False,
             "last_scan_at": settings.last_scan_at if settings is not None else None,
-            "last_scan_error": (
-                settings.last_scan_error if settings is not None else "巨鲸模块尚未初始化"
-            ),
+            "last_scan_error": scan_error,
             "consecutive_failures": settings.consecutive_failures if settings is not None else 0,
             "scan_interval_seconds": settings.scan_interval_seconds if settings is not None else 0,
             "rules": [

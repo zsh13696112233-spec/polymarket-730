@@ -158,4 +158,30 @@ describe("首页运行与跟单看板", () => {
     expect(screen.getAllByText("估值不完整").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("2 个开放仓位缺少有效买一价，已暂停总资产估算。")).toBeInTheDocument();
   });
+
+  it("实时连接断开后不再把扫描与监测规则显示为绿色运行中", async () => {
+    class FailedEventSource {
+      static instance: FailedEventSource | null = null;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor() {
+        FailedEventSource.instance = this;
+      }
+
+      close() {}
+    }
+    vi.stubGlobal("EventSource", FailedEventSource);
+    vi.stubGlobal("fetch", vi.fn(async () => json(overview())));
+    const { container } = render(<HomeWorkspace />);
+
+    expect(await screen.findByText("系统运行正常")).toBeInTheDocument();
+    FailedEventSource.instance?.onerror?.(new Event("error"));
+
+    expect(await screen.findByText("运行状态连接中断")).toBeInTheDocument();
+    expect(container.querySelector(".homeStatusBar .homeStatusDot")).toHaveClass("error");
+    expect(container.querySelectorAll(".homeRuleDot.enabled")).toHaveLength(0);
+    expect(screen.getAllByText("连接中断")).toHaveLength(2);
+  });
 });

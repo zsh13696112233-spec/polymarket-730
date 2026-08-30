@@ -86,6 +86,49 @@ async def test_home_balance_becomes_stale_after_five_minutes(
     assert payload["wallet"]["balance_stale"] is expected_stale
 
 
+@pytest.mark.asyncio
+async def test_home_system_is_not_healthy_when_scanner_is_stopped_or_stale(
+    database: Database,
+) -> None:
+    async with database.sessions() as session:
+        session.add(
+            WhaleSettings(
+                id=1,
+                last_scan_at=NOW,
+                scan_interval_seconds=60,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await session.commit()
+
+    stopped = await home_overview(
+        database,
+        MarksClient({}),  # type: ignore[arg-type]
+        now=NOW,
+        scanner_running=False,
+    )
+
+    assert stopped["system"]["status"] == "error"
+    assert stopped["system"]["last_scan_error"] == "后台扫描任务未运行"
+
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        settings.last_scan_at = NOW - timedelta(seconds=181)
+        await session.commit()
+
+    stale = await home_overview(
+        database,
+        MarksClient({}),  # type: ignore[arg-type]
+        now=NOW,
+        scanner_running=True,
+    )
+
+    assert stale["system"]["status"] == "error"
+    assert stale["system"]["last_scan_error"] == "最后扫描时间已过期"
+
+
 def position(
     asset_id: str,
     *,

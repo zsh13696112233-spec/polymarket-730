@@ -337,6 +337,18 @@ export default function HomeWorkspace() {
   }, 30_000);
 
   const visibleDays = useMemo(() => overview?.daily.slice(-range) ?? [], [overview, range]);
+  const runtimeStatus = error !== null || connection === "disconnected"
+    ? "error"
+    : overview?.system.status;
+  const runtimeLabel = error
+    ? "运行状态无法确认"
+    : connection === "disconnected"
+      ? "运行状态连接中断"
+      : runtimeStatus === "healthy"
+        ? "系统运行正常"
+        : runtimeStatus === "disabled"
+          ? "链上扫描已停用"
+          : "系统存在异常";
   const alerts = useMemo(() => {
     if (!overview) return [];
     const items: Array<{ key: string; title: string; detail: string }> = [];
@@ -361,16 +373,26 @@ export default function HomeWorkspace() {
 
       {loading && !overview ? <div className="pcPanel pcLoading homeLoading">正在汇总运行与跟单数据…</div> : overview && <>
         <section className="homeStatusBar" aria-label="系统状态">
-          <div><span className={`homeStatusDot ${overview.system.status}`} /><strong>{overview.system.status === "healthy" ? "系统运行正常" : overview.system.status === "disabled" ? "链上扫描已停用" : "系统存在异常"}</strong></div>
+          <div><span className={`homeStatusDot ${runtimeStatus}`} /><strong>{runtimeLabel}</strong></div>
           <dl><div><dt>最后扫描</dt><dd>{formatClock(overview.system.last_scan_at)}</dd></div><div><dt>数据更新</dt><dd>{formatClock(overview.as_of)}</dd></div></dl>
         </section>
 
         <section className="pcPanel homeRuntimePanel homeRuntimeFront" aria-label="运行概览">
           <header className="homeSectionHeader"><div><span>RUNTIME OVERVIEW</span><h2>运行概览</h2><p>先确认扫描与两套发现规则是否正常，再查看资金表现。</p></div><Link className="pcButton ghost" href="/whales/settings">监测设置</Link></header>
           <div className="homeRuntimeBody">
-            <div className="homeRuleCards">{overview.system.rules.map((rule) => <article key={rule.rule}><div><span className={`homeRuleDot ${rule.enabled ? "enabled" : ""}`} /><strong>{RULE_LABELS[rule.rule]}</strong></div><dl><div><dt>监测</dt><dd>{rule.enabled ? "运行中" : "已停用"}</dd></div><div><dt>自动跟单</dt><dd>{rule.auto_follow_enabled ? "已开启" : "未开启"}</dd></div><div><dt>活跃钱包</dt><dd>{rule.active_wallet_count}</dd></div></dl></article>)}</div>
+            <div className="homeRuleCards">{overview.system.rules.map((rule) => {
+              const ruleRunning = rule.enabled && runtimeStatus === "healthy";
+              const monitorLabel = !rule.enabled
+                ? "已停用"
+                : connection === "disconnected" || error !== null
+                  ? "连接中断"
+                  : runtimeStatus === "healthy"
+                    ? "运行中"
+                    : "未运行";
+              return <article key={rule.rule}><div><span className={`homeRuleDot ${ruleRunning ? "enabled" : ""}`} /><strong>{RULE_LABELS[rule.rule]}</strong></div><dl><div><dt>监测</dt><dd>{monitorLabel}</dd></div><div><dt>自动跟单</dt><dd>{rule.auto_follow_enabled ? "已开启" : "未开启"}</dd></div><div><dt>活跃钱包</dt><dd>{rule.active_wallet_count}</dd></div></dl></article>;
+            })}</div>
             <article className="homeScannerCard" aria-label="扫描状态">
-              <div className="homeScannerHeading"><span className={`homeStatusDot ${overview.system.status}`} /><strong>扫描状态</strong></div>
+              <div className="homeScannerHeading"><span className={`homeStatusDot ${runtimeStatus}`} /><strong>扫描状态</strong></div>
               <dl className="homeRuntimeMeta"><div><dt>间隔</dt><dd>{overview.system.scan_interval_seconds} 秒</dd></div><div><dt>最后扫描</dt><dd>{formatClock(overview.system.last_scan_at)}</dd></div><div className={overview.system.consecutive_failures ? "danger" : "healthy"}><dt>连续失败</dt><dd>{overview.system.consecutive_failures} 次</dd></div></dl>
             </article>
           </div>

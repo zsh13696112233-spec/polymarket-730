@@ -624,6 +624,10 @@ class WhaleDiscoveryScanner:
         self._running_config_at: datetime | None = None
         self._auto_pending_recovered = False
 
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run(), name="whale-discovery")

@@ -92,11 +92,17 @@ class WhaleSettingsRead(APIModel):
     new_account_auto_follow_min_price: DecimalNumber
     new_account_auto_follow_max_price: DecimalNumber
     new_account_auto_follow_categories: list[WhaleMarketCategory]
+    new_account_auto_follow_low_price_max_price: DecimalNumber | None
+    new_account_auto_follow_low_price_amount_usdc: DecimalNumber | None
     large_amount_auto_follow_enabled: bool
     large_amount_auto_follow_amount_usdc: DecimalNumber
     large_amount_auto_follow_min_price: DecimalNumber
     large_amount_auto_follow_max_price: DecimalNumber
     large_amount_auto_follow_categories: list[WhaleMarketCategory]
+    large_amount_auto_follow_low_price_max_price: DecimalNumber | None
+    large_amount_auto_follow_low_price_amount_usdc: DecimalNumber | None
+    auto_follow_market_max_purchase_count: int | None
+    auto_follow_market_max_amount_usdc: DecimalNumber | None
     collect_filter_amount_usdc: DecimalNumber
     single_trade_threshold_usdc: DecimalNumber
     cumulative_threshold_usdc: DecimalNumber
@@ -144,11 +150,17 @@ class WhaleSettingsUpdate(APIModel):
     new_account_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
     new_account_auto_follow_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
     new_account_auto_follow_categories: list[WhaleMarketCategory] | None = None
+    new_account_auto_follow_low_price_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
+    new_account_auto_follow_low_price_amount_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_auto_follow_enabled: bool | None = None
     large_amount_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
     large_amount_auto_follow_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
     large_amount_auto_follow_categories: list[WhaleMarketCategory] | None = None
+    large_amount_auto_follow_low_price_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
+    large_amount_auto_follow_low_price_amount_usdc: Decimal | None = Field(default=None, gt=0)
+    auto_follow_market_max_purchase_count: int | None = Field(default=None, gt=0)
+    auto_follow_market_max_amount_usdc: Decimal | None = Field(default=None, gt=0)
     collect_filter_amount_usdc: Decimal | None = Field(default=None, gt=0)
     single_trade_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     cumulative_threshold_usdc: Decimal | None = Field(default=None, gt=0)
@@ -246,6 +258,7 @@ class WhaleAutoDecisionRead(APIModel):
     configured_amount_usdc: DecimalNumber | None
     configured_min_price: DecimalNumber | None
     configured_max_price: DecimalNumber | None
+    selected_amount_usdc: DecimalNumber | None
     observed_best_ask: DecimalNumber | None
     status: str
     reason: str | None

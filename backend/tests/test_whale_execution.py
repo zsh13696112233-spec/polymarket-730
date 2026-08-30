@@ -22,7 +22,12 @@ from backend.models import (
 )
 from backend.polymarket import RedemptionSnapshot, TradeSnapshot
 from backend.trading import TradeResult
-from backend.whale import WhaleFollowExecutor
+from backend.whale import (
+    WhaleFollowExecutor,
+    WhaleFollowQuote,
+    _auto_follow_market_usage,
+    _ensure_auto_follow_market_capacity,
+)
 
 CONDITION_ID = "0x" + "8" * 64
 ASSET_ID = "whale-asset"
@@ -34,6 +39,146 @@ ZERO = Decimal("0")
 
 def assert_decimal(actual: Decimal, expected: str) -> None:
     assert actual.quantize(Decimal("0.000001")) == Decimal(expected)
+
+
+def test_auto_follow_market_usage_reserves_pending_and_releases_unfilled_orders():
+    orders = [
+        SimpleNamespace(status="submitted", requested_usdc=Decimal("15"), filled_usdc=ZERO),
+        SimpleNamespace(status="unfilled", requested_usdc=Decimal("15"), filled_usdc=ZERO),
+        SimpleNamespace(
+            status="partially_filled",
+            requested_usdc=Decimal("15"),
+            filled_usdc=Decimal("8"),
+        ),
+    ]
+
+    used_count, used_amount = _auto_follow_market_usage(orders)
+
+    assert used_count == 2
+    assert used_amount == Decimal("23")
+    _ensure_auto_follow_market_capacity(
+        used_count=used_count,
+        used_amount=used_amount,
+        requested_amount=Decimal("7"),
+        count_cap=3,
+        amount_cap=Decimal("30"),
+    )
+    with pytest.raises(ValueError, match="累计金额"):
+        _ensure_auto_follow_market_capacity(
+            used_count=used_count,
+            used_amount=used_amount,
+            requested_amount=Decimal("8"),
+            count_cap=3,
+            amount_cap=Decimal("30"),
+        )
+    with pytest.raises(ValueError, match="最多购买 2 次"):
+        _ensure_auto_follow_market_capacity(
+            used_count=used_count,
+            used_amount=used_amount,
+            requested_amount=Decimal("1"),
+            count_cap=2,
+            amount_cap=Decimal("30"),
+        )
+
+
+def follow_quote(amount: str = "15") -> WhaleFollowQuote:
+    amount_value = Decimal(amount)
+    return WhaleFollowQuote(
+        entry_id=None,
+        source_wallet=SOURCE_WALLET,
+        asset_id=ASSET_ID,
+        condition_id=CONDITION_ID,
+        title="Whale market",
+        outcome="Yes",
+        outcome_index=0,
+        neg_risk=False,
+        market_slug="whale-market",
+        event_slug="whale-event",
+        icon_url=None,
+        amount_usdc=amount_value,
+        best_ask=Decimal("0.50"),
+        worst_price=Decimal("0.52"),
+        strategy_minimum_price=Decimal("0.20"),
+        strategy_maximum_price=Decimal("0.75"),
+        low_price_max_price=Decimal("0.30"),
+        selected_low_price_amount=False,
+        tick_size=Decimal("0.01"),
+        minimum_order_usdc=Decimal("2.60"),
+        estimated_shares=amount_value / Decimal("0.52"),
+        estimated_fee_usdc=ZERO,
+        total_cost_usdc=amount_value,
+        profit_ratio_percent=ZERO,
+        max_loss_usdc=amount_value,
+        winning_payout_usdc=amount_value / Decimal("0.52"),
+        winning_profit_usdc=ZERO,
+        immediate_exit_price=None,
+        immediate_exit_proceeds_usdc=None,
+        immediate_exit_fee_usdc=None,
+        immediate_exit_pnl_usdc=None,
+        immediate_exit_pnl_percent=None,
+        immediate_exit_unavailable_reason=None,
+        whale_avg_price=Decimal("0.45"),
+        whale_profit_ratio_percent=None,
+        profit_ratio_gap_percent=None,
+        price_delta_cents=Decimal("5"),
+        price_delta_warning=False,
+        reserve_warning=False,
+        available_balance_usdc=Decimal("100"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_auto_order_enforces_shared_market_cap_and_releases_unfilled(
+    database: Database,
+):
+    await configure_whale_settings(database)
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        settings.auto_follow_market_max_purchase_count = 1
+        settings.auto_follow_market_max_amount_usdc = Decimal("30")
+        await session.commit()
+
+    follow_executor = executor(database)
+    first_order_id = await follow_executor._create_order(
+        quote=follow_quote(),
+        confirmation_id="auto:one",
+        side="BUY",
+        order_source="auto_follow",
+    )
+
+    with pytest.raises(ValueError, match="最多购买 1 次"):
+        await follow_executor._create_order(
+            quote=follow_quote(),
+            confirmation_id="auto:two",
+            side="BUY",
+            order_source="auto_follow",
+        )
+
+    async with database.sessions() as session:
+        first_order = await session.get(WhaleOrder, first_order_id)
+        settings = await session.get(WhaleSettings, 1)
+        assert first_order is not None and settings is not None
+        first_order.status = "unfilled"
+        settings.auto_follow_market_max_purchase_count = 2
+        settings.auto_follow_market_max_amount_usdc = Decimal("20")
+        await session.commit()
+
+    second_order_id = await follow_executor._create_order(
+        quote=follow_quote(),
+        confirmation_id="auto:three",
+        side="BUY",
+        order_source="auto_follow",
+    )
+    assert second_order_id > first_order_id
+
+    with pytest.raises(ValueError, match="累计金额"):
+        await follow_executor._create_order(
+            quote=follow_quote("10"),
+            confirmation_id="auto:four",
+            side="BUY",
+            order_source="auto_follow",
+        )
 
 
 @pytest.fixture

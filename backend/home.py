@@ -257,7 +257,9 @@ async def home_overview(
                 "outcome": decision.outcome,
                 "market_slug": market.market_slug if market is not None else None,
                 "event_slug": market.event_slug if market is not None else None,
-                "configured_amount_usdc": decision.configured_amount_usdc,
+                "configured_amount_usdc": (
+                    decision.selected_amount_usdc or decision.configured_amount_usdc
+                ),
                 "filled_usdc": buy_order.filled_usdc + buy_order.fee_usdc if buy_order else ZERO,
                 "status": decision.status,
                 "reason": _auto_follow_reason_display(decision.reason),

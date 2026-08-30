@@ -165,13 +165,17 @@ function decisionReason(reason: string | null) {
 
 function DecisionRow({ decision }: { decision: WhaleAutoDecision }) {
   const rules = decision.matched_rules.map((rule) => rule === "large_amount" ? "全量" : "新号").join(" + ");
+  const selectedAmount = decision.selected_amount_usdc ?? decision.configured_amount_usdc;
+  const usedLowPriceAmount = decision.selected_amount_usdc != null
+    && decision.configured_amount_usdc != null
+    && Number(decision.selected_amount_usdc) < Number(decision.configured_amount_usdc);
   return (
     <tr>
       <td><strong>{formatBeijing(decision.created_at, true)}</strong><span className={`pcBadge ${decisionTone(decision.status)}`}>{decisionLabel(decision.status)}</span></td>
       <td><a className="whaleAutoDecisionLink" href={profileUrl(decision.proxy_wallet)} target="_blank" rel="noreferrer"><strong>{shortAddress(decision.proxy_wallet)} ↗</strong><small>{rules || "—"}{decision.selected_rule ? ` · 采用${decision.selected_rule === "large_amount" ? "全量" : "新号"}` : ""}</small></a></td>
       <td><a className="whaleAutoDecisionLink" href={marketUrl(decision.event_slug || decision.market_slug)} target="_blank" rel="noreferrer"><strong>{decision.title} ↗</strong><small>{decision.outcome} · 同向已跟 {decision.followed_wallet_count} 个钱包</small></a></td>
       <td><span className="pcBadge neutral">{decision.category_label}</span></td>
-      <td className="numeric"><strong>{decision.configured_amount_usdc == null ? "—" : formatUsdc(decision.configured_amount_usdc)}</strong></td>
+      <td className="numeric"><strong>{selectedAmount == null ? "—" : formatUsdc(selectedAmount)}</strong><small>{usedLowPriceAmount ? "低价小额" : ""}</small></td>
       <td className="numeric"><strong>{decision.configured_min_price == null ? "—" : `${formatPrice(decision.configured_min_price)}–${formatPrice(decision.configured_max_price)}`}</strong><small>盘口 {formatPrice(decision.observed_best_ask)}</small></td>
       <td><strong>{decisionReason(decision.reason)}</strong><small>{decision.buy_order_id ? `买单 #${decision.buy_order_id}` : ""}{decision.latest_sell_order_id ? ` · 卖单 #${decision.latest_sell_order_id}` : ""}</small></td>
     </tr>
@@ -268,7 +272,7 @@ export default function WhaleAutoFollowWorkspace() {
                 <col className="whaleDecisionPriceColumn" />
                 <col className="whaleDecisionReasonColumn" />
               </colgroup>
-              <thead><tr><th>时间 / 状态</th><th>钱包 / 规则</th><th>市场 / 方向</th><th>分类</th><th className="numeric">配置金额</th><th className="numeric">价格区间 / 盘口</th><th>说明</th></tr></thead>
+              <thead><tr><th>时间 / 状态</th><th>钱包 / 规则</th><th>市场 / 方向</th><th>分类</th><th className="numeric">策略金额</th><th className="numeric">价格区间 / 盘口</th><th>说明</th></tr></thead>
               <tbody>{decisions.map((decision) => <DecisionRow key={decision.id} decision={decision} />)}</tbody>
             </table>
           </div>

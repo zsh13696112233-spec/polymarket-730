@@ -34,11 +34,17 @@ const settings = {
   new_account_auto_follow_min_price: 0.65,
   new_account_auto_follow_max_price: 0.8,
   new_account_auto_follow_categories: ["sports"],
+  new_account_auto_follow_low_price_max_price: null,
+  new_account_auto_follow_low_price_amount_usdc: null,
   large_amount_auto_follow_enabled: false,
   large_amount_auto_follow_amount_usdc: 10,
   large_amount_auto_follow_min_price: 0.6,
   large_amount_auto_follow_max_price: 0.8,
   large_amount_auto_follow_categories: ["sports"],
+  large_amount_auto_follow_low_price_max_price: null,
+  large_amount_auto_follow_low_price_amount_usdc: null,
+  auto_follow_market_max_purchase_count: null,
+  auto_follow_market_max_amount_usdc: null,
   scan_interval_seconds: 60,
   last_scan_at: "2026-08-16T09:00:00Z",
   last_scan_error: null,
@@ -140,13 +146,23 @@ describe("巨鲸页内设置", () => {
     const newStrategy = screen.getByRole("heading", { name: "新号大额自动跟单" }).closest("section");
     expect(newStrategy).not.toBeNull();
     await user.click(within(newStrategy!).getByText("政治"));
+    await user.click(within(newStrategy!).getByRole("checkbox", { name: "新号大额自动跟单启用低价小额" }));
+    await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价分界" }), "0.7");
+    await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价金额" }), "3");
+    await user.click(screen.getByRole("checkbox", { name: "启用单市场共享上限" }));
+    await user.type(screen.getByRole("spinbutton", { name: "单市场最大购买次数" }), "2");
+    await user.type(screen.getByRole("spinbutton", { name: "单市场累计投入上限" }), "30");
     await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
 
     await waitFor(() => expect(saved).not.toBeNull());
     expect(saved).toMatchObject({
       new_account_auto_follow_enabled: true,
       new_account_auto_follow_categories: ["sports", "politics"],
+      new_account_auto_follow_low_price_max_price: 0.7,
+      new_account_auto_follow_low_price_amount_usdc: 3,
       large_amount_auto_follow_enabled: false,
+      auto_follow_market_max_purchase_count: 2,
+      auto_follow_market_max_amount_usdc: 30,
     });
     expect(screen.queryByText(/模拟/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "自动跟单" })).toHaveClass("active");
@@ -185,6 +201,7 @@ describe("巨鲸页内设置", () => {
           category: "esports",
           category_label: "电竞",
           configured_amount_usdc: 10,
+          selected_amount_usdc: 10,
           configured_min_price: 0.5,
           configured_max_price: 0.75,
           observed_best_ask: 0.7,

@@ -108,6 +108,14 @@ WHALE_STATISTICS_CATEGORIES = (
     ("other", "其他"),
 )
 WHALE_STATISTICS_CATEGORY_LABELS = dict(WHALE_STATISTICS_CATEGORIES)
+AUTO_FOLLOW_RESERVED_ORDER_STATUSES = {
+    "planned",
+    "signed",
+    "submitted",
+    "reconciliation_pending",
+    "live",
+    "matched",
+}
 WHALE_STATISTICS_SCIENCE_TECH_TAGS = frozenset(
     {
         "science",
@@ -188,6 +196,64 @@ def _decimal_display(value: Decimal) -> str:
 def _auto_follow_price(value: Any) -> Decimal:
     """Normalize strategy prices after SQLite NUMERIC values are read back as floats."""
     return _decimal(value).quantize(AUTO_FOLLOW_PRICE_QUANTUM)
+
+
+def _select_auto_follow_amount(
+    *,
+    base_amount: Decimal,
+    best_ask: Decimal,
+    low_price_max_price: Decimal | None,
+    low_price_amount: Decimal | None,
+) -> tuple[Decimal, bool]:
+    if low_price_max_price is None and low_price_amount is None:
+        return base_amount, False
+    if low_price_max_price is None or low_price_amount is None:
+        raise ValueError("低价分界与低价金额配置不完整")
+    if low_price_amount <= ZERO or low_price_amount >= base_amount:
+        raise ValueError("低价金额必须大于 0 且小于基础单笔金额")
+    if best_ask < low_price_max_price:
+        return low_price_amount, True
+    return base_amount, False
+
+
+def _auto_follow_price_band_changed(
+    *, best_ask: Decimal, low_price_max_price: Decimal | None, selected_low: bool
+) -> bool:
+    if low_price_max_price is None:
+        return False
+    return (selected_low and best_ask >= low_price_max_price) or (
+        not selected_low and best_ask < low_price_max_price
+    )
+
+
+def _auto_follow_market_usage(orders: Iterable[WhaleOrder]) -> tuple[int, Decimal]:
+    used_count = 0
+    used_amount = ZERO
+    for order in orders:
+        if order.filled_usdc > ZERO:
+            used_count += 1
+            used_amount += order.filled_usdc
+        elif order.status in AUTO_FOLLOW_RESERVED_ORDER_STATUSES:
+            used_count += 1
+            used_amount += order.requested_usdc
+    return used_count, used_amount
+
+
+def _ensure_auto_follow_market_capacity(
+    *,
+    used_count: int,
+    used_amount: Decimal,
+    requested_amount: Decimal,
+    count_cap: int,
+    amount_cap: Decimal,
+) -> None:
+    if used_count + 1 > count_cap:
+        raise ValueError(f"同一市场自动跟单最多购买 {count_cap} 次，已经停止继续买入")
+    if used_amount + requested_amount > amount_cap:
+        raise ValueError(
+            "同一市场自动跟单累计金额不能超过 "
+            f"{_decimal_display(amount_cap)} USDC，已经停止继续买入"
+        )
 
 
 def _market_price(value: Any) -> Decimal:
@@ -1796,6 +1862,9 @@ class WhaleDiscoveryScanner:
                     configured_amount_usdc=None,
                     configured_min_price=None,
                     configured_max_price=None,
+                    configured_low_price_max_price=None,
+                    configured_low_price_amount_usdc=None,
+                    selected_amount_usdc=None,
                     observed_best_ask=None,
                     status="pending",
                     reason=None,
@@ -1855,7 +1924,17 @@ class WhaleDiscoveryScanner:
                     decision.processed_at = now
                     continue
 
-                selected: tuple[str, Decimal, Decimal, Decimal] | None = None
+                selected: (
+                    tuple[
+                        str,
+                        Decimal,
+                        Decimal,
+                        Decimal,
+                        Decimal | None,
+                        Decimal | None,
+                    ]
+                    | None
+                ) = None
                 for rule_type in (LARGE_AMOUNT_RULE, NEW_ACCOUNT_RULE):
                     if rule_type not in matched_rules:
                         continue
@@ -1870,6 +1949,18 @@ class WhaleDiscoveryScanner:
                             _decimal(config[f"{prefix}_auto_follow_amount_usdc"]),
                             _auto_follow_price(config[f"{prefix}_auto_follow_min_price"]),
                             _auto_follow_price(config[f"{prefix}_auto_follow_max_price"]),
+                            (
+                                _auto_follow_price(
+                                    config[f"{prefix}_auto_follow_low_price_max_price"]
+                                )
+                                if config[f"{prefix}_auto_follow_low_price_max_price"] is not None
+                                else None
+                            ),
+                            (
+                                _decimal(config[f"{prefix}_auto_follow_low_price_amount_usdc"])
+                                if config[f"{prefix}_auto_follow_low_price_amount_usdc"] is not None
+                                else None
+                            ),
                         )
                         break
                 if selected is None:
@@ -1891,6 +1982,8 @@ class WhaleDiscoveryScanner:
                     decision.configured_amount_usdc,
                     decision.configured_min_price,
                     decision.configured_max_price,
+                    decision.configured_low_price_max_price,
+                    decision.configured_low_price_amount_usdc,
                 ) = selected
                 pending_decision_ids.append(decision.id)
 
@@ -1943,6 +2036,16 @@ class WhaleDiscoveryScanner:
                     amount = _decimal(decision.configured_amount_usdc)
                     minimum = _auto_follow_price(decision.configured_min_price)
                     maximum = _auto_follow_price(decision.configured_max_price)
+                    low_maximum = (
+                        _auto_follow_price(decision.configured_low_price_max_price)
+                        if decision.configured_low_price_max_price is not None
+                        else None
+                    )
+                    low_amount = (
+                        _decimal(decision.configured_low_price_amount_usdc)
+                        if decision.configured_low_price_amount_usdc is not None
+                        else None
+                    )
                     entry_id = decision.entry_id
                     asset_id = decision.asset_id
                 quote = await self.executor.quote_follow(
@@ -1952,12 +2055,15 @@ class WhaleDiscoveryScanner:
                     require_active_signal=False,
                     minimum_price=minimum,
                     maximum_price=maximum,
+                    low_price_max_price=low_maximum,
+                    low_price_amount_usdc=low_amount,
                 )
                 async with self.database.sessions() as session:
                     decision = await session.get(WhaleAutoFollowDecision, decision_id)
                     if decision is None or decision.status != "pending":
                         continue
                     decision.observed_best_ask = quote.best_ask
+                    decision.selected_amount_usdc = quote.amount_usdc
                     decision.updated_at = utcnow()
                     if await session.get(WhaleAutoMarketLock, decision.condition_id) is not None:
                         decision.status = "conflict_locked"
@@ -2266,6 +2372,8 @@ class WhaleFollowQuote:
     worst_price: Decimal
     strategy_minimum_price: Decimal | None
     strategy_maximum_price: Decimal | None
+    low_price_max_price: Decimal | None
+    selected_low_price_amount: bool
     tick_size: Decimal
     minimum_order_usdc: Decimal
     estimated_shares: Decimal
@@ -2560,6 +2668,8 @@ class WhaleFollowExecutor:
         require_active_signal: bool = True,
         minimum_price: Decimal | None = None,
         maximum_price: Decimal | None = None,
+        low_price_max_price: Decimal | None = None,
+        low_price_amount_usdc: Decimal | None = None,
     ) -> WhaleFollowQuote:
         if not self.settings.trading_enabled:
             raise ValueError("自动实盘已被系统紧急停用")
@@ -2567,6 +2677,8 @@ class WhaleFollowExecutor:
             minimum_price = _auto_follow_price(minimum_price)
         if maximum_price is not None:
             maximum_price = _auto_follow_price(maximum_price)
+        if low_price_max_price is not None:
+            low_price_max_price = _auto_follow_price(low_price_max_price)
         async with self.database.sessions() as session:
             whale_settings = await session.get(WhaleSettings, 1)
             if whale_settings is None:
@@ -2621,6 +2733,20 @@ class WhaleFollowExecutor:
                 f"实际买价 {_decimal_display(book.best_ask)} "
                 f"高于策略最高价 {_decimal_display(maximum_price)}",
                 observed_best_ask=book.best_ask,
+            )
+        selected_low_price_amount = False
+        if low_price_max_price is not None or low_price_amount_usdc is not None:
+            if low_price_max_price is None or low_price_amount_usdc is None:
+                raise ValueError("低价分界与低价金额配置不完整")
+            if minimum_price is None or maximum_price is None:
+                raise ValueError("低价金额必须配置在自动跟单价格区间内")
+            if not minimum_price < low_price_max_price < maximum_price:
+                raise ValueError("低价分界必须严格位于自动跟单价格区间内")
+            amount_usdc, selected_low_price_amount = _select_auto_follow_amount(
+                base_amount=amount_usdc,
+                best_ask=book.best_ask,
+                low_price_max_price=low_price_max_price,
+                low_price_amount=low_price_amount_usdc,
             )
         worst_price = market_worst_price(book.best_ask, book.tick_size, slippage, side="BUY")
         if maximum_price is not None:
@@ -2692,6 +2818,8 @@ class WhaleFollowExecutor:
             worst_price=worst_price,
             strategy_minimum_price=minimum_price,
             strategy_maximum_price=maximum_price,
+            low_price_max_price=low_price_max_price,
+            selected_low_price_amount=selected_low_price_amount,
             tick_size=book.tick_size,
             minimum_order_usdc=minimum_order_usdc,
             estimated_shares=shares,
@@ -2743,6 +2871,15 @@ class WhaleFollowExecutor:
             ):
                 raise AutoFollowQuoteRejected(
                     "市场价格已经跌出自动跟单区间，不再买入",
+                    observed_best_ask=book.best_ask,
+                )
+            if _auto_follow_price_band_changed(
+                best_ask=book.best_ask,
+                low_price_max_price=quote.low_price_max_price,
+                selected_low=quote.selected_low_price_amount,
+            ):
+                raise AutoFollowQuoteRejected(
+                    "市场价格已经跨越自动跟单金额档位，不再使用旧金额买入",
                     observed_best_ask=book.best_ask,
                 )
             if book.best_ask > quote.worst_price or (
@@ -2803,6 +2940,34 @@ class WhaleFollowExecutor:
     ) -> int:
         now = utcnow()
         async with self.database.sessions() as session:
+            if order_source == "auto_follow":
+                settings = await session.get(WhaleSettings, 1)
+                if settings is None:
+                    raise ValueError("巨鲸模块尚未初始化")
+                count_cap = settings.auto_follow_market_max_purchase_count
+                amount_cap = settings.auto_follow_market_max_amount_usdc
+                if (count_cap is None) != (amount_cap is None):
+                    raise ValueError("单市场自动跟单上限配置不完整，已经停止买入")
+                if count_cap is not None and amount_cap is not None:
+                    prior_orders = list(
+                        (
+                            await session.scalars(
+                                select(WhaleOrder).where(
+                                    WhaleOrder.condition_id == quote.condition_id,
+                                    WhaleOrder.source == "auto_follow",
+                                    WhaleOrder.side == "BUY",
+                                )
+                            )
+                        ).all()
+                    )
+                    used_count, used_amount = _auto_follow_market_usage(prior_orders)
+                    _ensure_auto_follow_market_capacity(
+                        used_count=used_count,
+                        used_amount=used_amount,
+                        requested_amount=quote.amount_usdc,
+                        count_cap=count_cap,
+                        amount_cap=amount_cap,
+                    )
             position = await session.scalar(
                 select(WhaleFollowPosition)
                 .where(
@@ -4469,6 +4634,7 @@ async def list_whale_auto_decisions(
                 "configured_amount_usdc": decision.configured_amount_usdc,
                 "configured_min_price": decision.configured_min_price,
                 "configured_max_price": decision.configured_max_price,
+                "selected_amount_usdc": decision.selected_amount_usdc,
                 "observed_best_ask": decision.observed_best_ask,
                 "status": decision.status,
                 "reason": _auto_follow_reason_display(decision.reason),

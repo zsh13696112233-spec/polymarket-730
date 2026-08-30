@@ -467,11 +467,17 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     assert initial.json()["new_account_auto_follow_min_price"] == 0.65
     assert initial.json()["new_account_auto_follow_max_price"] == 0.8
     assert initial.json()["new_account_auto_follow_categories"] == ["sports"]
+    assert initial.json()["new_account_auto_follow_low_price_max_price"] is None
+    assert initial.json()["new_account_auto_follow_low_price_amount_usdc"] is None
     assert initial.json()["large_amount_auto_follow_enabled"] is False
     assert initial.json()["large_amount_auto_follow_amount_usdc"] == 10.0
     assert initial.json()["large_amount_auto_follow_min_price"] == 0.6
     assert initial.json()["large_amount_auto_follow_max_price"] == 0.8
     assert initial.json()["large_amount_auto_follow_categories"] == ["sports"]
+    assert initial.json()["large_amount_auto_follow_low_price_max_price"] is None
+    assert initial.json()["large_amount_auto_follow_low_price_amount_usdc"] is None
+    assert initial.json()["auto_follow_market_max_purchase_count"] is None
+    assert initial.json()["auto_follow_market_max_amount_usdc"] is None
     assert "smtp_configured" not in initial.json()
     global_email_settings = client.get("/api/email-settings").json()
     assert global_email_settings["smtp_configured"] is False
@@ -642,6 +648,46 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
         "politics",
     ]
     assert auto_settings.json()["large_amount_auto_follow_categories"] == ["crypto"]
+
+    risk_controls = client.put(
+        "/api/whales/settings",
+        json={
+            "new_account_auto_follow_min_price": 0.2,
+            "new_account_auto_follow_max_price": 0.75,
+            "new_account_auto_follow_amount_usdc": 15,
+            "new_account_auto_follow_low_price_max_price": 0.3,
+            "new_account_auto_follow_low_price_amount_usdc": 10,
+            "auto_follow_market_max_purchase_count": 2,
+            "auto_follow_market_max_amount_usdc": 30,
+        },
+    )
+    assert risk_controls.status_code == 200, risk_controls.text
+    assert risk_controls.json()["new_account_auto_follow_low_price_max_price"] == 0.3
+    assert risk_controls.json()["new_account_auto_follow_low_price_amount_usdc"] == 10.0
+    assert risk_controls.json()["auto_follow_market_max_purchase_count"] == 2
+    assert risk_controls.json()["auto_follow_market_max_amount_usdc"] == 30.0
+
+    invalid_low_price = client.put(
+        "/api/whales/settings",
+        json={"new_account_auto_follow_low_price_amount_usdc": 15},
+    )
+    assert invalid_low_price.status_code == 422
+    assert "低价金额" in invalid_low_price.text
+
+    cleared_controls = client.put(
+        "/api/whales/settings",
+        json={
+            "new_account_auto_follow_low_price_max_price": None,
+            "new_account_auto_follow_low_price_amount_usdc": None,
+            "auto_follow_market_max_purchase_count": None,
+            "auto_follow_market_max_amount_usdc": None,
+        },
+    )
+    assert cleared_controls.status_code == 200, cleared_controls.text
+    assert cleared_controls.json()["new_account_auto_follow_low_price_max_price"] is None
+    assert cleared_controls.json()["new_account_auto_follow_low_price_amount_usdc"] is None
+    assert cleared_controls.json()["auto_follow_market_max_purchase_count"] is None
+    assert cleared_controls.json()["auto_follow_market_max_amount_usdc"] is None
 
     invalid_auto_price = client.put(
         "/api/whales/settings",
@@ -897,6 +943,8 @@ def test_chain_test_resolves_outcomes_and_uses_single_use_buy_sell_confirmations
         worst_price=Decimal("0.53"),
         strategy_minimum_price=None,
         strategy_maximum_price=None,
+        low_price_max_price=None,
+        selected_low_price_amount=False,
         tick_size=Decimal("0.01"),
         minimum_order_usdc=Decimal("2.65"),
         estimated_shares=Decimal("9.433962"),

@@ -21,11 +21,17 @@ export type WhaleSettings = {
   new_account_auto_follow_min_price: Numeric;
   new_account_auto_follow_max_price: Numeric;
   new_account_auto_follow_categories: WhaleMarketCategory[];
+  new_account_auto_follow_low_price_max_price: Numeric | null;
+  new_account_auto_follow_low_price_amount_usdc: Numeric | null;
   large_amount_auto_follow_enabled: boolean;
   large_amount_auto_follow_amount_usdc: Numeric;
   large_amount_auto_follow_min_price: Numeric;
   large_amount_auto_follow_max_price: Numeric;
   large_amount_auto_follow_categories: WhaleMarketCategory[];
+  large_amount_auto_follow_low_price_max_price: Numeric | null;
+  large_amount_auto_follow_low_price_amount_usdc: Numeric | null;
+  auto_follow_market_max_purchase_count: number | null;
+  auto_follow_market_max_amount_usdc: Numeric | null;
   collect_filter_amount_usdc: Numeric;
   cumulative_threshold_usdc: Numeric;
   single_trade_threshold_usdc: Numeric;
@@ -442,6 +448,7 @@ export type WhaleAutoDecision = {
   configured_amount_usdc: Numeric | null;
   configured_min_price: Numeric | null;
   configured_max_price: Numeric | null;
+  selected_amount_usdc: Numeric | null;
   observed_best_ask: Numeric | null;
   status: string;
   reason: string | null;

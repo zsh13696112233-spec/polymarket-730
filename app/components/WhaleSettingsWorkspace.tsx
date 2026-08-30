@@ -326,12 +326,18 @@ function AutoStrategyCard({
   amount,
   minPrice,
   maxPrice,
+  lowPriceEnabled,
+  lowPriceMax,
+  lowPriceAmount,
   categories,
   busy,
   onEnabled,
   onAmount,
   onMinPrice,
   onMaxPrice,
+  onLowPriceEnabled,
+  onLowPriceMax,
+  onLowPriceAmount,
   onCategories,
 }: {
   title: string;
@@ -339,12 +345,18 @@ function AutoStrategyCard({
   amount: string;
   minPrice: string;
   maxPrice: string;
+  lowPriceEnabled: boolean;
+  lowPriceMax: string;
+  lowPriceAmount: string;
   categories: WhaleMarketCategory[];
   busy: boolean;
   onEnabled: (value: boolean) => void;
   onAmount: (value: string) => void;
   onMinPrice: (value: string) => void;
   onMaxPrice: (value: string) => void;
+  onLowPriceEnabled: (value: boolean) => void;
+  onLowPriceMax: (value: string) => void;
+  onLowPriceAmount: (value: string) => void;
   onCategories: (value: WhaleMarketCategory[]) => void;
 }) {
   const toggleCategory = (category: WhaleMarketCategory) => {
@@ -374,6 +386,24 @@ function AutoStrategyCard({
         <label className="pcField"><span>实际最低买价</span><input aria-label={`${title}最低买价`} type="number" min="0.01" max="0.99" step="0.01" value={minPrice} disabled={busy} onChange={(event) => onMinPrice(event.target.value)} /></label>
         <label className="pcField"><span>实际最高买价</span><input aria-label={`${title}最高买价`} type="number" min="0.01" max="0.99" step="0.01" value={maxPrice} disabled={busy} onChange={(event) => onMaxPrice(event.target.value)} /></label>
       </div>
+      <div className="whaleAutoLowPriceSection">
+        <label className="whaleAutoToggle">
+          <input
+            type="checkbox"
+            aria-label={`${title}启用低价小额`}
+            checked={lowPriceEnabled}
+            disabled={busy}
+            onChange={(event) => onLowPriceEnabled(event.target.checked)}
+          />
+          <b>低价小额</b>
+        </label>
+        {lowPriceEnabled && (
+          <div className="whaleAutoFields">
+            <label className="pcField"><span>低于此价格</span><input aria-label={`${title}低价分界`} type="number" min="0.01" max="0.99" step="0.01" value={lowPriceMax} disabled={busy} onChange={(event) => onLowPriceMax(event.target.value)} /></label>
+            <label className="pcField"><span>低价单笔金额</span><div className="pcUnitInput"><input aria-label={`${title}低价金额`} type="number" min="0.01" step="0.01" value={lowPriceAmount} disabled={busy} onChange={(event) => onLowPriceAmount(event.target.value)} /><b>USDC</b></div></label>
+          </div>
+        )}
+      </div>
       <fieldset className="whaleAutoCategories">
         <legend>允许的市场分类</legend>
         {AUTO_CATEGORIES.map((item) => (
@@ -401,11 +431,20 @@ export function WhaleAutoSettingsPanel({
   const [newAutoMinPrice, setNewAutoMinPrice] = useState<string | null>(null);
   const [newAutoMaxPrice, setNewAutoMaxPrice] = useState<string | null>(null);
   const [newAutoCategories, setNewAutoCategories] = useState<WhaleMarketCategory[] | null>(null);
+  const [newLowPriceEnabled, setNewLowPriceEnabled] = useState<boolean | null>(null);
+  const [newLowPriceMax, setNewLowPriceMax] = useState<string | null>(null);
+  const [newLowPriceAmount, setNewLowPriceAmount] = useState<string | null>(null);
   const [largeAutoEnabled, setLargeAutoEnabled] = useState<boolean | null>(null);
   const [largeAutoAmount, setLargeAutoAmount] = useState<string | null>(null);
   const [largeAutoMinPrice, setLargeAutoMinPrice] = useState<string | null>(null);
   const [largeAutoMaxPrice, setLargeAutoMaxPrice] = useState<string | null>(null);
   const [largeAutoCategories, setLargeAutoCategories] = useState<WhaleMarketCategory[] | null>(null);
+  const [largeLowPriceEnabled, setLargeLowPriceEnabled] = useState<boolean | null>(null);
+  const [largeLowPriceMax, setLargeLowPriceMax] = useState<string | null>(null);
+  const [largeLowPriceAmount, setLargeLowPriceAmount] = useState<string | null>(null);
+  const [marketCapEnabled, setMarketCapEnabled] = useState<boolean | null>(null);
+  const [marketMaxPurchaseCount, setMarketMaxPurchaseCount] = useState<string | null>(null);
+  const [marketMaxAmount, setMarketMaxAmount] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -419,11 +458,20 @@ export function WhaleAutoSettingsPanel({
   const resolvedNewAutoMinPrice = newAutoMinPrice ?? String(settings?.new_account_auto_follow_min_price ?? 0.65);
   const resolvedNewAutoMaxPrice = newAutoMaxPrice ?? String(settings?.new_account_auto_follow_max_price ?? 0.8);
   const resolvedNewAutoCategories = newAutoCategories ?? settings?.new_account_auto_follow_categories ?? ["sports"];
+  const resolvedNewLowPriceEnabled = newLowPriceEnabled ?? settings?.new_account_auto_follow_low_price_max_price != null;
+  const resolvedNewLowPriceMax = newLowPriceMax ?? (settings?.new_account_auto_follow_low_price_max_price == null ? "" : String(settings.new_account_auto_follow_low_price_max_price));
+  const resolvedNewLowPriceAmount = newLowPriceAmount ?? (settings?.new_account_auto_follow_low_price_amount_usdc == null ? "" : String(settings.new_account_auto_follow_low_price_amount_usdc));
   const resolvedLargeAutoEnabled = largeAutoEnabled ?? settings?.large_amount_auto_follow_enabled ?? false;
   const resolvedLargeAutoAmount = largeAutoAmount ?? String(settings?.large_amount_auto_follow_amount_usdc ?? 10);
   const resolvedLargeAutoMinPrice = largeAutoMinPrice ?? String(settings?.large_amount_auto_follow_min_price ?? 0.6);
   const resolvedLargeAutoMaxPrice = largeAutoMaxPrice ?? String(settings?.large_amount_auto_follow_max_price ?? 0.8);
   const resolvedLargeAutoCategories = largeAutoCategories ?? settings?.large_amount_auto_follow_categories ?? ["sports"];
+  const resolvedLargeLowPriceEnabled = largeLowPriceEnabled ?? settings?.large_amount_auto_follow_low_price_max_price != null;
+  const resolvedLargeLowPriceMax = largeLowPriceMax ?? (settings?.large_amount_auto_follow_low_price_max_price == null ? "" : String(settings.large_amount_auto_follow_low_price_max_price));
+  const resolvedLargeLowPriceAmount = largeLowPriceAmount ?? (settings?.large_amount_auto_follow_low_price_amount_usdc == null ? "" : String(settings.large_amount_auto_follow_low_price_amount_usdc));
+  const resolvedMarketCapEnabled = marketCapEnabled ?? settings?.auto_follow_market_max_purchase_count != null;
+  const resolvedMarketMaxPurchaseCount = marketMaxPurchaseCount ?? (settings?.auto_follow_market_max_purchase_count == null ? "" : String(settings.auto_follow_market_max_purchase_count));
+  const resolvedMarketMaxAmount = marketMaxAmount ?? (settings?.auto_follow_market_max_amount_usdc == null ? "" : String(settings.auto_follow_market_max_amount_usdc));
 
   useEffect(() => {
     const timer = window.setTimeout(() => setRiskVisible(false), 8000);
@@ -444,11 +492,20 @@ export function WhaleAutoSettingsPanel({
     setNewAutoMinPrice(null);
     setNewAutoMaxPrice(null);
     setNewAutoCategories(null);
+    setNewLowPriceEnabled(null);
+    setNewLowPriceMax(null);
+    setNewLowPriceAmount(null);
     setLargeAutoEnabled(null);
     setLargeAutoAmount(null);
     setLargeAutoMinPrice(null);
     setLargeAutoMaxPrice(null);
     setLargeAutoCategories(null);
+    setLargeLowPriceEnabled(null);
+    setLargeLowPriceMax(null);
+    setLargeLowPriceAmount(null);
+    setMarketCapEnabled(null);
+    setMarketMaxPurchaseCount(null);
+    setMarketMaxAmount(null);
   };
 
   const categorySummary = (categories: WhaleMarketCategory[]) => categories
@@ -460,12 +517,18 @@ export function WhaleAutoSettingsPanel({
     const newAutoAmountValue = Number(resolvedNewAutoAmount);
     const newAutoMinValue = Number(resolvedNewAutoMinPrice);
     const newAutoMaxValue = Number(resolvedNewAutoMaxPrice);
+    const newLowMaxValue = Number(resolvedNewLowPriceMax);
+    const newLowAmountValue = Number(resolvedNewLowPriceAmount);
     const largeAutoAmountValue = Number(resolvedLargeAutoAmount);
     const largeAutoMinValue = Number(resolvedLargeAutoMinPrice);
     const largeAutoMaxValue = Number(resolvedLargeAutoMaxPrice);
-    for (const [label, amount, minPrice, maxPrice, categories] of [
-      ["新号大额", newAutoAmountValue, newAutoMinValue, newAutoMaxValue, resolvedNewAutoCategories],
-      ["全量超大额", largeAutoAmountValue, largeAutoMinValue, largeAutoMaxValue, resolvedLargeAutoCategories],
+    const largeLowMaxValue = Number(resolvedLargeLowPriceMax);
+    const largeLowAmountValue = Number(resolvedLargeLowPriceAmount);
+    const marketMaxPurchaseCountValue = Number(resolvedMarketMaxPurchaseCount);
+    const marketMaxAmountValue = Number(resolvedMarketMaxAmount);
+    for (const [label, amount, minPrice, maxPrice, categories, lowEnabled, lowMax, lowAmount] of [
+      ["新号大额", newAutoAmountValue, newAutoMinValue, newAutoMaxValue, resolvedNewAutoCategories, resolvedNewLowPriceEnabled, newLowMaxValue, newLowAmountValue],
+      ["全量超大额", largeAutoAmountValue, largeAutoMinValue, largeAutoMaxValue, resolvedLargeAutoCategories, resolvedLargeLowPriceEnabled, largeLowMaxValue, largeLowAmountValue],
     ] as const) {
       if (!Number.isFinite(amount) || amount <= 0 || amount > numeric(settings?.max_follow_amount_usdc ?? 200)) {
         setError(`${label}自动跟单金额必须大于 0，且不能超过单笔买入上限。`);
@@ -477,6 +540,32 @@ export function WhaleAutoSettingsPanel({
       }
       if (!categories.length) {
         setError(`${label}自动跟单至少需要选择一个市场分类。`);
+        return;
+      }
+      if (lowEnabled && (!Number.isFinite(lowMax) || lowMax <= minPrice || lowMax >= maxPrice)) {
+        setError(`${label}低价分界必须严格位于实际买价区间内。`);
+        return;
+      }
+      if (lowEnabled && (!Number.isFinite(lowAmount) || lowAmount <= 0 || lowAmount >= amount)) {
+        setError(`${label}低价金额必须大于 0 且小于基础单笔金额。`);
+        return;
+      }
+    }
+    if (resolvedMarketCapEnabled) {
+      if (!Number.isInteger(marketMaxPurchaseCountValue) || marketMaxPurchaseCountValue <= 0) {
+        setError("单市场最大购买次数必须是正整数。");
+        return;
+      }
+      if (!Number.isFinite(marketMaxAmountValue) || marketMaxAmountValue <= 0) {
+        setError("单市场累计金额必须大于 0。");
+        return;
+      }
+      const enabledBaseAmounts = [
+        resolvedNewAutoEnabled ? newAutoAmountValue : 0,
+        resolvedLargeAutoEnabled ? largeAutoAmountValue : 0,
+      ];
+      if (marketMaxAmountValue < Math.max(...enabledBaseAmounts)) {
+        setError("单市场累计金额不能低于已开启策略的基础单笔金额。");
         return;
       }
     }
@@ -492,11 +581,17 @@ export function WhaleAutoSettingsPanel({
           new_account_auto_follow_min_price: newAutoMinValue,
           new_account_auto_follow_max_price: newAutoMaxValue,
           new_account_auto_follow_categories: resolvedNewAutoCategories,
+          new_account_auto_follow_low_price_max_price: resolvedNewLowPriceEnabled ? newLowMaxValue : null,
+          new_account_auto_follow_low_price_amount_usdc: resolvedNewLowPriceEnabled ? newLowAmountValue : null,
           large_amount_auto_follow_enabled: resolvedLargeAutoEnabled,
           large_amount_auto_follow_amount_usdc: largeAutoAmountValue,
           large_amount_auto_follow_min_price: largeAutoMinValue,
           large_amount_auto_follow_max_price: largeAutoMaxValue,
           large_amount_auto_follow_categories: resolvedLargeAutoCategories,
+          large_amount_auto_follow_low_price_max_price: resolvedLargeLowPriceEnabled ? largeLowMaxValue : null,
+          large_amount_auto_follow_low_price_amount_usdc: resolvedLargeLowPriceEnabled ? largeLowAmountValue : null,
+          auto_follow_market_max_purchase_count: resolvedMarketCapEnabled ? marketMaxPurchaseCountValue : null,
+          auto_follow_market_max_amount_usdc: resolvedMarketCapEnabled ? marketMaxAmountValue : null,
         }),
       });
       onSettingsChange(next);
@@ -537,13 +632,16 @@ export function WhaleAutoSettingsPanel({
         <div className="whaleAutoOverviewGrid" aria-label="自动跟单策略概览">
           <article className="whaleAutoOverviewCard">
             <header><strong>新号大额</strong><span className={resolvedNewAutoEnabled ? "enabled" : "disabled"}>{resolvedNewAutoEnabled ? "已开启" : "已关闭"}</span></header>
-            <dl><div><dt>单笔</dt><dd>{resolvedNewAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedNewAutoMinPrice}–{resolvedNewAutoMaxPrice}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedNewAutoCategories)}>{categorySummary(resolvedNewAutoCategories)}</dd></div></dl>
+            <dl><div><dt>单笔</dt><dd>{resolvedNewAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedNewAutoMinPrice}–{resolvedNewAutoMaxPrice}</dd></div><div><dt>低价</dt><dd>{resolvedNewLowPriceEnabled ? `< ${resolvedNewLowPriceMax}：${resolvedNewLowPriceAmount} USDC` : "未启用"}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedNewAutoCategories)}>{categorySummary(resolvedNewAutoCategories)}</dd></div></dl>
           </article>
           <article className="whaleAutoOverviewCard">
             <header><strong>全量超大额</strong><span className={resolvedLargeAutoEnabled ? "enabled" : "disabled"}>{resolvedLargeAutoEnabled ? "已开启" : "已关闭"}</span></header>
-            <dl><div><dt>单笔</dt><dd>{resolvedLargeAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedLargeAutoMinPrice}–{resolvedLargeAutoMaxPrice}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedLargeAutoCategories)}>{categorySummary(resolvedLargeAutoCategories)}</dd></div></dl>
+            <dl><div><dt>单笔</dt><dd>{resolvedLargeAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedLargeAutoMinPrice}–{resolvedLargeAutoMaxPrice}</dd></div><div><dt>低价</dt><dd>{resolvedLargeLowPriceEnabled ? `< ${resolvedLargeLowPriceMax}：${resolvedLargeLowPriceAmount} USDC` : "未启用"}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedLargeAutoCategories)}>{categorySummary(resolvedLargeAutoCategories)}</dd></div></dl>
           </article>
         </div>
+        <p className="pcFormHint whaleAutoMarketCapSummary">
+          单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
+        </p>
 
         {editing && (
           <div className="whaleAutoEditor" id="whale-auto-strategy-editor">
@@ -558,12 +656,18 @@ export function WhaleAutoSettingsPanel({
                 amount={resolvedNewAutoAmount}
                 minPrice={resolvedNewAutoMinPrice}
                 maxPrice={resolvedNewAutoMaxPrice}
+                lowPriceEnabled={resolvedNewLowPriceEnabled}
+                lowPriceMax={resolvedNewLowPriceMax}
+                lowPriceAmount={resolvedNewLowPriceAmount}
                 categories={resolvedNewAutoCategories}
                 busy={!settings || busy}
                 onEnabled={(value) => updateEnabled(setNewAutoEnabled, value)}
                 onAmount={setNewAutoAmount}
                 onMinPrice={setNewAutoMinPrice}
                 onMaxPrice={setNewAutoMaxPrice}
+                onLowPriceEnabled={setNewLowPriceEnabled}
+                onLowPriceMax={setNewLowPriceMax}
+                onLowPriceAmount={setNewLowPriceAmount}
                 onCategories={setNewAutoCategories}
               />
             ) : (
@@ -573,18 +677,40 @@ export function WhaleAutoSettingsPanel({
                 amount={resolvedLargeAutoAmount}
                 minPrice={resolvedLargeAutoMinPrice}
                 maxPrice={resolvedLargeAutoMaxPrice}
+                lowPriceEnabled={resolvedLargeLowPriceEnabled}
+                lowPriceMax={resolvedLargeLowPriceMax}
+                lowPriceAmount={resolvedLargeLowPriceAmount}
                 categories={resolvedLargeAutoCategories}
                 busy={!settings || busy}
                 onEnabled={(value) => updateEnabled(setLargeAutoEnabled, value)}
                 onAmount={setLargeAutoAmount}
                 onMinPrice={setLargeAutoMinPrice}
                 onMaxPrice={setLargeAutoMaxPrice}
+                onLowPriceEnabled={setLargeLowPriceEnabled}
+                onLowPriceMax={setLargeLowPriceMax}
+                onLowPriceAmount={setLargeLowPriceAmount}
                 onCategories={setLargeAutoCategories}
               />
             )}
+            <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
+              <header>
+                <div><span>SHARED MARKET LIMIT</span><h3>单市场共享上限</h3></div>
+                <label className="whaleAutoToggle">
+                  <input type="checkbox" aria-label="启用单市场共享上限" checked={resolvedMarketCapEnabled} disabled={!settings || busy} onChange={(event) => setMarketCapEnabled(event.target.checked)} />
+                  <b>{resolvedMarketCapEnabled ? "已开启" : "暂不限制"}</b>
+                </label>
+              </header>
+              {resolvedMarketCapEnabled && (
+                <div className="whaleAutoFields">
+                  <label className="pcField"><span>最大购买次数</span><input aria-label="单市场最大购买次数" type="number" min="1" step="1" value={resolvedMarketMaxPurchaseCount} disabled={busy} onChange={(event) => setMarketMaxPurchaseCount(event.target.value)} /></label>
+                  <label className="pcField"><span>累计投入上限</span><div className="pcUnitInput"><input aria-label="单市场累计投入上限" type="number" min="0.01" step="0.01" value={resolvedMarketMaxAmount} disabled={busy} onChange={(event) => setMarketMaxAmount(event.target.value)} /><b>USDC</b></div></label>
+                </div>
+              )}
+              <p className="pcFormHint">两类规则和所有触发钱包按同一 condition_id 共享；卖出后额度不重置。</p>
+            </section>
             {riskVisible && (
               <div className="pcFormHint whaleAutoRiskHint" role="status">
-                <span>真实资金功能：同一钱包同一资产只判断一次；不同钱包同方向可继续买入且不设数量上限。分歧市场禁止买入，持仓后出现反向大额信号会卖出原方向全部份额，包括混合人工份额。</span>
+                <span>真实资金功能：同一钱包同一资产只判断一次；不同钱包同方向可继续触发，并受上方单市场共享上限约束。分歧市场禁止买入，持仓后出现反向大额信号会卖出原方向全部份额，包括混合人工份额。</span>
                 <button type="button" aria-label="关闭真实资金风险提示" onClick={() => setRiskVisible(false)}>知道了</button>
               </div>
             )}

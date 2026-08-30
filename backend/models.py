@@ -165,6 +165,43 @@ class WhaleSettings(Base):
             "AND large_amount_auto_follow_max_price < 1",
             name="ck_whale_settings_large_auto_prices",
         ),
+        CheckConstraint(
+            "(new_account_auto_follow_low_price_max_price IS NULL "
+            "AND new_account_auto_follow_low_price_amount_usdc IS NULL) OR "
+            "(new_account_auto_follow_low_price_max_price IS NOT NULL AND "
+            "new_account_auto_follow_low_price_amount_usdc IS NOT NULL AND "
+            "new_account_auto_follow_low_price_max_price > "
+            "new_account_auto_follow_min_price AND "
+            "new_account_auto_follow_low_price_max_price < "
+            "new_account_auto_follow_max_price AND "
+            "new_account_auto_follow_low_price_amount_usdc > 0 AND "
+            "new_account_auto_follow_low_price_amount_usdc < "
+            "new_account_auto_follow_amount_usdc)",
+            name="ck_whale_settings_new_auto_low_price",
+        ),
+        CheckConstraint(
+            "(large_amount_auto_follow_low_price_max_price IS NULL "
+            "AND large_amount_auto_follow_low_price_amount_usdc IS NULL) OR "
+            "(large_amount_auto_follow_low_price_max_price IS NOT NULL AND "
+            "large_amount_auto_follow_low_price_amount_usdc IS NOT NULL AND "
+            "large_amount_auto_follow_low_price_max_price > "
+            "large_amount_auto_follow_min_price AND "
+            "large_amount_auto_follow_low_price_max_price < "
+            "large_amount_auto_follow_max_price AND "
+            "large_amount_auto_follow_low_price_amount_usdc > 0 AND "
+            "large_amount_auto_follow_low_price_amount_usdc < "
+            "large_amount_auto_follow_amount_usdc)",
+            name="ck_whale_settings_large_auto_low_price",
+        ),
+        CheckConstraint(
+            "(auto_follow_market_max_purchase_count IS NULL "
+            "AND auto_follow_market_max_amount_usdc IS NULL) OR "
+            "(auto_follow_market_max_purchase_count IS NOT NULL AND "
+            "auto_follow_market_max_amount_usdc IS NOT NULL AND "
+            "auto_follow_market_max_purchase_count > 0 "
+            "AND auto_follow_market_max_amount_usdc > 0)",
+            name="ck_whale_settings_auto_market_caps",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
@@ -201,6 +238,12 @@ class WhaleSettings(Base):
     new_account_auto_follow_categories_json: Mapped[str] = mapped_column(
         Text, nullable=False, default='["sports"]'
     )
+    new_account_auto_follow_low_price_max_price: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
+    )
+    new_account_auto_follow_low_price_amount_usdc: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
+    )
     large_amount_auto_follow_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
@@ -215,6 +258,18 @@ class WhaleSettings(Base):
     )
     large_amount_auto_follow_categories_json: Mapped[str] = mapped_column(
         Text, nullable=False, default='["sports"]'
+    )
+    large_amount_auto_follow_low_price_max_price: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
+    )
+    large_amount_auto_follow_low_price_amount_usdc: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
+    )
+    auto_follow_market_max_purchase_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    auto_follow_market_max_amount_usdc: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
     )
     min_liquidity_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("5000")
@@ -538,6 +593,13 @@ class WhaleAutoFollowDecision(Base):
     configured_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     configured_min_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     configured_max_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    configured_low_price_max_price: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
+    )
+    configured_low_price_amount_usdc: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
+    )
+    selected_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     observed_best_ask: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -620,6 +682,13 @@ class WhaleOrder(Base):
         UniqueConstraint("idempotency_key", name="uq_whale_orders_idempotency"),
         Index("ix_whale_orders_position_created", "position_id", "created_at"),
         Index("ix_whale_orders_status_updated", "status", "updated_at"),
+        Index(
+            "ix_whale_orders_auto_market_usage",
+            "condition_id",
+            "source",
+            "side",
+            "status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

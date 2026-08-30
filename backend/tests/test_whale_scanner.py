@@ -44,8 +44,10 @@ from backend.whale import (
     WhaleAggregate,
     WhaleDiscoveryScanner,
     _auto_follow_price,
+    _auto_follow_price_band_changed,
     _auto_follow_reason_display,
     _decimal_display,
+    _select_auto_follow_amount,
 )
 from backend.whale_email import (
     WhaleEmailCandidate,
@@ -1683,6 +1685,8 @@ async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(data
         database,
         new_account_auto_follow_enabled=True,
         large_amount_auto_follow_enabled=True,
+        large_amount_auto_follow_low_price_max_price=Decimal("0.65"),
+        large_amount_auto_follow_low_price_amount_usdc=Decimal("5"),
     )
     aggregate = _auto_aggregate(
         wallet=wallet,
@@ -1711,6 +1715,8 @@ async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(data
     assert len(decisions) == 1
     assert decisions[0].selected_rule == "large_amount"
     assert decisions[0].configured_amount_usdc == Decimal("10")
+    assert _auto_follow_price(decisions[0].configured_low_price_max_price) == Decimal("0.65")
+    assert decisions[0].configured_low_price_amount_usdc == Decimal("5")
     assert json.loads(decisions[0].matched_rules_json) == ["large_amount", "new_account"]
     assert decisions[0].status == "failed"
     assert decisions[0].reason == "服务重启前尚未提交自动买入，不补买"
@@ -1807,6 +1813,49 @@ def test_auto_follow_price_removes_sqlite_float_tail_at_strategy_boundary():
 
     assert maximum == Decimal("0.70")
     assert not Decimal("0.70") > maximum
+
+
+@pytest.mark.parametrize(
+    ("best_ask", "expected_amount", "expected_low"),
+    [
+        ("0.20", "10", True),
+        ("0.2999", "10", True),
+        ("0.30", "15", False),
+        ("0.75", "15", False),
+    ],
+)
+def test_auto_follow_selects_low_amount_below_exclusive_boundary(
+    best_ask: str,
+    expected_amount: str,
+    expected_low: bool,
+):
+    amount, selected_low = _select_auto_follow_amount(
+        base_amount=Decimal("15"),
+        best_ask=Decimal(best_ask),
+        low_price_max_price=Decimal("0.30"),
+        low_price_amount=Decimal("10"),
+    )
+
+    assert amount == Decimal(expected_amount)
+    assert selected_low is expected_low
+
+
+def test_auto_follow_rejects_execution_after_price_crosses_selected_band():
+    assert _auto_follow_price_band_changed(
+        best_ask=Decimal("0.30"),
+        low_price_max_price=Decimal("0.30"),
+        selected_low=True,
+    )
+    assert _auto_follow_price_band_changed(
+        best_ask=Decimal("0.29"),
+        low_price_max_price=Decimal("0.30"),
+        selected_low=False,
+    )
+    assert not _auto_follow_price_band_changed(
+        best_ask=Decimal("0.30"),
+        low_price_max_price=Decimal("0.30"),
+        selected_low=False,
+    )
 
 
 def test_auto_follow_reason_display_repairs_legacy_sqlite_float_tails():

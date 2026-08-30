@@ -808,6 +808,16 @@ def create_app(
         require_whale_module(request)
         database: Database = request.app.state.database
         values = payload.model_dump(exclude_none=True)
+        for nullable_key in (
+            "new_account_auto_follow_low_price_max_price",
+            "new_account_auto_follow_low_price_amount_usdc",
+            "large_amount_auto_follow_low_price_max_price",
+            "large_amount_auto_follow_low_price_amount_usdc",
+            "auto_follow_market_max_purchase_count",
+            "auto_follow_market_max_amount_usdc",
+        ):
+            if nullable_key in payload.model_fields_set and getattr(payload, nullable_key) is None:
+                values[nullable_key] = None
         for public_key, storage_key in (
             (
                 "new_account_auto_follow_categories",
@@ -862,6 +872,8 @@ def create_app(
                 amount = merged[f"{prefix}_auto_follow_amount_usdc"]
                 minimum = merged[f"{prefix}_auto_follow_min_price"]
                 maximum = merged[f"{prefix}_auto_follow_max_price"]
+                low_maximum = merged[f"{prefix}_auto_follow_low_price_max_price"]
+                low_amount = merged[f"{prefix}_auto_follow_low_price_amount_usdc"]
                 if amount > merged["max_follow_amount_usdc"]:
                     raise HTTPException(
                         status_code=422,
@@ -871,6 +883,45 @@ def create_app(
                     raise HTTPException(
                         status_code=422,
                         detail=f"{label}自动跟单最低买价不能高于最高买价",
+                    )
+                if (low_maximum is None) != (low_amount is None):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"{label}低价分界与低价金额必须同时设置或同时清除",
+                    )
+                if low_maximum is not None and low_amount is not None:
+                    if not minimum < low_maximum < maximum:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{label}低价分界必须严格位于实际买价区间内",
+                        )
+                    if low_amount >= amount:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{label}低价金额必须小于基础单笔金额",
+                        )
+                    if low_amount > merged["max_follow_amount_usdc"]:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{label}低价金额不能超过单笔买入上限",
+                        )
+            market_count_cap = merged["auto_follow_market_max_purchase_count"]
+            market_amount_cap = merged["auto_follow_market_max_amount_usdc"]
+            if (market_count_cap is None) != (market_amount_cap is None):
+                raise HTTPException(
+                    status_code=422,
+                    detail="单市场最大购买次数与累计金额必须同时设置或同时清除",
+                )
+            if market_count_cap is not None and market_amount_cap is not None:
+                enabled_amounts = []
+                for prefix in ("new_account", "large_amount"):
+                    if not merged[f"{prefix}_auto_follow_enabled"]:
+                        continue
+                    enabled_amounts.append(merged[f"{prefix}_auto_follow_amount_usdc"])
+                if enabled_amounts and market_amount_cap < max(enabled_amounts):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="单市场累计金额不能低于已开启策略的基础单笔金额",
                     )
             for key, value in values.items():
                 setattr(row, key, value)

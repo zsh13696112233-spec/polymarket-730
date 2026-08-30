@@ -12410,8 +12410,22 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   border-radius: 10px;
   background: #fff9ee;
   color: #81551c;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
+}
+
+.pcChainTestPanel .pcField > span {
+  color: #343844;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pcChainTestPanel .pcField input {
+  font-size: 15px;
+}
+
+.pcChainTestPanel .pcButton {
+  font-size: 13px;
 }
 
 .pcChainTestUrlRow,
@@ -12435,7 +12449,7 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 }
 
 .pcChainTestMarkets > strong {
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .pcChainTestMarkets fieldset {
@@ -12454,7 +12468,7 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   max-width: 100%;
   padding: 0 5px;
   color: #2f3440;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -12485,8 +12499,13 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   gap: 2px;
 }
 
+.pcChainOutcomeGrid label strong {
+  font-size: 15px;
+}
+
 .pcChainOutcomeGrid label small {
   color: #777d8c;
+  font-size: 12px;
 }
 
 .pcChainTestQuote,
@@ -12501,7 +12520,7 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .pcChainTestQuote h3,
 .pcChainTestResult h3 {
   margin: 0 0 10px;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .pcChainTestQuote dl {
@@ -12521,18 +12540,22 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 
 .pcChainTestQuote dt {
   color: #7b8190;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .pcChainTestQuote dd {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
 }
 
 .pcChainTestQuote > p,
 .pcChainTestResult > p {
   margin: 8px 0;
+  font-size: 13px;
+}
+
+.pcChainTestResult > small {
   font-size: 12px;
 }
 

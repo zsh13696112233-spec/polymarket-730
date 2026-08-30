@@ -356,6 +356,140 @@ describe("系统邮件设置", () => {
     expect(notice).not.toHaveClass("pcFormError");
   });
 
+  it("通过链上环境测试工具完成 outcome 识别、买入和卖出", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const account = {
+      signer_address: "0x1111111111111111111111111111111111111111",
+      funder_address: "0x2222222222222222222222222222222222222222",
+      signature_type: 3,
+      credentials_configured: true,
+      status: "ready",
+      budget_usdc: 400,
+      cash_reserve_usdc: 240,
+      max_total_exposure_usdc: 160,
+      daily_buy_limit_usdc: 80,
+      daily_loss_limit_usdc: 40,
+      auto_redeem: false,
+      collateral_balance: 300,
+      last_balance_at: "2026-08-29T16:00:00Z",
+      last_error: null,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (url.includes("/chain-test/")) calls.push({ url, body });
+      if (url.endsWith("/chain-test/resolve")) return json({
+        resolution_id: "resolution-1",
+        expires_at: "2026-08-30T12:10:00Z",
+        market_url: "https://polymarket.com/event/test-event",
+        event_title: "测试事件",
+        markets: [{
+          condition_id: `0x${"a".repeat(64)}`,
+          title: "测试市场会通过吗？",
+          market_slug: "test-market",
+          event_slug: "test-event",
+          closed: false,
+          active: true,
+          accepting_orders: true,
+          outcomes: [
+            { asset_id: "asset-yes", label: "Yes", outcome_index: 0, reference_price: 0.51 },
+            { asset_id: "asset-no", label: "No", outcome_index: 1, reference_price: 0.49 },
+          ],
+        }],
+      });
+      if (url.endsWith("/chain-test/buy/preview")) return json({
+        confirmation_id: "buy-preview-1",
+        title: "测试市场会通过吗？",
+        outcome: "Yes",
+        amount_usdc: 5,
+        best_ask: 0.51,
+        worst_price: 0.53,
+        minimum_order_usdc: 2.65,
+        estimated_shares: 9.4339,
+        estimated_fee_usdc: 0.02,
+        total_cost_usdc: 5.02,
+        immediate_exit_price: 0.47,
+        immediate_exit_proceeds_usdc: 4.43,
+        immediate_exit_pnl_usdc: -0.59,
+        immediate_exit_unavailable_reason: null,
+        available_balance_usdc: 300,
+        reserve_warning: false,
+      });
+      if (url.endsWith("/chain-test/buy/execute")) return json({
+        id: 11,
+        position_id: 7,
+        side: "BUY",
+        title: "测试市场会通过吗？",
+        outcome: "Yes",
+        filled_size: 9.4,
+        filled_usdc: 4.99,
+        fee_usdc: 0.02,
+        status: "filled",
+        reason: null,
+      });
+      if (url.endsWith("/orders/11/sell/preview")) return json({
+        confirmation_id: "sell-preview-1",
+        position_id: 7,
+        size: 9.4,
+        best_bid: 0.49,
+        worst_price: 0.47,
+        minimum_order_size: 5,
+        estimated_proceeds_usdc: 4.418,
+        estimated_fee_usdc: 0.02,
+        cost_basis_usdc: 5.01,
+        estimated_pnl_usdc: -0.612,
+        estimated_pnl_percent: -12.21,
+      });
+      if (url.endsWith("/orders/11/sell/execute")) return json({
+        id: 12,
+        position_id: 7,
+        side: "SELL",
+        title: "测试市场会通过吗？",
+        outcome: "Yes",
+        filled_size: 9.4,
+        filled_usdc: 4.6,
+        fee_usdc: 0.02,
+        status: "filled",
+        reason: null,
+      });
+      if (url.endsWith("/api/execution-account")) return json(account);
+      if (url.endsWith("/api/email-settings")) return json({
+        notifications_enabled: false,
+        notification_recipients: [],
+        smtp_host: "smtp.163.com",
+        smtp_port: 465,
+        smtp_security: "ssl",
+        smtp_username: null,
+        smtp_from_email: null,
+        smtp_from_name: "PolyCopy",
+        smtp_authorization_code_configured: false,
+        smtp_configured: false,
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<ExecutionSettingsWorkspace />);
+    await user.type(await screen.findByRole("textbox", { name: "Polymarket 市场链接" }), "https://polymarket.com/event/test-event");
+    await user.click(screen.getByRole("button", { name: "识别 outcome" }));
+    await user.click(await screen.findByRole("radio", { name: /Yes/ }));
+    const amount = screen.getByRole("spinbutton", { name: "链上测试买入金额" });
+    await user.clear(amount);
+    await user.type(amount, "5");
+    await user.click(screen.getByRole("button", { name: "预览真实买入" }));
+    await user.click(await screen.findByRole("button", { name: /确认真实买入/ }));
+    await user.click(await screen.findByRole("button", { name: "一键卖出本次成交" }));
+    await user.click(await screen.findByRole("button", { name: "确认卖出本次成交" }));
+
+    expect(await screen.findByText("买卖链路验证完成")).toBeInTheDocument();
+    expect(calls.map((call) => call.body)).toEqual(expect.arrayContaining([
+      { market_url: "https://polymarket.com/event/test-event" },
+      { resolution_id: "resolution-1", asset_id: "asset-yes", amount_usdc: 5 },
+      { confirmation_id: "buy-preview-1", confirmation_text: "确认真实买入" },
+      { confirmation_id: "sell-preview-1", confirmation_text: "确认真实卖出" },
+    ]));
+  });
+
   it("在系统设置工作台配置 163 SMTP 并测试连接", async () => {
     const user = userEvent.setup();
     const bodies: unknown[] = [];

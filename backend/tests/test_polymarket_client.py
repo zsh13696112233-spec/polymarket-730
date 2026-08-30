@@ -5,12 +5,90 @@ from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from time import monotonic
+from types import SimpleNamespace
 
 import httpx
+import polymarket
 import pytest
 
 from backend.polymarket import InvalidWalletInput, PolymarketAPIError, PolymarketClient
 from backend.tests.conftest import TEST_ADDRESS
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_url_uses_official_sdk_and_maps_event_outcomes(monkeypatch):
+    market = SimpleNamespace(
+        condition_id="0x" + "9" * 64,
+        question="测试市场会通过吗？",
+        group_item_title=None,
+        slug="test-market",
+        icon=None,
+        image=None,
+        tags=(),
+        events=(SimpleNamespace(slug="test-event", title="测试事件"),),
+        outcomes=SimpleNamespace(
+            yes=SimpleNamespace(label="Yes", token_id="asset-yes", price=Decimal("0.51")),
+            no=SimpleNamespace(label="No", token_id="asset-no", price=Decimal("0.49")),
+        ),
+        state=SimpleNamespace(
+            closed=False,
+            active=True,
+            accepting_orders=True,
+            neg_risk=False,
+            end_date=None,
+        ),
+        trading=SimpleNamespace(
+            minimum_order_size=Decimal("5"),
+            minimum_tick_size=Decimal("0.01"),
+            fee_schedule=SimpleNamespace(rate=Decimal("0.05"), exponent=1),
+        ),
+        metrics=SimpleNamespace(liquidity=Decimal("1000"), volume_24hr=Decimal("2000")),
+        prices=SimpleNamespace(best_bid=Decimal("0.49"), best_ask=Decimal("0.51")),
+    )
+
+    class FakePublicClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get_event(self, *, url: str):
+            assert url == "https://polymarket.com/event/test-event"
+            return SimpleNamespace(title="测试事件", slug="test-event", markets=(market,))
+
+    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+    )
+    try:
+        resolved = await client.resolve_market_url("https://polymarket.com/event/test-event")
+    finally:
+        await client.close()
+
+    assert resolved.event_title == "测试事件"
+    assert len(resolved.markets) == 1
+    assert resolved.markets[0].outcomes == ("Yes", "No")
+    assert resolved.markets[0].clob_token_ids == ("asset-yes", "asset-no")
+    assert resolved.markets[0].fee_rate == Decimal("0.05")
+
+
+@pytest.mark.asyncio
+async def test_resolve_market_url_rejects_non_polymarket_hosts():
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+    )
+    try:
+        with pytest.raises(InvalidWalletInput, match="仅支持"):
+            await client.resolve_market_url("https://example.com/event/test-event")
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

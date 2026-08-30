@@ -20,6 +20,7 @@ from backend.polymarket import (
     PositionSnapshot,
     PublicProfile,
     RedemptionSnapshot,
+    ResolvedMarketURL,
     SettlementEvidence,
     TradeSnapshot,
     WhaleMarketSnapshot,
@@ -103,6 +104,15 @@ class FakePolymarketClient:
         self.official_tags: list[OfficialTag] = []
         self.tag_error: Exception | None = None
         self.tag_calls: list[int] = []
+        self.market_url_resolution: ResolvedMarketURL | None = None
+        self.market_url_error: Exception | None = None
+
+    async def resolve_market_url(self, market_url: str) -> ResolvedMarketURL:
+        if self.market_url_error is not None:
+            raise self.market_url_error
+        if self.market_url_resolution is None:
+            raise PolymarketAPIError("测试市场链接未配置")
+        return self.market_url_resolution
 
     async def resolve_profile(self, raw_input: str, requested_label: str | None) -> PublicProfile:
         address = parse_wallet_input(raw_input)

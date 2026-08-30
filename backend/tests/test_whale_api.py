@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -10,13 +11,18 @@ from backend.models import (
     WhaleAutoFollowDecision,
     WhaleEntry,
     WhaleEntryRuleState,
+    WhaleFollowPosition,
     WhaleMarket,
+    WhaleOrder,
     WhaleSettings,
     WhaleTag,
     WhaleTrade,
     WhaleWallet,
 )
+from backend.polymarket import ResolvedMarketURL, WhaleMarketSnapshot
 from backend.time_utils import utcnow
+from backend.trading import TradeResult
+from backend.whale import WhaleFollowQuote, WhaleSellQuote
 
 CONDITION_ID = "0x" + "a" * 64
 ASSET_YES = "100000000000000000001"
@@ -833,6 +839,255 @@ def test_whale_history_filters_rules_and_returns_settlement_pnl(app_client_facto
     )
     assert preview.status_code == 409
     assert "历史记录" in preview.text
+
+
+def test_chain_test_resolves_outcomes_and_uses_single_use_buy_sell_confirmations(
+    app_client_factory,
+    monkeypatch,
+):
+    client, fake = app_client_factory([[]], trading_enabled=True)
+    market = WhaleMarketSnapshot(
+        condition_id=CONDITION_ID,
+        title="链上测试市场",
+        market_slug="chain-test-market",
+        event_slug="chain-test-event",
+        icon_url=None,
+        tags=(),
+        closed=False,
+        active=True,
+        accepting_orders=True,
+        neg_risk=False,
+        end_date=None,
+        end_date_is_date_only=False,
+        outcomes=("Yes", "No"),
+        outcome_prices=(Decimal("0.51"), Decimal("0.49")),
+        clob_token_ids=(ASSET_YES, ASSET_NO),
+        liquidity=Decimal("10000"),
+        volume_24h=Decimal("20000"),
+        best_bid=Decimal("0.49"),
+        best_ask=Decimal("0.51"),
+        order_min_size=Decimal("5"),
+        tick_size=Decimal("0.01"),
+        fee_rate=Decimal("0"),
+        fee_exponent=Decimal("1"),
+    )
+    fake.market_url_resolution = ResolvedMarketURL(
+        market_url="https://polymarket.com/event/chain-test-event",
+        event_title="链上测试事件",
+        markets=(market,),
+    )
+    follow_executor = client.app.state.whale_executor
+    synced: list[str] = []
+    quote_calls: list[dict[str, object]] = []
+
+    quote = WhaleFollowQuote(
+        entry_id=None,
+        source_wallet=None,
+        asset_id=ASSET_YES,
+        condition_id=CONDITION_ID,
+        title="链上测试市场",
+        outcome="Yes",
+        outcome_index=0,
+        neg_risk=False,
+        market_slug="chain-test-market",
+        event_slug="chain-test-event",
+        icon_url=None,
+        amount_usdc=Decimal("5"),
+        best_ask=Decimal("0.51"),
+        worst_price=Decimal("0.53"),
+        strategy_minimum_price=None,
+        strategy_maximum_price=None,
+        tick_size=Decimal("0.01"),
+        minimum_order_usdc=Decimal("2.65"),
+        estimated_shares=Decimal("9.433962"),
+        estimated_fee_usdc=Decimal("0"),
+        total_cost_usdc=Decimal("5"),
+        profit_ratio_percent=Decimal("88.67924"),
+        max_loss_usdc=Decimal("5"),
+        winning_payout_usdc=Decimal("9.433962"),
+        winning_profit_usdc=Decimal("4.433962"),
+        immediate_exit_price=Decimal("0.47"),
+        immediate_exit_proceeds_usdc=Decimal("4.433962"),
+        immediate_exit_fee_usdc=Decimal("0"),
+        immediate_exit_pnl_usdc=Decimal("-0.566038"),
+        immediate_exit_pnl_percent=Decimal("-11.32076"),
+        immediate_exit_unavailable_reason=None,
+        whale_avg_price=None,
+        whale_profit_ratio_percent=None,
+        profit_ratio_gap_percent=None,
+        price_delta_cents=None,
+        price_delta_warning=False,
+        reserve_warning=False,
+        available_balance_usdc=Decimal("300"),
+    )
+
+    async def quote_buy(**kwargs):
+        synced.append(kwargs["market"].condition_id)
+        quote_calls.append(kwargs)
+        return quote
+
+    async def execute_buy(selected_quote, confirmation_id, *, order_source):
+        assert selected_quote == quote
+        order_id = await follow_executor._create_order(
+            quote=selected_quote,
+            confirmation_id=confirmation_id,
+            side="BUY",
+            order_source=order_source,
+        )
+        await follow_executor.apply_result(
+            order_id,
+            TradeResult(
+                status="filled",
+                external_order_id="chain-buy-order",
+                external_trade_id="chain-buy-trade",
+                filled_size=Decimal("9.433962"),
+                filled_usdc=Decimal("5"),
+                average_price=Decimal("0.53"),
+            ),
+        )
+        return order_id
+
+    sell_quote = WhaleSellQuote(
+        position_id=0,
+        asset_id=ASSET_YES,
+        condition_id=CONDITION_ID,
+        title="链上测试市场",
+        outcome="Yes",
+        outcome_index=0,
+        neg_risk=False,
+        size=Decimal("9.433962"),
+        best_bid=Decimal("0.49"),
+        worst_price=Decimal("0.47"),
+        tick_size=Decimal("0.01"),
+        minimum_order_size=Decimal("5"),
+        estimated_proceeds_usdc=Decimal("4.433962"),
+        estimated_fee_usdc=Decimal("0"),
+        cost_basis_usdc=Decimal("5"),
+        estimated_pnl_usdc=Decimal("-0.566038"),
+        estimated_pnl_percent=Decimal("-11.32076"),
+    )
+
+    async def quote_sell(*, position_id, size, sell_all):
+        assert size.quantize(Decimal("0.000001")) == Decimal("9.433962")
+        assert sell_all is False
+        return replace(sell_quote, position_id=position_id)
+
+    async def execute_sell(selected_quote, confirmation_id, *, order_source):
+        now = utcnow()
+        async with client.app.state.database.sessions() as session:
+            position = await session.get(WhaleFollowPosition, selected_quote.position_id)
+            assert position is not None
+            order = WhaleOrder(
+                position_id=position.id,
+                entry_id=None,
+                idempotency_key=f"whale:{confirmation_id}",
+                source=order_source,
+                source_wallet=None,
+                asset_id=position.asset_id,
+                condition_id=position.condition_id,
+                title=position.title,
+                outcome=position.outcome,
+                outcome_index=position.outcome_index,
+                neg_risk=False,
+                side="SELL",
+                requested_size=selected_quote.size,
+                requested_usdc=selected_quote.estimated_proceeds_usdc,
+                limit_price=selected_quote.worst_price,
+                reference_price=selected_quote.best_bid,
+                whale_avg_price=None,
+                filled_size=Decimal("0"),
+                filled_usdc=Decimal("0"),
+                fee_usdc=Decimal("0"),
+                status="planned",
+                reason=None,
+                signed_order_hash=None,
+                execution_provider="unified_sdk",
+                external_order_id=None,
+                external_trade_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(order)
+            await session.commit()
+            return order.id
+
+    monkeypatch.setattr(follow_executor, "quote_chain_test_buy", quote_buy)
+    monkeypatch.setattr(follow_executor, "execute_follow", execute_buy)
+    monkeypatch.setattr(follow_executor, "quote_sell", quote_sell)
+    monkeypatch.setattr(follow_executor, "execute_sell", execute_sell)
+
+    resolved = client.post(
+        "/api/execution-account/chain-test/resolve",
+        json={"market_url": fake.market_url_resolution.market_url},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert [item["label"] for item in resolved.json()["markets"][0]["outcomes"]] == [
+        "Yes",
+        "No",
+    ]
+    preview = client.post(
+        "/api/execution-account/chain-test/buy/preview",
+        json={
+            "resolution_id": resolved.json()["resolution_id"],
+            "asset_id": ASSET_YES,
+            "amount_usdc": 5,
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    assert synced == [CONDITION_ID]
+    assert quote_calls == [
+        {
+            "market": market,
+            "asset_id": ASSET_YES,
+            "amount_usdc": Decimal("5"),
+        }
+    ]
+    bought = client.post(
+        "/api/execution-account/chain-test/buy/execute",
+        json={
+            "confirmation_id": preview.json()["confirmation_id"],
+            "confirmation_text": "确认真实买入",
+        },
+    )
+    assert bought.status_code == 200, bought.text
+    assert bought.json()["source"] == "chain_test"
+    assert bought.json()["entry_id"] is None
+    assert (
+        client.post(
+            "/api/execution-account/chain-test/buy/execute",
+            json={
+                "confirmation_id": preview.json()["confirmation_id"],
+                "confirmation_text": "确认真实买入",
+            },
+        ).status_code
+        == 409
+    )
+
+    buy_order_id = bought.json()["id"]
+    sell_preview = client.post(
+        f"/api/execution-account/chain-test/orders/{buy_order_id}/sell/preview"
+    )
+    assert sell_preview.status_code == 200, sell_preview.text
+    sold = client.post(
+        f"/api/execution-account/chain-test/orders/{buy_order_id}/sell/execute",
+        json={
+            "confirmation_id": sell_preview.json()["confirmation_id"],
+            "confirmation_text": "确认真实卖出",
+        },
+    )
+    assert sold.status_code == 200, sold.text
+    assert sold.json()["source"] == "chain_test"
+    assert sold.json()["side"] == "SELL"
+    assert (
+        client.post(
+            f"/api/execution-account/chain-test/orders/{buy_order_id}/sell/execute",
+            json={
+                "confirmation_id": sell_preview.json()["confirmation_id"],
+                "confirmation_text": "确认真实卖出",
+            },
+        ).status_code
+        == 409
+    )
 
 
 def test_whale_statistics_deduplicates_overlap_and_calculates_weighted_metrics(

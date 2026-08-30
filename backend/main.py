@@ -40,6 +40,10 @@ from backend.polymarket import (
     parse_wallet_input,
 )
 from backend.schemas import (
+    ChainTestBuyPreviewRequest,
+    ChainTestMarketRead,
+    ChainTestResolveRead,
+    ChainTestResolveRequest,
     EmailDeliveryListRead,
     EmailSettingsRead,
     EmailSettingsUpdate,
@@ -243,6 +247,9 @@ def create_app(
         application.state.whale_request_monitor = whale_request_monitor
         application.state.whale_follow_previews = {}
         application.state.whale_sell_previews = {}
+        application.state.chain_test_resolutions = {}
+        application.state.chain_test_buy_previews = {}
+        application.state.chain_test_sell_previews = {}
         if resolved_settings.start_monitor:
             whale_email_notifier.start()
             if resolved_settings.whale_enabled:
@@ -432,6 +439,218 @@ def create_app(
             result = execution_account_read(await session.get(ExecutionAccount, 1))
             assert result is not None
             return result
+
+    @application.post(
+        "/api/execution-account/chain-test/resolve",
+        response_model=ChainTestResolveRead,
+    )
+    async def resolve_chain_test_market(
+        payload: ChainTestResolveRequest,
+        request: Request,
+    ) -> ChainTestResolveRead:
+        try:
+            resolution = await request.app.state.polymarket_client.resolve_market_url(
+                payload.market_url
+            )
+        except InvalidWalletInput as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except PolymarketAPIError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        resolution_id = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=10)
+        request.app.state.chain_test_resolutions[resolution_id] = {
+            "resolution": resolution,
+            "expires_at": expires_at,
+        }
+        markets = []
+        for market in resolution.markets:
+            markets.append(
+                ChainTestMarketRead.model_validate(
+                    {
+                        "condition_id": market.condition_id,
+                        "title": market.title,
+                        "market_slug": market.market_slug,
+                        "event_slug": market.event_slug,
+                        "closed": market.closed,
+                        "active": market.active,
+                        "accepting_orders": market.accepting_orders,
+                        "outcomes": [
+                            {
+                                "asset_id": asset_id,
+                                "label": (
+                                    market.outcomes[index]
+                                    if index < len(market.outcomes)
+                                    else f"Outcome {index + 1}"
+                                ),
+                                "outcome_index": index,
+                                "reference_price": (
+                                    market.outcome_prices[index]
+                                    if index < len(market.outcome_prices)
+                                    else Decimal("0")
+                                ),
+                            }
+                            for index, asset_id in enumerate(market.clob_token_ids)
+                        ],
+                    }
+                )
+            )
+        return ChainTestResolveRead.model_validate(
+            {
+                "resolution_id": resolution_id,
+                "expires_at": expires_at,
+                "market_url": resolution.market_url,
+                "event_title": resolution.event_title,
+                "markets": markets,
+            }
+        )
+
+    @application.post(
+        "/api/execution-account/chain-test/buy/preview",
+        response_model=WhaleFollowPreviewRead,
+    )
+    async def preview_chain_test_buy(
+        payload: ChainTestBuyPreviewRequest,
+        request: Request,
+    ) -> WhaleFollowPreviewRead:
+        stored = request.app.state.chain_test_resolutions.get(payload.resolution_id)
+        if stored is None or stored["expires_at"] < utcnow():
+            request.app.state.chain_test_resolutions.pop(payload.resolution_id, None)
+            raise HTTPException(status_code=409, detail="市场解析结果已失效，请重新解析链接")
+        selected_market = next(
+            (
+                market
+                for market in stored["resolution"].markets
+                if payload.asset_id in market.clob_token_ids
+            ),
+            None,
+        )
+        if selected_market is None:
+            raise HTTPException(status_code=409, detail="所选 outcome 与市场解析结果不匹配")
+        try:
+            quote = await request.app.state.whale_executor.quote_chain_test_buy(
+                market=selected_market,
+                asset_id=payload.asset_id,
+                amount_usdc=payload.amount_usdc,
+            )
+        except ValueError as error:
+            raise whale_value_error(error, preview=True) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        confirmation_id = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=5)
+        request.app.state.chain_test_buy_previews[confirmation_id] = {
+            "quote": quote,
+            "expires_at": expires_at,
+        }
+        return WhaleFollowPreviewRead.model_validate(
+            {"confirmation_id": confirmation_id, "expires_at": expires_at, **asdict(quote)}
+        )
+
+    @application.post(
+        "/api/execution-account/chain-test/buy/execute",
+        response_model=WhaleOrderRead,
+    )
+    async def execute_chain_test_buy(
+        payload: WhaleFollowExecuteRequest,
+        request: Request,
+    ) -> WhaleOrderRead:
+        stored = request.app.state.chain_test_buy_previews.pop(payload.confirmation_id, None)
+        if stored is None:
+            raise HTTPException(status_code=409, detail="测试买入确认已失效，请重新预览")
+        if stored["expires_at"] < utcnow():
+            raise HTTPException(status_code=409, detail="测试买入确认已过期，请重新预览")
+        try:
+            order_id = await request.app.state.whale_executor.execute_follow(
+                stored["quote"], payload.confirmation_id, order_source="chain_test"
+            )
+        except ValueError as error:
+            raise whale_value_error(error) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            order = await session.scalar(
+                select(WhaleOrder)
+                .options(selectinload(WhaleOrder.fills))
+                .where(WhaleOrder.id == order_id)
+            )
+            assert order is not None
+            return WhaleOrderRead.model_validate(whale_order_payload(order))
+
+    @application.post(
+        "/api/execution-account/chain-test/orders/{buy_order_id}/sell/preview",
+        response_model=WhaleSellPreviewRead,
+    )
+    async def preview_chain_test_sell(
+        buy_order_id: int,
+        request: Request,
+    ) -> WhaleSellPreviewRead:
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            chain_test_buy = await session.get(WhaleOrder, buy_order_id)
+        if (
+            chain_test_buy is None
+            or chain_test_buy.source != "chain_test"
+            or chain_test_buy.side != "BUY"
+            or chain_test_buy.filled_size <= 0
+            or chain_test_buy.position_id is None
+        ):
+            raise HTTPException(status_code=409, detail="该订单不是已成交的链上环境测试买单")
+        try:
+            quote = await request.app.state.whale_executor.quote_sell(
+                position_id=chain_test_buy.position_id,
+                size=chain_test_buy.filled_size,
+                sell_all=False,
+            )
+        except ValueError as error:
+            raise whale_value_error(error, preview=True) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        confirmation_id = secrets.token_urlsafe(32)
+        expires_at = utcnow() + timedelta(minutes=5)
+        request.app.state.chain_test_sell_previews[confirmation_id] = {
+            "quote": quote,
+            "buy_order_id": buy_order_id,
+            "expires_at": expires_at,
+        }
+        return WhaleSellPreviewRead.model_validate(
+            {"confirmation_id": confirmation_id, "expires_at": expires_at, **asdict(quote)}
+        )
+
+    @application.post(
+        "/api/execution-account/chain-test/orders/{buy_order_id}/sell/execute",
+        response_model=WhaleOrderRead,
+    )
+    async def execute_chain_test_sell(
+        buy_order_id: int,
+        payload: WhaleSellExecuteRequest,
+        request: Request,
+    ) -> WhaleOrderRead:
+        stored = request.app.state.chain_test_sell_previews.pop(payload.confirmation_id, None)
+        if stored is None:
+            raise HTTPException(status_code=409, detail="测试卖出确认已失效，请重新预览")
+        quote = stored["quote"]
+        if stored["buy_order_id"] != buy_order_id:
+            raise HTTPException(status_code=409, detail="测试卖出确认与买单不匹配")
+        if stored["expires_at"] < utcnow():
+            raise HTTPException(status_code=409, detail="测试卖出确认已过期，请重新预览")
+        try:
+            order_id = await request.app.state.whale_executor.execute_sell(
+                quote, payload.confirmation_id, order_source="chain_test"
+            )
+        except ValueError as error:
+            raise whale_value_error(error) from error
+        except (PolymarketAPIError, TradingUnavailable) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        database: Database = request.app.state.database
+        async with database.sessions() as session:
+            order = await session.scalar(
+                select(WhaleOrder)
+                .options(selectinload(WhaleOrder.fills))
+                .where(WhaleOrder.id == order_id)
+            )
+            assert order is not None
+            return WhaleOrderRead.model_validate(whale_order_payload(order))
 
     def require_whale_module(request: Request) -> None:
         if not request.app.state.settings.whale_enabled:

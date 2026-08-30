@@ -829,6 +829,35 @@ async def test_platform_managed_redemption_skips_local_redemption_scan(database:
 
 
 @pytest.mark.asyncio
+async def test_chain_test_buy_enforces_cash_reserve_and_total_exposure(database: Database):
+    await configure_reconciliation(database)
+    follow_executor = executor(database)
+    quote = SimpleNamespace(
+        total_cost_usdc=Decimal("11"),
+        available_balance_usdc=Decimal("250"),
+    )
+
+    with pytest.raises(ValueError, match="预算或现金保留额"):
+        await follow_executor._ensure_chain_test_buy_limits(  # type: ignore[arg-type]
+            quote,
+            refresh_balance=False,
+        )
+
+    async with database.sessions() as session:
+        account = await session.get(ExecutionAccount, 1)
+        assert account is not None
+        account.cash_reserve_usdc = ZERO
+        account.max_total_exposure_usdc = Decimal("10")
+        await session.commit()
+
+    with pytest.raises(ValueError, match="总敞口限制"):
+        await follow_executor._ensure_chain_test_buy_limits(  # type: ignore[arg-type]
+            quote,
+            refresh_balance=False,
+        )
+
+
+@pytest.mark.asyncio
 async def test_local_redemption_opt_in_keeps_redeemable_scan_available(database: Database):
     await configure_reconciliation(database, local_auto_redeem=True)
     await configure_whale_settings(database)

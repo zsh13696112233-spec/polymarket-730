@@ -266,6 +266,13 @@ class ResolvedMarketOutcome:
     fee_rate_bps: int
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedMarketURL:
+    market_url: str
+    event_title: str
+    markets: tuple[WhaleMarketSnapshot, ...]
+
+
 def fingerprint_trades(
     proxy_wallet: str,
     trades: list[TradeSnapshot],
@@ -983,6 +990,95 @@ class PolymarketClient:
             tick_size=tick_size if tick_size > ZERO else Decimal("0.01"),
             min_order_size=min_order_size if min_order_size > ZERO else Decimal("5"),
             neg_risk=bool(payload.get("neg_risk", False)),
+        )
+
+    async def resolve_market_url(self, market_url: str) -> ResolvedMarketURL:
+        value = market_url.strip()
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if parsed.scheme != "https" or host not in {"polymarket.com", "www.polymarket.com"}:
+            raise InvalidWalletInput("仅支持 https://polymarket.com 市场链接")
+        is_event = len(segments) == 2 and segments[0] == "event"
+        is_market = (len(segments) == 3 and segments[0] == "event") or (
+            len(segments) == 2 and segments[0] == "market"
+        )
+        if not is_event and not is_market:
+            raise InvalidWalletInput("市场链接路径无效，请粘贴 Polymarket event 或 market 链接")
+
+        try:
+            from polymarket import AsyncPublicClient
+
+            async with AsyncPublicClient() as sdk:
+                if is_event:
+                    event = await sdk.get_event(url=value)
+                    event_title = event.title or segments[-1]
+                    event_slug = event.slug
+                    markets = event.markets
+                else:
+                    market = await sdk.get_market(url=value)
+                    first_event = market.events[0] if market.events else None
+                    event_title = (
+                        first_event.title if first_event and first_event.title else market.question
+                    ) or segments[-1]
+                    event_slug = first_event.slug if first_event else None
+                    markets = (market,)
+        except InvalidWalletInput:
+            raise
+        except Exception as error:
+            raise PolymarketAPIError(f"无法通过官方 SDK 解析市场链接：{error}") from error
+
+        snapshots: list[WhaleMarketSnapshot] = []
+        for market in markets:
+            outcomes = (market.outcomes.yes, market.outcomes.no)
+            token_ids = tuple(
+                str(item.token_id) if item.token_id is not None else "" for item in outcomes
+            )
+            if not market.condition_id or any(not token_id for token_id in token_ids):
+                continue
+            fee_schedule = market.trading.fee_schedule
+            market_event = market.events[0] if market.events else None
+            snapshots.append(
+                WhaleMarketSnapshot(
+                    condition_id=str(market.condition_id),
+                    title=market.question or market.group_item_title or event_title,
+                    market_slug=market.slug,
+                    event_slug=(market_event.slug if market_event else None) or event_slug,
+                    icon_url=market.icon or market.image,
+                    tags=tuple(
+                        OfficialTag(id=str(tag.id), slug=tag.slug or "", label=tag.label or "")
+                        for tag in market.tags
+                        if tag.slug
+                    ),
+                    closed=bool(market.state.closed),
+                    active=market.state.active is not False,
+                    accepting_orders=market.state.accepting_orders is True,
+                    neg_risk=bool(market.state.neg_risk),
+                    end_date=market.state.end_date,
+                    end_date_is_date_only=False,
+                    outcomes=tuple(item.label for item in outcomes),
+                    outcome_prices=tuple(item.price or ZERO for item in outcomes),
+                    clob_token_ids=token_ids,
+                    liquidity=market.metrics.liquidity or ZERO,
+                    volume_24h=market.metrics.volume_24hr or ZERO,
+                    best_bid=market.prices.best_bid,
+                    best_ask=market.prices.best_ask,
+                    order_min_size=market.trading.minimum_order_size or Decimal("5"),
+                    tick_size=market.trading.minimum_tick_size or Decimal("0.01"),
+                    fee_rate=fee_schedule.rate if fee_schedule is not None else ZERO,
+                    fee_exponent=(
+                        Decimal(str(fee_schedule.exponent))
+                        if fee_schedule is not None
+                        else Decimal("1")
+                    ),
+                )
+            )
+        if not snapshots:
+            raise PolymarketAPIError("该链接中没有可识别的 CLOB outcome")
+        return ResolvedMarketURL(
+            market_url=value,
+            event_title=event_title,
+            markets=tuple(snapshots),
         )
 
     async def resolve_market_outcome(self, market_url: str, outcome: str) -> ResolvedMarketOutcome:

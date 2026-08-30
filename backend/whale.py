@@ -46,6 +46,7 @@ from backend.polymarket import (
     PolymarketAPIError,
     PolymarketClient,
     WhaleMarketPositionSnapshot,
+    WhaleMarketSnapshot,
 )
 from backend.time_utils import utcnow
 from backend.trading import (
@@ -233,6 +234,46 @@ def _attribute(item: Any, *names: str, default: Any = None) -> Any:
         if isinstance(item, dict) and item.get(name) is not None:
             return item[name]
     return default
+
+
+def _apply_market_snapshot(row: WhaleMarket, item: Any, *, now: datetime) -> None:
+    tags = _attribute(item, "tags", default=[]) or []
+    row.title = str(_attribute(item, "title", "question") or "未命名市场")
+    row.market_slug = str(_attribute(item, "market_slug", "slug") or "")
+    row.event_slug = str(_attribute(item, "event_slug") or "")
+    row.icon_url = _attribute(item, "icon_url", "icon", "image")
+    row.outcomes_json = _json_dump(_attribute(item, "outcomes", default=[]) or [])
+    row.outcome_prices_json = _json_dump(
+        [str(value) for value in (_attribute(item, "outcome_prices", default=[]) or [])]
+    )
+    row.clob_token_ids_json = _json_dump(
+        [str(value) for value in (_attribute(item, "clob_token_ids", default=[]) or [])]
+    )
+    row.tags_json = _json_dump(
+        [
+            {
+                "id": str(_attribute(tag, "id", default="") or ""),
+                "label": str(_attribute(tag, "label", default="") or ""),
+                "slug": str(_attribute(tag, "slug", default="") or ""),
+            }
+            for tag in tags
+        ]
+    )
+    row.closed = bool(_attribute(item, "closed", default=False))
+    row.active = bool(_attribute(item, "active", default=True))
+    row.accepting_orders = bool(_attribute(item, "accepting_orders", default=False))
+    row.neg_risk = bool(_attribute(item, "neg_risk", default=False))
+    row.end_date = _attribute(item, "end_date")
+    row.end_date_is_date_only = bool(_attribute(item, "end_date_is_date_only", default=False))
+    row.liquidity = _decimal(_attribute(item, "liquidity"))
+    row.volume_24h = _decimal(_attribute(item, "volume_24h"))
+    row.best_bid = _attribute(item, "best_bid")
+    row.best_ask = _attribute(item, "best_ask")
+    row.order_min_size = _decimal(_attribute(item, "order_min_size"), Decimal("5"))
+    row.tick_size = _decimal(_attribute(item, "tick_size"), Decimal("0.01"))
+    row.fee_rate = _decimal(_attribute(item, "fee_rate"))
+    row.fee_exponent = _decimal(_attribute(item, "fee_exponent"), ONE)
+    row.refreshed_at = now
 
 
 def _display_name(trade: Any) -> str:
@@ -1231,45 +1272,7 @@ class WhaleDiscoveryScanner:
                 if row is None:
                     row = WhaleMarket(condition_id=condition_id)
                     session.add(row)
-                tags = _attribute(item, "tags", default=[]) or []
-                row.title = str(_attribute(item, "title", "question") or "未命名市场")
-                row.market_slug = str(_attribute(item, "market_slug", "slug") or "")
-                row.event_slug = str(_attribute(item, "event_slug") or "")
-                row.icon_url = _attribute(item, "icon_url", "icon", "image")
-                row.outcomes_json = _json_dump(_attribute(item, "outcomes", default=[]) or [])
-                row.outcome_prices_json = _json_dump(
-                    [str(value) for value in (_attribute(item, "outcome_prices", default=[]) or [])]
-                )
-                row.clob_token_ids_json = _json_dump(
-                    [str(value) for value in (_attribute(item, "clob_token_ids", default=[]) or [])]
-                )
-                row.tags_json = _json_dump(
-                    [
-                        {
-                            "id": str(_attribute(tag, "id", default="") or ""),
-                            "label": str(_attribute(tag, "label", default="") or ""),
-                            "slug": str(_attribute(tag, "slug", default="") or ""),
-                        }
-                        for tag in tags
-                    ]
-                )
-                row.closed = bool(_attribute(item, "closed", default=False))
-                row.active = bool(_attribute(item, "active", default=True))
-                row.accepting_orders = bool(_attribute(item, "accepting_orders", default=False))
-                row.neg_risk = bool(_attribute(item, "neg_risk", default=False))
-                row.end_date = _attribute(item, "end_date")
-                row.end_date_is_date_only = bool(
-                    _attribute(item, "end_date_is_date_only", default=False)
-                )
-                row.liquidity = _decimal(_attribute(item, "liquidity"))
-                row.volume_24h = _decimal(_attribute(item, "volume_24h"))
-                row.best_bid = _attribute(item, "best_bid")
-                row.best_ask = _attribute(item, "best_ask")
-                row.order_min_size = _decimal(_attribute(item, "order_min_size"), Decimal("5"))
-                row.tick_size = _decimal(_attribute(item, "tick_size"), Decimal("0.01"))
-                row.fee_rate = _decimal(_attribute(item, "fee_rate"))
-                row.fee_exponent = _decimal(_attribute(item, "fee_exponent"), ONE)
-                row.refreshed_at = now
+                _apply_market_snapshot(row, item, now=now)
             await session.commit()
 
     async def _persist_position_wallet_hints(
@@ -2362,6 +2365,103 @@ class WhaleFollowExecutor:
         """Refresh the shared execution-wallet collateral balance."""
         return await self._live_balance(await self._account())
 
+    async def sync_chain_test_market(self, market: WhaleMarketSnapshot) -> None:
+        now = utcnow()
+        async with self.database.sessions() as session:
+            row = await session.get(WhaleMarket, market.condition_id)
+            if row is None:
+                row = WhaleMarket(condition_id=market.condition_id)
+                session.add(row)
+            _apply_market_snapshot(row, market, now=now)
+            await session.commit()
+
+    async def quote_chain_test_buy(
+        self,
+        *,
+        market: WhaleMarketSnapshot,
+        asset_id: str,
+        amount_usdc: Decimal,
+    ) -> WhaleFollowQuote:
+        await self.sync_chain_test_market(market)
+        quote = await self.quote_follow(
+            asset_id=asset_id,
+            amount_usdc=amount_usdc,
+            entry_id=None,
+            require_active_signal=False,
+        )
+        await self._ensure_chain_test_buy_limits(quote, refresh_balance=False)
+        return quote
+
+    async def _ensure_chain_test_buy_limits(
+        self,
+        quote: WhaleFollowQuote,
+        *,
+        refresh_balance: bool,
+    ) -> None:
+        account = await self._account()
+        balance = (
+            await self._live_balance(account) if refresh_balance else quote.available_balance_usdc
+        )
+        spendable = max(ZERO, min(account.budget_usdc, balance) - account.cash_reserve_usdc)
+        if quote.total_cost_usdc > spendable:
+            raise ValueError("测试买入会突破执行钱包预算或现金保留额")
+        day_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        async with self.database.sessions() as session:
+            open_exposure = sum(
+                (
+                    position.cost_usdc
+                    for position in (
+                        await session.scalars(
+                            select(WhaleFollowPosition).where(
+                                WhaleFollowPosition.status.in_(["opening", "open", "closing"])
+                            )
+                        )
+                    ).all()
+                ),
+                ZERO,
+            )
+            daily_orders = list(
+                (
+                    await session.scalars(
+                        select(WhaleOrder).where(
+                            WhaleOrder.side == "BUY",
+                            WhaleOrder.created_at >= day_start,
+                            WhaleOrder.status.not_in(
+                                ["blocked", "rejected", "unfilled", "cancelled"]
+                            ),
+                        )
+                    )
+                ).all()
+            )
+            daily_buys = sum(
+                (
+                    order.filled_usdc + order.fee_usdc
+                    if order.filled_size > ZERO
+                    else order.requested_usdc
+                    for order in daily_orders
+                ),
+                ZERO,
+            )
+            daily_loss = -sum(
+                (
+                    min(entry.realized_pnl, ZERO)
+                    for entry in (
+                        await session.scalars(
+                            select(WhaleFollowLedger).where(
+                                WhaleFollowLedger.timestamp >= day_start
+                            )
+                        )
+                    ).all()
+                ),
+                ZERO,
+            )
+        if open_exposure + quote.total_cost_usdc > account.max_total_exposure_usdc:
+            raise ValueError("测试买入会突破执行钱包总敞口限制")
+        if daily_buys + quote.total_cost_usdc > account.daily_buy_limit_usdc:
+            raise ValueError("测试买入会突破执行钱包每日买入限额")
+        if daily_loss >= account.daily_loss_limit_usdc:
+            raise ValueError("执行钱包已达到每日亏损限制，不能继续测试买入")
+
     async def _account(self) -> ExecutionAccount:
         async with self.database.sessions() as session:
             account = await session.get(ExecutionAccount, 1)
@@ -2452,7 +2552,7 @@ class WhaleFollowExecutor:
         *,
         asset_id: str,
         amount_usdc: Decimal,
-        entry_id: int,
+        entry_id: int | None,
         require_active_signal: bool = True,
         minimum_price: Decimal | None = None,
         maximum_price: Decimal | None = None,
@@ -2473,30 +2573,31 @@ class WhaleFollowExecutor:
                 raise ValueError(
                     f"单笔跟单金额不能超过 {whale_settings.max_follow_amount_usdc} USDC"
                 )
-            entry = await session.get(WhaleEntry, entry_id)
-            if entry is None or entry.asset_id != asset_id:
-                raise ValueError("巨鲸投入记录与所选 outcome 不匹配")
-            if await session.get(WhaleExclusion, entry.proxy_wallet.lower()) is not None:
-                raise ValueError("该巨鲸账户已加入排除名单，不能继续跟买")
-            if require_active_signal:
-                active_rule_count = int(
-                    await session.scalar(
-                        select(func.count(WhaleEntryRuleState.id)).where(
-                            WhaleEntryRuleState.entry_id == entry.id,
-                            WhaleEntryRuleState.active.is_(True),
+            entry = await session.get(WhaleEntry, entry_id) if entry_id is not None else None
+            if entry_id is not None:
+                if entry is None or entry.asset_id != asset_id:
+                    raise ValueError("巨鲸投入记录与所选 outcome 不匹配")
+                if await session.get(WhaleExclusion, entry.proxy_wallet.lower()) is not None:
+                    raise ValueError("该巨鲸账户已加入排除名单，不能继续跟买")
+                if require_active_signal:
+                    active_rule_count = int(
+                        await session.scalar(
+                            select(func.count(WhaleEntryRuleState.id)).where(
+                                WhaleEntryRuleState.entry_id == entry.id,
+                                WhaleEntryRuleState.active.is_(True),
+                            )
                         )
+                        or 0
                     )
-                    or 0
-                )
-                if active_rule_count == 0:
-                    raise ValueError("该巨鲸信号已经进入历史记录，不能继续跟买")
-                if not entry.follow_eligible:
-                    raise ValueError("该巨鲸信号当前不满足跟买条件")
+                    if active_rule_count == 0:
+                        raise ValueError("该巨鲸信号已经进入历史记录，不能继续跟买")
+                    if not entry.follow_eligible:
+                        raise ValueError("该巨鲸信号当前不满足跟买条件")
             slippage = whale_settings.follow_slippage_cents
             sell_slippage = whale_settings.sell_slippage_cents
             warning_delta = whale_settings.max_price_delta_cents
-            source_wallet = entry.proxy_wallet
-            whale_avg_price = entry.avg_buy_price
+            source_wallet = entry.proxy_wallet if entry is not None else None
+            whale_avg_price = entry.avg_buy_price if entry is not None else None
         account = await self._account()
         market, outcome_index, outcome = await self._market_for_asset(asset_id)
         self._ensure_market_open(market)
@@ -2623,6 +2724,8 @@ class WhaleFollowExecutor:
         async with self._lock:
             if not self.settings.trading_enabled:
                 raise ValueError("自动实盘已被系统紧急停用")
+            if order_source == "chain_test":
+                await self._ensure_chain_test_buy_limits(quote, refresh_balance=True)
             if quote.source_wallet is not None:
                 async with self.database.sessions() as session:
                     if await session.get(WhaleExclusion, quote.source_wallet.lower()) is not None:
@@ -2988,7 +3091,11 @@ class WhaleFollowExecutor:
                             detail=(
                                 "巨鲸自动跟单买入"
                                 if order.source == "auto_follow"
-                                else "人工跟随巨鲸买入"
+                                else (
+                                    "链上环境测试买入"
+                                    if order.source == "chain_test"
+                                    else "人工跟随巨鲸买入"
+                                )
                             ),
                             timestamp=now,
                         )
@@ -3034,7 +3141,11 @@ class WhaleFollowExecutor:
                             detail=(
                                 "分歧市场风控卖出"
                                 if order.source == "conflict_exit"
-                                else "人工卖出巨鲸跟单持仓"
+                                else (
+                                    "链上环境测试卖出"
+                                    if order.source == "chain_test"
+                                    else "人工卖出巨鲸跟单持仓"
+                                )
                             ),
                             timestamp=now,
                         )
@@ -3655,6 +3766,8 @@ class WhaleFollowExecutor:
         order_source: str = "follow",
     ) -> int:
         async with self._lock:
+            if not self.settings.trading_enabled:
+                raise ValueError("自动实盘已被系统紧急停用")
             book = await self.client.fetch_order_book(quote.asset_id)
             if book.best_bid is None or book.best_bid < quote.worst_price:
                 raise ValueError("市场价格已变动，请重新预览")

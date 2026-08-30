@@ -878,6 +878,50 @@ class WhaleMarketListRead(APIModel):
         return _as_utc_iso(value) or ""
 
 
+class ChainTestResolveRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market_url: str = Field(min_length=1, max_length=1000)
+
+
+class ChainTestOutcomeRead(APIModel):
+    asset_id: str
+    label: str
+    outcome_index: int
+    reference_price: DecimalNumber
+
+
+class ChainTestMarketRead(APIModel):
+    condition_id: str
+    title: str
+    market_slug: str | None
+    event_slug: str | None
+    closed: bool
+    active: bool
+    accepting_orders: bool
+    outcomes: list[ChainTestOutcomeRead] = Field(default_factory=list)
+
+
+class ChainTestResolveRead(APIModel):
+    resolution_id: str
+    expires_at: datetime
+    market_url: str
+    event_title: str
+    markets: list[ChainTestMarketRead] = Field(default_factory=list)
+
+    @field_serializer("expires_at", when_used="json")
+    def serialize_expires_at(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class ChainTestBuyPreviewRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolution_id: str = Field(min_length=1, max_length=200)
+    asset_id: str = Field(min_length=1, max_length=100)
+    amount_usdc: Decimal = Field(gt=0)
+
+
 class WhaleFollowPreviewRequest(APIModel):
     model_config = ConfigDict(extra="forbid")
 

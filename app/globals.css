@@ -12394,6 +12394,152 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   padding: 16px 0 0;
 }
 
+.pcChainTestPanel {
+  padding-bottom: 18px;
+}
+
+.pcChainTestPanel > :not(.pcPanelHeader) {
+  margin-right: 18px;
+  margin-left: 18px;
+}
+
+.pcChainTestWarning {
+  margin-top: 16px;
+  padding: 11px 13px;
+  border: 1px solid #efd3a5;
+  border-radius: 10px;
+  background: #fff9ee;
+  color: #81551c;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pcChainTestUrlRow,
+.pcChainTestBuyRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.pcChainTestUrlRow .pcButton,
+.pcChainTestBuyRow .pcButton {
+  min-height: 40px;
+}
+
+.pcChainTestMarkets {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.pcChainTestMarkets > strong {
+  font-size: 14px;
+}
+
+.pcChainTestMarkets fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #e5e8ef;
+  border-radius: 10px;
+}
+
+.pcChainTestMarkets fieldset:disabled {
+  opacity: .58;
+}
+
+.pcChainTestMarkets legend {
+  max-width: 100%;
+  padding: 0 5px;
+  color: #2f3440;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pcChainOutcomeGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.pcChainOutcomeGrid label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid #e4e7ee;
+  border-radius: 9px;
+  background: #fbfbfc;
+  cursor: pointer;
+}
+
+.pcChainOutcomeGrid label.selected {
+  border-color: #778be3;
+  background: #f2f5ff;
+}
+
+.pcChainOutcomeGrid label span {
+  display: grid;
+  gap: 2px;
+}
+
+.pcChainOutcomeGrid label small {
+  color: #777d8c;
+}
+
+.pcChainTestQuote,
+.pcChainTestResult {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #dfe4ef;
+  border-radius: 10px;
+  background: #fafbfe;
+}
+
+.pcChainTestQuote h3,
+.pcChainTestResult h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.pcChainTestQuote dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.pcChainTestQuote dl div {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.pcChainTestQuote dt {
+  color: #7b8190;
+  font-size: 10px;
+}
+
+.pcChainTestQuote dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pcChainTestQuote > p,
+.pcChainTestResult > p {
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.pcChainTestResult .pcButton {
+  margin-top: 12px;
+}
+
 @media (max-width: 960px) {
   .pcExecutionFormFooter {
     grid-template-columns: 1fr;
@@ -12426,6 +12572,13 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 
   .pcExecutionFormFooter .pcSettingsActions {
     display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .pcChainTestUrlRow,
+  .pcChainTestBuyRow,
+  .pcChainTestQuote dl,
+  .pcChainOutcomeGrid {
     grid-template-columns: 1fr;
   }
 }

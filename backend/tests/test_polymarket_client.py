@@ -364,63 +364,73 @@ async def test_active_whale_markets_paginate_and_filter_non_tradable_rows():
 
 
 @pytest.mark.asyncio
-async def test_official_holders_and_market_positions_are_parsed():
+async def test_official_holders_and_market_positions_are_parsed(monkeypatch):
     condition_id = "0x" + "a" * 64
     asset_id = "asset-yes"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/holders":
-            assert request.url.params["market"] == condition_id
-            assert request.url.params["limit"] == "20"
-            assert request.url.params["minBalance"] == "10000"
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "token": asset_id,
-                        "holders": [
-                            {
-                                "proxyWallet": TEST_ADDRESS.upper(),
-                                "asset": asset_id,
-                                "amount": "25000.5",
-                                "outcomeIndex": 0,
-                                "name": "Position Whale",
-                                "profileImage": "https://example.test/whale.png",
-                                "verified": True,
-                            }
-                        ],
-                    }
-                ],
-            )
-        assert request.url.path == "/v1/market-positions"
+        assert request.url.path == "/holders"
         assert request.url.params["market"] == condition_id
-        assert request.url.params["status"] == "OPEN"
-        assert request.url.params["sortBy"] == "TOKENS"
         assert request.url.params["limit"] == "20"
+        assert request.url.params["minBalance"] == "10000"
         return httpx.Response(
             200,
             json=[
                 {
                     "token": asset_id,
-                    "positions": [
+                    "holders": [
                         {
                             "proxyWallet": TEST_ADDRESS.upper(),
                             "asset": asset_id,
-                            "conditionId": condition_id,
-                            "avgPrice": "0.40",
-                            "size": "25000.5",
-                            "totalBought": "25000.5",
-                            "currPrice": "0.60",
-                            "currentValue": "15000.3",
-                            "outcome": "Yes",
+                            "amount": "25000.5",
                             "outcomeIndex": 0,
                             "name": "Position Whale",
+                            "profileImage": "https://example.test/whale.png",
                             "verified": True,
                         }
                     ],
                 }
             ],
         )
+
+    position = SimpleNamespace(
+        wallet=TEST_ADDRESS.upper(),
+        token_id=asset_id,
+        condition_id=condition_id,
+        avg_price=Decimal("0.40"),
+        size=Decimal("25000.5"),
+        total_bought=Decimal("25000.5"),
+        cur_price=Decimal("0.60"),
+        current_value=Decimal("15000.3"),
+        outcome="Yes",
+        outcome_index=0,
+        name="Position Whale",
+        profile_image="https://example.test/whale.png",
+        verified=True,
+    )
+
+    class FakePaginator:
+        async def first_page(self):
+            return SimpleNamespace(items=(SimpleNamespace(token=asset_id, positions=(position,)),))
+
+    class FakePublicClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def list_market_positions(self, **kwargs):
+            assert kwargs == {
+                "market": condition_id,
+                "status": "OPEN",
+                "sort_by": "TOKENS",
+                "sort_direction": "DESC",
+                "page_size": 20,
+            }
+            return FakePaginator()
+
+    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -441,6 +451,40 @@ async def test_official_holders_and_market_positions_are_parsed():
     assert positions[0].total_bought == Decimal("25000.5")
     assert positions[0].avg_price == Decimal("0.40")
     assert positions[0].current_value == Decimal("15000.3")
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_uses_public_sdk(monkeypatch):
+    class FakePublicClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get_public_profile(self, address):
+            assert address == TEST_ADDRESS
+            return SimpleNamespace(
+                wallet=TEST_ADDRESS.upper(),
+                name="SDK Whale",
+                pseudonym="sdk-whale",
+            )
+
+    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+    )
+    try:
+        profile = await client.resolve_profile(TEST_ADDRESS, None)
+    finally:
+        await client.close()
+
+    assert profile.submitted_address == TEST_ADDRESS
+    assert profile.proxy_wallet == TEST_ADDRESS
+    assert profile.label == "SDK Whale"
 
 
 @pytest.mark.asyncio
@@ -492,26 +536,34 @@ async def test_whale_public_profile_parses_fields_and_returns_none_for_404():
 
 
 @pytest.mark.asyncio
-async def test_fetch_official_tags_uses_stable_order_and_skips_invalid_rows():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/tags"
-        assert request.url.params["limit"] == "200"
-        assert request.url.params["order"] == "id"
-        assert request.url.params["ascending"] == "true"
-        return httpx.Response(
-            200,
-            json=[
-                {"id": 1, "slug": "sports", "label": "Sports"},
-                {"id": 64, "slug": "esports", "label": "Esports"},
-                {"id": 65, "label": "missing slug"},
-            ],
-        )
+async def test_fetch_official_tags_uses_stable_order_and_skips_invalid_rows(monkeypatch):
+    class FakePaginator:
+        async def iter_items(self):
+            for item in (
+                SimpleNamespace(id=1, slug="sports", label="Sports"),
+                SimpleNamespace(id=64, slug="esports", label="Esports"),
+                SimpleNamespace(id=65, slug=None, label="missing slug"),
+            ):
+                yield item
+
+    class FakePublicClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def list_tags(self, **kwargs):
+            assert kwargs == {"order": "id", "ascending": True, "page_size": 100}
+            return FakePaginator()
+
+    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
 
     client = PolymarketClient(
         data_api_url="https://data.test",
         gamma_api_url="https://gamma.test",
         timeout=1,
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
     )
     try:
         tags = await client.fetch_tags()
@@ -969,7 +1021,7 @@ async def test_retry_after_is_preserved_on_rate_limit():
     )
     try:
         with pytest.raises(PolymarketAPIError) as raised:
-            await client.resolve_profile(TEST_ADDRESS, None)
+            await client.fetch_public_profile(TEST_ADDRESS)
     finally:
         await client.close()
 
@@ -990,7 +1042,7 @@ async def test_http_timeout_is_reported_as_api_error():
     )
     try:
         with pytest.raises(PolymarketAPIError, match="接口连接失败") as raised:
-            await client.resolve_profile(TEST_ADDRESS, None)
+            await client.fetch_public_profile(TEST_ADDRESS)
     finally:
         await client.close()
 
@@ -1018,13 +1070,14 @@ async def test_http_client_pool_is_replaced_after_network_error():
     original = client._http
     try:
         with pytest.raises(PolymarketAPIError):
-            await client.resolve_profile(TEST_ADDRESS, None)
+            await client.fetch_public_profile(TEST_ADDRESS)
         assert client._http is not original
-        profile = await client.resolve_profile(TEST_ADDRESS, None)
+        profile = await client.fetch_public_profile(TEST_ADDRESS)
     finally:
         await client.close()
 
-    assert profile.label == "Recovered"
+    assert profile is not None
+    assert profile.display_name == "Recovered"
 
 
 @pytest.mark.asyncio
@@ -1044,7 +1097,7 @@ async def test_invalid_json_is_rejected():
     )
     try:
         with pytest.raises(PolymarketAPIError, match="无效 JSON"):
-            await client.resolve_profile(TEST_ADDRESS, None)
+            await client.fetch_public_profile(TEST_ADDRESS)
     finally:
         await client.close()
 

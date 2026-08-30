@@ -48,13 +48,32 @@ def signed_order(signature: str = "0x1234") -> SignedOrder:
 
 class FakeClient:
     def __init__(self) -> None:
-        self._ctx = object()
         self.created: list[dict[str, object]] = []
         self.posted: list[SignedOrder] = []
         self.wallet = FUNDER
         self.signer = SIGNER
         self.wallet_type = "DEPOSIT_WALLET"
         self.closed = False
+        self.neg_risk = False
+        self.market = SimpleNamespace(
+            condition_id=CONDITION,
+            trading=SimpleNamespace(fees_enabled=False, fee_schedule=None),
+        )
+
+    async def get_order_book(self, *, token_id):
+        assert token_id == "99"
+        return SimpleNamespace(neg_risk=self.neg_risk)
+
+    def list_markets(self, *, condition_ids, page_size):
+        assert condition_ids == [self.market.condition_id]
+        assert page_size == 1
+        market = self.market
+
+        class Paginator:
+            async def first_page(self):
+                return SimpleNamespace(items=(market,))
+
+        return Paginator()
 
     async def create_market_order(self, **kwargs):
         self.created.append(kwargs)
@@ -126,13 +145,7 @@ async def test_unified_trader_rejects_retired_proxy_wallet_type():
         ("SELL", {"shares", "min_price"}),
     ],
 )
-async def test_market_order_keeps_fak_budget_and_price_guard(monkeypatch, side, expected):
-    async def fetch_neg_risk(ctx, *, token_id):
-        return False
-
-    monkeypatch.setattr(
-        "polymarket._internal.actions.orders.market_data.fetch_neg_risk", fetch_neg_risk
-    )
+async def test_market_order_keeps_fak_budget_and_price_guard(side, expected):
     client = FakeClient()
     adapter = trader(client)
     prepared = await adapter.prepare_market(
@@ -150,13 +163,7 @@ async def test_market_order_keeps_fak_budget_and_price_guard(monkeypatch, side, 
     assert prepared.signed_order_hash.startswith("0x")
 
 
-async def test_signed_fingerprint_does_not_depend_on_full_signature(monkeypatch):
-    async def fetch_neg_risk(ctx, *, token_id):
-        return False
-
-    monkeypatch.setattr(
-        "polymarket._internal.actions.orders.market_data.fetch_neg_risk", fetch_neg_risk
-    )
+async def test_signed_fingerprint_does_not_depend_on_full_signature():
     client = FakeClient()
     signatures = iter((signed_order("0xaaaa"), signed_order("0xbbbb")))
 
@@ -174,13 +181,7 @@ async def test_signed_fingerprint_does_not_depend_on_full_signature(monkeypatch)
     assert "aaaa" not in first.signed_order_hash
 
 
-async def test_accepted_order_persists_every_confirmed_fill(monkeypatch):
-    async def fetch_neg_risk(ctx, *, token_id):
-        return False
-
-    monkeypatch.setattr(
-        "polymarket._internal.actions.orders.market_data.fetch_neg_risk", fetch_neg_risk
-    )
+async def test_accepted_order_persists_every_confirmed_fill():
     client = FakeClient()
     adapter = trader(client)
     fills = (
@@ -223,13 +224,7 @@ async def test_accepted_order_persists_every_confirmed_fill(monkeypatch):
     assert result.fills == fills
 
 
-async def test_accepted_order_without_initial_trade_ids_reconciles_associate_trades(monkeypatch):
-    async def fetch_neg_risk(ctx, *, token_id):
-        return False
-
-    monkeypatch.setattr(
-        "polymarket._internal.actions.orders.market_data.fetch_neg_risk", fetch_neg_risk
-    )
+async def test_accepted_order_without_initial_trade_ids_reconciles_associate_trades():
     client = FakeClient()
 
     async def post_order(order):
@@ -275,14 +270,9 @@ async def test_accepted_order_without_initial_trade_ids_reconciles_associate_tra
     assert result.status == "filled"
 
 
-async def test_neg_risk_metadata_mismatch_fails_before_signing(monkeypatch):
-    async def fetch_neg_risk(ctx, *, token_id):
-        return True
-
-    monkeypatch.setattr(
-        "polymarket._internal.actions.orders.market_data.fetch_neg_risk", fetch_neg_risk
-    )
+async def test_neg_risk_metadata_mismatch_fails_before_signing():
     client = FakeClient()
+    client.neg_risk = True
     adapter = trader(client)
 
     with pytest.raises(Exception, match="Neg Risk"):
@@ -290,6 +280,50 @@ async def test_neg_risk_metadata_mismatch_fails_before_signing(monkeypatch):
             MarketTradeRequest("99", "BUY", Decimal("1"), Decimal("0.55"), False)
         )
     assert client.created == []
+
+
+async def test_taker_fee_uses_public_market_fee_schedule():
+    client = FakeClient()
+    client.market = SimpleNamespace(
+        condition_id=CONDITION,
+        trading=SimpleNamespace(
+            fees_enabled=True,
+            fee_schedule=SimpleNamespace(rate=Decimal("0.04"), exponent=1),
+        ),
+    )
+    adapter = trader(client)
+
+    fee = await adapter._fee_for_trade(
+        SimpleNamespace(
+            id="trade-1",
+            trader_side="TAKER",
+            condition_id=CONDITION,
+            price=Decimal("0.50"),
+            size=Decimal("10"),
+        )
+    )
+
+    assert fee == Decimal("0.10000")
+
+
+async def test_taker_fee_fails_closed_when_public_schedule_is_missing():
+    client = FakeClient()
+    client.market = SimpleNamespace(
+        condition_id=CONDITION,
+        trading=SimpleNamespace(fees_enabled=True, fee_schedule=None),
+    )
+    adapter = trader(client)
+
+    with pytest.raises(TradingUnavailable, match="缺少手续费参数"):
+        await adapter._fee_for_trade(
+            SimpleNamespace(
+                id="trade-1",
+                trader_side="TAKER",
+                condition_id=CONDITION,
+                price=Decimal("0.50"),
+                size=Decimal("10"),
+            )
+        )
 
 
 async def test_redemption_returns_handle_before_wait(monkeypatch):

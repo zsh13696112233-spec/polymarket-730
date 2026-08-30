@@ -863,34 +863,27 @@ class PolymarketClient:
 
         if not 0 < limit <= 500:
             raise ValueError("市场持仓数量必须在 1 到 500 之间")
-        payload = await self._get_json(
-            f"{self.data_api_url}/v1/market-positions",
-            params={
-                "market": condition_id,
-                "status": "OPEN",
-                "sortBy": "TOKENS",
-                "sortDirection": "DESC",
-                "limit": limit,
-                "offset": 0,
-            },
-        )
-        if not isinstance(payload, list):
-            raise PolymarketAPIError("市场持仓明细接口返回格式无效")
+        try:
+            from polymarket import AsyncPublicClient
+
+            async with AsyncPublicClient() as sdk:
+                page = await sdk.list_market_positions(
+                    market=condition_id,
+                    status="OPEN",
+                    sort_by="TOKENS",
+                    sort_direction="DESC",
+                    page_size=limit,
+                ).first_page()
+        except Exception as error:
+            raise self._sdk_api_error("公开 SDK 市场持仓查询失败", error) from error
         positions: list[WhaleMarketPositionSnapshot] = []
-        for token_group in payload:
-            if not isinstance(token_group, dict):
-                continue
-            group_asset_id = str(token_group.get("token") or "")
-            raw_positions = token_group.get("positions")
-            if not isinstance(raw_positions, list):
-                continue
-            for item in raw_positions:
-                if not isinstance(item, dict):
-                    continue
-                wallet = str(item.get("proxyWallet") or "").lower()
-                asset_id = str(item.get("asset") or group_asset_id)
-                linked_condition_id = str(item.get("conditionId") or condition_id)
-                size = to_decimal(item.get("size"))
+        for token_group in page.items:
+            group_asset_id = str(token_group.token or "")
+            for item in token_group.positions or ():
+                wallet = str(item.wallet or "").lower()
+                asset_id = str(item.token_id or group_asset_id)
+                linked_condition_id = str(item.condition_id or condition_id)
+                size = item.size or ZERO
                 if (
                     not wallet
                     or not asset_id
@@ -903,16 +896,16 @@ class PolymarketClient:
                         proxy_wallet=wallet,
                         asset_id=asset_id,
                         condition_id=linked_condition_id,
-                        outcome=str(item.get("outcome") or ""),
-                        outcome_index=int(item.get("outcomeIndex") or 0),
+                        outcome=item.outcome or "",
+                        outcome_index=item.outcome_index or 0,
                         size=size,
-                        total_bought=to_decimal(item.get("totalBought")),
-                        avg_price=to_decimal(item.get("avgPrice")),
-                        current_price=to_decimal(item.get("currPrice")),
-                        current_value=to_decimal(item.get("currentValue")),
-                        display_name=self._optional_text(item.get("name")),
-                        profile_image_url=self._optional_text(item.get("profileImage")),
-                        verified_badge=self._as_bool(item.get("verified")),
+                        total_bought=item.total_bought or ZERO,
+                        avg_price=item.avg_price or ZERO,
+                        current_price=item.cur_price or ZERO,
+                        current_value=item.current_value or ZERO,
+                        display_name=self._optional_text(item.name),
+                        profile_image_url=self._optional_text(item.profile_image),
+                        verified_badge=bool(item.verified),
                     )
                 )
         return positions
@@ -946,17 +939,34 @@ class PolymarketClient:
     async def fetch_tags(self, *, limit: int = 200) -> list[OfficialTag]:
         if limit <= 0:
             raise ValueError("标签数量上限必须大于 0")
-        payload = await self._get_json(
-            f"{self.gamma_api_url}/tags",
-            params={"limit": limit, "order": "id", "ascending": "true"},
-        )
-        if not isinstance(payload, list):
-            raise PolymarketAPIError("标签字典接口返回格式无效")
+        try:
+            from polymarket import AsyncPublicClient
+
+            async with AsyncPublicClient() as sdk:
+                paginator = sdk.list_tags(
+                    order="id",
+                    ascending=True,
+                    page_size=min(limit, 100),
+                )
+                sdk_tags = []
+                async for item in paginator.iter_items():
+                    sdk_tags.append(item)
+                    if len(sdk_tags) >= limit:
+                        break
+        except Exception as error:
+            raise self._sdk_api_error("公开 SDK 标签字典查询失败", error) from error
         tags: list[OfficialTag] = []
-        for item in payload:
-            tag = self._parse_official_tag(item)
-            if tag is not None:
-                tags.append(tag)
+        for item in sdk_tags:
+            tag_id = str(item.id or "").strip()
+            slug = str(item.slug or "").strip()
+            if tag_id and slug:
+                tags.append(
+                    OfficialTag(
+                        id=tag_id,
+                        slug=slug,
+                        label=str(item.label or slug).strip() or slug,
+                    )
+                )
         return tags
 
     async def fetch_order_book(self, asset_id: str) -> OrderBookSnapshot:
@@ -1415,24 +1425,33 @@ class PolymarketClient:
                 retry_at = retry_at.replace(tzinfo=UTC)
             return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
 
+    @staticmethod
+    def _sdk_api_error(message: str, error: Exception) -> PolymarketAPIError:
+        retry_after = getattr(error, "retry_after", None)
+        status = getattr(error, "status", None)
+        detail = str(error).strip()
+        return PolymarketAPIError(
+            f"{message}：{detail}" if detail else message,
+            retry_after=retry_after if isinstance(retry_after, (int, float)) else None,
+            rate_limited=status == 429 or type(error).__name__ == "RateLimitError",
+        )
+
     async def resolve_profile(self, raw_input: str, requested_label: str | None) -> PublicProfile:
         submitted = parse_wallet_input(raw_input)
         try:
-            payload = await self._get_json(
-                f"{self.gamma_api_url}/public-profile",
-                params={"address": submitted},
-            )
-        except PolymarketAPIError as error:
-            if "返回 404" not in str(error):
-                raise
-            payload = {}
+            from polymarket import AsyncPublicClient
 
-        proxy_wallet = str(payload.get("proxyWallet") or submitted).lower()
+            async with AsyncPublicClient() as sdk:
+                profile = await sdk.get_public_profile(submitted)
+        except Exception as error:
+            raise self._sdk_api_error("公开 SDK 钱包资料查询失败", error) from error
+
+        proxy_wallet = str(profile.wallet if profile and profile.wallet else submitted).lower()
         if not ADDRESS_RE.fullmatch(proxy_wallet):
             proxy_wallet = submitted
         inferred_label = (
-            payload.get("name")
-            or payload.get("pseudonym")
+            (profile.name if profile else None)
+            or (profile.pseudonym if profile else None)
             or f"{proxy_wallet[:6]}…{proxy_wallet[-4:]}"
         )
         label = (requested_label or "").strip() or str(inferred_label).strip()

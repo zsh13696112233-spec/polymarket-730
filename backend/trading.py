@@ -300,9 +300,8 @@ class UnifiedPolymarketTrader:
         try:
             # The pinned SDK owns market metadata resolution. This explicit check
             # prevents stale local attribution data from changing the exchange used.
-            from polymarket._internal.actions.orders.market_data import fetch_neg_risk
-
-            sdk_neg_risk = await fetch_neg_risk(client._ctx, token_id=request.asset_id)
+            book = await client.get_order_book(token_id=request.asset_id)
+            sdk_neg_risk = book.neg_risk
             if sdk_neg_risk != request.neg_risk:
                 raise TradingUnavailable("本地 Neg Risk 标记与 SDK 市场元数据不一致")
             if request.side == "BUY":
@@ -512,12 +511,26 @@ class UnifiedPolymarketTrader:
         if str(trade.trader_side).upper() != "TAKER":
             return ZERO
         try:
-            from polymarket._internal.actions.orders.market_data import fetch_platform_fee_info
-
             client = await self._client_async()
-            info = await fetch_platform_fee_info(client._ctx, condition_id=trade.condition_id)
+            page = await client.list_markets(
+                condition_ids=[trade.condition_id],
+                page_size=1,
+            ).first_page()
+            market = next(
+                (item for item in page.items if str(item.condition_id) == str(trade.condition_id)),
+                None,
+            )
+            if market is None:
+                raise TradingUnavailable("公开 SDK 未返回成交市场元数据")
+            schedule = market.trading.fee_schedule
+            if schedule is None:
+                if market.trading.fees_enabled is False:
+                    return ZERO
+                raise TradingUnavailable("公开 SDK 市场元数据缺少手续费参数")
             price = Decimal(trade.price)
-            effective_rate = info.rate * ((price * (Decimal(1) - price)) ** info.exponent)
+            rate = Decimal(schedule.rate)
+            exponent = Decimal(str(schedule.exponent))
+            effective_rate = rate * ((price * (Decimal(1) - price)) ** exponent)
             fee = Decimal(trade.size) * effective_rate
             return fee.quantize(Decimal("0.00001"), rounding=ROUND_DOWN)
         except Exception as error:

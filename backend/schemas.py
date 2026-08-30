@@ -72,7 +72,7 @@ class ExecutionAccountUpdate(APIModel):
     max_total_exposure_usdc: Decimal = Field(default=Decimal("160"), ge=0)
     daily_buy_limit_usdc: Decimal = Field(default=Decimal("80"), ge=0)
     daily_loss_limit_usdc: Decimal = Field(default=Decimal("40"), ge=0)
-    auto_redeem: bool = True
+    auto_redeem: bool = False
 
 
 class HealthRead(APIModel):

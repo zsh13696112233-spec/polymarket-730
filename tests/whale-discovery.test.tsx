@@ -308,7 +308,7 @@ describe("系统邮件设置", () => {
       max_total_exposure_usdc: 160,
       daily_buy_limit_usdc: 80,
       daily_loss_limit_usdc: 40,
-      auto_redeem: true,
+      auto_redeem: false,
       collateral_balance: 300,
       last_balance_at: "2026-08-29T16:00:00Z",
       last_error: null,
@@ -339,9 +339,15 @@ describe("系统邮件设置", () => {
     expect(screen.queryByRole("combobox", { name: "钱包类型" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Poly Proxy/)).not.toBeInTheDocument();
     await screen.findByDisplayValue(account.signer_address);
+    const localRedeem = screen.getByRole("checkbox", { name: "启用本地主动赎回兜底" });
+    expect(localRedeem).not.toBeChecked();
+    await user.click(localRedeem);
 
     await user.click(screen.getByRole("button", { name: "保存配置" }));
-    expect(savedAccounts).toContainEqual(expect.objectContaining({ signature_type: 3 }));
+    expect(savedAccounts).toContainEqual(expect.objectContaining({
+      signature_type: 3,
+      auto_redeem: true,
+    }));
 
     await user.click(await screen.findByRole("button", { name: "验证密钥与授权" }));
 

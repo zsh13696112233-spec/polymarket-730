@@ -67,7 +67,7 @@ class ExecutionAccount(Base):
     daily_loss_limit_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("40")
     )
-    auto_redeem: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auto_redeem: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     collateral_balance: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     last_balance_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

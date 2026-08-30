@@ -1,5 +1,9 @@
 # 自动赎回并直接获得 pUSD｜需求文档 V1
 
+> 当前运行模式默认由 Polymarket 线上自动赎回执行，本系统持续负责链上余额、官方
+> REDEEM 流水、盈亏和本地账本对账。本文描述的本地主动赎回链路保留为显式开启的兜底，
+> 仅应在关闭 Polymarket 线上自动赎回后使用，避免两个执行方重复提交。
+
 ## 1. 背景
 
 当前自动赎回通过 Conditional Tokens Framework（CTF）直接赎回 outcome token，赎回所得为 Polygon USDC.e。Polymarket V2 使用 pUSD 作为交易抵押品，因此用户仍会在官方 WebUI 看到 `Confirm pending deposit / Activate Funds`，需要再次确认后才能把 USDC.e 转为可交易的 pUSD。

@@ -47,6 +47,7 @@ export default function ExecutionSettingsWorkspace() {
   const [signer, setSigner] = useState("");
   const [funder, setFunder] = useState("");
   const [cashReserve, setCashReserve] = useState("240");
+  const [localAutoRedeem, setLocalAutoRedeem] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
 
@@ -58,6 +59,7 @@ export default function ExecutionSettingsWorkspace() {
         setSigner(next.signer_address ?? "");
         setFunder(next.funder_address ?? "");
         setCashReserve(String(next.cash_reserve_usdc));
+        setLocalAutoRedeem(next.auto_redeem);
       }
     } catch (error) {
       setNotice({
@@ -88,7 +90,7 @@ export default function ExecutionSettingsWorkspace() {
           max_total_exposure_usdc: 160,
           daily_buy_limit_usdc: 80,
           daily_loss_limit_usdc: 40,
-          auto_redeem: true,
+          auto_redeem: localAutoRedeem,
         }),
       });
       setNotice({ kind: "success", text: "执行钱包配置已保存。" });
@@ -131,6 +133,19 @@ export default function ExecutionSettingsWorkspace() {
             <label className="pcField"><span>签名钱包地址</span><input value={signer} onChange={(event) => setSigner(event.target.value)} placeholder="0x…" required /></label>
             <label className="pcField"><span>资金钱包地址</span><input value={funder} onChange={(event) => setFunder(event.target.value)} placeholder="0x…" required /></label>
           </div>
+          <label className="pcExecutionRedemptionToggle">
+            <input
+              aria-label="启用本地主动赎回兜底"
+              type="checkbox"
+              checked={localAutoRedeem}
+              onChange={(event) => setLocalAutoRedeem(event.target.checked)}
+              disabled={busy}
+            />
+            <span>
+              <strong>启用本地主动赎回兜底</strong>
+              <small>默认由 Polymarket 线上自动赎回；仅在关闭线上功能后启用，避免重复提交。</small>
+            </span>
+          </label>
           {signer && !account?.credentials_configured && <div className="pcCommandHint"><span>导入执行密钥</span><code>uv run python -m backend.trading_cli set-key --account {signer}</code></div>}
           <div className="pcExecutionFormFooter">
             <label className="pcField"><span>现金保留额</span><div className="pcUnitInput"><input type="number" min="0" step="0.01" value={cashReserve} onChange={(event) => setCashReserve(event.target.value)} /><b>USDC</b></div><small>下单后余额低于该值时显示风险警告。</small></label>

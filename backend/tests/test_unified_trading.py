@@ -97,6 +97,15 @@ def test_execution_account_update_rejects_retired_proxy_wallet_type():
         )
 
 
+def test_execution_account_defaults_to_platform_managed_redemption():
+    payload = ExecutionAccountUpdate(
+        signer_address=SIGNER,
+        funder_address=FUNDER,
+    )
+
+    assert payload.auto_redeem is False
+
+
 async def test_unified_trader_rejects_retired_proxy_wallet_type():
     adapter = UnifiedPolymarketTrader(
         host="https://clob.test",

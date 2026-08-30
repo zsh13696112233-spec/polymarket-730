@@ -64,7 +64,7 @@ async def test_pre_migration_database_replays_from_its_actual_revision(tmp_path:
         }
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
-    assert revision == "0038_whale_trade_cursor"
+    assert revision == "0039_platform_managed_redemption"
     assert RETIRED_TABLES.isdisjoint(tables)
     assert set(Base.metadata.tables) == tables - {"alembic_version"}
 
@@ -127,7 +127,8 @@ def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_p
             )
         }
         account = connection.execute(
-            "SELECT signer_address,funder_address,status FROM execution_accounts WHERE id=1"
+            """SELECT signer_address,funder_address,status,auto_redeem
+               FROM execution_accounts WHERE id=1"""
         ).fetchone()
         whale_settings_after = connection.execute("SELECT COUNT(*) FROM whale_settings").fetchone()[
             0
@@ -136,7 +137,7 @@ def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_p
             row[1] for row in connection.execute("PRAGMA table_info(email_settings)")
         }
 
-    assert account == (address, address, "ready")
+    assert account == (address, address, "ready", 0)
     assert whale_settings_after == whale_settings_before
     assert {"weekly_summary_enabled", "weekly_summary_enabled_at"} <= email_settings_columns
     assert "redemption_executions" in tables

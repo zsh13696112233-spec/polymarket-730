@@ -3786,6 +3786,7 @@ class WhaleFollowExecutor:
                 whale_settings is None
                 or not whale_settings.auto_redeem
                 or account is None
+                or not account.auto_redeem
                 or account.status not in {"ready", "insufficient_balance"}
                 or not account.funder_address
                 or account.signature_type != 3

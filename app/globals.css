@@ -12339,6 +12339,41 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   gap: 14px;
 }
 
+.pcExecutionRedemptionToggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid #e3e7f3;
+  border-radius: 10px;
+  background: #fafbff;
+  color: #343844;
+  cursor: pointer;
+}
+
+.pcExecutionRedemptionToggle input {
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: #3156d3;
+}
+
+.pcExecutionRedemptionToggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.pcExecutionRedemptionToggle strong {
+  font-size: 13px;
+}
+
+.pcExecutionRedemptionToggle small {
+  color: #737887;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .pcExecutionFormFooter {
   display: grid;
   align-items: end;

@@ -18,6 +18,7 @@ from backend.models import (
     WhaleMarket,
     WhaleOrder,
     WhaleRedemption,
+    WhaleSettings,
 )
 from backend.polymarket import RedemptionSnapshot, TradeSnapshot
 from backend.trading import TradeResult
@@ -96,7 +97,11 @@ class PendingOrderTrader:
         return self.result
 
 
-async def configure_reconciliation(database: Database) -> None:
+async def configure_reconciliation(
+    database: Database,
+    *,
+    local_auto_redeem: bool = False,
+) -> None:
     async with database.sessions() as session:
         session.add(
             ExecutionAccount(
@@ -107,6 +112,7 @@ async def configure_reconciliation(database: Database) -> None:
                 keychain_service="test-service",
                 keychain_account="test-account",
                 status="ready",
+                auto_redeem=local_auto_redeem,
                 created_at=NOW,
                 updated_at=NOW,
             )
@@ -124,6 +130,12 @@ async def configure_reconciliation(database: Database) -> None:
                 refreshed_at=NOW,
             )
         )
+        await session.commit()
+
+
+async def configure_whale_settings(database: Database) -> None:
+    async with database.sessions() as session:
+        session.add(WhaleSettings(id=1, auto_redeem=True, created_at=NOW, updated_at=NOW))
         await session.commit()
 
 
@@ -794,6 +806,59 @@ async def test_polymarket_auto_redemption_reconciles_zero_chain_balance_once(
     assert ledger[0].transaction_hash == "0xpolymarket-auto-redeem"
     assert ledger[0].timestamp == redeemed_at
     assert "官方 REDEEM" in (ledger[0].detail or "")
+
+
+@pytest.mark.asyncio
+async def test_platform_managed_redemption_skips_local_redemption_scan(database: Database):
+    await configure_reconciliation(database, local_auto_redeem=False)
+    await configure_whale_settings(database)
+    await insert_position(database, size="10", cost="4", status="open")
+
+    class PlatformManagedClient:
+        async def fetch_redeemable_positions(self, *_: object, **__: object) -> list[object]:
+            raise AssertionError("platform-managed redemption must not start a local scan")
+
+    follow_executor = WhaleFollowExecutor(
+        database=database,
+        client=PlatformManagedClient(),  # type: ignore[arg-type]
+        settings=database.settings,
+        keychain=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+
+    await follow_executor.process_redeemable_positions()
+
+
+@pytest.mark.asyncio
+async def test_local_redemption_opt_in_keeps_redeemable_scan_available(database: Database):
+    await configure_reconciliation(database, local_auto_redeem=True)
+    await configure_whale_settings(database)
+    await insert_position(database, size="10", cost="4", status="open")
+
+    class LocalRedemptionClient:
+        calls = 0
+
+        async def fetch_redeemable_positions(self, *_: object, **__: object) -> list[object]:
+            self.calls += 1
+            return []
+
+    client = LocalRedemptionClient()
+    follow_executor = WhaleFollowExecutor(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+        keychain=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+    follow_executor._trader_cache = SimpleNamespace()  # type: ignore[assignment]
+    follow_executor._trader_cache_key = (
+        "test-service",
+        "test-account",
+        3,
+        FUNDER_ADDRESS,
+    )
+
+    await follow_executor.process_redeemable_positions()
+
+    assert client.calls == 1
 
 
 @pytest.mark.asyncio

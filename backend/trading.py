@@ -247,7 +247,7 @@ class UnifiedPolymarketTrader:
         try:
             from polymarket import AsyncSecureClient, BuilderApiKey
         except ImportError as error:
-            raise TradingUnavailable("缺少 polymarket-client==0.5.0，实盘功能不可用") from error
+            raise TradingUnavailable("缺少 polymarket-client==0.7.1，实盘功能不可用") from error
         if self.signature_type != 3 or not self.funder_address:
             raise TradingUnavailable("统一 SDK 实盘仅允许 Deposit Wallet（signature_type=3）")
         private_key = self.keychain.get_secret(self.key_reference)
@@ -623,7 +623,7 @@ class UnifiedPolymarketTrader:
         try:
             handle = await client.redeem_positions(condition_id=condition_id)
         except Exception as error:
-            # polymarket-client 0.5.0 resolves market metadata with
+            # polymarket-client resolves market metadata with
             # `closed=true` before it builds the CTF redemption call. Gamma can
             # already omit a resolved sports market from that filtered result
             # while Data API and the chain still correctly report the outcome as

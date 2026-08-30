@@ -11,7 +11,7 @@
 迁移到 Polymarket 官方统一 Python SDK：
 
 ```text
-polymarket-client==0.5.0
+polymarket-client==0.7.1
 ```
 
 迁移只替换 Polymarket 接入层。现有跟单策略、风控、归因仓位、数据库幂等、失败恢复和 Dashboard 产品行为必须保留。
@@ -134,7 +134,7 @@ Safe 和 EOA 暂不扩大为产品支持范围，即使 SDK 本身支持；如�
 先加入并锁定：
 
 ```toml
-"polymarket-client==0.5.0"
+"polymarket-client==0.7.1"
 ```
 
 完成切换和全量验证后再移除：
@@ -504,7 +504,7 @@ npm run lint
 ## 11. 实施顺序
 
 1. 记录当前 diff 和测试基线，保护未提交改动；
-2. 加入 `polymarket-client==0.5.0`；
+2. 加入 `polymarket-client==0.7.1`；
 3. 实现 Secure Client 工厂、Keychain 凭证映射和钱包类型校验；
 4. 用兼容接口实现 SDK 交易适配器；
 5. 切换 create/persist/post 和多 fill 对账；

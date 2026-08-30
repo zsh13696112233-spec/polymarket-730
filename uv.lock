@@ -794,7 +794,7 @@ wheels = [
 
 [[package]]
 name = "polymarket-client"
-version = "0.5.0"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "eth-abi" },
@@ -805,9 +805,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/da/1e1d47486cdf84d911af76b47ae4cbe47e93f7105cf200997965ba3a0fa9/polymarket_client-0.5.0.tar.gz", hash = "sha256:7419b088df2fb6d5631ffda902d865004aa1fae8269d9695f81979e63d97764a", size = 347459, upload-time = "2026-08-07T14:01:30.041Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/53/5974d3f01b107f5f027d860884bf1863ec384da346a07a8517b2e6e54f37/polymarket_client-0.7.1.tar.gz", hash = "sha256:457200c6a70d385a7d9cd8350b595640961c54f41b25d2ceca9000c0beb35b9b", size = 373681, upload-time = "2026-08-28T10:08:23.265Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/7b/e649073120b98a5cac52124de960263e6ab692f5029313d496ac2fd8d21c/polymarket_client-0.5.0-py3-none-any.whl", hash = "sha256:07001aca7462f9638db3d57e2a69445323ff3cb200a3c851167e27758e0e52c0", size = 302359, upload-time = "2026-08-07T14:01:28.531Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/8a/0d0b35eb5e39b6adac40359bbd498788775b8b38c9ae46e35bce7b421b5c/polymarket_client-0.7.1-py3-none-any.whl", hash = "sha256:181849b2011d8174ac14d210d170db82ef3565da5a3191a731562aeb0ff2f42a", size = 330814, upload-time = "2026-08-28T10:08:21.875Z" },
 ]
 
 [[package]]
@@ -838,7 +838,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.16.0,<2" },
     { name = "fastapi", specifier = ">=0.116.0,<1" },
     { name = "httpx", specifier = ">=0.28.0,<1" },
-    { name = "polymarket-client", specifier = "==0.5.0" },
+    { name = "polymarket-client", specifier = "==0.7.1" },
     { name = "python-dotenv", specifier = ">=1.1.0,<2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.41,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0,<1" },

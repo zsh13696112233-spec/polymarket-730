@@ -9567,7 +9567,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .homeRuleDot.enabled { background: #18a36f; box-shadow: 0 0 0 4px rgba(24, 163, 111, .1); }
 .homeStatusDot.error { background: #dc514b; box-shadow: 0 0 0 4px rgba(220, 81, 75, .1); }
 .homeStatusDot.disabled { background: #e09a31; box-shadow: 0 0 0 4px rgba(224, 154, 49, .1); }
-.homeMetrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.homeMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .homeMetricCard {
   position: relative;
   --base-glow-x: 8%;
@@ -9595,7 +9595,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .homeMetricCard:nth-child(2) { --base-glow-x: 92%; --base-glow-y: 12%; --base-effect-angle: 225deg; }
 .homeMetricCard:nth-child(3) { --base-glow-x: 48%; --base-glow-y: 108%; --base-effect-angle: 28deg; }
 .homeMetricCard:nth-child(4) { --base-glow-x: 92%; --base-glow-y: 88%; --base-effect-angle: 310deg; }
-.homeMetricCard:nth-child(5) { --base-glow-x: 50%; --base-glow-y: -8%; --base-effect-angle: 190deg; }
 .homeMetricCard.profit {
   --effect-primary-strong: rgba(9, 177, 117, .94);
   --effect-primary-soft: rgba(9, 177, 117, .38);
@@ -9656,6 +9655,29 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   overflow-wrap: anywhere;
 }
 .homeMetricCard > small { display: block; color: #9a9da5; font-size: 10px; line-height: 1.4; }
+.homeFlowValues {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 10px 0 8px;
+  gap: 12px;
+}
+.homeFlowValue { min-width: 0; }
+.homeFlowValue + .homeFlowValue { padding-left: 12px; border-left: 1px solid #e7eaf0; }
+.homeFlowValue > small { display: block; overflow: hidden; color: #969aa4; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.homeFlowValue > strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 6px;
+  color: #111216;
+  font-family: var(--pc-data-font);
+  font-size: clamp(13px, 1.2vw, 20px);
+  font-weight: 650;
+  letter-spacing: -.035em;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.homeFlowValue.exit > strong { color: #28758a; }
 .homeMetricCard.profit > strong,
 .homeWalletMetrics dd.profit { color: #0b8a5c; }
 .homeMetricCard.loss > strong,
@@ -9670,7 +9692,10 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .homeMetricCard:hover::after { opacity: .46; }
   .homeMetricCard:hover > span,
   .homeMetricCard:hover > strong,
-  .homeMetricCard:hover > small { color: rgba(255, 255, 255, .94); }
+  .homeMetricCard:hover > small,
+  .homeMetricCard:hover .homeFlowValue > small,
+  .homeMetricCard:hover .homeFlowValue > strong { color: rgba(255, 255, 255, .94); }
+  .homeMetricCard:hover .homeFlowValue + .homeFlowValue { border-left-color: rgba(255, 255, 255, .32); }
 }
 .homePortfolioGrid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); gap: 14px; }
 .homeTrendPanel,
@@ -9788,7 +9813,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleTerminalLine > b.pending { color: #a36513; }
 
 @media (max-width: 1180px) {
-  .homeMetrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .homeMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .homePortfolioGrid { grid-template-columns: minmax(0, 1.3fr) minmax(300px, .8fr); }
   .homeDecisionRow { grid-template-columns: 90px 110px minmax(170px, 1fr) 100px 100px; }
   .homeDecisionRow > p { grid-column: 3 / -1; }
@@ -9826,6 +9851,11 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .homeRequestSection { order: 6; }
   .homeMetricCard { min-height: 112px; padding: 14px; }
   .homeMetricCard > strong { margin-block: 11px 7px; font-size: 20px; }
+  .homeFlowValues { grid-template-columns: 1fr; margin-block: 8px 6px; gap: 5px; }
+  .homeFlowValue { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+  .homeFlowValue + .homeFlowValue { padding: 5px 0 0; border-top: 1px solid #e7eaf0; border-left: 0; }
+  .homeFlowValue > small { flex: 0 0 auto; }
+  .homeFlowValue > strong { flex: 0 1 auto; margin-top: 0; font-size: 13px; text-align: right; }
   .homeSectionHeader { align-items: flex-start; flex-direction: column; min-height: 0; padding: 14px; }
   .homeRuntimeFront .homeSectionHeader { align-items: center; flex-direction: row; }
   .homeRangeSwitch,

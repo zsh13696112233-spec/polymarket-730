@@ -5840,6 +5840,24 @@ async def list_whale_records(
             ).all()
         )
         positions = list((await session.scalars(select(WhaleFollowPosition))).all())
+        conflict_exit_position_ids = set(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger.position_id)
+                    .where(WhaleFollowLedger.source == "conflict_exit")
+                    .distinct()
+                )
+            ).all()
+        )
+        chain_test_position_ids = set(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger.position_id)
+                    .where(WhaleFollowLedger.source == "chain_test")
+                    .distinct()
+                )
+            ).all()
+        )
         positions_by_id = {position.id: position for position in positions}
         order_ids = list(dict.fromkeys(row.order_id for row in ledger if row.order_id is not None))
         orders_by_id = {
@@ -5892,8 +5910,15 @@ async def list_whale_records(
         for position in positions
         if position.status in {"closed", "redeemed", "resolved_loss"}
     ]
-    wins = sum(1 for position in finished if position.realized_pnl > ZERO)
-    losses = sum(1 for position in finished if position.realized_pnl < ZERO)
+    performance_finished = [
+        position
+        for position in finished
+        if position.id not in conflict_exit_position_ids
+        and position.id not in chain_test_position_ids
+    ]
+    wins = sum(1 for position in performance_finished if position.realized_pnl > ZERO)
+    losses = sum(1 for position in performance_finished if position.realized_pnl < ZERO)
+    decided_count = wins + losses
     ratios = [
         position.realized_pnl / position.lifetime_bought_usdc * HUNDRED
         for position in finished
@@ -5917,8 +5942,17 @@ async def list_whale_records(
             "closed_position_count": len(finished),
             "win_count": wins,
             "loss_count": losses,
+            "excluded_conflict_exit_count": sum(
+                1 for position in finished if position.id in conflict_exit_position_ids
+            ),
+            "excluded_chain_test_count": sum(
+                1
+                for position in finished
+                if position.id in chain_test_position_ids
+                and position.id not in conflict_exit_position_ids
+            ),
             "win_rate_percent": (
-                Decimal(wins) / Decimal(len(finished)) * HUNDRED if finished else None
+                Decimal(wins) / Decimal(decided_count) * HUNDRED if decided_count else None
             ),
             "average_profit_ratio_percent": (
                 sum(ratios, ZERO) / Decimal(len(ratios)) if ratios else None

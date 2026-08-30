@@ -65,22 +65,37 @@ def _empty_day(day: date) -> dict[str, Any]:
         "win_count": 0,
         "loss_count": 0,
         "flat_count": 0,
+        "excluded_conflict_exit_count": 0,
+        "excluded_chain_test_count": 0,
     }
 
 
-def _finish_counts(positions: list[WhaleFollowPosition]) -> dict[date, tuple[int, int, int]]:
-    result: dict[date, list[int]] = defaultdict(lambda: [0, 0, 0])
+def _finish_counts(
+    positions: list[WhaleFollowPosition],
+    conflict_exit_position_ids: set[int],
+    chain_test_position_ids: set[int],
+) -> dict[date, tuple[int, int, int, int, int]]:
+    result: dict[date, list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     for position in positions:
         if position.status not in FINISHED_POSITION_STATUSES or position.closed_at is None:
             continue
         counts = result[_beijing_date(position.closed_at)]
+        if position.id in conflict_exit_position_ids:
+            counts[3] += 1
+            continue
+        if position.id in chain_test_position_ids:
+            counts[4] += 1
+            continue
         if position.realized_pnl > ZERO:
             counts[0] += 1
         elif position.realized_pnl < ZERO:
             counts[1] += 1
         else:
             counts[2] += 1
-    return {day: (values[0], values[1], values[2]) for day, values in result.items()}
+    return {
+        day: (values[0], values[1], values[2], values[3], values[4])
+        for day, values in result.items()
+    }
 
 
 async def home_overview(
@@ -112,6 +127,24 @@ async def home_overview(
             ).all()
         )
         positions = list((await session.scalars(select(WhaleFollowPosition))).all())
+        conflict_exit_position_ids = set(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger.position_id)
+                    .where(WhaleFollowLedger.source == "conflict_exit")
+                    .distinct()
+                )
+            ).all()
+        )
+        chain_test_position_ids = set(
+            (
+                await session.scalars(
+                    select(WhaleFollowLedger.position_id)
+                    .where(WhaleFollowLedger.source == "chain_test")
+                    .distinct()
+                )
+            ).all()
+        )
         decisions = list(
             (
                 await session.scalars(
@@ -186,7 +219,11 @@ async def home_overview(
         bucket = daily_by_date.get(day)
         if bucket is None:
             continue
-        if row.type == "buy":
+        if (
+            row.type == "buy"
+            and row.source != "chain_test"
+            and row.position_id not in conflict_exit_position_ids
+        ):
             bucket["buy_amount_usdc"] += row.amount_usdc
             bucket["buy_count"] += 1
         if row.type == "sell" and row.source == "conflict_exit":
@@ -196,11 +233,23 @@ async def home_overview(
             bucket["realized_pnl_usdc"] += row.realized_pnl
             bucket["realized_cost_usdc"] += _exit_cost(row)
 
-    finished_counts = _finish_counts(positions)
+    finished_counts = _finish_counts(
+        positions,
+        conflict_exit_position_ids,
+        chain_test_position_ids,
+    )
     for day, bucket in daily_by_date.items():
         bucket["conflict_exit_count"] = len(conflict_exit_positions_by_date[day])
-        wins, losses, flats = finished_counts.get(day, (0, 0, 0))
-        bucket.update(win_count=wins, loss_count=losses, flat_count=flats)
+        wins, losses, flats, excluded_conflicts, excluded_tests = finished_counts.get(
+            day, (0, 0, 0, 0, 0)
+        )
+        bucket.update(
+            win_count=wins,
+            loss_count=losses,
+            flat_count=flats,
+            excluded_conflict_exit_count=excluded_conflicts,
+            excluded_chain_test_count=excluded_tests,
+        )
         cost = bucket["realized_cost_usdc"]
         bucket["realized_roi_percent"] = (
             bucket["realized_pnl_usdc"] / cost * HUNDRED if cost > ZERO else None

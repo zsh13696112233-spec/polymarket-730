@@ -33,6 +33,8 @@ def test_home_overview_route_returns_thirty_beijing_days(app_client_factory) -> 
     assert payload["today"]["buy_count"] == 0
     assert payload["today"]["conflict_exit_proceeds_usdc"] == 0.0
     assert payload["today"]["conflict_exit_count"] == 0
+    assert payload["today"]["excluded_conflict_exit_count"] == 0
+    assert payload["today"]["excluded_chain_test_count"] == 0
     assert payload["wallet"]["available"] is False
 
 
@@ -247,6 +249,14 @@ async def test_home_overview_uses_beijing_days_and_all_whale_follow_sources(
                     timestamp=datetime(2026, 8, 28, 16, 1),
                 ),
                 ledger(
+                    rows[1].id,
+                    "buy",
+                    source="auto_follow",
+                    amount="4",
+                    pnl="0",
+                    timestamp=datetime(2026, 8, 29, 0, 30),
+                ),
+                ledger(
                     rows[0].id,
                     "sell",
                     source="conflict_exit",
@@ -289,9 +299,9 @@ async def test_home_overview_uses_beijing_days_and_all_whale_follow_sources(
     )
 
     assert len(payload["daily"]) == 30
-    assert payload["daily"][-2]["buy_amount_usdc"] == Decimal("3")
+    assert payload["daily"][-2]["buy_amount_usdc"] == Decimal("0")
     assert payload["daily"][-2]["conflict_exit_proceeds_usdc"] == Decimal("0")
-    assert payload["today"]["buy_amount_usdc"] == Decimal("10")
+    assert payload["today"]["buy_amount_usdc"] == Decimal("4")
     assert payload["today"]["buy_count"] == 1
     assert payload["today"]["conflict_exit_proceeds_usdc"] == Decimal("10")
     assert payload["today"]["conflict_exit_count"] == 1
@@ -306,6 +316,71 @@ async def test_home_overview_uses_beijing_days_and_all_whale_follow_sources(
     assert payload["wallet"]["unrealized_pnl_usdc"] == Decimal("2.5")
     assert payload["wallet"]["total_assets_usdc"] == Decimal("122.5")
     assert payload["wallet"]["available_cash_usdc"] == Decimal("40")
+
+
+@pytest.mark.asyncio
+async def test_home_win_rate_excludes_conflict_exit_positions(database: Database) -> None:
+    async with database.sessions() as session:
+        session.add(WhaleSettings(id=1, created_at=NOW, updated_at=NOW))
+        rows = [
+            position(
+                "normal-win", status="closed", size="0", cost="0", realized="4", closed_at=NOW
+            ),
+            position(
+                "normal-loss", status="closed", size="0", cost="0", realized="-3", closed_at=NOW
+            ),
+            position(
+                "conflict-loss", status="closed", size="0", cost="0", realized="-2", closed_at=NOW
+            ),
+            position(
+                "chain-test-loss", status="closed", size="0", cost="0", realized="-1", closed_at=NOW
+            ),
+        ]
+        session.add_all(rows)
+        await session.flush()
+        session.add(
+            ledger(
+                rows[2].id,
+                "sell",
+                source="conflict_exit",
+                amount="3",
+                pnl="-2",
+                timestamp=NOW,
+            )
+        )
+        session.add(
+            ledger(
+                rows[3].id,
+                "sell",
+                source="chain_test",
+                amount="4",
+                pnl="-1",
+                timestamp=NOW,
+            )
+        )
+        session.add(
+            ledger(
+                rows[3].id,
+                "buy",
+                source="chain_test",
+                amount="2",
+                pnl="0",
+                timestamp=NOW,
+            )
+        )
+        await session.commit()
+
+    payload = await home_overview(database, MarksClient({}), now=NOW)  # type: ignore[arg-type]
+
+    assert payload["today"]["win_count"] == 1
+    assert payload["today"]["loss_count"] == 1
+    assert payload["today"]["flat_count"] == 0
+    assert payload["today"]["excluded_conflict_exit_count"] == 1
+    assert payload["today"]["excluded_chain_test_count"] == 1
+    assert payload["today"]["win_rate_percent"] == Decimal("50")
+    assert payload["today"]["buy_amount_usdc"] == Decimal("0")
+    assert payload["today"]["buy_count"] == 0
+    assert payload["today"]["realized_pnl_usdc"] == Decimal("-3")
 
 
 @pytest.mark.asyncio

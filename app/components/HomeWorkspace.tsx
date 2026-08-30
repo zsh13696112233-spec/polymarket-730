@@ -60,6 +60,8 @@ type HomeDaily = {
   win_count: number;
   loss_count: number;
   flat_count: number;
+  excluded_conflict_exit_count: number;
+  excluded_chain_test_count: number;
 };
 
 type HomeOverview = {
@@ -152,6 +154,14 @@ function formatRate(value: Numeric | null | undefined): string {
   return `${numeric(value).toFixed(1)}%`;
 }
 
+function performanceExclusionDetail(conflictExits: number, chainTests: number): string {
+  const excluded = [
+    conflictExits ? `${conflictExits} 笔分歧退出` : "",
+    chainTests ? `${chainTests} 笔链路测试` : "",
+  ].filter(Boolean);
+  return excluded.length ? ` · 不含 ${excluded.join("、")}` : "";
+}
+
 type HomeTrendPoint = HomeDaily & {
   buyAmount: number;
   realizedPnl: number;
@@ -196,7 +206,7 @@ function TrendTooltip({ active, payload }: TooltipContentProps) {
     <div className="homeTrendTooltip">
       <header><strong>{point.date.slice(5, 7)} 月 {point.date.slice(8)} 日</strong><span>{point.buy_count} 次买入</span></header>
       <dl>
-        <div><dt><i className="buy" />跟单买入</dt><dd>{formatUsdc(point.buyAmount)}</dd></div>
+        <div><dt><i className="buy" />实际跟单买入</dt><dd>{formatUsdc(point.buyAmount)}</dd></div>
         <div><dt><i className={tone || "neutral"} />已实现盈亏</dt><dd className={tone}>{formatCompactSignedUsdc(point.realizedPnl)}</dd></div>
       </dl>
       <footer><span>已实现 ROI</span><strong className={tone}>{formatRate(point.realized_roi_percent)}</strong></footer>
@@ -336,6 +346,36 @@ function MetricCard({
   );
 }
 
+function CopyFlowMetricCard({
+  buyAmount,
+  buyCount,
+  exitProceeds,
+  exitCount,
+}: {
+  buyAmount: Numeric;
+  buyCount: number;
+  exitProceeds: Numeric;
+  exitCount: number;
+}) {
+  return (
+    <article
+      className="homeMetricCard homeFlowMetricCard"
+      aria-label="今日跟单买入与今日分歧退出回款"
+      data-effect-angle={-12}
+      onPointerMove={moveMetricCardEffect}
+      onPointerLeave={resetMetricCardEffect}
+      onPointerCancel={resetMetricCardEffect}
+    >
+      <span>今日跟单资金流</span>
+      <div className="homeFlowValues">
+        <div className="homeFlowValue buy"><small>实际跟单买入</small><strong>{formatCompactUsdc(buyAmount)}</strong></div>
+        <div className="homeFlowValue exit"><small>分歧退出回款</small><strong>{formatCompactUsdc(exitProceeds)}</strong></div>
+      </div>
+      <small>{buyCount} 次买入 · {exitCount} 次分歧退出到账</small>
+    </article>
+  );
+}
+
 export default function HomeWorkspace() {
   const [overview, setOverview] = useState<HomeOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -445,11 +485,10 @@ export default function HomeWorkspace() {
 
       {loading && !overview ? <div className="pcPanel pcLoading homeLoading">正在汇总运行与跟单数据…</div> : overview && <>
         <section className="homeMetrics" aria-label="今日核心指标">
-          <MetricCard label="今日跟单买入" value={formatCompactUsdc(overview.today.buy_amount_usdc)} detail={`${overview.today.buy_count} 次已成交买入`} effectAngle={-12} />
-          <MetricCard label="今日分歧退出回款" value={formatCompactUsdc(overview.today.conflict_exit_proceeds_usdc)} detail={`${overview.today.conflict_exit_count} 次分歧风控卖出到账`} effectAngle={18} />
-          <MetricCard label="今日已实现盈亏" value={formatCompactSignedUsdc(overview.today.realized_pnl_usdc)} detail={`已实现 ROI ${formatPercent(overview.today.realized_roi_percent)}`} tone={pnlClass(overview.today.realized_pnl_usdc)} effectAngle={-24} />
-          <MetricCard label="全仓未实现盈亏" value={formatCompactSignedUsdc(overview.today.unrealized_pnl_usdc)} detail={overview.wallet.valuation_complete ? "按当前有效买一价估值" : "估值不完整"} tone={pnlClass(overview.today.unrealized_pnl_usdc)} effectAngle={32} />
-          <MetricCard label="今日结束仓位胜率" value={formatRate(overview.today.win_rate_percent)} detail={`${overview.today.win_count} 胜 · ${overview.today.loss_count} 负${overview.today.flat_count ? ` · ${overview.today.flat_count} 平` : ""}`} effectAngle={-8} />
+          <CopyFlowMetricCard buyAmount={overview.today.buy_amount_usdc} buyCount={overview.today.buy_count} exitProceeds={overview.today.conflict_exit_proceeds_usdc} exitCount={overview.today.conflict_exit_count} />
+          <MetricCard label="今日已实现盈亏" value={formatCompactSignedUsdc(overview.today.realized_pnl_usdc)} detail={`已实现 ROI ${formatPercent(overview.today.realized_roi_percent)}`} tone={pnlClass(overview.today.realized_pnl_usdc)} effectAngle={18} />
+          <MetricCard label="全仓未实现盈亏" value={formatCompactSignedUsdc(overview.today.unrealized_pnl_usdc)} detail={overview.wallet.valuation_complete ? "按当前有效买一价估值" : "估值不完整"} tone={pnlClass(overview.today.unrealized_pnl_usdc)} effectAngle={-24} />
+          <MetricCard label="今日结束仓位胜率" value={formatRate(overview.today.win_rate_percent)} detail={`${overview.today.win_count} 胜 · ${overview.today.loss_count} 负${overview.today.flat_count ? ` · ${overview.today.flat_count} 平` : ""}${performanceExclusionDetail(overview.today.excluded_conflict_exit_count, overview.today.excluded_chain_test_count)}`} effectAngle={32} />
         </section>
 
         <section className="pcPanel homeRuntimePanel homeRuntimeFront" aria-label="运行概览">
@@ -475,7 +514,7 @@ export default function HomeWorkspace() {
 
         <div className="homePortfolioGrid">
           <section className="pcPanel homeTrendPanel">
-            <header className="homeSectionHeader"><div><span>DAILY COPY TREND</span><h2>每日跟单趋势</h2><p>北京时间自然日；柱状图为买入金额，折线为已实现盈亏。</p></div><div className="homeRangeSwitch" role="group" aria-label="趋势日期范围"><button type="button" className={range === 7 ? "active" : ""} aria-pressed={range === 7} onClick={() => setRange(7)}>近 7 日</button><button type="button" className={range === 15 ? "active" : ""} aria-pressed={range === 15} onClick={() => setRange(15)}>近 15 日</button><button type="button" className={range === 30 ? "active" : ""} aria-pressed={range === 30} onClick={() => setRange(30)}>近 30 日</button></div></header>
+            <header className="homeSectionHeader"><div><span>DAILY COPY TREND</span><h2>每日跟单趋势</h2><p>北京时间自然日；柱状图为实际跟单买入，不含分歧退出与链路测试。</p></div><div className="homeRangeSwitch" role="group" aria-label="趋势日期范围"><button type="button" className={range === 7 ? "active" : ""} aria-pressed={range === 7} onClick={() => setRange(7)}>近 7 日</button><button type="button" className={range === 15 ? "active" : ""} aria-pressed={range === 15} onClick={() => setRange(15)}>近 15 日</button><button type="button" className={range === 30 ? "active" : ""} aria-pressed={range === 30} onClick={() => setRange(30)}>近 30 日</button></div></header>
             <TrendChart data={visibleDays} />
           </section>
 

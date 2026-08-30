@@ -421,6 +421,8 @@ export type WhaleRecordSummary = {
   closed_position_count: number;
   win_count: number;
   loss_count: number;
+  excluded_conflict_exit_count: number;
+  excluded_chain_test_count: number;
   win_rate_percent: Numeric | null;
   average_profit_ratio_percent: Numeric | null;
 };

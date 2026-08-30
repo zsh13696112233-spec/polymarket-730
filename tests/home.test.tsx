@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import HomeWorkspace from "../app/components/HomeWorkspace";
@@ -23,6 +23,8 @@ function overview(overrides: Record<string, unknown> = {}) {
     win_count: index === 29 ? 1 : 0,
     loss_count: index === 29 ? 1 : 0,
     flat_count: 0,
+    excluded_conflict_exit_count: index === 29 ? 2 : 0,
+    excluded_chain_test_count: index === 29 ? 1 : 0,
   }));
   return {
     as_of: "2026-08-30T08:00:00Z",
@@ -96,16 +98,21 @@ describe("首页运行与跟单看板", () => {
     expect(await screen.findByRole("heading", { name: "首页" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "首页" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "链上监测" })).toHaveAttribute("href", "/whales");
-    expect(screen.getByText("20.50 USDC")).toBeInTheDocument();
-    expect(screen.getByText("今日分歧退出回款")).toBeInTheDocument();
-    expect(screen.getByText("8.75 USDC")).toBeInTheDocument();
-    expect(screen.getByText("1 次分歧风控卖出到账")).toBeInTheDocument();
+    const flowCard = screen.getByLabelText("今日跟单买入与今日分歧退出回款");
+    expect(within(flowCard).getByText("今日跟单资金流")).toBeInTheDocument();
+    expect(within(flowCard).getByText("实际跟单买入")).toBeInTheDocument();
+    expect(within(flowCard).getByText("20.50 USDC")).toBeInTheDocument();
+    expect(within(flowCard).getByText("分歧退出回款")).toBeInTheDocument();
+    expect(within(flowCard).getByText("8.75 USDC")).toBeInTheDocument();
+    expect(within(flowCard).getByText("2 次买入 · 1 次分歧退出到账")).toBeInTheDocument();
     expect(screen.getByText("-3.00 USDC")).toBeInTheDocument();
     expect(screen.getByText("已实现 ROI -25.0%")).toBeInTheDocument();
     expect(screen.getByText("134.20 USDC")).toBeInTheDocument();
     expect(screen.queryByText("钱包总资产估值")).not.toBeInTheDocument();
     expect(screen.getByText("全仓未实现盈亏")).toBeInTheDocument();
     expect(screen.queryByText("当前浮盈亏")).not.toBeInTheDocument();
+    expect(screen.getByText("1 胜 · 1 负 · 不含 2 笔分歧退出、1 笔链路测试")).toBeInTheDocument();
+    expect(screen.getByText("北京时间自然日；柱状图为实际跟单买入，不含分歧退出与链路测试。")).toBeInTheDocument();
     expect(screen.getByText("冠军归属市场")).toBeInTheDocument();
     expect(screen.getByText("已成交")).toBeInTheDocument();
     expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "7");

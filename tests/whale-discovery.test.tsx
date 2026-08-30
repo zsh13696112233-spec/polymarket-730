@@ -1400,10 +1400,12 @@ describe("巨鲸跟单记录页", () => {
           unrealized_pnl: null,
           total_pnl: null,
           open_position_count: 1,
-          closed_position_count: 0,
-          win_count: 0,
-          loss_count: 0,
-          win_rate_percent: null,
+          closed_position_count: 5,
+          win_count: 2,
+          loss_count: 1,
+          excluded_conflict_exit_count: 2,
+          excluded_chain_test_count: 1,
+          win_rate_percent: 66.6667,
           average_profit_ratio_percent: null,
         },
       });
@@ -1430,6 +1432,8 @@ describe("巨鲸跟单记录页", () => {
     expect(await screen.findByText("无法估值")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "自动跟单决策" })).not.toBeInTheDocument();
     expect(screen.getAllByText("20.40 USDC").length).toBeGreaterThan(0);
+    expect(screen.getByText("+66.7%")).toBeInTheDocument();
+    expect(screen.getByText("2 胜 / 1 负 · 不含 2 笔分歧退出、1 笔链路测试")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "一键卖出" }));
     const execute = screen.getByRole("button", { name: "确认卖出" });

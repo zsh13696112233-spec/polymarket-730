@@ -39,6 +39,8 @@ const EMPTY_SUMMARY: WhaleRecordSummary = {
   closed_position_count: 0,
   win_count: 0,
   loss_count: 0,
+  excluded_conflict_exit_count: 0,
+  excluded_chain_test_count: 0,
   win_rate_percent: null,
   average_profit_ratio_percent: null,
 };
@@ -87,10 +89,19 @@ function recordSourceLabel(source: string) {
     manual: "手动交易",
     auto_follow: "自动跟单",
     conflict_exit: "分歧风控",
+    chain_test: "链路测试",
     auto_redeem: "自动结算",
     reconciliation: "自动对账",
   };
   return labels[source] || source;
+}
+
+function performanceExclusionHint(conflictExits: number, chainTests: number) {
+  const excluded = [
+    conflictExits ? `${conflictExits} 笔分歧退出` : "",
+    chainTests ? `${chainTests} 笔链路测试` : "",
+  ].filter(Boolean);
+  return excluded.length ? ` · 不含 ${excluded.join("、")}` : "";
 }
 
 export default function WhaleRecordsWorkspace() {
@@ -197,7 +208,7 @@ export default function WhaleRecordsWorkspace() {
         <Metric label="已实现盈亏" value={formatUsdc(summary.realized_pnl)} tone={pnlClass(summary.realized_pnl)} hint={`${summary.closed_position_count} 个已结束仓位`} />
         <Metric label="浮动盈亏" value={formatUsdc(summary.unrealized_pnl)} tone={pnlClass(summary.unrealized_pnl)} hint={`${summary.open_position_count} 个当前仓位`} />
         <Metric label="总盈亏" value={formatUsdc(summary.total_pnl)} tone={pnlClass(summary.total_pnl)} hint="已实现 + 浮动" />
-        <Metric label="已结束胜率" value={formatPercent(summary.win_rate_percent)} hint={`${summary.win_count} 胜 / ${summary.loss_count} 负`} />
+        <Metric label="已结束胜率" value={formatPercent(summary.win_rate_percent)} hint={`${summary.win_count} 胜 / ${summary.loss_count} 负${performanceExclusionHint(summary.excluded_conflict_exit_count, summary.excluded_chain_test_count)}`} />
         <Metric label="平均盈利比" value={formatPercent(summary.average_profit_ratio_percent)} tone={pnlClass(summary.average_profit_ratio_percent)} hint="已结束仓位口径" />
       </section>
 

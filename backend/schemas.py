@@ -528,6 +528,8 @@ class HomeTodayRead(APIModel):
     win_count: int
     loss_count: int
     flat_count: int
+    excluded_conflict_exit_count: int
+    excluded_chain_test_count: int
     win_rate_percent: DecimalNumber | None
 
 
@@ -565,6 +567,8 @@ class HomeDailyRead(APIModel):
     win_count: int
     loss_count: int
     flat_count: int
+    excluded_conflict_exit_count: int
+    excluded_chain_test_count: int
 
 
 class HomeAutoDecisionRead(APIModel):
@@ -1162,6 +1166,7 @@ class WhaleLedgerRead(APIModel):
         "manual",
         "auto_follow",
         "conflict_exit",
+        "chain_test",
         "auto_redeem",
         "reconciliation",
     ]
@@ -1213,6 +1218,8 @@ class WhaleRecordSummaryRead(APIModel):
     closed_position_count: int
     win_count: int
     loss_count: int
+    excluded_conflict_exit_count: int
+    excluded_chain_test_count: int
     win_rate_percent: DecimalNumber | None
     average_profit_ratio_percent: DecimalNumber | None
 

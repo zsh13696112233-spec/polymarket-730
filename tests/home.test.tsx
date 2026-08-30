@@ -15,6 +15,8 @@ function overview(overrides: Record<string, unknown> = {}) {
     date: `2026-08-${String(index + 1).padStart(2, "0")}`,
     buy_amount_usdc: index === 29 ? 20.5 : 0,
     buy_count: index === 29 ? 2 : 0,
+    conflict_exit_proceeds_usdc: index === 29 ? 8.75 : 0,
+    conflict_exit_count: index === 29 ? 1 : 0,
     realized_pnl_usdc: index === 29 ? -3 : 0,
     realized_cost_usdc: index === 29 ? 12 : 0,
     realized_roi_percent: index === 29 ? -25 : null,
@@ -95,9 +97,15 @@ describe("首页运行与跟单看板", () => {
     expect(screen.getByRole("link", { name: "首页" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "链上监测" })).toHaveAttribute("href", "/whales");
     expect(screen.getByText("20.50 USDC")).toBeInTheDocument();
+    expect(screen.getByText("今日分歧退出回款")).toBeInTheDocument();
+    expect(screen.getByText("8.75 USDC")).toBeInTheDocument();
+    expect(screen.getByText("1 次分歧风控卖出到账")).toBeInTheDocument();
     expect(screen.getByText("-3.00 USDC")).toBeInTheDocument();
     expect(screen.getByText("已实现 ROI -25.0%")).toBeInTheDocument();
-    expect(screen.getAllByText("134.20 USDC")).toHaveLength(2);
+    expect(screen.getByText("134.20 USDC")).toBeInTheDocument();
+    expect(screen.queryByText("钱包总资产估值")).not.toBeInTheDocument();
+    expect(screen.getByText("全仓未实现盈亏")).toBeInTheDocument();
+    expect(screen.queryByText("当前浮盈亏")).not.toBeInTheDocument();
     expect(screen.getByText("冠军归属市场")).toBeInTheDocument();
     expect(screen.getByText("已成交")).toBeInTheDocument();
     expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "7");
@@ -105,7 +113,8 @@ describe("首页运行与跟单看板", () => {
     expect(container.querySelector(".homeChartLegend .roi")).not.toBeInTheDocument();
     const runtime = screen.getByLabelText("运行概览");
     const metrics = screen.getByLabelText("今日核心指标");
-    expect(runtime.compareDocumentPosition(metrics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(metrics.compareDocumentPosition(runtime) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByLabelText("系统状态").closest("header")).toHaveClass("pcTopbar");
 
     await user.click(screen.getByRole("button", { name: "近 15 日" }));
     expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "15");
@@ -134,7 +143,7 @@ describe("首页运行与跟单看板", () => {
 
     expect(await screen.findByText("余额刷新失败，已保留缓存数据")).toBeInTheDocument();
     expect(screen.queryByText("钱包余额已过期")).not.toBeInTheDocument();
-    expect(screen.getAllByText("134.20 USDC")).toHaveLength(2);
+    expect(screen.getByText("134.20 USDC")).toBeInTheDocument();
     await waitFor(() => expect(requests.filter((item) => item.method === "POST")).toHaveLength(1));
   });
 
@@ -180,7 +189,7 @@ describe("首页运行与跟单看板", () => {
     FailedEventSource.instance?.onerror?.(new Event("error"));
 
     expect(await screen.findByText("运行状态连接中断")).toBeInTheDocument();
-    expect(container.querySelector(".homeStatusBar .homeStatusDot")).toHaveClass("error");
+    expect(container.querySelector(".homeTopStatus .homeStatusDot")).toHaveClass("error");
     expect(container.querySelectorAll(".homeRuleDot.enabled")).toHaveLength(0);
     expect(screen.getAllByText("连接中断")).toHaveLength(2);
   });

@@ -57,6 +57,8 @@ def _empty_day(day: date) -> dict[str, Any]:
         "date": day,
         "buy_amount_usdc": ZERO,
         "buy_count": 0,
+        "conflict_exit_proceeds_usdc": ZERO,
+        "conflict_exit_count": 0,
         "realized_pnl_usdc": ZERO,
         "realized_cost_usdc": ZERO,
         "realized_roi_percent": None,
@@ -178,6 +180,7 @@ async def home_overview(
         first_date + timedelta(days=index): _empty_day(first_date + timedelta(days=index))
         for index in range(30)
     }
+    conflict_exit_positions_by_date: dict[date, set[int]] = defaultdict(set)
     for row in ledger:
         day = _beijing_date(row.timestamp)
         bucket = daily_by_date.get(day)
@@ -186,12 +189,16 @@ async def home_overview(
         if row.type == "buy":
             bucket["buy_amount_usdc"] += row.amount_usdc
             bucket["buy_count"] += 1
+        if row.type == "sell" and row.source == "conflict_exit":
+            bucket["conflict_exit_proceeds_usdc"] += row.amount_usdc
+            conflict_exit_positions_by_date[day].add(row.position_id)
         if row.realized_pnl != ZERO or row.type in EXIT_LEDGER_TYPES:
             bucket["realized_pnl_usdc"] += row.realized_pnl
             bucket["realized_cost_usdc"] += _exit_cost(row)
 
     finished_counts = _finish_counts(positions)
     for day, bucket in daily_by_date.items():
+        bucket["conflict_exit_count"] = len(conflict_exit_positions_by_date[day])
         wins, losses, flats = finished_counts.get(day, (0, 0, 0))
         bucket.update(win_count=wins, loss_count=losses, flat_count=flats)
         cost = bucket["realized_cost_usdc"]

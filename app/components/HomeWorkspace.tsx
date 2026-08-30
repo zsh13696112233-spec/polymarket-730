@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   Bar,
   CartesianGrid,
@@ -44,6 +52,8 @@ type HomeDaily = {
   date: string;
   buy_amount_usdc: Numeric;
   buy_count: number;
+  conflict_exit_proceeds_usdc: Numeric;
+  conflict_exit_count: number;
   realized_pnl_usdc: Numeric;
   realized_cost_usdc: Numeric;
   realized_roi_percent: Numeric | null;
@@ -272,8 +282,58 @@ function TrendChart({ data }: { data: HomeDaily[] }) {
   );
 }
 
-function MetricCard({ label, value, detail, tone = "" }: { label: string; value: string; detail: string; tone?: string }) {
-  return <article className={`homeMetricCard ${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
+function moveMetricCardEffect(event: ReactPointerEvent<HTMLElement>) {
+  if (event.pointerType === "touch" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  const card = event.currentTarget;
+  const bounds = card.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+
+  const x = Math.min(Math.max(event.clientX - bounds.left, 0), bounds.width);
+  const y = Math.min(Math.max(event.clientY - bounds.top, 0), bounds.height);
+  const horizontal = (x / bounds.width - 0.5) * 2;
+  const vertical = (y / bounds.height - 0.5) * 2;
+  const angleOffset = Number(card.dataset.effectAngle ?? 0);
+  const angle = Math.atan2(vertical, horizontal) * (180 / Math.PI) + 90 + angleOffset;
+
+  card.style.setProperty("--effect-x", `${((x / bounds.width) * 100).toFixed(2)}%`);
+  card.style.setProperty("--effect-y", `${((y / bounds.height) * 100).toFixed(2)}%`);
+  card.style.setProperty("--effect-angle", `${angle.toFixed(2)}deg`);
+  card.style.setProperty("--tilt-x", `${(-vertical * 1.4).toFixed(2)}deg`);
+  card.style.setProperty("--tilt-y", `${(horizontal * 1.4).toFixed(2)}deg`);
+}
+
+function resetMetricCardEffect(event: ReactPointerEvent<HTMLElement>) {
+  const card = event.currentTarget;
+  ["--effect-x", "--effect-y", "--effect-angle", "--tilt-x", "--tilt-y"].forEach((property) => {
+    card.style.removeProperty(property);
+  });
+}
+
+function MetricCard({
+  label,
+  value,
+  detail,
+  tone = "",
+  effectAngle,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: string;
+  effectAngle: number;
+}) {
+  return (
+    <article
+      className={`homeMetricCard ${tone}`}
+      data-effect-angle={effectAngle}
+      onPointerMove={moveMetricCardEffect}
+      onPointerLeave={resetMetricCardEffect}
+      onPointerCancel={resetMetricCardEffect}
+    >
+      <span>{label}</span><strong>{value}</strong><small>{detail}</small>
+    </article>
+  );
 }
 
 export default function HomeWorkspace() {
@@ -340,7 +400,10 @@ export default function HomeWorkspace() {
   const runtimeStatus = error !== null || connection === "disconnected"
     ? "error"
     : overview?.system.status;
-  const runtimeLabel = error
+  const runtimeTone = loading && !overview ? "connecting" : runtimeStatus;
+  const runtimeLabel = loading && !overview
+    ? "正在读取状态"
+    : error
     ? "运行状态无法确认"
     : connection === "disconnected"
       ? "运行状态连接中断"
@@ -365,16 +428,28 @@ export default function HomeWorkspace() {
       active="home"
       title="首页"
       subtitle="运行状态、跟单表现与钱包资产总览"
-      actions={<button className="pcButton primary" type="button" onClick={() => void refreshBalance(true)} disabled={refreshing || loading}><span className={refreshing ? "spinning" : ""}>↻</span>{refreshing ? "刷新中" : "刷新首页"}</button>}
+      actions={<>
+        <div className="homeTopStatus" aria-label="系统状态">
+          <div className="homeTopHealth"><span className={`homeStatusDot ${runtimeTone}`} /><strong>{runtimeLabel}</strong></div>
+          <dl>
+            <div className="homeTopLastScan"><dt>最后扫描</dt><dd>{formatClock(overview?.system.last_scan_at ?? null)}</dd></div>
+            <div><dt>数据更新</dt><dd>{formatClock(overview?.as_of ?? null)}</dd></div>
+          </dl>
+        </div>
+        <button className="pcButton primary" type="button" onClick={() => void refreshBalance(true)} disabled={refreshing || loading}><span className={refreshing ? "spinning" : ""}>↻</span>{refreshing ? "刷新中" : "刷新首页"}</button>
+      </>}
     >
       {error && <div className="pcAlert danger homeLoadAlert" role="alert"><div><strong>首页数据请求失败</strong><p>{error}</p></div><button type="button" onClick={() => void loadOverview()}>重试</button></div>}
 
       {alerts.length > 0 && <section className="homeAlertStack" aria-label="首页告警">{alerts.map((item) => <div className="homeAlert" role="alert" key={item.key}><span aria-hidden="true">!</span><div><strong>{item.title}</strong><p>{item.detail}</p></div></div>)}</section>}
 
       {loading && !overview ? <div className="pcPanel pcLoading homeLoading">正在汇总运行与跟单数据…</div> : overview && <>
-        <section className="homeStatusBar" aria-label="系统状态">
-          <div><span className={`homeStatusDot ${runtimeStatus}`} /><strong>{runtimeLabel}</strong></div>
-          <dl><div><dt>最后扫描</dt><dd>{formatClock(overview.system.last_scan_at)}</dd></div><div><dt>数据更新</dt><dd>{formatClock(overview.as_of)}</dd></div></dl>
+        <section className="homeMetrics" aria-label="今日核心指标">
+          <MetricCard label="今日跟单买入" value={formatCompactUsdc(overview.today.buy_amount_usdc)} detail={`${overview.today.buy_count} 次已成交买入`} effectAngle={-12} />
+          <MetricCard label="今日分歧退出回款" value={formatCompactUsdc(overview.today.conflict_exit_proceeds_usdc)} detail={`${overview.today.conflict_exit_count} 次分歧风控卖出到账`} effectAngle={18} />
+          <MetricCard label="今日已实现盈亏" value={formatCompactSignedUsdc(overview.today.realized_pnl_usdc)} detail={`已实现 ROI ${formatPercent(overview.today.realized_roi_percent)}`} tone={pnlClass(overview.today.realized_pnl_usdc)} effectAngle={-24} />
+          <MetricCard label="全仓未实现盈亏" value={formatCompactSignedUsdc(overview.today.unrealized_pnl_usdc)} detail={overview.wallet.valuation_complete ? "按当前有效买一价估值" : "估值不完整"} tone={pnlClass(overview.today.unrealized_pnl_usdc)} effectAngle={32} />
+          <MetricCard label="今日结束仓位胜率" value={formatRate(overview.today.win_rate_percent)} detail={`${overview.today.win_count} 胜 · ${overview.today.loss_count} 负${overview.today.flat_count ? ` · ${overview.today.flat_count} 平` : ""}`} effectAngle={-8} />
         </section>
 
         <section className="pcPanel homeRuntimePanel homeRuntimeFront" aria-label="运行概览">
@@ -398,14 +473,6 @@ export default function HomeWorkspace() {
           </div>
         </section>
 
-        <section className="homeMetrics" aria-label="今日核心指标">
-          <MetricCard label="今日跟单买入" value={formatCompactUsdc(overview.today.buy_amount_usdc)} detail={`${overview.today.buy_count} 次已成交买入`} />
-          <MetricCard label="今日已实现盈亏" value={formatCompactSignedUsdc(overview.today.realized_pnl_usdc)} detail={`已实现 ROI ${formatPercent(overview.today.realized_roi_percent)}`} tone={pnlClass(overview.today.realized_pnl_usdc)} />
-          <MetricCard label="当前持仓浮盈亏" value={formatCompactSignedUsdc(overview.today.unrealized_pnl_usdc)} detail={overview.wallet.valuation_complete ? "按当前有效买一价估值" : "估值不完整"} tone={pnlClass(overview.today.unrealized_pnl_usdc)} />
-          <MetricCard label="今日结束仓位胜率" value={formatRate(overview.today.win_rate_percent)} detail={`${overview.today.win_count} 胜 · ${overview.today.loss_count} 负${overview.today.flat_count ? ` · ${overview.today.flat_count} 平` : ""}`} />
-          <MetricCard label="钱包总资产估值" value={overview.wallet.total_assets_usdc == null ? "估值不完整" : formatCompactUsdc(overview.wallet.total_assets_usdc)} detail="现金余额 + 可估值持仓市值" />
-        </section>
-
         <div className="homePortfolioGrid">
           <section className="pcPanel homeTrendPanel">
             <header className="homeSectionHeader"><div><span>DAILY COPY TREND</span><h2>每日跟单趋势</h2><p>北京时间自然日；柱状图为买入金额，折线为已实现盈亏。</p></div><div className="homeRangeSwitch" role="group" aria-label="趋势日期范围"><button type="button" className={range === 7 ? "active" : ""} aria-pressed={range === 7} onClick={() => setRange(7)}>近 7 日</button><button type="button" className={range === 15 ? "active" : ""} aria-pressed={range === 15} onClick={() => setRange(15)}>近 15 日</button><button type="button" className={range === 30 ? "active" : ""} aria-pressed={range === 30} onClick={() => setRange(30)}>近 30 日</button></div></header>
@@ -419,7 +486,6 @@ export default function HomeWorkspace() {
               <div><dt>pUSD / USDC 现金</dt><dd>{formatUsdc(overview.wallet.cash_balance_usdc)}</dd></div>
               <div><dt>持仓成本</dt><dd>{formatUsdc(overview.wallet.open_cost_usdc)}</dd></div>
               <div><dt>持仓市值</dt><dd>{overview.wallet.valuation_complete ? formatUsdc(overview.wallet.market_value_usdc) : "估值不完整"}</dd></div>
-              <div><dt>当前浮盈亏</dt><dd className={pnlClass(overview.wallet.unrealized_pnl_usdc)}>{formatCompactSignedUsdc(overview.wallet.unrealized_pnl_usdc)}</dd></div>
               <div><dt>现金保留线</dt><dd>{formatUsdc(overview.wallet.cash_reserve_usdc)}</dd></div>
               <div><dt>保留线以上可用现金</dt><dd>{formatUsdc(overview.wallet.available_cash_usdc)}</dd></div>
               <div><dt>开放仓位</dt><dd>{overview.wallet.open_position_count} 个</dd></div>

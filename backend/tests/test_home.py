@@ -31,6 +31,8 @@ def test_home_overview_route_returns_thirty_beijing_days(app_client_factory) -> 
     assert payload["timezone"] == "Asia/Shanghai"
     assert len(payload["daily"]) == 30
     assert payload["today"]["buy_count"] == 0
+    assert payload["today"]["conflict_exit_proceeds_usdc"] == 0.0
+    assert payload["today"]["conflict_exit_count"] == 0
     assert payload["wallet"]["available"] is False
 
 
@@ -288,8 +290,11 @@ async def test_home_overview_uses_beijing_days_and_all_whale_follow_sources(
 
     assert len(payload["daily"]) == 30
     assert payload["daily"][-2]["buy_amount_usdc"] == Decimal("3")
+    assert payload["daily"][-2]["conflict_exit_proceeds_usdc"] == Decimal("0")
     assert payload["today"]["buy_amount_usdc"] == Decimal("10")
     assert payload["today"]["buy_count"] == 1
+    assert payload["today"]["conflict_exit_proceeds_usdc"] == Decimal("10")
+    assert payload["today"]["conflict_exit_count"] == 1
     assert payload["today"]["realized_pnl_usdc"] == Decimal("1")
     assert payload["today"]["realized_cost_usdc"] == Decimal("23")
     assert payload["today"]["realized_roi_percent"] == Decimal("100") / Decimal("23")

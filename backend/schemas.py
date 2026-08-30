@@ -519,6 +519,8 @@ class HomeTodayRead(APIModel):
     date: date
     buy_amount_usdc: DecimalNumber
     buy_count: int
+    conflict_exit_proceeds_usdc: DecimalNumber
+    conflict_exit_count: int
     realized_pnl_usdc: DecimalNumber
     realized_cost_usdc: DecimalNumber
     realized_roi_percent: DecimalNumber | None
@@ -555,6 +557,8 @@ class HomeDailyRead(APIModel):
     date: date
     buy_amount_usdc: DecimalNumber
     buy_count: int
+    conflict_exit_proceeds_usdc: DecimalNumber
+    conflict_exit_count: int
     realized_pnl_usdc: DecimalNumber
     realized_cost_usdc: DecimalNumber
     realized_roi_percent: DecimalNumber | None

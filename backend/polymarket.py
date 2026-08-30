@@ -999,28 +999,52 @@ class PolymarketClient:
         segments = [segment for segment in parsed.path.split("/") if segment]
         if parsed.scheme != "https" or host not in {"polymarket.com", "www.polymarket.com"}:
             raise InvalidWalletInput("仅支持 https://polymarket.com 市场链接")
-        is_event = len(segments) == 2 and segments[0] == "event"
-        is_market = (len(segments) == 3 and segments[0] == "event") or (
-            len(segments) == 2 and segments[0] == "market"
+        has_locale_prefix = bool(
+            segments and re.fullmatch(r"[a-z]{2}(?:-[a-z]{2})?", segments[0], re.I)
         )
-        if not is_event and not is_market:
-            raise InvalidWalletInput("市场链接路径无效，请粘贴 Polymarket event 或 market 链接")
+        routed_segments = segments[1:] if has_locale_prefix else segments
+        is_event = len(routed_segments) == 2 and routed_segments[0] == "event"
+        is_market = (len(routed_segments) == 3 and routed_segments[0] == "event") or (
+            len(routed_segments) == 2 and routed_segments[0] == "market"
+        )
+        is_sports_event = (
+            len(routed_segments) == 3
+            and routed_segments[0] == "sports"
+            and all(routed_segments[1:])
+        )
+        if not is_event and not is_market and not is_sports_event:
+            raise InvalidWalletInput(
+                "市场链接路径无效，请粘贴 Polymarket event、market 或 sports 链接"
+            )
 
         try:
             from polymarket import AsyncPublicClient
 
             async with AsyncPublicClient() as sdk:
-                if is_event:
-                    event = await sdk.get_event(url=value)
-                    event_title = event.title or segments[-1]
+                if is_sports_event:
+                    event = await sdk.get_event(slug=routed_segments[-1])
+                    event_title = event.title or routed_segments[-1]
+                    event_slug = event.slug
+                    markets = event.markets
+                elif is_event:
+                    event = (
+                        await sdk.get_event(slug=routed_segments[-1])
+                        if has_locale_prefix
+                        else await sdk.get_event(url=value)
+                    )
+                    event_title = event.title or routed_segments[-1]
                     event_slug = event.slug
                     markets = event.markets
                 else:
-                    market = await sdk.get_market(url=value)
+                    market = (
+                        await sdk.get_market(slug=routed_segments[-1])
+                        if has_locale_prefix
+                        else await sdk.get_market(url=value)
+                    )
                     first_event = market.events[0] if market.events else None
                     event_title = (
                         first_event.title if first_event and first_event.title else market.question
-                    ) or segments[-1]
+                    ) or routed_segments[-1]
                     event_slug = first_event.slug if first_event else None
                     markets = (market,)
         except InvalidWalletInput:

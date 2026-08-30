@@ -16,7 +16,7 @@ from backend.tests.conftest import TEST_ADDRESS
 
 
 @pytest.mark.asyncio
-async def test_resolve_market_url_uses_official_sdk_and_maps_event_outcomes(monkeypatch):
+async def test_resolve_localized_sports_url_uses_event_slug_and_maps_outcomes(monkeypatch):
     market = SimpleNamespace(
         condition_id="0x" + "9" * 64,
         question="测试市场会通过吗？",
@@ -53,8 +53,8 @@ async def test_resolve_market_url_uses_official_sdk_and_maps_event_outcomes(monk
         async def __aexit__(self, *_):
             return None
 
-        async def get_event(self, *, url: str):
-            assert url == "https://polymarket.com/event/test-event"
+        async def get_event(self, *, slug: str):
+            assert slug == "epl-che-bri-2026-08-30"
             return SimpleNamespace(title="测试事件", slug="test-event", markets=(market,))
 
     monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
@@ -65,7 +65,9 @@ async def test_resolve_market_url_uses_official_sdk_and_maps_event_outcomes(monk
         transport=httpx.MockTransport(lambda _: httpx.Response(500)),
     )
     try:
-        resolved = await client.resolve_market_url("https://polymarket.com/event/test-event")
+        resolved = await client.resolve_market_url(
+            "https://polymarket.com/zh/sports/epl/epl-che-bri-2026-08-30"
+        )
     finally:
         await client.close()
 

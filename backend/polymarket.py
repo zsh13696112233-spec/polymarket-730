@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -20,6 +20,8 @@ from backend.whale_requests import current_whale_request_capture
 
 ADDRESS_RE = re.compile(r"0x[a-fA-F0-9]{40}")
 ZERO = Decimal("0")
+SDK_DATA_API_URL = "https://data-api.polymarket.com"
+SDK_GAMMA_API_URL = "https://gamma-api.polymarket.com"
 
 
 class PolymarketAPIError(RuntimeError):
@@ -463,6 +465,7 @@ class PolymarketClient:
                 method=request.method,
                 url=str(request.url).partition("?")[0],
                 query_params=query_params,
+                source="http",
             )
         try:
             semaphore = self._request_semaphores.get(request.url.host or "")
@@ -565,6 +568,63 @@ class PolymarketClient:
                 http_status=response.status_code,
             )
         return payload
+
+    async def _monitored_sdk_request(
+        self,
+        operation: Awaitable[Any],
+        *,
+        url: str,
+        params: dict[str, Any],
+        not_found_none: bool = False,
+    ) -> Any:
+        capture = current_whale_request_capture()
+        request_record_id: int | None = None
+        if capture is not None:
+            query_params = {
+                key: [str(item) for item in value]
+                if isinstance(value, (list, tuple))
+                else str(value)
+                for key, value in params.items()
+                if value is not None
+            }
+            request_record_id = await capture.monitor.begin(
+                scan_id=capture.scan_id,
+                method="GET",
+                url=url,
+                query_params=query_params,
+                source="sdk",
+            )
+        try:
+            result = await operation
+        except asyncio.CancelledError:
+            if capture is not None and request_record_id is not None:
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    error_type="CancelledError",
+                    error_message="请求已取消",
+                )
+            raise
+        except Exception as error:
+            if capture is not None and request_record_id is not None:
+                status = getattr(error, "status", None)
+                if type(error).__name__ == "RateLimitError":
+                    status = 429
+                await capture.monitor.complete(
+                    request_record_id,
+                    status="failed",
+                    http_status=status if isinstance(status, int) else None,
+                    error_type=type(error).__name__,
+                    error_message=str(error).strip() or type(error).__name__,
+                )
+            raise
+        if capture is not None and request_record_id is not None:
+            await capture.monitor.complete(
+                request_record_id,
+                status="success",
+                http_status=404 if not_found_none and result is None else 200,
+            )
+        return result
 
     async def fetch_large_trades(
         self,
@@ -867,13 +927,23 @@ class PolymarketClient:
             from polymarket import AsyncPublicClient
 
             async with AsyncPublicClient() as sdk:
-                page = await sdk.list_market_positions(
-                    market=condition_id,
-                    status="OPEN",
-                    sort_by="TOKENS",
-                    sort_direction="DESC",
-                    page_size=limit,
-                ).first_page()
+                page = await self._monitored_sdk_request(
+                    sdk.list_market_positions(
+                        market=condition_id,
+                        status="OPEN",
+                        sort_by="TOKENS",
+                        sort_direction="DESC",
+                        page_size=limit,
+                    ).first_page(),
+                    url=f"{SDK_DATA_API_URL}/v1/market-positions",
+                    params={
+                        "market": condition_id,
+                        "status": "OPEN",
+                        "sortBy": "TOKENS",
+                        "sortDirection": "DESC",
+                        "limit": limit,
+                    },
+                )
         except Exception as error:
             raise self._sdk_api_error("公开 SDK 市场持仓查询失败", error) from error
         positions: list[WhaleMarketPositionSnapshot] = []
@@ -948,11 +1018,20 @@ class PolymarketClient:
                     ascending=True,
                     page_size=min(limit, 100),
                 )
-                sdk_tags = []
-                async for item in paginator.iter_items():
-                    sdk_tags.append(item)
-                    if len(sdk_tags) >= limit:
-                        break
+
+                async def collect_tags() -> list[Any]:
+                    items: list[Any] = []
+                    async for item in paginator.iter_items():
+                        items.append(item)
+                        if len(items) >= limit:
+                            break
+                    return items
+
+                sdk_tags = await self._monitored_sdk_request(
+                    collect_tags(),
+                    url=f"{SDK_GAMMA_API_URL}/tags",
+                    params={"order": "id", "ascending": True, "limit": limit},
+                )
         except Exception as error:
             raise self._sdk_api_error("公开 SDK 标签字典查询失败", error) from error
         tags: list[OfficialTag] = []
@@ -1442,7 +1521,12 @@ class PolymarketClient:
             from polymarket import AsyncPublicClient
 
             async with AsyncPublicClient() as sdk:
-                profile = await sdk.get_public_profile(submitted)
+                profile = await self._monitored_sdk_request(
+                    sdk.get_public_profile(submitted),
+                    url=f"{SDK_GAMMA_API_URL}/public-profile",
+                    params={"address": submitted},
+                    not_found_none=True,
+                )
         except Exception as error:
             raise self._sdk_api_error("公开 SDK 钱包资料查询失败", error) from error
 

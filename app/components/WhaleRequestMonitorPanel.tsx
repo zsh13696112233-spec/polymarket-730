@@ -19,6 +19,7 @@ function requestTimestamp(record: WhaleRequestLog): number {
 function requestKey(record: WhaleRequestLog): string {
   return JSON.stringify([
     record.scan_id,
+    record.source,
     record.method,
     record.url,
     Object.entries(record.query_params).sort(([left], [right]) => left.localeCompare(right)),
@@ -163,7 +164,7 @@ export function WhaleRequestMonitorPanel({
                   <b className={record.status}>{record.status}</b>
                   <code>
                     <span className="whaleRequestSummary">
-                      <strong>{record.method}</strong>
+                      <strong>{record.source.toUpperCase()} · {record.method}</strong>
                       <span className="whaleRequestUrl">{record.url}</span>
                       <small>{record.status === "failed" ? `${record.error_message || record.error_type || "请求失败"} · ${record.duration_ms ?? 0}ms` : `HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
                     </span>

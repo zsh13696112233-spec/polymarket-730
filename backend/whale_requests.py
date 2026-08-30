@@ -11,6 +11,7 @@ from time import monotonic
 from typing import Literal
 
 WhaleRequestStatus = Literal["pending", "success", "failed"]
+WhaleRequestSource = Literal["http", "sdk"]
 
 
 @dataclass(slots=True)
@@ -18,6 +19,7 @@ class WhaleRequestRecord:
     id: int
     scan_id: str
     status: WhaleRequestStatus
+    source: WhaleRequestSource
     started_at: datetime
     finished_at: datetime | None
     method: str
@@ -84,6 +86,7 @@ class WhaleRequestMonitor:
         method: str,
         url: str,
         query_params: dict[str, str | list[str]],
+        source: WhaleRequestSource = "http",
     ) -> int:
         async with self._lock:
             record_id = self._next_id
@@ -96,6 +99,7 @@ class WhaleRequestMonitor:
                 id=record_id,
                 scan_id=scan_id,
                 status="pending",
+                source=source,
                 started_at=utcnow(),
                 finished_at=None,
                 method=method.upper(),

@@ -454,6 +454,7 @@ class WhaleRequestLogRead(APIModel):
     id: int
     scan_id: str
     status: Literal["pending", "success", "failed"]
+    source: Literal["http", "sdk"]
     started_at: datetime
     finished_at: datetime | None
     method: str

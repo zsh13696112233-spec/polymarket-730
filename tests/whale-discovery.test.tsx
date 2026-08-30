@@ -845,6 +845,7 @@ describe("巨鲸请求监测面板", () => {
       id: 7,
       scan_id: "scan-live",
       status: "pending",
+      source: "http",
       started_at: "2026-08-23T08:00:01Z",
       finished_at: null,
       method: "GET",
@@ -878,7 +879,7 @@ describe("巨鲸请求监测面板", () => {
     expect(screen.getByLabelText("Request Monitor")).not.toHaveClass("pcPanel");
     expect(screen.queryByRole("heading", { name: "Request Monitor" })).not.toBeInTheDocument();
     expect(screen.getByText("HTTP 200 · 321ms").closest("code")).toHaveTextContent(
-      "GEThttps://data-api.polymarket.com/tradesHTTP 200 · 321ms",
+      "HTTP · GEThttps://data-api.polymarket.com/tradesHTTP 200 · 321ms",
     );
     expect(screen.getByText("HTTP 200 · 321ms")).toBeInTheDocument();
     expect(screen.getByText("pending")).toBeInTheDocument();
@@ -921,6 +922,7 @@ describe("巨鲸请求监测面板", () => {
       data: JSON.stringify({
         ...pending,
         id: 9,
+        source: "sdk",
         status: "success",
         finished_at: "2026-08-23T08:00:05Z",
         http_status: 200,
@@ -928,6 +930,7 @@ describe("巨鲸请求监测面板", () => {
       }),
     }));
     expect(await screen.findByText("16:00:05")).toBeInTheDocument();
+    expect(screen.getByText("SDK · GET")).toBeInTheDocument();
 
     for (const [id, second] of [[10, "06"], [11, "07"], [12, "08"]] as const) {
       FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {

@@ -155,6 +155,7 @@ export type WhaleRequestLog = {
   id: number;
   scan_id: string;
   status: "pending" | "success" | "failed";
+  source: "http" | "sdk";
   started_at: string;
   finished_at: string | null;
   method: string;

@@ -4,8 +4,10 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal
 from functools import partial
+from types import SimpleNamespace
 
 import httpx
+import polymarket
 import pytest
 
 from backend.polymarket import PolymarketAPIError, PolymarketClient
@@ -70,11 +72,48 @@ async def test_polymarket_request_capture_is_scoped_and_preserves_repeated_query
     record = (await monitor.snapshot())[0]
     assert record.scan_id == "scan-1"
     assert record.status == "success"
+    assert record.source == "http"
     assert record.url == "https://gamma.test/markets"
     assert record.query_params["condition_ids"] == ["condition-a", "condition-b"]
     assert record.query_params["include_tag"] == "true"
     assert record.http_status == 200
     assert record.response_excerpt is None
+
+
+@pytest.mark.asyncio
+async def test_public_sdk_request_capture_records_sdk_source(monkeypatch):
+    class FakePublicClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def get_public_profile(self, address):
+            assert address == "0x" + "1" * 40
+            return SimpleNamespace(wallet=address, name="SDK Whale", pseudonym=None)
+
+    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
+    monitor = WhaleRequestMonitor()
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+    )
+    try:
+        with capture_whale_requests(monitor, "scan-sdk"):
+            await client.resolve_profile("0x" + "1" * 40, None)
+    finally:
+        await client.close()
+
+    record = (await monitor.snapshot())[0]
+    assert record.scan_id == "scan-sdk"
+    assert record.status == "success"
+    assert record.source == "sdk"
+    assert record.url == "https://gamma-api.polymarket.com/public-profile"
+    assert record.query_params == {"address": "0x" + "1" * 40}
+    assert record.http_status == 200
 
 
 @pytest.mark.asyncio
@@ -184,6 +223,7 @@ def test_whale_request_log_snapshot_api(app_client_factory):
         "id": record_id,
         "scan_id": "scan-api",
         "status": "failed",
+        "source": "http",
         "started_at": payload["items"][0]["started_at"],
         "finished_at": payload["items"][0]["finished_at"],
         "method": "GET",

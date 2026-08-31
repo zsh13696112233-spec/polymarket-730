@@ -488,7 +488,11 @@ class UnifiedPolymarketTrader:
         for trade_id in trade_ids:
             page = await client.list_account_trades(id=trade_id).first_page()
             trade = next((item for item in page.items if str(item.id) == trade_id), None)
-            if trade is None or str(trade.status).upper() != "CONFIRMED":
+            if (
+                trade is None
+                or str(trade.status).upper() != "CONFIRMED"
+                or not trade.transaction_hash
+            ):
                 continue
             fee = await self._fee_for_trade(trade)
             rows.append(
@@ -592,19 +596,38 @@ class UnifiedPolymarketTrader:
         except Exception as error:
             raise TradingUnavailable(f"无法同步统一 SDK 订单：{error}") from error
         matched = Decimal(order.size_matched)
-        price = Decimal(order.price)
         original = Decimal(order.original_size)
         status = str(order.status).lower()
-        if matched >= original > ZERO:
-            status = "filled"
-        elif matched > ZERO:
-            status = "partially_filled"
+        trade_ids = tuple(str(value) for value in getattr(order, "associate_trades", ()))
+        if matched > ZERO and trade_ids:
+            fills = await self._confirmed_fills(trade_ids)
+            if fills:
+                filled_size = sum((fill.size for fill in fills), ZERO)
+                filled_usdc = sum((fill.amount for fill in fills), ZERO)
+                fee_usdc = sum((fill.fee_usdc for fill in fills), ZERO)
+                status = "filled" if matched >= original else "partially_filled"
+                return TradeResult(
+                    status=status,
+                    external_order_id=external_order_id,
+                    filled_size=filled_size,
+                    filled_usdc=filled_usdc,
+                    average_price=filled_usdc / filled_size if filled_size else None,
+                    fee_usdc=fee_usdc,
+                    external_trade_id=trade_ids[0],
+                    external_trade_ids=trade_ids,
+                    fills=fills,
+                )
+        if matched > ZERO:
+            return TradeResult(
+                status="reconciliation_pending",
+                external_order_id=external_order_id,
+                external_trade_id=trade_ids[0] if trade_ids else None,
+                external_trade_ids=trade_ids,
+                reason="订单已有匹配数量，等待官方 confirmed fill 和交易哈希",
+            )
         return TradeResult(
             status=status,
             external_order_id=external_order_id,
-            filled_size=matched,
-            filled_usdc=matched * price,
-            average_price=price if matched else None,
         )
 
     async def cancel(self, external_order_id: str) -> None:

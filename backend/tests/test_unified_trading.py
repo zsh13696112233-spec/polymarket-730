@@ -270,6 +270,74 @@ async def test_accepted_order_without_initial_trade_ids_reconciles_associate_tra
     assert result.status == "filled"
 
 
+async def test_order_status_uses_confirmed_fills_instead_of_order_limit_price():
+    client = FakeClient()
+
+    async def get_order(*, order_id):
+        assert order_id == "order-1"
+        return SimpleNamespace(
+            associate_trades=("trade-late",),
+            size_matched=Decimal("28.185713"),
+            price=Decimal("0.73"),
+            original_size=Decimal("28.185713"),
+            status="matched",
+            side="BUY",
+        )
+
+    client.get_order = get_order
+    adapter = trader(client)
+    fill = TradeFillResult(
+        "trade-late",
+        Decimal("28.185713"),
+        Decimal("0.6999999965"),
+        Decimal("19.7299990013500045"),
+        Decimal("0.29594"),
+        "0xactual-fill",
+        0,
+        "confirmed",
+    )
+
+    async def confirmed_fills(ids):
+        assert ids == ("trade-late",)
+        return (fill,)
+
+    adapter._confirmed_fills = confirmed_fills
+
+    result = await adapter.order_status("order-1")
+
+    assert result.status == "filled"
+    assert result.filled_size == Decimal("28.185713")
+    assert result.filled_usdc == Decimal("19.7299990013500045")
+    assert result.average_price == Decimal("0.6999999965")
+    assert result.fee_usdc == Decimal("0.29594")
+    assert result.fills == (fill,)
+
+
+async def test_order_status_waits_when_matched_fill_has_no_confirmed_transaction():
+    client = FakeClient()
+
+    async def get_order(*, order_id):
+        assert order_id == "order-1"
+        return SimpleNamespace(
+            associate_trades=(),
+            size_matched=Decimal("28.185713"),
+            price=Decimal("0.73"),
+            original_size=Decimal("28.185713"),
+            status="matched",
+            side="BUY",
+        )
+
+    client.get_order = get_order
+    adapter = trader(client)
+
+    result = await adapter.order_status("order-1")
+
+    assert result.status == "reconciliation_pending"
+    assert result.filled_size == Decimal("0")
+    assert result.filled_usdc == Decimal("0")
+    assert "confirmed fill" in (result.reason or "")
+
+
 async def test_neg_risk_metadata_mismatch_fails_before_signing():
     client = FakeClient()
     client.neg_risk = True

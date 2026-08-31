@@ -67,6 +67,7 @@ def _empty_day(day: date) -> dict[str, Any]:
         "flat_count": 0,
         "excluded_conflict_exit_count": 0,
         "excluded_chain_test_count": 0,
+        "win_rate_percent": None,
     }
 
 
@@ -213,6 +214,7 @@ async def home_overview(
         first_date + timedelta(days=index): _empty_day(first_date + timedelta(days=index))
         for index in range(30)
     }
+    buy_events_by_date: dict[date, set[tuple[str, int | str]]] = defaultdict(set)
     conflict_exit_positions_by_date: dict[date, set[int]] = defaultdict(set)
     for row in ledger:
         day = _beijing_date(row.timestamp)
@@ -225,7 +227,13 @@ async def home_overview(
             and row.position_id not in conflict_exit_position_ids
         ):
             bucket["buy_amount_usdc"] += row.amount_usdc
-            bucket["buy_count"] += 1
+            if row.order_id is not None:
+                event_key: tuple[str, int | str] = ("order", row.order_id)
+            elif row.external_event_key is not None:
+                event_key = ("external", row.external_event_key)
+            else:
+                event_key = ("ledger", row.id)
+            buy_events_by_date[day].add(event_key)
         if row.type == "sell" and row.source == "conflict_exit":
             bucket["conflict_exit_proceeds_usdc"] += row.amount_usdc
             conflict_exit_positions_by_date[day].add(row.position_id)
@@ -239,6 +247,7 @@ async def home_overview(
         chain_test_position_ids,
     )
     for day, bucket in daily_by_date.items():
+        bucket["buy_count"] = len(buy_events_by_date[day])
         bucket["conflict_exit_count"] = len(conflict_exit_positions_by_date[day])
         wins, losses, flats, excluded_conflicts, excluded_tests = finished_counts.get(
             day, (0, 0, 0, 0, 0)
@@ -253,6 +262,10 @@ async def home_overview(
         cost = bucket["realized_cost_usdc"]
         bucket["realized_roi_percent"] = (
             bucket["realized_pnl_usdc"] / cost * HUNDRED if cost > ZERO else None
+        )
+        win_denominator = wins + losses
+        bucket["win_rate_percent"] = (
+            Decimal(wins) / Decimal(win_denominator) * HUNDRED if win_denominator else None
         )
 
     marks = await _position_marks(client, positions)
@@ -289,13 +302,7 @@ async def home_overview(
     )
 
     today = daily_by_date[today_date]
-    win_denominator = today["win_count"] + today["loss_count"]
     today_payload = dict(today)
-    today_payload["win_rate_percent"] = (
-        Decimal(today["win_count"]) / Decimal(win_denominator) * HUNDRED
-        if win_denominator
-        else None
-    )
     today_payload["unrealized_pnl_usdc"] = unrealized
 
     recent_decisions = []

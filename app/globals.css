@@ -9716,19 +9716,32 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .homeSectionHeader span { color: #9a9da5; font-size: 9px; font-weight: 650; letter-spacing: .09em; }
 .homeSectionHeader h2 { margin: 3px 0 0; color: #17181c; font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
 .homeSectionHeader p { margin: 3px 0 0; color: #9a9da5; font-size: 10px; }
+.homeTrendControls { display: grid; flex: 0 0 auto; justify-items: end; gap: 6px; }
+.homeViewSwitch,
 .homeRangeSwitch { display: flex; flex: 0 0 auto; padding: 3px; border: 1px solid #e1e3e8; border-radius: 8px; background: #f7f8fa; }
+.homeViewSwitch button,
 .homeRangeSwitch button { min-height: 28px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #777b85; cursor: pointer; font-size: 10px; }
+.homeViewSwitch button.active,
 .homeRangeSwitch button.active { background: #fff; color: #134cff; box-shadow: 0 1px 3px rgba(11, 12, 14, .11); font-weight: 600; }
+.homeTrendSummary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; padding: 10px 14px; border-bottom: 1px solid #eceef2; background: linear-gradient(180deg, #fbfcff, #fff); gap: 8px; }
+.homeTrendSummary > div { min-width: 0; padding: 7px 10px; border-right: 1px solid #eceef2; }
+.homeTrendSummary > div:last-child { border-right: 0; }
+.homeTrendSummary dt { color: #9699a2; font-size: 9px; }
+.homeTrendSummary dd { margin: 4px 0 2px; color: #292c32; font-family: var(--pc-data-font); font-size: 15px; font-weight: 650; }
+.homeTrendSummary small { display: block; overflow: hidden; color: #a0a3ab; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .homeTrendChart { position: relative; display: flex; min-height: 300px; flex: 1; flex-direction: column; padding: 38px 10px 8px; }
 .homeTrendPlot { width: 100%; min-height: 264px; flex: 1; }
 .homeChartLegend { position: absolute; top: 15px; right: 20px; display: flex; gap: 15px; color: #747984; font-size: 9px; }
 .homeChartLegend span { display: inline-flex; align-items: center; gap: 6px; }
 .homeChartLegend span::before { width: 9px; height: 7px; border-radius: 3px; background: linear-gradient(180deg, #6487f6, #c9d7ff); content: ""; }
 .homeChartLegend .pnl::before { width: 13px; height: 2px; border-radius: 999px; background: linear-gradient(90deg, #109568 0 58%, #d4514b 58%); }
+.homeChartLegend .winRate::before { width: 13px; height: 2px; border-radius: 999px; background: #8b5cf6; }
 .homeTrendDot { fill: #109568; stroke: #fff; stroke-width: 1.8px; }
 .homeTrendDot.loss { fill: #d4514b; }
 .homeTrendActiveDot { fill: #109568; stroke: #fff; stroke-width: 2.5px; filter: drop-shadow(0 2px 3px rgba(16, 149, 104, .28)); }
 .homeTrendActiveDot.loss { fill: #d4514b; filter: drop-shadow(0 2px 3px rgba(212, 81, 75, .28)); }
+.homeQualityDot { fill: #8b5cf6; stroke: #fff; stroke-width: 1.8px; }
+.homeQualityActiveDot { fill: #8b5cf6; stroke: #fff; stroke-width: 2.5px; filter: drop-shadow(0 2px 3px rgba(139, 92, 246, .28)); }
 .homeTrendTooltip { min-width: 208px; overflow: hidden; border: 1px solid rgba(220, 223, 230, .94); border-radius: 11px; background: rgba(255, 255, 255, .96); box-shadow: 0 12px 30px rgba(26, 31, 43, .13), 0 2px 7px rgba(26, 31, 43, .06); backdrop-filter: blur(10px); }
 .homeTrendTooltip header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 12px; border-bottom: 1px solid #eceef2; }
 .homeTrendTooltip header strong { color: #292c32; font-size: 11px; font-weight: 650; }
@@ -9740,11 +9753,14 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .homeTrendTooltip dt i { width: 7px; height: 7px; border-radius: 2px; background: #6487f6; }
 .homeTrendTooltip dt i.profit { border-radius: 50%; background: #109568; }
 .homeTrendTooltip dt i.loss { border-radius: 50%; background: #d4514b; }
+.homeTrendTooltip dt i.finished { background: #8b5cf6; }
+.homeTrendTooltip dt i.roi { border-radius: 50%; background: #aeb4c0; }
 .homeTrendTooltip dd { margin: 0; color: #333740; font-family: var(--pc-data-font); font-size: 10px; font-weight: 650; }
 .homeTrendTooltip .profit { color: #0b8a5c; }
 .homeTrendTooltip .loss { color: #ca4843; }
-.homeTrendTooltip footer { padding: 8px 12px; border-top: 1px solid #eceef2; background: #fafbfc; color: #8b8f99; font-size: 9px; }
+.homeTrendTooltip footer { display: grid; grid-template-columns: 1fr auto; padding: 8px 12px; border-top: 1px solid #eceef2; background: #fafbfc; color: #8b8f99; font-size: 9px; }
 .homeTrendTooltip footer strong { font-family: var(--pc-data-font); font-size: 10px; font-weight: 650; }
+.homeTrendTooltip footer small { grid-column: 1 / -1; margin-top: 4px; color: #a0a3ab; font-size: 8px; text-align: right; }
 .homeWalletState { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; background: #eaf7f2; color: #0b8058 !important; font-size: 9px !important; letter-spacing: 0 !important; }
 .homeWalletState.danger { background: #fff0ef; color: #ba443f !important; }
 .homeWalletHero { padding: 22px 18px 18px; background: linear-gradient(145deg, #f4f7ff, #fff); }
@@ -9858,13 +9874,19 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .homeFlowValue > strong { flex: 0 1 auto; margin-top: 0; font-size: 13px; text-align: right; }
   .homeSectionHeader { align-items: flex-start; flex-direction: column; min-height: 0; padding: 14px; }
   .homeRuntimeFront .homeSectionHeader { align-items: center; flex-direction: row; }
+  .homeTrendControls,
+  .homeViewSwitch,
   .homeRangeSwitch,
   .homeSectionLinks { width: 100%; }
+  .homeTrendControls { justify-items: stretch; }
+  .homeViewSwitch button,
   .homeRangeSwitch button { flex: 1; }
   .homeSectionLinks { justify-content: space-between; }
   .homeTrendChart { min-height: 270px; padding: 38px 2px 4px; }
   .homeTrendPlot { min-height: 236px; flex: 0 0 236px; }
   .homeChartLegend { left: 14px; right: auto; }
+  .homeTrendSummary { padding-inline: 8px; }
+  .homeTrendSummary > div { padding-inline: 7px; }
   .homeWalletMetrics { grid-template-columns: 1fr 1fr; }
   .homeDecisionRow { grid-template-columns: 1fr auto; gap: 8px 12px; padding: 12px 14px; }
   .homeDecisionRow time { grid-column: 1; }

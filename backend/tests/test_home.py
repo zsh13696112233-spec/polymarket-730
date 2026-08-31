@@ -13,6 +13,7 @@ from backend.models import (
     ExecutionAccount,
     WhaleFollowLedger,
     WhaleFollowPosition,
+    WhaleOrder,
     WhaleSettings,
 )
 
@@ -174,9 +175,11 @@ def ledger(
     amount: str,
     pnl: str,
     timestamp: datetime,
+    order_id: int | None = None,
 ) -> WhaleFollowLedger:
     return WhaleFollowLedger(
         position_id=position_id,
+        order_id=order_id,
         type=kind,
         source=source,
         size=Decimal("1"),
@@ -312,10 +315,86 @@ async def test_home_overview_uses_beijing_days_and_all_whale_follow_sources(
     assert payload["today"]["loss_count"] == 1
     assert payload["today"]["flat_count"] == 1
     assert payload["today"]["win_rate_percent"] == Decimal("50")
+    assert payload["daily"][-1]["win_rate_percent"] == Decimal("50")
     assert payload["wallet"]["market_value_usdc"] == Decimal("22.5")
     assert payload["wallet"]["unrealized_pnl_usdc"] == Decimal("2.5")
     assert payload["wallet"]["total_assets_usdc"] == Decimal("122.5")
     assert payload["wallet"]["available_cash_usdc"] == Decimal("40")
+
+
+@pytest.mark.asyncio
+async def test_home_buy_count_deduplicates_partial_fills_for_one_order(
+    database: Database,
+) -> None:
+    async with database.sessions() as session:
+        session.add(WhaleSettings(id=1, created_at=NOW, updated_at=NOW))
+        followed = position("partial-fill", status="open", size="10", cost="7", realized="0")
+        session.add(followed)
+        await session.flush()
+        order = WhaleOrder(
+            position_id=followed.id,
+            entry_id=None,
+            idempotency_key="home-partial-fill",
+            source="auto_follow",
+            source_wallet=None,
+            asset_id=followed.asset_id,
+            condition_id=followed.condition_id,
+            title=followed.title,
+            outcome=followed.outcome,
+            outcome_index=followed.outcome_index,
+            neg_risk=False,
+            side="BUY",
+            requested_size=Decimal("10"),
+            requested_usdc=Decimal("7"),
+            limit_price=Decimal("0.7"),
+            reference_price=Decimal("0.7"),
+            whale_avg_price=None,
+            filled_size=Decimal("10"),
+            filled_usdc=Decimal("7"),
+            fee_usdc=Decimal("0"),
+            status="filled",
+            reason=None,
+            signed_order_hash=None,
+            execution_provider="test",
+            external_order_id=None,
+            external_trade_id=None,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        session.add(order)
+        await session.flush()
+        session.add_all(
+            [
+                ledger(
+                    followed.id,
+                    "buy",
+                    source="auto_follow",
+                    amount="3",
+                    pnl="0",
+                    timestamp=NOW - timedelta(minutes=1),
+                    order_id=order.id,
+                ),
+                ledger(
+                    followed.id,
+                    "buy",
+                    source="auto_follow",
+                    amount="4",
+                    pnl="0",
+                    timestamp=NOW,
+                    order_id=order.id,
+                ),
+            ]
+        )
+        await session.commit()
+
+    payload = await home_overview(
+        database,
+        MarksClient({"partial-fill": Decimal("0.7")}),  # type: ignore[arg-type]
+        now=NOW,
+    )
+
+    assert payload["today"]["buy_amount_usdc"] == Decimal("7")
+    assert payload["today"]["buy_count"] == 1
 
 
 @pytest.mark.asyncio

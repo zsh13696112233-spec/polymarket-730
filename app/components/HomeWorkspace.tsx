@@ -62,6 +62,7 @@ type HomeDaily = {
   flat_count: number;
   excluded_conflict_exit_count: number;
   excluded_chain_test_count: number;
+  win_rate_percent: Numeric | null;
 };
 
 type HomeOverview = {
@@ -118,6 +119,7 @@ type HomeOverview = {
 };
 
 type ConnectionState = "connecting" | "connected" | "disconnected";
+type TrendMode = "finance" | "quality";
 
 const BALANCE_REFRESH_RETRY_MS = 5 * 60 * 1000;
 
@@ -164,7 +166,10 @@ function performanceExclusionDetail(conflictExits: number, chainTests: number): 
 
 type HomeTrendPoint = HomeDaily & {
   buyAmount: number;
+  buyCount: number;
   realizedPnl: number;
+  finishedCount: number;
+  winRate: number | null;
   positivePnlPlot: number | null;
   negativePnlPlot: number | null;
   neutralPnlPlot: number | null;
@@ -200,16 +205,22 @@ function useReducedMotion(): boolean {
 
 function TrendTooltip({ active, payload }: TooltipContentProps) {
   const point = payload?.[0]?.payload as HomeTrendPoint | undefined;
-  if (!active || !point || (point.buyAmount === 0 && point.realizedPnl === 0)) return null;
+  if (!active || !point || (
+    point.buyAmount === 0
+    && point.realizedPnl === 0
+    && point.finishedCount === 0
+  )) return null;
   const tone = pnlClass(point.realizedPnl);
   return (
     <div className="homeTrendTooltip">
-      <header><strong>{point.date.slice(5, 7)} 月 {point.date.slice(8)} 日</strong><span>{point.buy_count} 次买入</span></header>
+      <header><strong>{point.date.slice(5, 7)} 月 {point.date.slice(8)} 日</strong><span>{point.buy_count} 次跟单</span></header>
       <dl>
         <div><dt><i className="buy" />实际跟单买入</dt><dd>{formatUsdc(point.buyAmount)}</dd></div>
         <div><dt><i className={tone || "neutral"} />已实现盈亏</dt><dd className={tone}>{formatCompactSignedUsdc(point.realizedPnl)}</dd></div>
+        <div><dt><i className="finished" />结束仓位</dt><dd>{point.finishedCount} 个</dd></div>
+        <div><dt><i className="roi" />已实现 ROI</dt><dd className={tone}>{formatRate(point.realized_roi_percent)}</dd></div>
       </dl>
-      <footer><span>已实现 ROI</span><strong className={tone}>{formatRate(point.realized_roi_percent)}</strong></footer>
+      <footer><span>结束仓位胜率</span><strong>{formatRate(point.win_rate_percent)}</strong><small>{point.win_count} 胜 / {point.loss_count} 负{point.flat_count ? ` / ${point.flat_count} 平` : ""}</small></footer>
     </div>
   );
 }
@@ -226,14 +237,29 @@ function TrendActiveDot({ cx, cy, payload }: ActiveDotProps) {
   return <circle className={`homeTrendActiveDot ${pnlClass(point.realizedPnl)}`} cx={cx} cy={cy} r="5" />;
 }
 
-function TrendChart({ data }: { data: HomeDaily[] }) {
+function QualityDot({ cx, cy, payload }: DotItemDotProps) {
+  const point = payload as HomeTrendPoint | undefined;
+  if (cx == null || cy == null || !point || point.winRate === null) return null;
+  return <circle className="homeQualityDot" cx={cx} cy={cy} r="3.2" />;
+}
+
+function QualityActiveDot({ cx, cy, payload }: ActiveDotProps) {
+  const point = payload as HomeTrendPoint | undefined;
+  if (cx == null || cy == null || !point || point.winRate === null) return null;
+  return <circle className="homeQualityActiveDot" cx={cx} cy={cy} r="5" />;
+}
+
+function TrendChart({ data, mode }: { data: HomeDaily[]; mode: TrendMode }) {
   const gradientId = useId().replaceAll(":", "");
   const reducedMotion = useReducedMotion();
   const chartData = useMemo<HomeTrendPoint[]>(() => {
     const points = data.map((item) => ({
       ...item,
       buyAmount: numeric(item.buy_amount_usdc),
+      buyCount: item.buy_count,
       realizedPnl: numeric(item.realized_pnl_usdc),
+      finishedCount: item.win_count + item.loss_count + item.flat_count,
+      winRate: item.win_rate_percent == null ? null : numeric(item.win_rate_percent),
       shortDate: item.date.slice(5),
     }));
     const firstActiveIndex = points.findIndex((point) => point.realizedPnl !== 0);
@@ -260,11 +286,14 @@ function TrendChart({ data }: { data: HomeDaily[] }) {
     }));
   }, [data]);
   const buyMax = chartCeiling(Math.max(1, ...chartData.map((item) => item.buyAmount)));
+  const countMax = chartCeiling(Math.max(1, ...chartData.map((item) => item.buyCount)));
   const pnlMax = chartCeiling(Math.max(1, ...chartData.map((item) => Math.abs(item.realizedPnl))));
   return (
-    <div className="homeTrendChart" data-point-count={data.length} role="img" aria-label="每日买入金额和已实现盈亏趋势">
+    <div className="homeTrendChart" data-point-count={data.length} data-mode={mode} role="img" aria-label={mode === "finance" ? "每日买入金额和已实现盈亏趋势" : "每日跟单次数和结束仓位胜率趋势"}>
       <div className="homeChartLegend" aria-hidden="true">
-        <span className="buy">买入金额</span><span className="pnl">已实现盈亏</span>
+        {mode === "finance"
+          ? <><span className="buy">买入金额</span><span className="pnl">已实现盈亏</span></>
+          : <><span className="count">跟单次数</span><span className="winRate">结束仓位胜率</span></>}
       </div>
       <div className="homeTrendPlot">
         <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
@@ -277,18 +306,51 @@ function TrendChart({ data }: { data: HomeDaily[] }) {
             </defs>
             <CartesianGrid vertical={false} stroke="#e8eaf0" strokeDasharray="3 5" />
             <XAxis dataKey="shortDate" axisLine={false} tickLine={false} tickMargin={12} minTickGap={data.length <= 7 ? 12 : 32} tick={{ fill: "#969aa4", fontSize: 10 }} />
-            <YAxis yAxisId="buy" domain={[0, buyMax]} axisLine={false} tickLine={false} tickCount={4} width={38} tickFormatter={compactAxisAmount} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
-            <YAxis yAxisId="pnl" orientation="right" domain={[-pnlMax, pnlMax]} axisLine={false} tickLine={false} tickCount={5} width={38} tickFormatter={compactAxisAmount} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
-            <ReferenceLine yAxisId="pnl" y={0} stroke="#bfc4ce" strokeDasharray="3 4" />
             <Tooltip content={TrendTooltip} cursor={false} wrapperStyle={{ outline: "none", zIndex: 10 }} />
-            <Bar yAxisId="buy" dataKey="buyAmount" name="买入金额" fill={`url(#${gradientId}-buy)`} radius={[4, 4, 1, 1]} maxBarSize={data.length <= 7 ? 42 : 22} isAnimationActive={!reducedMotion} animationDuration={550} />
-            <Line yAxisId="pnl" dataKey="neutralPnlPlot" name="零盈亏" type="linear" stroke="#aeb4c0" strokeWidth={1.7} dot={false} activeDot={false} isAnimationActive={!reducedMotion} animationDuration={500} />
-            <Line yAxisId="pnl" dataKey="positivePnlPlot" name="已实现盈亏" type="monotoneX" stroke="#109568" strokeWidth={2.4} dot={TrendDot} activeDot={TrendActiveDot} isAnimationActive={!reducedMotion} animationDuration={650} />
-            <Line yAxisId="pnl" dataKey="negativePnlPlot" name="已实现盈亏" type="monotoneX" stroke="#d4514b" strokeWidth={2.4} dot={TrendDot} activeDot={TrendActiveDot} isAnimationActive={!reducedMotion} animationDuration={650} />
+            {mode === "finance" ? <>
+              <YAxis yAxisId="buy" domain={[0, buyMax]} axisLine={false} tickLine={false} tickCount={4} width={38} tickFormatter={compactAxisAmount} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
+              <YAxis yAxisId="pnl" orientation="right" domain={[-pnlMax, pnlMax]} axisLine={false} tickLine={false} tickCount={5} width={38} tickFormatter={compactAxisAmount} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
+              <ReferenceLine yAxisId="pnl" y={0} stroke="#bfc4ce" strokeDasharray="3 4" />
+              <Bar yAxisId="buy" dataKey="buyAmount" name="买入金额" fill={`url(#${gradientId}-buy)`} radius={[4, 4, 1, 1]} maxBarSize={data.length <= 7 ? 42 : 22} isAnimationActive={!reducedMotion} animationDuration={550} />
+              <Line yAxisId="pnl" dataKey="neutralPnlPlot" name="零盈亏" type="linear" stroke="#aeb4c0" strokeWidth={1.7} dot={false} activeDot={false} isAnimationActive={!reducedMotion} animationDuration={500} />
+              <Line yAxisId="pnl" dataKey="positivePnlPlot" name="已实现盈亏" type="monotoneX" stroke="#109568" strokeWidth={2.4} dot={TrendDot} activeDot={TrendActiveDot} isAnimationActive={!reducedMotion} animationDuration={650} />
+              <Line yAxisId="pnl" dataKey="negativePnlPlot" name="已实现盈亏" type="monotoneX" stroke="#d4514b" strokeWidth={2.4} dot={TrendDot} activeDot={TrendActiveDot} isAnimationActive={!reducedMotion} animationDuration={650} />
+            </> : <>
+              <YAxis yAxisId="count" domain={[0, countMax]} allowDecimals={false} axisLine={false} tickLine={false} tickCount={4} width={38} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
+              <YAxis yAxisId="rate" orientation="right" domain={[0, 100]} ticks={[0, 50, 100]} axisLine={false} tickLine={false} width={38} tickFormatter={(value) => `${value}%`} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
+              <ReferenceLine yAxisId="rate" y={50} stroke="#c8cbd2" strokeDasharray="3 4" />
+              <Bar yAxisId="count" dataKey="buyCount" name="跟单次数" fill={`url(#${gradientId}-buy)`} radius={[4, 4, 1, 1]} maxBarSize={data.length <= 7 ? 42 : 22} isAnimationActive={!reducedMotion} animationDuration={550} />
+              <Line yAxisId="rate" dataKey="winRate" name="结束仓位胜率" type="monotoneX" stroke="#8b5cf6" strokeWidth={2.4} dot={QualityDot} activeDot={QualityActiveDot} connectNulls={false} isAnimationActive={!reducedMotion} animationDuration={650} />
+            </>}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
     </div>
+  );
+}
+
+function TrendSummary({ data }: { data: HomeDaily[] }) {
+  const summary = useMemo(() => {
+    const buyCount = data.reduce((total, item) => total + item.buy_count, 0);
+    const wins = data.reduce((total, item) => total + item.win_count, 0);
+    const losses = data.reduce((total, item) => total + item.loss_count, 0);
+    const flats = data.reduce((total, item) => total + item.flat_count, 0);
+    const decided = wins + losses;
+    return {
+      buyCount,
+      wins,
+      losses,
+      flats,
+      finished: decided + flats,
+      winRate: decided ? wins / decided * 100 : null,
+    };
+  }, [data]);
+  return (
+    <dl className="homeTrendSummary" aria-label="所选区间跟单汇总">
+      <div><dt>跟单次数</dt><dd>{summary.buyCount} 次</dd><small>独立买入事件</small></div>
+      <div><dt>结束仓位</dt><dd>{summary.finished} 个</dd><small>{summary.flats ? `${summary.flats} 个平局` : "按结束日统计"}</small></div>
+      <div><dt>区间胜率</dt><dd>{formatRate(summary.winRate)}</dd><small>{summary.wins} 胜 / {summary.losses} 负</small></div>
+    </dl>
   );
 }
 
@@ -383,6 +445,7 @@ export default function HomeWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [range, setRange] = useState<7 | 15 | 30>(7);
+  const [trendMode, setTrendMode] = useState<TrendMode>("finance");
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const balanceRefreshInFlight = useRef(false);
   const lastBalanceRefreshAttempt = useRef(0);
@@ -514,8 +577,9 @@ export default function HomeWorkspace() {
 
         <div className="homePortfolioGrid">
           <section className="pcPanel homeTrendPanel">
-            <header className="homeSectionHeader"><div><span>DAILY COPY TREND</span><h2>每日跟单趋势</h2><p>北京时间自然日；柱状图为实际跟单买入，不含分歧退出与链路测试。</p></div><div className="homeRangeSwitch" role="group" aria-label="趋势日期范围"><button type="button" className={range === 7 ? "active" : ""} aria-pressed={range === 7} onClick={() => setRange(7)}>近 7 日</button><button type="button" className={range === 15 ? "active" : ""} aria-pressed={range === 15} onClick={() => setRange(15)}>近 15 日</button><button type="button" className={range === 30 ? "active" : ""} aria-pressed={range === 30} onClick={() => setRange(30)}>近 30 日</button></div></header>
-            <TrendChart data={visibleDays} />
+            <header className="homeSectionHeader"><div><span>DAILY COPY TREND</span><h2>每日跟单趋势</h2><p>北京时间自然日；跟单按买入日、胜率按仓位结束日统计，平局不计入胜率。</p></div><div className="homeTrendControls"><div className="homeViewSwitch" role="group" aria-label="趋势指标"><button type="button" className={trendMode === "finance" ? "active" : ""} aria-pressed={trendMode === "finance"} onClick={() => setTrendMode("finance")}>资金表现</button><button type="button" className={trendMode === "quality" ? "active" : ""} aria-pressed={trendMode === "quality"} onClick={() => setTrendMode("quality")}>次数与胜率</button></div><div className="homeRangeSwitch" role="group" aria-label="趋势日期范围"><button type="button" className={range === 7 ? "active" : ""} aria-pressed={range === 7} onClick={() => setRange(7)}>近 7 日</button><button type="button" className={range === 15 ? "active" : ""} aria-pressed={range === 15} onClick={() => setRange(15)}>近 15 日</button><button type="button" className={range === 30 ? "active" : ""} aria-pressed={range === 30} onClick={() => setRange(30)}>近 30 日</button></div></div></header>
+            <TrendSummary data={visibleDays} />
+            <TrendChart data={visibleDays} mode={trendMode} />
           </section>
 
           <section className="pcPanel homeWalletPanel" aria-label="钱包资产">

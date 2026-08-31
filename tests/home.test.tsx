@@ -25,6 +25,7 @@ function overview(overrides: Record<string, unknown> = {}) {
     flat_count: 0,
     excluded_conflict_exit_count: index === 29 ? 2 : 0,
     excluded_chain_test_count: index === 29 ? 1 : 0,
+    win_rate_percent: index === 29 ? 50 : null,
   }));
   return {
     as_of: "2026-08-30T08:00:00Z",
@@ -112,16 +113,27 @@ describe("首页运行与跟单看板", () => {
     expect(screen.getByText("全仓未实现盈亏")).toBeInTheDocument();
     expect(screen.queryByText("当前浮盈亏")).not.toBeInTheDocument();
     expect(screen.getByText("1 胜 · 1 负 · 不含 2 笔分歧退出、1 笔链路测试")).toBeInTheDocument();
-    expect(screen.getByText("北京时间自然日；柱状图为实际跟单买入，不含分歧退出与链路测试。")).toBeInTheDocument();
+    expect(screen.getByText("北京时间自然日；跟单按买入日、胜率按仓位结束日统计，平局不计入胜率。")).toBeInTheDocument();
+    const trendSummary = screen.getByLabelText("所选区间跟单汇总");
+    expect(within(trendSummary).getByText("2 次")).toBeInTheDocument();
+    expect(within(trendSummary).getByText("2 个")).toBeInTheDocument();
+    expect(within(trendSummary).getByText("50.0%")).toBeInTheDocument();
     expect(screen.getByText("冠军归属市场")).toBeInTheDocument();
     expect(screen.getByText("已成交")).toBeInTheDocument();
     expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "7");
+    expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-mode", "finance");
     expect(screen.getByRole("button", { name: "近 7 日" })).toHaveAttribute("aria-pressed", "true");
     expect(container.querySelector(".homeChartLegend .roi")).not.toBeInTheDocument();
     const runtime = screen.getByLabelText("运行概览");
     const metrics = screen.getByLabelText("今日核心指标");
     expect(metrics.compareDocumentPosition(runtime) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByLabelText("系统状态").closest("header")).toHaveClass("pcTopbar");
+
+    await user.click(screen.getByRole("button", { name: "次数与胜率" }));
+    expect(screen.getByRole("button", { name: "次数与胜率" })).toHaveAttribute("aria-pressed", "true");
+    expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-mode", "quality");
+    expect(container.querySelector(".homeChartLegend .count")).toHaveTextContent("跟单次数");
+    expect(container.querySelector(".homeChartLegend .winRate")).toHaveTextContent("结束仓位胜率");
 
     await user.click(screen.getByRole("button", { name: "近 15 日" }));
     expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "15");

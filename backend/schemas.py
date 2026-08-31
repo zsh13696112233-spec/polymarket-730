@@ -569,6 +569,7 @@ class HomeDailyRead(APIModel):
     flat_count: int
     excluded_conflict_exit_count: int
     excluded_chain_test_count: int
+    win_rate_percent: DecimalNumber | None
 
 
 class HomeAutoDecisionRead(APIModel):

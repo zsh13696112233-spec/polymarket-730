@@ -101,6 +101,7 @@ class WhaleSettingsRead(APIModel):
     large_amount_auto_follow_categories: list[WhaleMarketCategory]
     large_amount_auto_follow_low_price_max_price: DecimalNumber | None
     large_amount_auto_follow_low_price_amount_usdc: DecimalNumber | None
+    large_amount_conflict_priority_enabled: bool
     auto_follow_market_max_purchase_count: int | None
     auto_follow_market_max_amount_usdc: DecimalNumber | None
     collect_filter_amount_usdc: DecimalNumber
@@ -159,6 +160,7 @@ class WhaleSettingsUpdate(APIModel):
     large_amount_auto_follow_categories: list[WhaleMarketCategory] | None = None
     large_amount_auto_follow_low_price_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
     large_amount_auto_follow_low_price_amount_usdc: Decimal | None = Field(default=None, gt=0)
+    large_amount_conflict_priority_enabled: bool | None = None
     auto_follow_market_max_purchase_count: int | None = Field(default=None, gt=0)
     auto_follow_market_max_amount_usdc: Decimal | None = Field(default=None, gt=0)
     collect_filter_amount_usdc: Decimal | None = Field(default=None, gt=0)

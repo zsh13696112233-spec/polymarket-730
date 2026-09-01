@@ -442,6 +442,7 @@ export function WhaleAutoSettingsPanel({
   const [largeLowPriceEnabled, setLargeLowPriceEnabled] = useState<boolean | null>(null);
   const [largeLowPriceMax, setLargeLowPriceMax] = useState<string | null>(null);
   const [largeLowPriceAmount, setLargeLowPriceAmount] = useState<string | null>(null);
+  const [largeConflictPriorityEnabled, setLargeConflictPriorityEnabled] = useState<boolean | null>(null);
   const [marketCapEnabled, setMarketCapEnabled] = useState<boolean | null>(null);
   const [marketMaxPurchaseCount, setMarketMaxPurchaseCount] = useState<string | null>(null);
   const [marketMaxAmount, setMarketMaxAmount] = useState<string | null>(null);
@@ -469,6 +470,7 @@ export function WhaleAutoSettingsPanel({
   const resolvedLargeLowPriceEnabled = largeLowPriceEnabled ?? settings?.large_amount_auto_follow_low_price_max_price != null;
   const resolvedLargeLowPriceMax = largeLowPriceMax ?? (settings?.large_amount_auto_follow_low_price_max_price == null ? "" : String(settings.large_amount_auto_follow_low_price_max_price));
   const resolvedLargeLowPriceAmount = largeLowPriceAmount ?? (settings?.large_amount_auto_follow_low_price_amount_usdc == null ? "" : String(settings.large_amount_auto_follow_low_price_amount_usdc));
+  const resolvedLargeConflictPriorityEnabled = largeConflictPriorityEnabled ?? settings?.large_amount_conflict_priority_enabled ?? true;
   const resolvedMarketCapEnabled = marketCapEnabled ?? settings?.auto_follow_market_max_purchase_count != null;
   const resolvedMarketMaxPurchaseCount = marketMaxPurchaseCount ?? (settings?.auto_follow_market_max_purchase_count == null ? "" : String(settings.auto_follow_market_max_purchase_count));
   const resolvedMarketMaxAmount = marketMaxAmount ?? (settings?.auto_follow_market_max_amount_usdc == null ? "" : String(settings.auto_follow_market_max_amount_usdc));
@@ -503,6 +505,7 @@ export function WhaleAutoSettingsPanel({
     setLargeLowPriceEnabled(null);
     setLargeLowPriceMax(null);
     setLargeLowPriceAmount(null);
+    setLargeConflictPriorityEnabled(null);
     setMarketCapEnabled(null);
     setMarketMaxPurchaseCount(null);
     setMarketMaxAmount(null);
@@ -590,6 +593,7 @@ export function WhaleAutoSettingsPanel({
           large_amount_auto_follow_categories: resolvedLargeAutoCategories,
           large_amount_auto_follow_low_price_max_price: resolvedLargeLowPriceEnabled ? largeLowMaxValue : null,
           large_amount_auto_follow_low_price_amount_usdc: resolvedLargeLowPriceEnabled ? largeLowAmountValue : null,
+          large_amount_conflict_priority_enabled: resolvedLargeConflictPriorityEnabled,
           auto_follow_market_max_purchase_count: resolvedMarketCapEnabled ? marketMaxPurchaseCountValue : null,
           auto_follow_market_max_amount_usdc: resolvedMarketCapEnabled ? marketMaxAmountValue : null,
         }),
@@ -640,7 +644,7 @@ export function WhaleAutoSettingsPanel({
           </article>
         </div>
         <p className="pcFormHint whaleAutoMarketCapSummary">
-          单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
+          分歧规则：{resolvedLargeConflictPriorityEnabled ? "全量超大额优先" : "任意反向信号退出"} · 单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
         </p>
 
         {editing && (
@@ -694,6 +698,16 @@ export function WhaleAutoSettingsPanel({
             )}
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
+                <div><span>CONFLICT PRIORITY</span><h3>分歧退出优先级</h3></div>
+                <label className="whaleAutoToggle">
+                  <input type="checkbox" aria-label="启用全量超大额优先规则" checked={resolvedLargeConflictPriorityEnabled} disabled={!settings || busy} onChange={(event) => setLargeConflictPriorityEnabled(event.target.checked)} />
+                  <b>{resolvedLargeConflictPriorityEnabled ? "全量优先" : "旧版规则"}</b>
+                </label>
+              </header>
+              <p className="pcFormHint">开启时全量仓位不会被反向新号退出；关闭后恢复任意有效反向信号都会锁定并退出原仓位。切换不会解除已经生成的永久分歧锁。</p>
+            </section>
+            <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
+              <header>
                 <div><span>SHARED MARKET LIMIT</span><h3>单市场共享上限</h3></div>
                 <label className="whaleAutoToggle">
                   <input type="checkbox" aria-label="启用单市场共享上限" checked={resolvedMarketCapEnabled} disabled={!settings || busy} onChange={(event) => setMarketCapEnabled(event.target.checked)} />
@@ -710,7 +724,7 @@ export function WhaleAutoSettingsPanel({
             </section>
             {riskVisible && (
               <div className="pcFormHint whaleAutoRiskHint" role="status">
-                <span>真实资金功能：同一钱包同一资产只判断一次；不同钱包同方向可继续触发，并受上方单市场共享上限约束。分歧市场禁止买入，持仓后出现反向大额信号会卖出原方向全部份额，包括混合人工份额。</span>
+                <span>真实资金功能：同一钱包同一资产只判断一次；不同钱包同方向可继续触发，并受上方单市场共享上限约束。符合当前分歧规则的反向信号会卖出原方向全部份额，包括混合人工份额。</span>
                 <button type="button" aria-label="关闭真实资金风险提示" onClick={() => setRiskVisible(false)}>知道了</button>
               </div>
             )}

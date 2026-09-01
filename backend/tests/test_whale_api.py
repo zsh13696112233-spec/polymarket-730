@@ -476,6 +476,7 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     assert initial.json()["large_amount_auto_follow_categories"] == ["sports"]
     assert initial.json()["large_amount_auto_follow_low_price_max_price"] is None
     assert initial.json()["large_amount_auto_follow_low_price_amount_usdc"] is None
+    assert initial.json()["large_amount_conflict_priority_enabled"] is True
     assert initial.json()["auto_follow_market_max_purchase_count"] is None
     assert initial.json()["auto_follow_market_max_amount_usdc"] is None
     assert "smtp_configured" not in initial.json()
@@ -640,6 +641,7 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
             "large_amount_auto_follow_enabled": True,
             "large_amount_auto_follow_amount_usdc": 25,
             "large_amount_auto_follow_categories": ["crypto"],
+            "large_amount_conflict_priority_enabled": False,
         },
     )
     assert auto_settings.status_code == 200, auto_settings.text
@@ -648,6 +650,7 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
         "politics",
     ]
     assert auto_settings.json()["large_amount_auto_follow_categories"] == ["crypto"]
+    assert auto_settings.json()["large_amount_conflict_priority_enabled"] is False
 
     risk_controls = client.put(
         "/api/whales/settings",

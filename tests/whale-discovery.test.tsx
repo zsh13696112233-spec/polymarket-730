@@ -43,6 +43,7 @@ const settings = {
   large_amount_auto_follow_categories: ["sports"],
   large_amount_auto_follow_low_price_max_price: null,
   large_amount_auto_follow_low_price_amount_usdc: null,
+  large_amount_conflict_priority_enabled: true,
   auto_follow_market_max_purchase_count: null,
   auto_follow_market_max_amount_usdc: null,
   scan_interval_seconds: 60,
@@ -152,6 +153,7 @@ describe("巨鲸页内设置", () => {
     await user.click(screen.getByRole("checkbox", { name: "启用单市场共享上限" }));
     await user.type(screen.getByRole("spinbutton", { name: "单市场最大购买次数" }), "2");
     await user.type(screen.getByRole("spinbutton", { name: "单市场累计投入上限" }), "30");
+    await user.click(screen.getByRole("checkbox", { name: "启用全量超大额优先规则" }));
     await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
 
     await waitFor(() => expect(saved).not.toBeNull());
@@ -161,6 +163,7 @@ describe("巨鲸页内设置", () => {
       new_account_auto_follow_low_price_max_price: 0.7,
       new_account_auto_follow_low_price_amount_usdc: 3,
       large_amount_auto_follow_enabled: false,
+      large_amount_conflict_priority_enabled: false,
       auto_follow_market_max_purchase_count: 2,
       auto_follow_market_max_amount_usdc: 30,
     });

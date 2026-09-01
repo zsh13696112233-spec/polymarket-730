@@ -30,6 +30,7 @@ export type WhaleSettings = {
   large_amount_auto_follow_categories: WhaleMarketCategory[];
   large_amount_auto_follow_low_price_max_price: Numeric | null;
   large_amount_auto_follow_low_price_amount_usdc: Numeric | null;
+  large_amount_conflict_priority_enabled: boolean;
   auto_follow_market_max_purchase_count: number | null;
   auto_follow_market_max_amount_usdc: Numeric | null;
   collect_filter_amount_usdc: Numeric;

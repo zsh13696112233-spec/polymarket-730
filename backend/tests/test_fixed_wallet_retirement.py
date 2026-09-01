@@ -64,7 +64,7 @@ async def test_pre_migration_database_replays_from_its_actual_revision(tmp_path:
         }
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
-    assert revision == "0040_whale_auto_follow_risk_controls"
+    assert revision == "0041_whale_conflict_priority_toggle"
     assert RETIRED_TABLES.isdisjoint(tables)
     assert set(Base.metadata.tables) == tables - {"alembic_version"}
 
@@ -136,10 +136,14 @@ def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_p
         email_settings_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(email_settings)")
         }
+        conflict_priority_enabled = connection.execute(
+            "SELECT large_amount_conflict_priority_enabled FROM whale_settings WHERE id=1"
+        ).fetchone()[0]
 
     assert account == (address, address, "ready", 0)
     assert whale_settings_after == whale_settings_before
     assert {"weekly_summary_enabled", "weekly_summary_enabled_at"} <= email_settings_columns
+    assert conflict_priority_enabled == 1
     assert "redemption_executions" in tables
     assert RETIRED_TABLES.isdisjoint(tables)
     assert set(Base.metadata.tables) == tables - {"alembic_version"}

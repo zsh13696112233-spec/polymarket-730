@@ -265,6 +265,9 @@ class WhaleSettings(Base):
     large_amount_auto_follow_low_price_amount_usdc: Mapped[Decimal | None] = mapped_column(
         DECIMAL_TYPE, nullable=True
     )
+    large_amount_conflict_priority_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
     auto_follow_market_max_purchase_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )

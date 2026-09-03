@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, Decimal, DecimalException
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -67,7 +67,11 @@ from backend.whale_email import (
     WhaleEmailNotifier,
     enqueue_whale_email_deliveries,
 )
-from backend.whale_requests import WhaleRequestMonitor, capture_whale_requests
+from backend.whale_requests import (
+    WhaleRequestMonitor,
+    capture_whale_requests,
+    current_whale_request_capture,
+)
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -1201,6 +1205,18 @@ class WhaleDiscoveryScanner:
             for wallet, result in zip(batch, results, strict=True):
                 if isinstance(result, Exception):
                     failed_wallets.add(wallet)
+                    capture = current_whale_request_capture()
+                    if capture is not None:
+                        await capture.monitor.log_failure(
+                            "position_verification_failed",
+                            scan_id=capture.scan_id,
+                            wallet=wallet,
+                            condition_ids=requested_by_wallet[wallet],
+                            error_type=type(result).__name__,
+                            error_message=(str(result).strip() or type(result).__name__)[:2000],
+                            failure_stage="pre_order_position_verification",
+                            auto_follow_blocked=wallet in candidate_targets,
+                        )
                     continue
                 positions = dict(cached_by_wallet[wallet])
                 requested = requested_by_wallet[wallet]
@@ -4244,6 +4260,7 @@ class WhaleFollowExecutor:
         manually held token turns the operation into manual review.
         """
 
+        await self._reconcile_platform_managed_resolved_losses()
         async with self.database.sessions() as session:
             whale_settings = await session.get(WhaleSettings, 1)
             account = await session.get(ExecutionAccount, 1)
@@ -4299,6 +4316,100 @@ class WhaleFollowExecutor:
                     [position.id for position in condition_positions],
                     f"自动赎回检查失败：{error}",
                 )
+
+    async def _reconcile_platform_managed_resolved_losses(self) -> int:
+        """Close zero-payout positions without waiting for a redemption event.
+
+        Polymarket-managed redemption may leave losing ERC-1155 tokens in the
+        wallet because they have no collateral to claim.  A closed market's
+        canonical token mapping and exact 0/1 payout vector are sufficient to
+        write off that economic position without submitting an on-chain action.
+        """
+
+        async with self.database.sessions() as session:
+            account = await session.get(ExecutionAccount, 1)
+            if account is None or account.auto_redeem:
+                return 0
+            positions = list(
+                (
+                    await session.scalars(
+                        select(WhaleFollowPosition).where(
+                            WhaleFollowPosition.size > ZERO,
+                            WhaleFollowPosition.status == "open",
+                        )
+                    )
+                ).all()
+            )
+            if not positions:
+                return 0
+            markets = {
+                market.condition_id: market
+                for market in (
+                    await session.scalars(
+                        select(WhaleMarket).where(
+                            WhaleMarket.condition_id.in_(
+                                list(dict.fromkeys(position.condition_id for position in positions))
+                            )
+                        )
+                    )
+                ).all()
+            }
+            now = utcnow()
+            reconciled = 0
+            for position in positions:
+                market = markets.get(position.condition_id)
+                if market is None or not market.closed:
+                    continue
+                token_ids = [str(value) for value in _json_list(market.clob_token_ids_json)]
+                raw_payouts = _json_list(market.outcome_prices_json)
+                if not token_ids or len(token_ids) != len(raw_payouts):
+                    continue
+                try:
+                    outcome_index = token_ids.index(position.asset_id)
+                    payouts = [Decimal(str(value)) for value in raw_payouts]
+                except (DecimalException, ValueError, TypeError):
+                    continue
+                if (
+                    payouts[outcome_index] != ZERO
+                    or ONE not in payouts
+                    or any(
+                        not payout.is_finite() or payout < ZERO or payout > ONE
+                        for payout in payouts
+                    )
+                ):
+                    continue
+                size = position.size
+                cost = position.cost_usdc
+                event_key = hashlib.sha256(
+                    f"resolved-loss|{position.id}|{position.condition_id}|{position.asset_id}".encode()
+                ).hexdigest()
+                session.add(
+                    WhaleFollowLedger(
+                        position_id=position.id,
+                        order_id=None,
+                        type="resolved_loss",
+                        source="reconciliation",
+                        external_event_key=event_key,
+                        size=size,
+                        price=ZERO,
+                        amount_usdc=ZERO,
+                        fee_usdc=ZERO,
+                        realized_pnl=-cost,
+                        transaction_hash=None,
+                        detail="Polymarket 市场已结算为败方，零价值仓位自动核销（未提交链上赎回）",
+                        timestamp=now,
+                    )
+                )
+                position.realized_pnl -= cost
+                position.size = ZERO
+                position.cost_usdc = ZERO
+                position.status = "resolved_loss"
+                position.closed_at = now
+                position.updated_at = max(position.updated_at, now)
+                reconciled += 1
+            if reconciled:
+                await session.commit()
+            return reconciled
 
     async def _process_condition_redemption(
         self,

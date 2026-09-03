@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import HomeWorkspace from "../app/components/HomeWorkspace";
+import HomeWorkspace, { buildHomeTrendData } from "../app/components/HomeWorkspace";
 
 function json(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -140,6 +140,20 @@ describe("首页运行与跟单看板", () => {
 
     await user.click(screen.getByRole("button", { name: "近 30 日" }));
     expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "30");
+  });
+
+  it("正负盈亏跨越零轴时保持同一条连续序列", () => {
+    const daily = overview().daily.slice(0, 4).map((item, index) => ({
+      ...item,
+      realized_pnl_usdc: [0, 18, -6, 0][index],
+    }));
+
+    expect(buildHomeTrendData(daily).map((item) => item.realizedPnlPlot)).toEqual([
+      0,
+      18,
+      -6,
+      0,
+    ]);
   });
 
   it("余额过期时在冷却窗口内只刷新一次，失败后保留缓存并告警", async () => {

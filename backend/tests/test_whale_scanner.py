@@ -58,6 +58,7 @@ from backend.whale_email import (
     weekly_email_summary_metrics,
     weekly_summary_period,
 )
+from backend.whale_requests import WhaleRequestMonitor
 
 
 @pytest.fixture
@@ -1454,12 +1455,14 @@ async def test_monitored_build_time_is_frozen_when_rolling_window_moves(database
     assert entry.last_buy_at == client.trade_timestamp
 
 
-async def test_position_api_failure_preserves_last_holding_state(database):
+async def test_position_api_failure_preserves_last_holding_state(database, tmp_path):
     client = PositionDiscoveryClient()
+    failure_log_path = tmp_path / "whale-failures.jsonl"
     scanner = WhaleDiscoveryScanner(
         database=database,
         client=client,
         settings=database.settings,  # type: ignore[arg-type]
+        request_monitor=WhaleRequestMonitor(failure_log_path=failure_log_path),
     )
     assert await scanner.tick() is True
     client.position_error = True
@@ -1478,6 +1481,19 @@ async def test_position_api_failure_preserves_last_holding_state(database):
     assert state is not None and state.active is True
     assert settings is not None
     assert "已保留上次状态" in (settings.last_scan_error or "")
+    failure_log = failure_log_path.read_text(encoding="utf-8")
+    failures = [json.loads(line) for line in failure_log.splitlines()]
+    assert failures[-1] == {
+        "logged_at": failures[-1]["logged_at"],
+        "event": "position_verification_failed",
+        "scan_id": failures[-1]["scan_id"],
+        "wallet": client.wallet,
+        "condition_ids": [client.condition_id],
+        "error_type": "RuntimeError",
+        "error_message": "positions unavailable",
+        "failure_stage": "pre_order_position_verification",
+        "auto_follow_blocked": True,
+    }
 
 
 async def test_settlement_is_mapped_to_the_entry_outcome_and_deactivates_rule(database):

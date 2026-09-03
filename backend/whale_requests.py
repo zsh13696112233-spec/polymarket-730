@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import threading
 from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
-from typing import Literal
+from typing import Any, Literal
+
+LOGGER = logging.getLogger(__name__)
+FAILURE_LOG_MAX_BYTES = 5 * 1024 * 1024
+FAILURE_LOG_BACKUP_COUNT = 3
+_FAILURE_LOG_LOCK = threading.Lock()
 
 WhaleRequestStatus = Literal["pending", "success", "failed"]
 WhaleRequestSource = Literal["http", "sdk"]
@@ -48,6 +57,21 @@ def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _append_failure_log(path: Path, payload: dict[str, Any]) -> None:
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    encoded_size = len(line.encode("utf-8"))
+    with _FAILURE_LOG_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        current_size = path.stat().st_size if path.exists() else 0
+        if current_size and current_size + encoded_size > FAILURE_LOG_MAX_BYTES:
+            for index in range(FAILURE_LOG_BACKUP_COUNT, 0, -1):
+                source = path if index == 1 else Path(f"{path}.{index - 1}")
+                if source.exists():
+                    source.replace(Path(f"{path}.{index}"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+
+
 def current_whale_request_capture() -> WhaleRequestCapture | None:
     return _CAPTURE.get()
 
@@ -68,10 +92,16 @@ def capture_whale_requests(
 
 
 class WhaleRequestMonitor:
-    def __init__(self, *, capacity: int = 100) -> None:
+    def __init__(
+        self,
+        *,
+        capacity: int = 100,
+        failure_log_path: Path | None = None,
+    ) -> None:
         if capacity <= 0:
             raise ValueError("请求监测容量必须大于 0")
         self.capacity = capacity
+        self.failure_log_path = failure_log_path
         self._records: deque[WhaleRequestRecord] = deque()
         self._records_by_id: dict[int, WhaleRequestRecord] = {}
         self._started_monotonic: dict[int, float] = {}
@@ -143,6 +173,35 @@ class WhaleRequestMonitor:
             subscribers = tuple(self._subscribers)
             published = replace(record)
         self._publish(published, subscribers)
+        if status == "failed":
+            await self.log_failure(
+                "request_failed",
+                scan_id=published.scan_id,
+                request_id=published.id,
+                source=published.source,
+                method=published.method,
+                url=published.url,
+                query_params=published.query_params,
+                http_status=published.http_status,
+                duration_ms=published.duration_ms,
+                error_type=published.error_type,
+                error_message=published.error_message,
+                response_excerpt=published.response_excerpt,
+            )
+
+    async def log_failure(self, event: str, /, **details: Any) -> None:
+        if self.failure_log_path is None:
+            return
+        payload = {
+            "logged_at": utcnow().isoformat(timespec="milliseconds") + "Z",
+            "event": event,
+            **details,
+        }
+        try:
+            await asyncio.to_thread(_append_failure_log, self.failure_log_path, payload)
+        except Exception:
+            # Diagnostics must never change scanner or trading behavior.
+            LOGGER.exception("Failed to persist whale failure log path=%s", self.failure_log_path)
 
     async def snapshot(self) -> list[WhaleRequestRecord]:
         async with self._lock:

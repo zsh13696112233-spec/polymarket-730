@@ -161,7 +161,9 @@ npm run dev:api
 POLYMARKET_TRADING_ENABLED=0 POLYMARKET_START_MONITOR=0 npm run dev:all
 ```
 
-默认 SQLite 文件存放在 `data/`。该目录、`.env`、缓存和构建产物均已被 Git 忽略。
+默认 SQLite 文件存放在 `data/`。巨鲸请求或持仓核验失败会追加到同目录的
+`whale-failures.jsonl`，单文件上限 5 MiB，并保留 3 个轮转备份。该目录、`.env`、缓存和
+构建产物均已被 Git 忽略。
 
 ## 配置执行钱包
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 from decimal import Decimal
 from functools import partial
@@ -46,6 +47,39 @@ async def test_monitor_emits_pending_and_completion_with_same_id_and_caps_histor
 
     snapshot = await monitor.snapshot()
     assert [record.scan_id for record in snapshot] == ["scan-c", "scan-b"]
+
+
+@pytest.mark.asyncio
+async def test_failed_request_log_survives_memory_history_eviction(tmp_path):
+    failure_log_path = tmp_path / "whale-failures.jsonl"
+    monitor = WhaleRequestMonitor(capacity=1, failure_log_path=failure_log_path)
+    failed_id = await monitor.begin(
+        scan_id="scan-failed",
+        method="GET",
+        url="https://data.test/positions",
+        query_params={"user": "0x123"},
+    )
+    await monitor.complete(
+        failed_id,
+        status="failed",
+        http_status=503,
+        error_type="HTTPError",
+        error_message="Polymarket 接口返回 503",
+        response_excerpt="upstream unavailable",
+    )
+    success_id = await monitor.begin(
+        scan_id="scan-success",
+        method="GET",
+        url="https://data.test/positions",
+        query_params={"user": "0x456"},
+    )
+    await monitor.complete(success_id, status="success", http_status=200)
+
+    assert [record.id for record in await monitor.snapshot()] == [success_id]
+    failure = json.loads(failure_log_path.read_text(encoding="utf-8"))
+    assert failure["request_id"] == failed_id
+    assert failure["http_status"] == 503
+    assert failure["response_excerpt"] == "upstream unavailable"
 
 
 @pytest.mark.asyncio
@@ -129,8 +163,10 @@ async def test_polymarket_request_capture_records_http_and_json_failures(
     response: httpx.Response,
     expected_status: int,
     expected_error: str,
+    tmp_path,
 ):
-    monitor = WhaleRequestMonitor()
+    failure_log_path = tmp_path / "whale-failures.jsonl"
+    monitor = WhaleRequestMonitor(failure_log_path=failure_log_path)
     client = PolymarketClient(
         data_api_url="https://data.test",
         gamma_api_url="https://gamma.test",
@@ -153,6 +189,12 @@ async def test_polymarket_request_capture_records_http_and_json_failures(
     assert record.http_status == expected_status
     assert expected_error in (record.error_message or "")
     assert record.response_excerpt == response.text
+    failure = json.loads(failure_log_path.read_text(encoding="utf-8"))
+    assert failure["event"] == "request_failed"
+    assert failure["scan_id"] == "scan-failure"
+    assert failure["http_status"] == expected_status
+    assert expected_error in failure["error_message"]
+    assert failure["response_excerpt"] == response.text
 
 
 @pytest.mark.asyncio

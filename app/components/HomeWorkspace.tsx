@@ -170,9 +170,7 @@ type HomeTrendPoint = HomeDaily & {
   realizedPnl: number;
   finishedCount: number;
   winRate: number | null;
-  positivePnlPlot: number | null;
-  negativePnlPlot: number | null;
-  neutralPnlPlot: number | null;
+  realizedPnlPlot: number | null;
   shortDate: string;
 };
 
@@ -249,45 +247,49 @@ function QualityActiveDot({ cx, cy, payload }: ActiveDotProps) {
   return <circle className="homeQualityActiveDot" cx={cx} cy={cy} r="5" />;
 }
 
+export function buildHomeTrendData(data: HomeDaily[]): HomeTrendPoint[] {
+  const points = data.map((item) => ({
+    ...item,
+    buyAmount: numeric(item.buy_amount_usdc),
+    buyCount: item.buy_count,
+    realizedPnl: numeric(item.realized_pnl_usdc),
+    finishedCount: item.win_count + item.loss_count + item.flat_count,
+    winRate: item.win_rate_percent == null ? null : numeric(item.win_rate_percent),
+    shortDate: item.date.slice(5),
+  }));
+  const firstActiveIndex = points.findIndex((point) => point.realizedPnl !== 0);
+  let lastActiveIndex = -1;
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    if (points[index].realizedPnl !== 0) {
+      lastActiveIndex = index;
+      break;
+    }
+  }
+  return points.map((point, index) => ({
+    ...point,
+    realizedPnlPlot: firstActiveIndex >= 0
+      && index >= Math.max(0, firstActiveIndex - 1)
+      && index <= Math.min(points.length - 1, lastActiveIndex + 1)
+      ? point.realizedPnl
+      : null,
+  }));
+}
+
 function TrendChart({ data, mode }: { data: HomeDaily[]; mode: TrendMode }) {
   const gradientId = useId().replaceAll(":", "");
   const reducedMotion = useReducedMotion();
-  const chartData = useMemo<HomeTrendPoint[]>(() => {
-    const points = data.map((item) => ({
-      ...item,
-      buyAmount: numeric(item.buy_amount_usdc),
-      buyCount: item.buy_count,
-      realizedPnl: numeric(item.realized_pnl_usdc),
-      finishedCount: item.win_count + item.loss_count + item.flat_count,
-      winRate: item.win_rate_percent == null ? null : numeric(item.win_rate_percent),
-      shortDate: item.date.slice(5),
-    }));
-    const firstActiveIndex = points.findIndex((point) => point.realizedPnl !== 0);
-    let lastActiveIndex = -1;
-    for (let index = points.length - 1; index >= 0; index -= 1) {
-      if (points[index].realizedPnl !== 0) {
-        lastActiveIndex = index;
-        break;
-      }
-    }
-    return points.map((point, index) => ({
-      ...point,
-      positivePnlPlot: point.realizedPnl > 0
-        || (point.realizedPnl === 0 && (points[index - 1]?.realizedPnl > 0 || points[index + 1]?.realizedPnl > 0))
-        ? point.realizedPnl
-        : null,
-      negativePnlPlot: point.realizedPnl < 0
-        || (point.realizedPnl === 0 && (points[index - 1]?.realizedPnl < 0 || points[index + 1]?.realizedPnl < 0))
-        ? point.realizedPnl
-        : null,
-      neutralPnlPlot: point.realizedPnl === 0 && index >= firstActiveIndex && index <= lastActiveIndex
-        ? 0
-        : null,
-    }));
-  }, [data]);
+  const chartData = useMemo(() => buildHomeTrendData(data), [data]);
   const buyMax = chartCeiling(Math.max(1, ...chartData.map((item) => item.buyAmount)));
   const countMax = chartCeiling(Math.max(1, ...chartData.map((item) => item.buyCount)));
   const pnlMax = chartCeiling(Math.max(1, ...chartData.map((item) => Math.abs(item.realizedPnl))));
+  const plottedPnl = chartData.flatMap((item) => item.realizedPnlPlot == null ? [] : [item.realizedPnlPlot]);
+  const highestPnl = Math.max(0, ...plottedPnl);
+  const lowestPnl = Math.min(0, ...plottedPnl);
+  const hasPositivePnl = highestPnl > 0;
+  const hasNegativePnl = lowestPnl < 0;
+  const zeroOffset = hasPositivePnl && hasNegativePnl
+    ? highestPnl / (highestPnl - lowestPnl) * 100
+    : 50;
   return (
     <div className="homeTrendChart" data-point-count={data.length} data-mode={mode} role="img" aria-label={mode === "finance" ? "每日买入金额和已实现盈亏趋势" : "每日跟单次数和结束仓位胜率趋势"}>
       <div className="homeChartLegend" aria-hidden="true">
@@ -303,6 +305,18 @@ function TrendChart({ data, mode }: { data: HomeDaily[]; mode: TrendMode }) {
                 <stop offset="0%" stopColor="#6487f6" stopOpacity="0.92" />
                 <stop offset="100%" stopColor="#c9d7ff" stopOpacity="0.72" />
               </linearGradient>
+              <linearGradient id={`${gradientId}-pnl`} x1="0" y1="0" x2="0" y2="1">
+                {hasPositivePnl && hasNegativePnl ? <>
+                  <stop offset="0%" stopColor="#109568" />
+                  <stop offset={`${Math.max(0, zeroOffset - 0.5)}%`} stopColor="#109568" />
+                  <stop offset={`${zeroOffset}%`} stopColor="#aeb4c0" />
+                  <stop offset={`${Math.min(100, zeroOffset + 0.5)}%`} stopColor="#d4514b" />
+                  <stop offset="100%" stopColor="#d4514b" />
+                </> : <>
+                  <stop offset="0%" stopColor={hasNegativePnl ? "#d4514b" : "#109568"} />
+                  <stop offset="100%" stopColor={hasNegativePnl ? "#d4514b" : "#109568"} />
+                </>}
+              </linearGradient>
             </defs>
             <CartesianGrid vertical={false} stroke="#e8eaf0" strokeDasharray="3 5" />
             <XAxis dataKey="shortDate" axisLine={false} tickLine={false} tickMargin={12} minTickGap={data.length <= 7 ? 12 : 32} tick={{ fill: "#969aa4", fontSize: 10 }} />
@@ -312,9 +326,7 @@ function TrendChart({ data, mode }: { data: HomeDaily[]; mode: TrendMode }) {
               <YAxis yAxisId="pnl" orientation="right" domain={[-pnlMax, pnlMax]} axisLine={false} tickLine={false} tickCount={5} width={38} tickFormatter={compactAxisAmount} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
               <ReferenceLine yAxisId="pnl" y={0} stroke="#bfc4ce" strokeDasharray="3 4" />
               <Bar yAxisId="buy" dataKey="buyAmount" name="买入金额" fill={`url(#${gradientId}-buy)`} radius={[4, 4, 1, 1]} maxBarSize={data.length <= 7 ? 42 : 22} isAnimationActive={!reducedMotion} animationDuration={550} />
-              <Line yAxisId="pnl" dataKey="neutralPnlPlot" name="零盈亏" type="linear" stroke="#aeb4c0" strokeWidth={1.7} dot={false} activeDot={false} isAnimationActive={!reducedMotion} animationDuration={500} />
-              <Line yAxisId="pnl" dataKey="positivePnlPlot" name="已实现盈亏" type="monotoneX" stroke="#109568" strokeWidth={2.4} dot={TrendDot} activeDot={TrendActiveDot} isAnimationActive={!reducedMotion} animationDuration={650} />
-              <Line yAxisId="pnl" dataKey="negativePnlPlot" name="已实现盈亏" type="monotoneX" stroke="#d4514b" strokeWidth={2.4} dot={TrendDot} activeDot={TrendActiveDot} isAnimationActive={!reducedMotion} animationDuration={650} />
+              <Line yAxisId="pnl" dataKey="realizedPnlPlot" name="已实现盈亏" type="linear" stroke={`url(#${gradientId}-pnl)`} strokeWidth={2.4} dot={TrendDot} activeDot={TrendActiveDot} isAnimationActive={!reducedMotion} animationDuration={650} />
             </> : <>
               <YAxis yAxisId="count" domain={[0, countMax]} allowDecimals={false} axisLine={false} tickLine={false} tickCount={4} width={38} tick={{ fill: "#a0a4ad", fontSize: 9 }} />
               <YAxis yAxisId="rate" orientation="right" domain={[0, 100]} ticks={[0, 50, 100]} axisLine={false} tickLine={false} width={38} tickFormatter={(value) => `${value}%`} tick={{ fill: "#a0a4ad", fontSize: 9 }} />

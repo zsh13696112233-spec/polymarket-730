@@ -93,6 +93,15 @@ class Settings:
             and self.smtp_security in {"starttls", "ssl", "none"}
         )
 
+    @property
+    def whale_failure_log_path(self) -> Path:
+        prefix = "sqlite+aiosqlite:///"
+        if self.database_url.startswith(prefix):
+            database_path = self.database_url.removeprefix(prefix)
+            if database_path != ":memory:" and not database_path.startswith("file:"):
+                return Path(database_path).expanduser().resolve().parent / "whale-failures.jsonl"
+        return Path("data/whale-failures.jsonl").resolve()
+
     def ensure_sqlite_directory(self) -> None:
         prefix = "sqlite+aiosqlite:///"
         if not self.database_url.startswith(prefix):

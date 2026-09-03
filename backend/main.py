@@ -216,7 +216,10 @@ def create_app(
             gamma_api_concurrency=resolved_settings.gamma_api_concurrency,
             clob_api_concurrency=resolved_settings.clob_api_concurrency,
         )
-        whale_request_monitor = WhaleRequestMonitor(capacity=100)
+        whale_request_monitor = WhaleRequestMonitor(
+            capacity=100,
+            failure_log_path=resolved_settings.whale_failure_log_path,
+        )
         keychain = MacOSKeychain()
         whale_executor = WhaleFollowExecutor(
             database=database,

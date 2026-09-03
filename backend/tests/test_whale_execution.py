@@ -974,6 +974,70 @@ async def test_platform_managed_redemption_skips_local_redemption_scan(database:
 
 
 @pytest.mark.asyncio
+async def test_platform_managed_resolved_loss_is_written_off_without_redemption(
+    database: Database,
+):
+    await configure_reconciliation(database, local_auto_redeem=False)
+    await configure_whale_settings(database)
+    position_id = await insert_position(
+        database,
+        size="10",
+        cost="4.1",
+        status="open",
+        lifetime_bought_size="10",
+        lifetime_bought_usdc="4",
+        lifetime_fee_usdc="0.1",
+    )
+    async with database.sessions() as session:
+        market = await session.get(WhaleMarket, CONDITION_ID)
+        assert market is not None
+        market.closed = True
+        market.active = False
+        market.accepting_orders = False
+        market.outcome_prices_json = '["0","1"]'
+        market.clob_token_ids_json = f'["{ASSET_ID}","winning-asset"]'
+        await session.commit()
+
+    class PlatformManagedClient:
+        async def fetch_redeemable_positions(self, *_: object, **__: object) -> list[object]:
+            raise AssertionError("resolved loss must not start a local redemption")
+
+    follow_executor = WhaleFollowExecutor(
+        database=database,
+        client=PlatformManagedClient(),  # type: ignore[arg-type]
+        settings=database.settings,
+        keychain=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+
+    await follow_executor.process_redeemable_positions()
+    await follow_executor.process_redeemable_positions()
+
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        redemption = await session.scalar(
+            select(WhaleRedemption).where(WhaleRedemption.position_id == position_id)
+        )
+        ledger = list(
+            await session.scalars(
+                select(WhaleFollowLedger).where(WhaleFollowLedger.position_id == position_id)
+            )
+        )
+
+    assert position is not None
+    assert position.size == ZERO
+    assert position.cost_usdc == ZERO
+    assert_decimal(position.realized_pnl, "-4.1")
+    assert position.status == "resolved_loss"
+    assert position.closed_at is not None
+    assert redemption is None
+    assert len(ledger) == 1
+    assert ledger[0].type == "resolved_loss"
+    assert ledger[0].source == "reconciliation"
+    assert ledger[0].amount_usdc == ZERO
+    assert ledger[0].transaction_hash is None
+
+
+@pytest.mark.asyncio
 async def test_chain_test_buy_enforces_cash_reserve_and_total_exposure(database: Database):
     await configure_reconciliation(database)
     follow_executor = executor(database)
@@ -1006,7 +1070,14 @@ async def test_chain_test_buy_enforces_cash_reserve_and_total_exposure(database:
 async def test_local_redemption_opt_in_keeps_redeemable_scan_available(database: Database):
     await configure_reconciliation(database, local_auto_redeem=True)
     await configure_whale_settings(database)
-    await insert_position(database, size="10", cost="4", status="open")
+    position_id = await insert_position(database, size="10", cost="4", status="open")
+    async with database.sessions() as session:
+        market = await session.get(WhaleMarket, CONDITION_ID)
+        assert market is not None
+        market.closed = True
+        market.outcome_prices_json = '["0","1"]'
+        market.clob_token_ids_json = f'["{ASSET_ID}","winning-asset"]'
+        await session.commit()
 
     class LocalRedemptionClient:
         calls = 0
@@ -1033,6 +1104,11 @@ async def test_local_redemption_opt_in_keeps_redeemable_scan_available(database:
     await follow_executor.process_redeemable_positions()
 
     assert client.calls == 1
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+    assert position is not None
+    assert position.status == "open"
+    assert position.size == Decimal("10")
 
 
 @pytest.mark.asyncio

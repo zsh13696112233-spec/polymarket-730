@@ -110,7 +110,7 @@ describe("首页运行与跟单看板", () => {
     expect(screen.getByText("已实现 ROI -25.0%")).toBeInTheDocument();
     expect(screen.getByText("134.20 USDC")).toBeInTheDocument();
     expect(screen.queryByText("钱包总资产估值")).not.toBeInTheDocument();
-    expect(screen.getByText("全仓未实现盈亏")).toBeInTheDocument();
+    expect(screen.getByText("当前持仓浮动盈亏合计")).toBeInTheDocument();
     expect(screen.queryByText("当前浮盈亏")).not.toBeInTheDocument();
     expect(screen.getByText("1 胜 · 1 负 · 不含 2 笔分歧退出、1 笔链路测试")).toBeInTheDocument();
     expect(screen.getByText("北京时间自然日；跟单按买入日、胜率按仓位结束日统计，平局不计入胜率。")).toBeInTheDocument();

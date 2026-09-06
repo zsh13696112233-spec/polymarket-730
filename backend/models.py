@@ -304,11 +304,38 @@ class WhaleSettings(Base):
     )
     auto_redeem: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_trade_cursor_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    coverage_incomplete_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_scan_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class WhaleScanRun(Base):
+    __tablename__ = "whale_scan_runs"
+    __table_args__ = (
+        UniqueConstraint("scan_id", name="uq_whale_scan_runs_scan_id"),
+        CheckConstraint(
+            "status IN ('running', 'success', 'degraded', 'failed')",
+            name="ck_whale_scan_runs_status",
+        ),
+        Index("ix_whale_scan_runs_started", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    requested_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    requested_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    oldest_trade_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    newest_trade_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    collected_trade_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    page_limit_hit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    coverage_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EmailSettings(Base):

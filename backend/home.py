@@ -334,6 +334,18 @@ async def home_overview(
         )
 
     scan_error = settings.last_scan_error if settings is not None else "巨鲸模块尚未初始化"
+    coverage_incomplete_until = (
+        settings.coverage_incomplete_until
+        if settings is not None
+        and settings.coverage_incomplete_until is not None
+        and settings.coverage_incomplete_until > generated_at
+        else None
+    )
+    if coverage_incomplete_until is not None and not scan_error:
+        scan_error = (
+            "成交历史覆盖不完整，自动跟单暂停至 "
+            f"{coverage_incomplete_until.isoformat(timespec='seconds')} UTC"
+        )
     if settings is None:
         system_status = "error"
     elif not settings.enabled:
@@ -363,6 +375,7 @@ async def home_overview(
             "enabled": settings.enabled if settings is not None else False,
             "last_scan_at": settings.last_scan_at if settings is not None else None,
             "last_scan_error": scan_error,
+            "coverage_incomplete_until": coverage_incomplete_until,
             "consecutive_failures": settings.consecutive_failures if settings is not None else 0,
             "scan_interval_seconds": settings.scan_interval_seconds if settings is not None else 0,
             "rules": [

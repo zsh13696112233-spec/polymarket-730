@@ -70,6 +70,8 @@ from backend.schemas import (
     WhaleRequestLogListRead,
     WhaleRequestLogRead,
     WhaleScanRead,
+    WhaleScanRunListRead,
+    WhaleScanRunRead,
     WhaleSellExecuteRequest,
     WhaleSellPreviewRead,
     WhaleSellPreviewRequest,
@@ -96,6 +98,7 @@ from backend.whale import (
     list_whale_markets,
     list_whale_positions,
     list_whale_records,
+    list_whale_scan_runs,
     list_whale_statistics_signals,
     whale_order_payload,
     whale_position_detail,
@@ -212,6 +215,7 @@ def create_app(
             gamma_api_url=resolved_settings.gamma_api_url,
             clob_api_url=resolved_settings.clob_api_url,
             timeout=resolved_settings.request_timeout_seconds,
+            proxy_url=resolved_settings.proxy_url,
             data_api_concurrency=resolved_settings.data_api_concurrency,
             gamma_api_concurrency=resolved_settings.gamma_api_concurrency,
             clob_api_concurrency=resolved_settings.clob_api_concurrency,
@@ -342,6 +346,7 @@ def create_app(
                 funder_address=account.funder_address,
                 relayer_url=resolved_settings.relayer_api_url,
                 rpc_url=resolved_settings.polygon_rpc_url,
+                proxy_url=resolved_settings.proxy_url,
             )
             try:
                 await trader.ensure_ready_approvals()
@@ -1075,6 +1080,26 @@ def create_app(
         require_whale_module(request)
         completed = await request.app.state.whale_scanner.scan_now()
         return WhaleScanRead(status="ok" if completed else "skipped")
+
+    @application.get(
+        "/api/whales/scan-runs",
+        response_model=WhaleScanRunListRead,
+    )
+    async def get_whale_scan_runs(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> WhaleScanRunListRead:
+        require_whale_module(request)
+        payload = await list_whale_scan_runs(
+            request.app.state.database,
+            limit=limit,
+            offset=offset,
+        )
+        return WhaleScanRunListRead(
+            total=payload["total"],
+            items=[WhaleScanRunRead.model_validate(row) for row in payload["items"]],
+        )
 
     @application.get(
         "/api/whales/request-logs",

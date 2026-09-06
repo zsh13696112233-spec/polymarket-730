@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
+DEFAULT_POLYMARKET_PROXY_URL = "http://127.0.0.1:7897"
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -17,6 +19,7 @@ class Settings:
     clob_api_url: str = "https://clob.polymarket.com"
     relayer_api_url: str = "https://relayer-v2.polymarket.com"
     polygon_rpc_url: str = "https://polygon.drpc.org"
+    proxy_url: str = DEFAULT_POLYMARKET_PROXY_URL
     request_timeout_seconds: float = 12.0
     data_api_concurrency: int = 10
     gamma_api_concurrency: int = 6
@@ -58,6 +61,10 @@ class Settings:
                 "POLYMARKET_RELAYER_API_URL", "https://relayer-v2.polymarket.com"
             ),
             polygon_rpc_url=os.getenv("POLYMARKET_POLYGON_RPC_URL", "https://polygon.drpc.org"),
+            proxy_url=(
+                os.getenv("POLYMARKET_PROXY_URL", DEFAULT_POLYMARKET_PROXY_URL).strip()
+                or DEFAULT_POLYMARKET_PROXY_URL
+            ),
             request_timeout_seconds=float(os.getenv("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "12")),
             data_api_concurrency=int(os.getenv("POLYMARKET_DATA_API_CONCURRENCY", "10")),
             gamma_api_concurrency=int(os.getenv("POLYMARKET_GAMMA_API_CONCURRENCY", "6")),

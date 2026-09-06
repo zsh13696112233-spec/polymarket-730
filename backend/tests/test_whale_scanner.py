@@ -26,6 +26,7 @@ from backend.models import (
     WhaleFollowPosition,
     WhaleMarket,
     WhaleOrder,
+    WhaleScanRun,
     WhaleSettings,
     WhaleTrade,
     WhaleWallet,
@@ -527,6 +528,39 @@ async def test_scanner_finds_recent_large_buyers_and_confirms_current_position(d
     assert settings is not None
     assert settings.last_scan_error is None
     assert client.trade_calls == 1
+
+
+async def test_scanner_blocks_auto_follow_while_trade_coverage_is_incomplete(database):
+    client = PositionDiscoveryClient()
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings is not None
+        settings.new_account_auto_follow_enabled = True
+        settings.coverage_incomplete_until = utcnow() + timedelta(hours=24)
+        await session.commit()
+
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        decisions = list(await session.scalars(select(WhaleAutoFollowDecision)))
+        entry = await session.scalar(select(WhaleEntry))
+        settings = await session.get(WhaleSettings, 1)
+        run = await session.scalar(select(WhaleScanRun))
+
+    assert decisions == []
+    assert entry is not None
+    assert entry.follow_eligible is False
+    assert entry.follow_ineligible_reason == "coverage_incomplete"
+    assert settings is not None
+    assert "自动跟单暂停" in (settings.last_scan_error or "")
+    assert run is not None
+    assert run.status == "degraded"
+    assert run.coverage_complete is True
 
 
 async def test_scanner_enqueues_one_combined_email_per_recipient_for_dual_trigger(database):
@@ -1237,11 +1271,19 @@ async def test_scanner_does_not_advance_trade_cursor_after_collection_failure(
     assert await scanner.tick() is False
     async with database.sessions() as session:
         settings = await session.get(WhaleSettings, 1)
+        run = await session.scalar(select(WhaleScanRun))
         assert settings is not None
         assert settings.last_trade_cursor_at is None
+        assert run is not None
+        assert run.status == "failed"
+        assert run.finished_at is not None
+        assert run.error == "trade collection failed"
 
 
-async def test_scanner_does_not_advance_trade_cursor_at_page_limit(database, monkeypatch):
+async def test_scanner_advances_cursor_but_marks_coverage_degraded_at_page_limit(
+    database,
+    monkeypatch,
+):
     client = PositionDiscoveryClient()
     scanner = WhaleDiscoveryScanner(
         database=database,
@@ -1257,9 +1299,18 @@ async def test_scanner_does_not_advance_trade_cursor_at_page_limit(database, mon
     assert await scanner.tick() is True
     async with database.sessions() as session:
         settings = await session.get(WhaleSettings, 1)
+        run = await session.scalar(select(WhaleScanRun))
         assert settings is not None
-        assert settings.last_trade_cursor_at is None
-        assert "分页上限" in (settings.last_scan_error or "")
+        assert settings.last_trade_cursor_at is not None
+        assert settings.coverage_incomplete_until is not None
+        assert settings.coverage_incomplete_until > settings.last_trade_cursor_at
+        assert "自动跟单暂停" in (settings.last_scan_error or "")
+        assert run is not None
+        assert run.status == "degraded"
+        assert run.page_limit_hit is True
+        assert run.coverage_complete is False
+        assert run.requested_start is not None
+        assert run.requested_end is not None
 
 
 async def test_profile_refresh_honors_per_scan_limit(database):

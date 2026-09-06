@@ -126,6 +126,7 @@ POLYMARKET_TRADING_ENABLED=0
 | `NEXT_PUBLIC_API_BASE` | Web 访问 FastAPI 的基础地址，默认 `http://127.0.0.1:8730` |
 | `POLYMARKET_DATABASE_URL` | SQLAlchemy 数据库地址，默认写入 `data/polymarket-watch.db` |
 | `POLYMARKET_TRADING_ENABLED` | 真实买入、卖出与自动实盘总开关；`0` 为紧急停用 |
+| `POLYMARKET_PROXY_URL` | Polymarket API 与 Polygon RPC 强制使用的 HTTP(S) 代理，默认 `http://127.0.0.1:7897` |
 | `POLYMARKET_WHALE_ENABLED` | 链上巨鲸扫描模块总开关 |
 | `POLYMARKET_WHALE_SCAN_INTERVAL_SECONDS` | 后台扫描间隔 |
 | `POLYMARKET_WHALE_MAX_SCAN_PAGES` | 每轮扫描最多读取的成交分页数 |
@@ -144,6 +145,8 @@ POLYMARKET_TRADING_ENABLED=0
 ```bash
 npm run dev:all
 ```
+
+后端会强制通过 `POLYMARKET_PROXY_URL` 访问 Polymarket 和 Polygon RPC；代理不可用时请求失败，不会回退直连。
 
 打开 [http://localhost:3000](http://localhost:3000)。API 健康检查地址是
 [http://127.0.0.1:8730/healthz](http://127.0.0.1:8730/healthz)。

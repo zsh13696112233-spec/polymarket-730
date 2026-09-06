@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 from collections import defaultdict
 from collections.abc import Awaitable, Iterable
@@ -22,6 +23,27 @@ ADDRESS_RE = re.compile(r"0x[a-fA-F0-9]{40}")
 ZERO = Decimal("0")
 SDK_DATA_API_URL = "https://data-api.polymarket.com"
 SDK_GAMMA_API_URL = "https://gamma-api.polymarket.com"
+PROXY_ENVIRONMENT_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+LOCAL_NO_PROXY = "localhost,127.0.0.1,::1"
+
+
+def configure_polymarket_proxy(proxy_url: str) -> str:
+    normalized = proxy_url.strip()
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("POLYMARKET_PROXY_URL 必须是有效的 HTTP(S) 代理地址")
+    for key in PROXY_ENVIRONMENT_KEYS:
+        os.environ[key] = normalized
+    os.environ["NO_PROXY"] = LOCAL_NO_PROXY
+    os.environ["no_proxy"] = LOCAL_NO_PROXY
+    return normalized
 
 
 class PolymarketAPIError(RuntimeError):
@@ -370,6 +392,7 @@ class PolymarketClient:
         gamma_api_url: str,
         clob_api_url: str = "https://clob.polymarket.com",
         timeout: float,
+        proxy_url: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         data_api_concurrency: int = 10,
         gamma_api_concurrency: int = 6,
@@ -378,6 +401,11 @@ class PolymarketClient:
         self.data_api_url = data_api_url.rstrip("/")
         self.gamma_api_url = gamma_api_url.rstrip("/")
         self.clob_api_url = clob_api_url.rstrip("/")
+        if transport is None and proxy_url is None:
+            raise ValueError("Polymarket 客户端必须配置代理")
+        if transport is not None and proxy_url is not None:
+            raise ValueError("测试传输与 Polymarket 代理不能同时配置")
+        self.proxy_url = configure_polymarket_proxy(proxy_url) if proxy_url is not None else None
         self._timeout = httpx.Timeout(timeout)
         self._transport = transport
         self._http_reset_lock = asyncio.Lock()
@@ -412,7 +440,9 @@ class PolymarketClient:
     def _new_http_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             timeout=self._timeout,
+            proxy=self.proxy_url,
             transport=self._transport,
+            trust_env=False,
             headers={"User-Agent": "polymarket-wallet-monitor/0.1"},
         )
 
@@ -474,7 +504,7 @@ class PolymarketClient:
             else:
                 async with semaphore:
                     response = await client.send(request)
-        except (httpx.TimeoutException, httpx.NetworkError) as error:
+        except httpx.TransportError as error:
             if capture is not None and request_record_id is not None:
                 await capture.monitor.complete(
                     request_record_id,

@@ -42,6 +42,7 @@ export type WhaleSettings = {
   max_follow_amount_usdc: Numeric;
   default_follow_amount_usdc: Numeric;
   scan_interval_seconds: number;
+  coverage_incomplete_until: string | null;
   last_scan_at: string | null;
   last_scan_error: string | null;
   consecutive_failures: number;

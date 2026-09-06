@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -11,8 +12,60 @@ import httpx
 import polymarket
 import pytest
 
-from backend.polymarket import InvalidWalletInput, PolymarketAPIError, PolymarketClient
+from backend.polymarket import (
+    LOCAL_NO_PROXY,
+    PROXY_ENVIRONMENT_KEYS,
+    InvalidWalletInput,
+    PolymarketAPIError,
+    PolymarketClient,
+    configure_polymarket_proxy,
+)
 from backend.tests.conftest import TEST_ADDRESS
+
+
+def test_polymarket_client_requires_proxy_without_test_transport():
+    with pytest.raises(ValueError, match="必须配置代理"):
+        PolymarketClient(
+            data_api_url="https://data.test",
+            gamma_api_url="https://gamma.test",
+            timeout=1,
+        )
+
+
+def test_polymarket_client_passes_explicit_proxy_and_disables_environment(monkeypatch):
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def capture_client(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(httpx, "AsyncClient", capture_client)
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        proxy_url="http://127.0.0.1:7897",
+    )
+
+    assert client._http is sentinel
+    assert captured["proxy"] == "http://127.0.0.1:7897"
+    assert captured["trust_env"] is False
+    assert captured["transport"] is None
+
+
+def test_configure_polymarket_proxy_overrides_process_proxy_environment(monkeypatch):
+    for key in (*PROXY_ENVIRONMENT_KEYS, "NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(key, "http://direct-or-stale.test:9999")
+
+    proxy_url = configure_polymarket_proxy(" http://127.0.0.1:7897 ")
+
+    assert proxy_url == "http://127.0.0.1:7897"
+    for key in PROXY_ENVIRONMENT_KEYS:
+        assert os.environ[key] == proxy_url
+    assert os.environ["NO_PROXY"] == LOCAL_NO_PROXY
+    assert os.environ["no_proxy"] == LOCAL_NO_PROXY
 
 
 @pytest.mark.asyncio
@@ -1070,6 +1123,39 @@ async def test_http_client_pool_is_replaced_after_network_error():
     original = client._http
     try:
         with pytest.raises(PolymarketAPIError):
+            await client.fetch_public_profile(TEST_ADDRESS)
+        assert client._http is not original
+        profile = await client.fetch_public_profile(TEST_ADDRESS)
+    finally:
+        await client.close()
+
+    assert profile is not None
+    assert profile.display_name == "Recovered"
+
+
+@pytest.mark.asyncio
+async def test_http_client_pool_is_replaced_after_remote_protocol_error():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body",
+                request=request,
+            )
+        return httpx.Response(200, json={"name": "Recovered"})
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    original = client._http
+    try:
+        with pytest.raises(PolymarketAPIError, match="接口连接失败"):
             await client.fetch_public_profile(TEST_ADDRESS)
         assert client._http is not original
         profile = await client.fetch_public_profile(TEST_ADDRESS)

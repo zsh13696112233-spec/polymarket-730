@@ -120,6 +120,7 @@ class WhaleSettingsRead(APIModel):
     follow_slippage_cents: DecimalNumber
     sell_slippage_cents: DecimalNumber
     auto_redeem: bool
+    coverage_incomplete_until: datetime | None
     last_scan_at: datetime | None
     last_scan_error: str | None
     consecutive_failures: int
@@ -133,7 +134,13 @@ class WhaleSettingsRead(APIModel):
     large_amount_active_count: int = 0
     large_amount_history_count: int = 0
 
-    @field_serializer("last_scan_at", "created_at", "updated_at", when_used="json")
+    @field_serializer(
+        "coverage_incomplete_until",
+        "last_scan_at",
+        "created_at",
+        "updated_at",
+        when_used="json",
+    )
     def serialize_dates(self, value: datetime | None) -> str | None:
         return _as_utc_iso(value)
 
@@ -465,6 +472,39 @@ class WhaleScanRead(APIModel):
     status: Literal["ok", "skipped"]
 
 
+class WhaleScanRunRead(APIModel):
+    id: int
+    scan_id: str
+    status: Literal["running", "success", "degraded", "failed"]
+    started_at: datetime
+    finished_at: datetime | None
+    requested_start: datetime | None
+    requested_end: datetime | None
+    oldest_trade_at: datetime | None
+    newest_trade_at: datetime | None
+    collected_trade_count: int
+    page_limit_hit: bool
+    coverage_complete: bool
+    error: str | None
+
+    @field_serializer(
+        "started_at",
+        "finished_at",
+        "requested_start",
+        "requested_end",
+        "oldest_trade_at",
+        "newest_trade_at",
+        when_used="json",
+    )
+    def serialize_scan_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class WhaleScanRunListRead(APIModel):
+    total: int
+    items: list[WhaleScanRunRead]
+
+
 class WhaleRequestLogRead(APIModel):
     id: int
     scan_id: str
@@ -508,11 +548,12 @@ class HomeSystemRead(APIModel):
     enabled: bool
     last_scan_at: datetime | None
     last_scan_error: str | None
+    coverage_incomplete_until: datetime | None
     consecutive_failures: int
     scan_interval_seconds: int
     rules: list[HomeSystemRuleRead] = Field(default_factory=list)
 
-    @field_serializer("last_scan_at", when_used="json")
+    @field_serializer("last_scan_at", "coverage_incomplete_until", when_used="json")
     def serialize_last_scan_at(self, value: datetime | None) -> str | None:
         return _as_utc_iso(value)
 

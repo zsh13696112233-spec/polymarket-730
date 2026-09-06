@@ -134,6 +134,35 @@ async def test_home_system_is_not_healthy_when_scanner_is_stopped_or_stale(
     assert stale["system"]["last_scan_error"] == "最后扫描时间已过期"
 
 
+@pytest.mark.asyncio
+async def test_home_system_stays_degraded_while_trade_coverage_is_incomplete(
+    database: Database,
+) -> None:
+    coverage_until = NOW + timedelta(hours=24)
+    async with database.sessions() as session:
+        session.add(
+            WhaleSettings(
+                id=1,
+                last_scan_at=NOW,
+                coverage_incomplete_until=coverage_until,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await session.commit()
+
+    payload = await home_overview(
+        database,
+        MarksClient({}),  # type: ignore[arg-type]
+        now=NOW,
+        scanner_running=True,
+    )
+
+    assert payload["system"]["status"] == "error"
+    assert payload["system"]["coverage_incomplete_until"] == coverage_until
+    assert "自动跟单暂停" in payload["system"]["last_scan_error"]
+
+
 def position(
     asset_id: str,
     *,

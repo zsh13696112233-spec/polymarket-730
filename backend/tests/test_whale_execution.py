@@ -20,7 +20,7 @@ from backend.models import (
     WhaleRedemption,
     WhaleSettings,
 )
-from backend.polymarket import RedemptionSnapshot, TradeSnapshot
+from backend.polymarket import PolymarketAPIError, RedemptionSnapshot, TradeSnapshot
 from backend.trading import TradeResult
 from backend.whale import (
     WhaleFollowExecutor,
@@ -772,6 +772,40 @@ async def test_sell_all_keeps_material_remainder_open(database: Database):
     assert position.size == Decimal("1")
     assert position.status == "open"
     assert [row.type for row in ledger] == ["sell"]
+
+
+@pytest.mark.asyncio
+async def test_external_reconciliation_retries_transient_trade_read_failures(
+    database: Database,
+    monkeypatch,
+):
+    await configure_reconciliation(database)
+    await insert_position(database, size="10", cost="5", status="open")
+
+    class FlakyTradeClient(ManualTradeClient):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.trade_attempts = 0
+
+        async def fetch_trades(self, *_: object, **__: object) -> list[TradeSnapshot]:
+            self.trade_attempts += 1
+            if self.trade_attempts < 3:
+                raise PolymarketAPIError("transient disconnect")
+            return []
+
+    client = FlakyTradeClient()
+    follow_executor = reconciliation_executor(database, trades=[], balance="10")
+    follow_executor.client = client  # type: ignore[assignment]
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("backend.whale.asyncio.sleep", record_sleep)
+
+    assert await follow_executor.reconcile_external_wallet_activity() is None
+    assert client.trade_attempts == 3
+    assert delays == [1.0, 2.0]
 
 
 @pytest.mark.asyncio

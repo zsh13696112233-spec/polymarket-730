@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
-from backend.polymarket import OrderBookSnapshot
+from backend.polymarket import OrderBookSnapshot, configure_polymarket_proxy
 
 ZERO = Decimal("0")
 BASE_UNITS = Decimal("1000000")
@@ -218,6 +218,7 @@ class UnifiedPolymarketTrader:
         funder_address: str | None,
         relayer_url: str = "https://relayer-v2.polymarket.com",
         rpc_url: str = "https://polygon.drpc.org",
+        proxy_url: str | None = None,
     ) -> None:
         self.host = host
         self.keychain = keychain
@@ -226,6 +227,7 @@ class UnifiedPolymarketTrader:
         self.funder_address = funder_address
         self.relayer_url = relayer_url
         self.rpc_url = rpc_url
+        self.proxy_url = configure_polymarket_proxy(proxy_url) if proxy_url is not None else None
         self._client: Any | None = None
         self._client_lock = asyncio.Lock()
 
@@ -250,6 +252,9 @@ class UnifiedPolymarketTrader:
             raise TradingUnavailable("缺少 polymarket-client==0.7.1，实盘功能不可用") from error
         if self.signature_type != 3 or not self.funder_address:
             raise TradingUnavailable("统一 SDK 实盘仅允许 Deposit Wallet（signature_type=3）")
+        if self.proxy_url is None:
+            raise TradingUnavailable("Polymarket 代理未配置")
+        configure_polymarket_proxy(self.proxy_url)
         private_key = self.keychain.get_secret(self.key_reference)
         api_key = None
         builder_reference = KeychainReference(
@@ -806,8 +811,13 @@ class UnifiedPolymarketTrader:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=15) as response:  # noqa: S310
+            if self.proxy_url is None:
+                raise TradingUnavailable("Polymarket 代理未配置")
+            opener = build_opener(ProxyHandler({"http": self.proxy_url, "https": self.proxy_url}))
+            with opener.open(request, timeout=15) as response:  # noqa: S310
                 body = json.loads(response.read().decode())
+        except TradingUnavailable:
+            raise
         except (OSError, URLError, ValueError, json.JSONDecodeError) as error:
             raise TradingUnavailable(f"无法读取 Polygon 链上状态：{error}") from error
         if body.get("error"):

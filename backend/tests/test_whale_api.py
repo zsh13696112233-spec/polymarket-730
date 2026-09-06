@@ -31,6 +31,26 @@ WALLET_HEDGED = "0x1111111111111111111111111111111111111111"
 WALLET_DIRECTIONAL = "0x2222222222222222222222222222222222222222"
 
 
+def test_whale_scan_runs_endpoint_persists_completed_scans(app_client_factory) -> None:
+    client, _ = app_client_factory([[]])
+
+    empty = client.get("/api/whales/scan-runs")
+    assert empty.status_code == 200
+    assert empty.json() == {"total": 0, "items": []}
+
+    scanned = client.post("/api/whales/scan")
+    assert scanned.status_code == 200, scanned.text
+    history = client.get("/api/whales/scan-runs?limit=1")
+
+    assert history.status_code == 200
+    payload = history.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["status"] == "success"
+    assert payload["items"][0]["finished_at"] is not None
+    assert payload["items"][0]["coverage_complete"] is True
+    assert payload["items"][0]["page_limit_hit"] is False
+
+
 async def seed_two_sided_whale_market(database) -> None:
     now = utcnow()
     async with database.sessions() as session:
@@ -479,6 +499,7 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     assert initial.json()["large_amount_conflict_priority_enabled"] is True
     assert initial.json()["auto_follow_market_max_purchase_count"] is None
     assert initial.json()["auto_follow_market_max_amount_usdc"] is None
+    assert initial.json()["coverage_incomplete_until"] is None
     assert "smtp_configured" not in initial.json()
     global_email_settings = client.get("/api/email-settings").json()
     assert global_email_settings["smtp_configured"] is False

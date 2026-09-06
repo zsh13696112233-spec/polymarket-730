@@ -75,6 +75,7 @@ type HomeOverview = {
     enabled: boolean;
     last_scan_at: string | null;
     last_scan_error: string | null;
+    coverage_incomplete_until: string | null;
     consecutive_failures: number;
     scan_interval_seconds: number;
     rules: HomeSystemRule[];

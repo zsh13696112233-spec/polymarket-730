@@ -488,6 +488,7 @@ price_delta_percent = (current_price − avg_buy_price) / avg_buy_price × 100
 | `follow_slippage_cents` | DECIMAL | 3 | 跟单买入允许滑点（美分） |
 | `sell_slippage_cents` | DECIMAL | 3 | 卖出允许滑点（美分） |
 | `auto_redeem` | Boolean | true | 结算后自动赎回 |
+| `coverage_incomplete_until` | DateTime | null | 分页触顶后保持降级和暂停自动动作的截止时间 |
 | `last_scan_at` | DateTime | null | 健康状态 |
 | `last_scan_error` | Text | null | 健康状态 |
 | `consecutive_failures` | Integer | 0 | 健康状态 |
@@ -768,7 +769,7 @@ sequenceDiagram
     S->>DB: 写入 last_scan_at
 ```
 
-第一步的分页终止条件有三个，任一满足即停：本页最小 `timestamp` 早于 `window_start`；返回条数少于 `limit`；`offset` 超过 `max_scan_pages × limit`（默认 20 页即 10000 条）。达到页数上限时记录一条告警到 `last_scan_error`，但不视为失败。
+第一步的分页终止条件有三个，任一满足即停：本页最小 `timestamp` 早于 `window_start`；返回条数少于 `limit`；`offset` 超过 `max_scan_pages × limit`（默认 20 页即 10000 条）。达到页数上限时，扫描器写入覆盖不完整告警并把游标推进到本轮结束时间，避免以后每轮永久重复同一批数据；同时把 `coverage_incomplete_until` 延长一个完整滚动窗口。在此之前继续采集新成交和记录信号，但暂停自动买入与分歧自动卖出。
 
 ### 8.3 请求量控制
 
@@ -784,6 +785,8 @@ sequenceDiagram
 稳态下单轮约 5–15 个请求，60 秒一轮完全在限速范围内。遇到 `PolymarketAPIError` 且带 `retry_after` 时，按该值休眠后重试当前步骤，最多 3 次；连续失败则本轮中止，`consecutive_failures += 1`，下一轮间隔按指数退避（上限 `settings.max_backoff_seconds`）。
 
 **增量优化**：记录上一轮成功采集到的最新 `timestamp`，下一轮的 `start` 取 `max(window_start, last_timestamp − 120s)`，回退 120 秒覆盖乱序与延迟入账。这能把稳态下的成交采集压到 1–2 页。首轮或距上次成功超过窗口长度时退化为全窗口拉取。
+
+每轮扫描写入 `whale_scan_runs`，记录请求覆盖区间、实际成交时间边界、采集数量、分页触顶状态、完成状态和错误，并保留 30 天。进程重启后，未完成的 `running` 记录会标记为中断失败。
 
 ### 8.4 故障隔离
 
@@ -992,11 +995,12 @@ profit_ratio   = (gross_payout − total_cost) / total_cost × 100%
 GET  /api/whales/settings         -> WhaleSettingsRead
 PUT  /api/whales/settings         <- WhaleSettingsUpdate  -> WhaleSettingsRead
 POST /api/whales/scan             -> {"status":"ok"|"skipped"}  手动触发一轮扫描
+GET  /api/whales/scan-runs        -> 最近 30 天持久化扫描运行记录
 ```
 
 手动扫描是同步等待的：一轮扫描要几十秒，而后台循环大半时间都在跑，若发现有轮次在跑就直接返回，界面上会表现为「点了没反应、过一会儿才刷新」。所以 `scan_now()` 会比对 `WhaleSettings.updated_at` 与运行中轮次读到的配置版本——运行中的轮次已经读到最新配置就等它收尾，否则排队再补一轮，返回时保证列表能读到基于最新配置的结果。巨鲸模块被关闭或本轮扫描失败时返回 `skipped`，前端据此提示列表可能仍是上一轮结果。
 
-`WhaleSettingsRead` 在 7.1 全部字段基础上追加：`last_scan_at`、`last_scan_error`、`consecutive_failures`、`tracked_trade_count`、`entry_count`、`market_count`。
+`WhaleSettingsRead` 在 7.1 全部字段基础上追加：`coverage_incomplete_until`、`last_scan_at`、`last_scan_error`、`consecutive_failures`、`tracked_trade_count`、`entry_count`、`market_count`。
 
 `WhaleSettingsUpdate` 的校验与 7.1 的表约束一致，越界返回 422 并给出中文原因。
 
@@ -1397,7 +1401,7 @@ npm run lint
 | D1 | 打开跟单记录页 | 汇总显示总投入、已实现盈亏、浮动盈亏、胜率、平均盈利比 |
 | D2 | 展开某个已结束仓位 | 从买入到退出的完整流水，末行给出该仓位最终净盈亏 |
 | D3 | 某持仓的 `best_bid` 拿不到 | 市值与浮动盈亏显示「—」，不显示 0 |
-| E1 | 断网后触发扫描 | `last_scan_error` 有记录，页面显示数据过期，现有持仓监控与自动跟单不受影响 |
+| E1 | 断网后触发扫描 | `last_scan_error` 和 `whale_scan_runs` 有记录；若回补触顶则页面持续显示降级，并暂停自动买入与分歧自动卖出直到缺口退出滚动窗口 |
 | E2 | 关闭 `whale_settings.enabled` | 扫描停止，现有功能行为不变 |
 
 ---

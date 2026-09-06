@@ -64,7 +64,7 @@ async def test_pre_migration_database_replays_from_its_actual_revision(tmp_path:
         }
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
-    assert revision == "0041_whale_conflict_priority_toggle"
+    assert revision == "0042_whale_scan_audit"
     assert RETIRED_TABLES.isdisjoint(tables)
     assert set(Base.metadata.tables) == tables - {"alembic_version"}
 

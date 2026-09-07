@@ -125,6 +125,47 @@ def test_execution_account_defaults_to_platform_managed_redemption():
     assert payload.auto_redeem is False
 
 
+def test_polygon_rpc_bypasses_configured_proxy(monkeypatch):
+    adapter = UnifiedPolymarketTrader(
+        host="https://clob.test",
+        keychain=SimpleNamespace(),
+        key_reference=KeychainReference(service="test", account="test"),
+        signature_type=3,
+        funder_address=FUNDER,
+        proxy_url="http://127.0.0.1:7897",
+    )
+    observed: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return b'{"jsonrpc":"2.0","id":1,"result":"0x89"}'
+
+    class Opener:
+        def open(self, request, timeout):
+            observed["url"] = request.full_url
+            observed["timeout"] = timeout
+            return Response()
+
+    def fake_build_opener(handler):
+        observed["proxies"] = handler.proxies
+        return Opener()
+
+    monkeypatch.setattr("backend.trading.build_opener", fake_build_opener)
+
+    assert adapter._rpc_sync("eth_chainId", []) == "0x89"
+    assert observed == {
+        "url": "https://polygon.drpc.org",
+        "timeout": 15,
+        "proxies": {},
+    }
+
+
 async def test_unified_trader_rejects_retired_proxy_wallet_type():
     adapter = UnifiedPolymarketTrader(
         host="https://clob.test",

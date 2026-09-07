@@ -911,9 +911,10 @@ class UnifiedPolymarketTrader:
             method="POST",
         )
         try:
-            if self.proxy_url is None:
-                raise TradingUnavailable("Polymarket 代理未配置")
-            opener = build_opener(ProxyHandler({"http": self.proxy_url, "https": self.proxy_url}))
+            # Polygon RPC is reachable directly even when the Polymarket APIs require a proxy.
+            # An explicit empty handler prevents the SDK's global proxy environment from leaking
+            # into these latency-sensitive chain reads.
+            opener = build_opener(ProxyHandler({}))
             with opener.open(request, timeout=15) as response:  # noqa: S310
                 body = json.loads(response.read().decode())
         except TradingUnavailable:

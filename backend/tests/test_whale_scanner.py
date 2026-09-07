@@ -1249,7 +1249,82 @@ async def test_scanner_restores_incremental_watermark_from_persisted_trades(
         settings = await session.get(WhaleSettings, 1)
         assert settings is not None
         assert settings.last_trade_cursor_at is not None
-        assert settings.last_trade_cursor_at > persisted_cursor
+        assert settings.last_trade_cursor_at == persisted_cursor
+
+
+@pytest.mark.parametrize("response_kind", ["empty", "stale"])
+async def test_scanner_collects_delayed_trade_after_empty_or_stale_feed(
+    database, monkeypatch, response_kind
+):
+    client = PositionDiscoveryClient()
+    scan_time = utcnow()
+    client.trade_timestamp = scan_time - timedelta(minutes=5)
+    original_trade = (await client.fetch_large_trades())[0]
+    delayed_trade = replace(
+        original_trade,
+        timestamp=original_trade.timestamp + timedelta(minutes=1),
+        transaction_hash="0x" + "d" * 64,
+    )
+    response = [original_trade]
+
+    async def fetch_trades(**_: Any) -> list[LargeTradeSnapshot]:
+        return response
+
+    monkeypatch.setattr(client, "fetch_large_trades", fetch_trades)
+    monkeypatch.setattr("backend.whale.utcnow", lambda: scan_time)
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await scanner.tick() is True
+
+    scan_time += timedelta(minutes=1)
+    response = (
+        []
+        if response_kind == "empty"
+        else [replace(original_trade, timestamp=original_trade.timestamp - timedelta(seconds=30))]
+    )
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings.last_trade_cursor_at == original_trade.timestamp
+
+    # A restart must preserve the trade watermark, including after an empty page.
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    scan_time += timedelta(minutes=1)
+    response = [delayed_trade, original_trade]
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        stored = await session.scalar(
+            select(WhaleTrade).where(WhaleTrade.transaction_hash == delayed_trade.transaction_hash)
+        )
+        settings = await session.get(WhaleSettings, 1)
+        assert stored is not None
+        assert stored.timestamp == delayed_trade.timestamp
+        assert settings.last_trade_cursor_at == delayed_trade.timestamp
+
+
+async def test_scanner_keeps_uninitialized_cursor_after_empty_feed(database, monkeypatch):
+    client = PositionDiscoveryClient()
+
+    async def no_trades(**_: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(client, "fetch_large_trades", no_trades)
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert settings.last_trade_cursor_at is None
 
 
 async def test_scanner_does_not_advance_trade_cursor_after_collection_failure(
@@ -1576,6 +1651,85 @@ async def test_settlement_is_mapped_to_the_entry_outcome_and_deactivates_rule(da
     assert state is not None
     assert state.active is False
     assert state.inactive_reason == "market_closed"
+
+
+async def test_scanner_refreshes_market_for_open_follow_position_without_entry(
+    database,
+    monkeypatch,
+):
+    client = PositionDiscoveryClient()
+    now = utcnow()
+    async with database.sessions() as session:
+        session.add(
+            WhaleFollowPosition(
+                asset_id=client.asset_id,
+                condition_id=client.condition_id,
+                title="Chain test market",
+                outcome="Yes",
+                outcome_index=0,
+                neg_risk=False,
+                cycle_no=1,
+                size=Decimal("5"),
+                cost_usdc=Decimal("3"),
+                lifetime_bought_size=Decimal("5"),
+                lifetime_bought_usdc=Decimal("3"),
+                lifetime_sold_size=Decimal("0"),
+                lifetime_sold_usdc=Decimal("0"),
+                lifetime_fee_usdc=Decimal("0"),
+                realized_pnl=Decimal("0"),
+                status="open",
+                opened_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+    active_market = (
+        await client.fetch_active_whale_markets(
+            min_liquidity_usdc=Decimal("5000"),
+            min_volume_usdc=Decimal("10000"),
+        )
+    )[0]
+    closed_market = replace(
+        active_market,
+        closed=True,
+        accepting_orders=False,
+        outcome_prices=(Decimal("0"), Decimal("1")),
+    )
+    active_calls: list[list[str]] = []
+    closed_calls: list[list[str]] = []
+
+    async def no_trades(**_: Any) -> list[Any]:
+        return []
+
+    async def active_markets(condition_ids: list[str]) -> list[WhaleMarketSnapshot]:
+        active_calls.append(condition_ids)
+        return []
+
+    async def closed_markets(condition_ids: list[str]) -> list[WhaleMarketSnapshot]:
+        closed_calls.append(condition_ids)
+        return [closed_market]
+
+    monkeypatch.setattr(client, "fetch_large_trades", no_trades)
+    monkeypatch.setattr(client, "fetch_markets_with_tags", active_markets)
+    monkeypatch.setattr(client, "fetch_closed_markets_with_tags", closed_markets, raising=False)
+    scanner = WhaleDiscoveryScanner(
+        database=database,
+        client=client,  # type: ignore[arg-type]
+        settings=database.settings,
+    )
+
+    assert await scanner.tick() is True
+
+    async with database.sessions() as session:
+        assert await session.scalar(select(WhaleEntry)) is None
+        market = await session.get(WhaleMarket, client.condition_id)
+    assert active_calls == [[client.condition_id]]
+    assert closed_calls == [[client.condition_id]]
+    assert market is not None
+    assert market.closed is True
+    assert market.outcome_prices_json == '["0","1"]'
 
 
 async def test_settlement_repairs_invalid_outcome_index_from_market_token_mapping(database):

@@ -809,6 +809,77 @@ async def test_external_reconciliation_retries_transient_trade_read_failures(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("balance", "old_asset", "redeemed", "warns"),
+    [
+        ("79.724284", ASSET_ID, False, False),
+        ("79.724284", ASSET_ID, True, True),
+        ("79.714284", ASSET_ID, False, False),
+        ("79.734284", ASSET_ID, False, True),
+        ("79.704284", ASSET_ID, False, True),
+        ("79.724284", "other-asset", False, True),
+    ],
+)
+async def test_external_reconciliation_recognizes_prior_cycle_dust(
+    database: Database, balance: str, old_asset: str, redeemed: bool, warns: bool
+):
+    await configure_reconciliation(database)
+    old_id = await insert_position(database, size="0", cost="0", status="closed")
+    async with database.sessions() as session:
+        old = await session.get(WhaleFollowPosition, old_id)
+        old.asset_id = old_asset
+        old.cycle_no = 0
+        old.created_at = NOW - timedelta(hours=1)
+        old.closed_at = NOW - timedelta(minutes=30)
+        session.add(
+            WhaleFollowLedger(
+                position_id=old_id,
+                type="dust_writeoff",
+                source="conflict_exit",
+                size=Decimal("0.01"),
+                amount_usdc=ZERO,
+                timestamp=old.closed_at,
+            )
+        )
+        await session.commit()
+    position_id = await insert_position(
+        database, size="79.714284", cost="40.05601916", status="open"
+    )
+    redemptions = []
+    if redeemed:
+        redemptions.append(
+            RedemptionSnapshot(
+                asset_id=ASSET_ID,
+                condition_id=CONDITION_ID,
+                title="Whale market",
+                outcome="Yes",
+                outcome_index=0,
+                event_slug="whale-event",
+                market_slug="whale-market",
+                size=Decimal("0.01"),
+                usdc_size=Decimal("0.01"),
+                timestamp=NOW - timedelta(minutes=20),
+                transaction_hash="0xold-dust-redemption",
+            )
+        )
+    follow_executor = reconciliation_executor(
+        database, trades=[], balance=balance, redemptions=redemptions
+    )
+    for _ in range(2):
+        warning = await follow_executor.reconcile_external_wallet_activity()
+        assert (warning is not None) == warns
+        if warns:
+            assert f"本地 79.714284 份，链上 {balance} 份" in warning
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        assert_decimal(position.size, "79.714284")
+        assert_decimal(position.cost_usdc, "40.056019")
+        assert position.status == "open"
+        ledger = list(await session.scalars(select(WhaleFollowLedger)))
+        assert len(ledger) == 1
+
+
+@pytest.mark.asyncio
 async def test_manual_buy_and_sell_are_adopted_and_dust_closes_position(
     database: Database,
 ):

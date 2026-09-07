@@ -1060,22 +1060,28 @@ class WhaleDiscoveryScanner:
             if isinstance(configured_coverage_until, datetime) and configured_coverage_until > now
             else None
         )
+        next_cursor = self._last_trade_cursor_at
         if hit_page_limit:
+            # Escape the public feed's historical offset cap while retaining
+            # the fail-closed coverage flag for the potentially missing window.
+            next_cursor = now
             next_complete_at = now + timedelta(hours=max(1, int(config["window_hours"])))
             coverage_incomplete_until = max(
                 coverage_incomplete_until or next_complete_at,
                 next_complete_at,
             )
+        elif trade_timestamps:
+            # Successful responses can still be stale. Advance only to observed
+            # trades; empty pages and older overlap rows must not move the cursor.
+            newest_trade_at = max(trade_timestamps)
+            next_cursor = max(next_cursor or newest_trade_at, newest_trade_at)
         async with self.database.sessions() as session:
             settings_row = await session.get(WhaleSettings, 1)
             if settings_row is not None:
-                # The public feed cannot page past its historical offset cap.  Keep
-                # the scanner moving forward, but retain a fail-closed coverage flag
-                # until every potentially missing trade has aged out of the window.
-                settings_row.last_trade_cursor_at = now
+                settings_row.last_trade_cursor_at = next_cursor
                 settings_row.coverage_incomplete_until = coverage_incomplete_until
                 await session.commit()
-        self._last_trade_cursor_at = now
+        self._last_trade_cursor_at = next_cursor
 
         auto_follow_block_reason = (
             "成交历史覆盖不完整，自动跟单已暂停" if coverage_incomplete_until is not None else None
@@ -1111,7 +1117,7 @@ class WhaleDiscoveryScanner:
             or self._last_history_refresh_at <= now - WHALE_HISTORY_REFRESH
         ):
             async with self.database.sessions() as session:
-                unresolved_conditions = list(
+                entry_conditions = list(
                     (
                         await session.scalars(
                             select(WhaleEntry.condition_id)
@@ -1123,6 +1129,21 @@ class WhaleDiscoveryScanner:
                         )
                     ).all()
                 )
+                position_conditions = list(
+                    (
+                        await session.scalars(
+                            select(WhaleFollowPosition.condition_id)
+                            .where(
+                                WhaleFollowPosition.size > ZERO,
+                                WhaleFollowPosition.status.in_(
+                                    ["opening", "open", "closing", "redeeming"]
+                                ),
+                            )
+                            .distinct()
+                        )
+                    ).all()
+                )
+                unresolved_conditions = list(dict.fromkeys(entry_conditions + position_conditions))
             self._last_history_refresh_at = now
         await self._refresh_markets(
             list(
@@ -4184,20 +4205,62 @@ class WhaleFollowExecutor:
                         )
                         known_event_keys.add(matching_event_key)
                         continue
-                if abs(chain_balance - position.size) > REDEMPTION_SIZE_TOLERANCE:
+                # A closed cycle's written-off dust can remain in the wallet when
+                # this asset is bought again. It is not a missing external fill.
+                previous_cycle = await session.scalar(
+                    select(WhaleFollowPosition)
+                    .where(
+                        WhaleFollowPosition.asset_id == position.asset_id,
+                        WhaleFollowPosition.cycle_no < position.cycle_no,
+                        WhaleFollowPosition.status == "closed",
+                        WhaleFollowPosition.closed_at <= position.created_at,
+                    )
+                    .order_by(WhaleFollowPosition.cycle_no.desc())
+                    .limit(1)
+                )
+                prior_dust = ZERO
+                if previous_cycle is not None:
+                    prior_dust = sum(
+                        await session.scalars(
+                            select(WhaleFollowLedger.size).where(
+                                WhaleFollowLedger.position_id == previous_cycle.id,
+                                WhaleFollowLedger.type == "dust_writeoff",
+                            )
+                        ),
+                        ZERO,
+                    )
+                    if any(
+                        redemption.timestamp >= previous_cycle.closed_at
+                        and self._redemption_matches_position(redemption, position)
+                        for redemption in redemptions_by_condition.get(position.condition_id, [])
+                    ):
+                        prior_dust = ZERO
+                difference = chain_balance - position.size
+                known_dust_balance = (
+                    redemption_fetch_error is None
+                    and prior_dust > ZERO
+                    and abs(difference - prior_dust) <= REDEMPTION_SIZE_TOLERANCE
+                )
+                if abs(difference) > REDEMPTION_SIZE_TOLERANCE and not known_dust_balance:
+                    local_size_display = _decimal_display(
+                        position.size.quantize(REDEMPTION_SIZE_TOLERANCE)
+                    )
+                    chain_size_display = _decimal_display(
+                        chain_balance.quantize(REDEMPTION_SIZE_TOLERANCE)
+                    )
                     if (
                         chain_balance <= REDEMPTION_SIZE_TOLERANCE
                         and market is not None
                         and (market.closed or market_price_is_settled(market))
                     ):
                         warnings.append(
-                            f"{position.title} / {position.outcome} 本地 {position.size} 份，"
+                            f"{position.title} / {position.outcome} 本地 {local_size_display} 份，"
                             "链上已归零，尚未获取到对应的自动赎回流水"
                         )
                     else:
                         warnings.append(
-                            f"{position.title} / {position.outcome} 本地 {position.size} 份，"
-                            f"链上 {chain_balance} 份，等待外部成交数据补齐"
+                            f"{position.title} / {position.outcome} 本地 {local_size_display} 份，"
+                            f"链上 {chain_size_display} 份，等待外部成交数据补齐"
                         )
                     continue
                 if position.size <= ZERO:

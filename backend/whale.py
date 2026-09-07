@@ -74,6 +74,21 @@ from backend.whale_requests import (
     current_whale_request_capture,
 )
 
+# The Data API truncates indexed position sizes to four decimal places.
+# Chain/CLOB balance checks keep their separate, stricter base-unit tolerance.
+WALLET_POSITION_INDEX_PRECISION = Decimal("0.0001")
+
+WALLET_PENDING_STATUSES = {
+    "planned",
+    "signed",
+    "submitted",
+    "reconciliation_pending",
+    "live",
+    "matched",
+    "delayed",
+    "partially_filled_live",
+}
+
 ZERO = Decimal("0")
 ONE = Decimal("1")
 HUNDRED = Decimal("100")
@@ -3428,7 +3443,7 @@ class WhaleFollowExecutor:
                     (
                         await session.scalars(
                             select(WhaleOrder).where(
-                                WhaleOrder.status.in_(["submitted", "reconciliation_pending"]),
+                                WhaleOrder.status.in_(WALLET_PENDING_STATUSES),
                                 WhaleOrder.external_order_id.is_not(None),
                             )
                         )
@@ -3443,7 +3458,15 @@ class WhaleFollowExecutor:
             warnings: list[str] = []
             for order in orders:
                 try:
-                    result = await trader.order_status(str(order.external_order_id))
+                    if order.execution_wallet:
+                        account = await self._account()
+                        if order.execution_wallet != str(account.funder_address).lower():
+                            continue
+                    result = await (
+                        trader.order_status(str(order.external_order_id), order_type="GTC")
+                        if order.order_type == "GTC"
+                        else trader.order_status(str(order.external_order_id))
+                    )
                     result = await self._hydrate_fee(trader, result)
                     await self.apply_result(order.id, result)
                 except Exception as error:
@@ -3464,7 +3487,8 @@ class WhaleFollowExecutor:
                 worst_price=order.limit_price,
                 neg_risk=order.neg_risk,
             )
-        result = normalize_fak_result(request, result)
+        if order.order_type != "GTC":
+            result = normalize_fak_result(request, result)
         now = utcnow()
         raw_fills = list(result.fills)
         if not raw_fills and result.filled_size > ZERO:
@@ -3489,6 +3513,11 @@ class WhaleFollowExecutor:
         async with self.database.sessions() as session:
             order = await session.get(WhaleOrder, order_id)
             assert order is not None
+            if (
+                order.order_type == "GTC"
+                and result.filled_size + REDEMPTION_SIZE_TOLERANCE < order.filled_size
+            ):
+                raise ValueError("上游成交数量回退，保留本地记录等待对账")
             position = (
                 await session.get(WhaleFollowPosition, order.position_id)
                 if order.position_id is not None
@@ -3659,7 +3688,7 @@ class WhaleFollowExecutor:
                             timestamp=now,
                         )
                     )
-                    if full_exit_requested:
+                    if full_exit_requested and order.order_type != "GTC":
                         await self._write_off_terminal_sell_remainder(
                             session,
                             position,
@@ -3676,18 +3705,15 @@ class WhaleFollowExecutor:
                         )
                 position.updated_at = now
             elif position is not None and new_size <= ZERO:
-                pending_status = order.status in {
-                    "submitted",
-                    "reconciliation_pending",
-                    "live",
-                    "matched",
-                }
+                pending_status = order.status in WALLET_PENDING_STATUSES
                 if order.side == "BUY" and position.size <= ZERO:
                     position.status = "opening" if pending_status else "closed"
                     position.closed_at = None if pending_status else now
                     position.updated_at = now
                 elif order.side == "SELL" and position.size > ZERO:
-                    position.status = "closing" if pending_status else "open"
+                    position.status = (
+                        "closing" if pending_status and order.order_type != "GTC" else "open"
+                    )
                     position.updated_at = now
             await session.commit()
 
@@ -3818,6 +3844,7 @@ class WhaleFollowExecutor:
         }
         if (
             order.side != "SELL"
+            or order.order_type == "GTC"
             or order.status in pending_statuses
             or order.filled_size <= ZERO
             or position.size <= ZERO
@@ -4212,6 +4239,395 @@ class WhaleFollowExecutor:
             await session.commit()
         return "；".join(warnings[:3]) or None
 
+    async def _wallet_orders(self, wallet: str) -> list[WhaleOrder]:
+        async with self.database.sessions() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(WhaleOrder)
+                        .where(
+                            WhaleOrder.side == "SELL",
+                            or_(
+                                WhaleOrder.execution_wallet == wallet,
+                                WhaleOrder.execution_wallet.is_(None),
+                            ),
+                        )
+                        .order_by(WhaleOrder.id.desc())
+                    )
+                ).all()
+            )
+
+    @staticmethod
+    def _wallet_order_read(order: WhaleOrder) -> dict[str, Any]:
+        return {
+            "id": order.id,
+            "external_order_id": order.external_order_id,
+            "asset_id": order.asset_id,
+            "title": order.title,
+            "outcome": order.outcome,
+            "order_type": order.order_type,
+            "price": order.limit_price,
+            "size": order.requested_size,
+            "filled_size": order.filled_size,
+            "status": order.status,
+            "reason": order.reason,
+            "can_cancel": bool(
+                order.execution_wallet
+                and order.external_order_id
+                and order.order_type == "GTC"
+                and order.status in WALLET_PENDING_STATUSES
+            ),
+        }
+
+    async def _wallet_capacity(
+        self,
+        asset_id: str,
+        wallet: str,
+        trader: UnifiedPolymarketTrader,
+        *,
+        orders: list[WhaleOrder] | None = None,
+        remote: list[Any] | None = None,
+    ) -> tuple[Decimal, Decimal, Decimal]:
+        orders = await self._wallet_orders(wallet) if orders is None else orders
+        remote = await trader.open_orders() if remote is None else remote
+        # Confirmed chain balances and the CLOB's spendable balance must agree.
+        balance, clob_balance = await asyncio.gather(
+            trader.onchain_outcome_balance(asset_id), trader.outcome_balance(asset_id)
+        )
+        if abs(balance - clob_balance) > Decimal("0.000001"):
+            raise ValueError("链上与交易余额尚未一致，请等待结算后刷新")
+        reservations: dict[str, Decimal] = {}
+        for order in remote:
+            if str(order.maker_address).lower() != wallet:
+                raise ValueError("挂单账户与执行钱包不匹配")
+            if str(order.token_id) == asset_id and order.side == "SELL":
+                reservations[str(order.id)] = max(ZERO, order.original_size - order.size_matched)
+        for order in orders:
+            if order.asset_id == asset_id and order.status in WALLET_PENDING_STATUSES:
+                key = order.external_order_id or f"local:{order.id}"
+                reservations[key] = max(
+                    reservations.get(key, ZERO), order.requested_size - order.filled_size
+                )
+        reserved = sum(reservations.values(), ZERO)
+        if reserved > balance:
+            raise ValueError("挂单占用超过当前余额，请等待订单对账")
+        return balance, reserved, balance - reserved
+
+    async def wallet_positions(self) -> dict[str, Any]:
+        account = await self._account()
+        wallet = str(account.funder_address).lower()
+        trader = await self._trader(account)
+        active, settled = await asyncio.gather(
+            self.client.fetch_active_positions(wallet),
+            self.client.fetch_redeemable_positions(wallet),
+        )
+        orders = await self._wallet_orders(wallet)
+        remote = await trader.open_orders()
+        async with self.database.sessions() as session:
+            tracked = {
+                p.asset_id: p
+                for p in (
+                    await session.scalars(
+                        select(WhaleFollowPosition).where(
+                            WhaleFollowPosition.status.in_(
+                                ["opening", "open", "closing", "redeeming"]
+                            )
+                        )
+                    )
+                ).all()
+            }
+        settled_ids = {p.asset_id for p in settled}
+        snapshots = {p.asset_id: p for p in [*active, *settled]}
+
+        async def read_position(asset_id: str, position: Any) -> dict[str, Any] | None:
+            reason = None
+            size, reserved, available = position.size, ZERO, ZERO
+            price = cost = None
+            status = "settled" if asset_id in settled_ids else "open"
+            try:
+                size, reserved, available = await self._wallet_capacity(
+                    asset_id, wallet, trader, orders=orders, remote=remote
+                )
+                if size == ZERO:
+                    return None
+                if abs(size - position.size) >= WALLET_POSITION_INDEX_PRECISION:
+                    raise ValueError("持仓数据与链上余额尚未一致，请刷新")
+                if status == "settled":
+                    available = ZERO
+                    price = position.current_price
+                else:
+                    price = (await self.client.fetch_order_book(asset_id)).best_bid
+                local = tracked.get(asset_id)
+                if local is not None and abs(local.size - size) <= Decimal("0.000001"):
+                    cost = local.cost_usdc
+                elif position.avg_price > ZERO:
+                    cost = position.avg_price * size
+            except (ValueError, TradingUnavailable, PolymarketAPIError) as error:
+                reason = str(error)
+                available = ZERO
+                if status != "settled":
+                    status = "unavailable"
+            value = size * price if price is not None else None
+            return {
+                "asset_id": asset_id,
+                "title": position.title,
+                "outcome": position.outcome,
+                "size": size,
+                "reserved_size": reserved,
+                "available_size": available,
+                "price": price,
+                "market_value": value,
+                "cost": cost,
+                "pnl": value - cost if value is not None and cost is not None else None,
+                "status": status,
+                "reason": reason,
+            }
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def read_limited(asset_id: str, position: Any) -> dict[str, Any] | None:
+            async with semaphore:
+                return await read_position(asset_id, position)
+
+        positions = await asyncio.gather(*(read_limited(a, p) for a, p in snapshots.items()))
+        local_ids = {o.external_order_id for o in orders if o.external_order_id}
+        displayed = [
+            self._wallet_order_read(o)
+            for index, o in enumerate(orders)
+            if index < 200 or o.status in WALLET_PENDING_STATUSES
+        ]
+        for order in remote:
+            if order.side != "SELL" or str(order.id) in local_ids:
+                continue
+            displayed.append(
+                {
+                    "id": None,
+                    "external_order_id": str(order.id),
+                    "asset_id": str(order.token_id),
+                    "title": "外部卖出挂单",
+                    "outcome": order.outcome,
+                    "order_type": order.order_type,
+                    "price": order.price,
+                    "size": order.original_size,
+                    "filled_size": order.size_matched,
+                    "status": str(order.status).lower(),
+                    "can_cancel": False,
+                    "reason": "外部订单仅展示占用",
+                }
+            )
+        return {
+            "wallet": wallet,
+            "positions": [position for position in positions if position is not None],
+            "orders": displayed,
+        }
+
+    async def quote_wallet_sell(
+        self,
+        asset_id: str,
+        *,
+        size: Decimal | None,
+        sell_all: bool,
+        order_type: str,
+        price: Decimal | None,
+    ) -> dict[str, Any]:
+        if not self.settings.trading_enabled:
+            raise ValueError("实盘交易已被系统停用")
+        account = await self._account()
+        wallet = str(account.funder_address).lower()
+        trader = await self._trader(account)
+        positions = await self.client.fetch_active_positions(wallet)
+        position = next((p for p in positions if p.asset_id == asset_id), None)
+        if position is None:
+            raise ValueError("该钱包当前没有可交易持仓")
+        market = await trader.sell_market(position.condition_id, asset_id)
+        book = await self.client.fetch_order_book(asset_id)
+        balance, _, available = await self._wallet_capacity(asset_id, wallet, trader)
+        if abs(balance - position.size) >= WALLET_POSITION_INDEX_PRECISION:
+            raise ValueError("持仓数据与链上余额尚未一致，请刷新")
+        selected = available if sell_all else _decimal(size)
+        if selected <= ZERO or selected > available:
+            raise ValueError("卖出份额必须大于 0 且不能超过可卖份额")
+        if selected != selected.quantize(Decimal("0.01"), rounding=ROUND_DOWN):
+            if sell_all:
+                selected = selected.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            else:
+                raise ValueError("卖出份额最多支持两位小数")
+        if selected < book.min_order_size:
+            raise ValueError(f"卖出份额不能低于市场最小下单量 {book.min_order_size}")
+        async with self.database.sessions() as session:
+            settings = await session.get(WhaleSettings, 1)
+            local = await session.scalar(
+                select(WhaleFollowPosition).where(
+                    WhaleFollowPosition.asset_id == asset_id,
+                    WhaleFollowPosition.status.in_(["opening", "open", "closing", "redeeming"]),
+                )
+            )
+            if local is not None and (
+                local.status in {"opening", "redeeming"}
+                or abs(local.size - balance) > Decimal("0.000001")
+            ):
+                raise ValueError("跟单账本与余额不一致或正在结算，请等待对账")
+            slippage = settings.sell_slippage_cents if settings else Decimal("2")
+        if order_type == "FAK":
+            if book.best_bid is None:
+                raise ValueError("市场当前没有可成交买盘")
+            price = market_worst_price(book.best_bid, book.tick_size, slippage, side="SELL")
+        if price is None or not book.tick_size <= price <= ONE - book.tick_size:
+            raise ValueError("卖出价格超出市场允许范围")
+        if price % book.tick_size != ZERO:
+            raise ValueError(f"卖出价格必须符合最小跳动 {book.tick_size}")
+        schedule = market.trading.fee_schedule
+        fee = estimated_market_fee(
+            selected,
+            price,
+            schedule.rate if schedule else ZERO,
+            Decimal(str(schedule.exponent)) if schedule else ONE,
+        )
+        cost = None
+        if local is not None:
+            cost = local.cost_usdc * selected / local.size
+        elif position.avg_price > ZERO:
+            cost = position.avg_price * selected
+        return {
+            "wallet": wallet,
+            "asset_id": asset_id,
+            "condition_id": position.condition_id,
+            "title": position.title,
+            "outcome": position.outcome,
+            "outcome_index": position.outcome_index,
+            "neg_risk": bool(market.state.neg_risk),
+            "position_id": local.id if local else None,
+            "order_type": order_type,
+            "size": selected,
+            "price": price,
+            "tick_size": book.tick_size,
+            "minimum_order_size": book.min_order_size,
+            "estimated_proceeds": selected * price,
+            "estimated_fee": fee,
+            "estimated_pnl": selected * price - fee - cost if cost is not None else None,
+        }
+
+    async def execute_wallet_sell(
+        self, quote: dict[str, Any], confirmation_id: str
+    ) -> dict[str, Any]:
+        async with self._lock:
+            current = await self.quote_wallet_sell(
+                quote["asset_id"],
+                size=quote["size"],
+                sell_all=False,
+                order_type=quote["order_type"],
+                price=quote["price"] if quote["order_type"] == "GTC" else None,
+            )
+            if any(
+                current[key] != quote[key]
+                for key in (
+                    "wallet",
+                    "condition_id",
+                    "neg_risk",
+                    "position_id",
+                    "tick_size",
+                    "minimum_order_size",
+                )
+            ) or (quote["order_type"] == "FAK" and current["price"] < quote["price"]):
+                raise ValueError("账户、盘口或持仓已变化，请重新预览")
+            async with self.database.sessions() as session:
+                if await session.scalar(
+                    select(WhaleOrder.id).where(
+                        WhaleOrder.idempotency_key == f"wallet:{confirmation_id}"
+                    )
+                ):
+                    raise ValueError("该卖出已提交，请查看订单")
+                now = utcnow()
+                order = WhaleOrder(
+                    position_id=quote["position_id"],
+                    source="wallet_manual",
+                    execution_wallet=quote["wallet"],
+                    order_type=quote["order_type"],
+                    idempotency_key=f"wallet:{confirmation_id}",
+                    asset_id=quote["asset_id"],
+                    condition_id=quote["condition_id"],
+                    title=quote["title"],
+                    outcome=quote["outcome"],
+                    outcome_index=quote["outcome_index"],
+                    neg_risk=quote["neg_risk"],
+                    side="SELL",
+                    requested_size=quote["size"],
+                    requested_usdc=quote["estimated_proceeds"],
+                    limit_price=quote["price"],
+                    status="planned",
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(order)
+                await session.commit()
+                order_id = order.id
+            trader = await self._trader()
+            request = MarketTradeRequest(
+                asset_id=quote["asset_id"],
+                side="SELL",
+                amount=quote["size"],
+                worst_price=quote["price"],
+                neg_risk=quote["neg_risk"],
+            )
+            try:
+                prepared = await (
+                    trader.prepare_limit(request)
+                    if quote["order_type"] == "GTC"
+                    else trader.prepare_market(request)
+                )
+            except Exception as error:
+                await self._mark_order(order_id, "blocked", "SDK 签名失败，未提交订单")
+                raise TradingUnavailable("SDK 签名失败，未提交订单") from error
+            async with self.database.sessions() as session:
+                order = await session.get(WhaleOrder, order_id)
+                order.signed_order_hash = prepared.signed_order_hash
+                order.status = "signed"
+                await session.commit()
+            try:
+                result = await (
+                    trader.submit_prepared_limit(prepared)
+                    if quote["order_type"] == "GTC"
+                    else trader.submit_prepared_market(prepared)
+                )
+            except Exception as error:
+                await self._mark_order(
+                    order_id, "reconciliation_pending", "提交结果待确认，禁止重试"
+                )
+                raise TradingUnavailable("提交结果待确认，请查看订单，不要重复卖出") from error
+            await self.apply_result(order_id, result)
+            async with self.database.sessions() as session:
+                return self._wallet_order_read(await session.get(WhaleOrder, order_id))
+
+    async def quote_wallet_cancel(self, order_id: int) -> dict[str, Any]:
+        account = await self._account()
+        async with self.database.sessions() as session:
+            order = await session.get(WhaleOrder, order_id)
+            if order is None or order.execution_wallet != str(account.funder_address).lower():
+                raise ValueError("订单不属于当前执行钱包")
+            payload = self._wallet_order_read(order)
+            if not payload["can_cancel"]:
+                raise ValueError("该订单不可撤销，请刷新状态")
+            return {"wallet": order.execution_wallet, "order": payload}
+
+    async def execute_wallet_cancel(self, quote: dict[str, Any]) -> dict[str, Any]:
+        async with self._lock:
+            current = await self.quote_wallet_cancel(quote["order"]["id"])
+            if current["wallet"] != quote["wallet"] or (
+                current["order"]["external_order_id"] != quote["order"]["external_order_id"]
+            ):
+                raise ValueError("撤单账户或订单已变化，请重新预览")
+            trader = await self._trader()
+            order_id = current["order"]["id"]
+            # Durable pending status keeps the reservation through timeout or restart.
+            await self._mark_order(order_id, "reconciliation_pending", "正在核对撤单结果")
+            await trader.cancel_confirmed(current["order"]["external_order_id"])
+            result = await trader.order_status(
+                current["order"]["external_order_id"], order_type="GTC"
+            )
+            await self.apply_result(order_id, result)
+            async with self.database.sessions() as session:
+                return self._wallet_order_read(await session.get(WhaleOrder, order_id))
+
     async def quote_sell(
         self,
         *,
@@ -4284,6 +4700,13 @@ class WhaleFollowExecutor:
         async with self._lock:
             if not self.settings.trading_enabled:
                 raise ValueError("自动实盘已被系统紧急停用")
+            account = await self._account()
+            trader = await self._trader(account)
+            _, _, available = await self._wallet_capacity(
+                quote.asset_id, str(account.funder_address).lower(), trader
+            )
+            if quote.size > available:
+                raise ValueError("卖出份额超过可卖份额，请先处理已有挂单")
             book = await self.client.fetch_order_book(quote.asset_id)
             if book.best_bid is None or book.best_bid < quote.worst_price:
                 raise ValueError("市场价格已变动，请重新预览")
@@ -4299,6 +4722,7 @@ class WhaleFollowExecutor:
                     entry_id=None,
                     idempotency_key=f"whale:{confirmation_id}",
                     source=order_source,
+                    execution_wallet=str(account.funder_address).lower(),
                     source_wallet=position.source_wallet,
                     asset_id=position.asset_id,
                     condition_id=position.condition_id,

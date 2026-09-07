@@ -339,6 +339,96 @@ class UnifiedPolymarketTrader:
         fingerprint = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
         return PreparedMarketOrder(request, signed_order, fingerprint)
 
+    async def prepare_limit(self, request: MarketTradeRequest) -> PreparedMarketOrder:
+        client = await self._client_async()
+        try:
+            book = await client.get_order_book(token_id=request.asset_id)
+            if book.neg_risk != request.neg_risk:
+                raise TradingUnavailable("本地 Neg Risk 标记与 SDK 市场元数据不一致")
+            signed = await client.create_limit_order(
+                token_id=request.asset_id,
+                side="SELL",
+                price=request.worst_price,
+                size=request.amount,
+                post_only=False,
+            )
+        except Exception as error:
+            raise TradingUnavailable("SDK 限价订单签名失败，请检查市场和账户配置") from error
+        fields = {
+            field.name: getattr(signed, field.name)
+            for field in dataclasses.fields(signed)
+            if field.name != "signature"
+        }
+        fingerprint = (
+            "0x"
+            + hashlib.sha256(
+                json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str).encode()
+            ).hexdigest()
+        )
+        return PreparedMarketOrder(request, signed, fingerprint)
+
+    async def submit_prepared_limit(self, prepared: PreparedMarketOrder) -> TradeResult:
+        client = await self._client_async()
+        try:
+            response = await client.post_order(prepared.signed_order)
+        except Exception as error:
+            raise TradingUnavailable("限价订单提交结果不明，请等待对账，不要重复下单") from error
+        if not response.ok and response.code == "not_enough_balance":
+            if await self._repair_missing_order_approval(prepared.request):
+                try:
+                    response = await client.post_order(prepared.signed_order)
+                except Exception as error:
+                    raise TradingUnavailable("补授权后限价订单提交结果不明，请等待对账") from error
+        if not response.ok:
+            return self._rejected_result(response, prepared.signed_order_hash)
+        # Persist the accepted ID before querying fills. A query failure must not lose it.
+        return TradeResult(
+            status="submitted",
+            external_order_id=str(response.order_id),
+            signed_order_hash=prepared.signed_order_hash,
+        )
+
+    async def open_orders(self) -> list[Any]:
+        try:
+            paginator = (await self._client_async()).list_open_orders()
+            return [order async for order in paginator.iter_items()]
+        except Exception as error:
+            raise TradingUnavailable("无法核对钱包挂单，暂时不能卖出") from error
+
+    async def sell_market(self, condition_id: str, asset_id: str) -> Any:
+        try:
+            page = (
+                await (await self._client_async())
+                .list_markets(condition_ids=[condition_id], page_size=1)
+                .first_page()
+            )
+            if len(page.items) != 1:
+                raise ValueError("missing market")
+            market = page.items[0]
+            tokens = (market.outcomes.yes.token_id, market.outcomes.no.token_id)
+            if str(market.condition_id) != condition_id or asset_id not in map(str, tokens):
+                raise ValueError("wrong market")
+            if (
+                market.state.closed is not False
+                or market.state.active is not True
+                or market.state.accepting_orders is not True
+                or market.state.neg_risk is None
+            ):
+                raise ValueError("closed market")
+            if market.trading.fees_enabled is not False and market.trading.fee_schedule is None:
+                raise ValueError("missing fees")
+            return market
+        except Exception as error:
+            raise TradingUnavailable("市场未开放交易或资料不完整，无法卖出") from error
+
+    async def cancel_confirmed(self, external_order_id: str) -> None:
+        try:
+            response = await (await self._client_async()).cancel_order(order_id=external_order_id)
+        except Exception as error:
+            raise TradingUnavailable("撤单结果待确认，请刷新订单状态") from error
+        if external_order_id not in response.canceled:
+            raise TradingUnavailable("上游未确认撤单，请刷新订单核对是否已成交")
+
     async def submit_prepared_market(self, prepared: PreparedMarketOrder) -> TradeResult:
         client = await self._client_async()
         try:
@@ -595,7 +685,7 @@ class UnifiedPolymarketTrader:
         )
         return Decimal(payload.balance) / BASE_UNITS
 
-    async def order_status(self, external_order_id: str) -> TradeResult:
+    async def order_status(self, external_order_id: str, *, order_type: str = "FAK") -> TradeResult:
         try:
             order = await (await self._client_async()).get_order(order_id=external_order_id)
         except Exception as error:
@@ -610,7 +700,17 @@ class UnifiedPolymarketTrader:
                 filled_size = sum((fill.size for fill in fills), ZERO)
                 filled_usdc = sum((fill.amount for fill in fills), ZERO)
                 fee_usdc = sum((fill.fee_usdc for fill in fills), ZERO)
-                status = "filled" if matched >= original else "partially_filled"
+                if order_type == "GTC":
+                    if filled_size < matched:
+                        status = "reconciliation_pending"
+                    elif matched >= original:
+                        status = "filled"
+                    elif status in {"canceled", "cancelled", "expired"}:
+                        status = "cancelled"
+                    else:
+                        status = "partially_filled_live"
+                else:
+                    status = "filled" if matched >= original else "partially_filled"
                 return TradeResult(
                     status=status,
                     external_order_id=external_order_id,

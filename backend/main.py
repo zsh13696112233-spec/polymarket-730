@@ -4,7 +4,7 @@ import asyncio
 import json
 import secrets
 import smtplib
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -53,6 +53,12 @@ from backend.schemas import (
     ExecutionAccountUpdate,
     HealthRead,
     HomeOverviewRead,
+    WalletCancelExecuteRequest,
+    WalletCancelPreviewRead,
+    WalletOrderRead,
+    WalletPositionsRead,
+    WalletSellPreviewRead,
+    WalletSellPreviewRequest,
     WhaleAutoDecisionListRead,
     WhaleExclusionCreate,
     WhaleExclusionListRead,
@@ -90,6 +96,7 @@ from backend.trading import (
 )
 from backend.trading_cli import DEFAULT_SERVICE
 from backend.whale import (
+    WALLET_PENDING_STATUSES,
     WhaleDiscoveryScanner,
     WhaleFollowExecutor,
     list_whale_auto_decisions,
@@ -254,6 +261,7 @@ def create_app(
         application.state.whale_request_monitor = whale_request_monitor
         application.state.whale_follow_previews = {}
         application.state.whale_sell_previews = {}
+        application.state.wallet_previews = {}
         application.state.chain_test_resolutions = {}
         application.state.chain_test_buy_previews = {}
         application.state.chain_test_sell_previews = {}
@@ -261,9 +269,44 @@ def create_app(
             whale_email_notifier.start()
             if resolved_settings.whale_enabled:
                 whale_scanner.start()
+
+        async def reconcile_wallet_orders() -> None:
+            while True:
+                await asyncio.sleep(10)
+                try:
+                    # Only resume orders already authorized by the user, even with scanning off.
+                    async with database.sessions() as session:
+                        pending = await session.scalar(
+                            select(WhaleOrder.id)
+                            .where(
+                                WhaleOrder.source == "wallet_manual",
+                                WhaleOrder.status.in_(
+                                    [
+                                        "submitted",
+                                        "live",
+                                        "matched",
+                                        "partially_filled_live",
+                                        "reconciliation_pending",
+                                        "delayed",
+                                    ]
+                                ),
+                                WhaleOrder.external_order_id.is_not(None),
+                            )
+                            .limit(1)
+                        )
+                    if pending is not None:
+                        await whale_executor.reconcile_pending_orders()
+                except Exception:
+                    # Keep reservations intact; the next page refresh reports upstream errors.
+                    continue
+
+        reconciliation_task = asyncio.create_task(reconcile_wallet_orders())
         try:
             yield
         finally:
+            reconciliation_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reconciliation_task
             await whale_scanner.stop()
             await whale_email_notifier.stop()
             await whale_executor.close()
@@ -401,34 +444,50 @@ def create_app(
         funder = payload.funder_address.lower()
         if any(len(value) != 42 or not value.startswith("0x") for value in (signer, funder)):
             raise HTTPException(status_code=422, detail="钱包地址无效")
-        reference = KeychainReference(service=DEFAULT_SERVICE, account=signer)
-        try:
-            await asyncio.to_thread(request.app.state.keychain.get_secret, reference)
-            account_status = "configured"
-        except KeychainError:
-            account_status = "missing_key"
-        database: Database = request.app.state.database
-        async with database.sessions() as session:
-            account = await session.get(ExecutionAccount, 1)
-            now = utcnow()
-            if account is None:
-                account = ExecutionAccount(id=1, created_at=now, updated_at=now)
-                session.add(account)
-            for field, value in payload.model_dump().items():
-                setattr(account, field, value)
-            account.signer_address = signer
-            account.funder_address = funder
-            account.keychain_service = reference.service
-            account.keychain_account = reference.account
-            account.status = account_status
-            account.collateral_balance = None
-            account.last_balance_at = None
-            account.last_error = None
-            account.updated_at = now
-            await session.commit()
-            result = execution_account_read(account)
-            assert result is not None
-            return result
+        async with request.app.state.whale_executor._lock:
+            reference = KeychainReference(service=DEFAULT_SERVICE, account=signer)
+            try:
+                await asyncio.to_thread(request.app.state.keychain.get_secret, reference)
+                account_status = "configured"
+            except KeychainError:
+                account_status = "missing_key"
+            database: Database = request.app.state.database
+            async with database.sessions() as session:
+                account = await session.get(ExecutionAccount, 1)
+                if account is not None and (
+                    account.funder_address != funder or account.signer_address != signer
+                ):
+                    pending = await session.scalar(
+                        select(WhaleOrder.id)
+                        .where(
+                            WhaleOrder.status.in_(WALLET_PENDING_STATUSES),
+                        )
+                        .limit(1)
+                    )
+                    if pending is not None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="存在未完成订单，请先完成撤单或对账再切换执行钱包",
+                        )
+                now = utcnow()
+                if account is None:
+                    account = ExecutionAccount(id=1, created_at=now, updated_at=now)
+                    session.add(account)
+                for field, value in payload.model_dump().items():
+                    setattr(account, field, value)
+                account.signer_address = signer
+                account.funder_address = funder
+                account.keychain_service = reference.service
+                account.keychain_account = reference.account
+                account.status = account_status
+                account.collateral_balance = None
+                account.last_balance_at = None
+                account.last_error = None
+                account.updated_at = now
+                await session.commit()
+                result = execution_account_read(account)
+                assert result is not None
+                return result
 
     @application.post("/api/execution-account/verify", response_model=ExecutionAccountRead)
     async def verify_trade_account_endpoint(request: Request) -> ExecutionAccountRead:
@@ -680,6 +739,91 @@ def create_app(
             ),
             detail=message,
         )
+
+    async def wallet_call(operation: Any) -> Any:
+        try:
+            return await operation
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (TradingUnavailable, PolymarketAPIError) as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    def wallet_confirmation(request: Request, key: str, confirmation_id: str) -> dict[str, Any]:
+        stored = request.app.state.wallet_previews.pop(confirmation_id, None)
+        if stored is None or stored["key"] != key or stored["expires_at"] < utcnow():
+            raise HTTPException(status_code=409, detail="确认已失效，请重新预览")
+        return stored["quote"]
+
+    def store_wallet_preview(request: Request, key: str, quote: dict[str, Any]) -> dict[str, Any]:
+        previews = request.app.state.wallet_previews
+        now = utcnow()
+        for token in list(previews):
+            if previews[token]["expires_at"] < now:
+                previews.pop(token, None)
+        confirmation_id = secrets.token_urlsafe(32)
+        expires_at = now + timedelta(minutes=5)
+        previews[confirmation_id] = {"key": key, "quote": quote, "expires_at": expires_at}
+        return {**quote, "confirmation_id": confirmation_id, "expires_at": expires_at}
+
+    @application.get("/api/execution-account/positions", response_model=WalletPositionsRead)
+    async def get_wallet_positions(request: Request) -> Any:
+        executor = request.app.state.whale_executor
+        warning = await wallet_call(executor.reconcile_pending_orders())
+        result = await wallet_call(executor.wallet_positions())
+        return {**result, "warning": warning}
+
+    @application.get("/api/execution-account/orders", response_model=list[WalletOrderRead])
+    async def get_wallet_orders(request: Request) -> Any:
+        result = await get_wallet_positions(request)
+        return result["orders"]
+
+    @application.post(
+        "/api/execution-account/positions/{asset_id}/sell/preview",
+        response_model=WalletSellPreviewRead,
+    )
+    async def preview_wallet_sell(
+        asset_id: str,
+        payload: WalletSellPreviewRequest,
+        request: Request,
+    ) -> Any:
+        quote = await wallet_call(
+            request.app.state.whale_executor.quote_wallet_sell(asset_id, **payload.model_dump())
+        )
+        return store_wallet_preview(request, f"sell:{asset_id}", quote)
+
+    @application.post(
+        "/api/execution-account/positions/{asset_id}/sell/execute",
+        response_model=WalletOrderRead,
+    )
+    async def execute_wallet_sell(
+        asset_id: str,
+        payload: WhaleSellExecuteRequest,
+        request: Request,
+    ) -> Any:
+        quote = wallet_confirmation(request, f"sell:{asset_id}", payload.confirmation_id)
+        return await wallet_call(
+            request.app.state.whale_executor.execute_wallet_sell(quote, payload.confirmation_id)
+        )
+
+    @application.post(
+        "/api/execution-account/orders/{order_id}/cancel/preview",
+        response_model=WalletCancelPreviewRead,
+    )
+    async def preview_wallet_cancel(order_id: int, request: Request) -> Any:
+        quote = await wallet_call(request.app.state.whale_executor.quote_wallet_cancel(order_id))
+        return store_wallet_preview(request, f"cancel:{order_id}", quote)
+
+    @application.post(
+        "/api/execution-account/orders/{order_id}/cancel/execute",
+        response_model=WalletOrderRead,
+    )
+    async def execute_wallet_cancel(
+        order_id: int,
+        payload: WalletCancelExecuteRequest,
+        request: Request,
+    ) -> Any:
+        quote = wallet_confirmation(request, f"cancel:{order_id}", payload.confirmation_id)
+        return await wallet_call(request.app.state.whale_executor.execute_wallet_cancel(quote))
 
     @application.get("/api/whales/settings", response_model=WhaleSettingsRead)
     async def get_whale_settings(request: Request) -> WhaleSettingsRead:

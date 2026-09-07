@@ -728,6 +728,8 @@ class WhaleOrder(Base):
     entry_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     source: Mapped[str] = mapped_column(String(30), nullable=False, default="follow")
+    execution_wallet: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    order_type: Mapped[str] = mapped_column(String(3), nullable=False, default="FAK")
     source_wallet: Mapped[str | None] = mapped_column(String(42), nullable=True)
     asset_id: Mapped[str] = mapped_column(String(100), nullable=False)
     condition_id: Mapped[str] = mapped_column(String(66), nullable=False)

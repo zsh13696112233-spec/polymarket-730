@@ -3,7 +3,7 @@
 import { ReactNode, useState } from "react";
 import Link from "next/link";
 
-export type WorkspaceView = "home" | "whales" | "auto-follow" | "whale-records" | "email-records" | "settings";
+export type WorkspaceView = "home" | "whales" | "auto-follow" | "positions" | "whale-records" | "email-records" | "settings";
 
 const navigation: Array<{
   id: WorkspaceView;
@@ -13,6 +13,7 @@ const navigation: Array<{
   { id: "home", href: "/", label: "首页" },
   { id: "whales", href: "/whales", label: "链上监测" },
   { id: "auto-follow", href: "/whales/auto-follow", label: "自动跟单" },
+  { id: "positions", href: "/positions", label: "持仓管理" },
   { id: "whale-records", href: "/whales/records", label: "我的跟单" },
   { id: "email-records", href: "/email-records", label: "邮件记录" },
   { id: "settings", href: "/settings", label: "设置" },
@@ -32,7 +33,7 @@ function NavIcon({ id }: { id: WorkspaceView }) {
   if (id === "home") {
     return <svg {...common}><path d="m3.5 10 8.5-7 8.5 7" /><path d="M5.5 8.5V21h13V8.5" /><path d="M9.5 21v-7h5v7" /></svg>;
   }
-  if (id === "whale-records") {
+  if (id === "whale-records" || id === "positions") {
     return <svg {...common}><path d="M8.5 6h11" /><path d="M8.5 12h11" /><path d="M8.5 18h11" /><path d="m3.75 6 1 1 1.75-2" /><path d="m3.75 12 1 1 1.75-2" /><path d="m3.75 18 1 1 1.75-2" /></svg>;
   }
   if (id === "auto-follow") {
@@ -84,7 +85,7 @@ export function PolyCopyShell({
         </Link>
         <nav className="pcNavigation" aria-label="主导航">
           <span className="pcNavLabel">工作台</span>
-          {navigation.slice(0, 5).map((item) => (
+          {navigation.filter((item) => item.id !== "settings").map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}
@@ -97,7 +98,7 @@ export function PolyCopyShell({
             </Link>
           ))}
           <span className="pcNavLabel pcNavLabelSecondary">系统</span>
-          {navigation.slice(5).map((item) => (
+          {navigation.filter((item) => item.id === "settings").map((item) => (
             <Link
               key={item.id}
               className={active === item.id ? "active" : ""}

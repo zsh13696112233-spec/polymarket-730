@@ -8112,8 +8112,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleFollowMarket,
 .whaleDateFilters,
 .whaleDateFilters label,
-.whaleModalFooter,
-.whaleSellAll {
+.whaleModalFooter {
   display: flex;
   align-items: center;
 }
@@ -8272,8 +8271,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   white-space: nowrap;
 }
 
-.whaleToggleField input,
-.whaleSellAll input { width: 15px; height: 15px; margin: 0; accent-color: #f2c319; }
+.whaleToggleField input { width: 15px; height: 15px; margin: 0; accent-color: #f2c319; }
 
 .whaleFilterMeta {
   min-height: 38px;
@@ -8384,8 +8382,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleEntryActions { align-items: stretch; flex-direction: column; gap: 5px; }
 .whaleEntryActions .pcBadge { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .whaleEntryActions .pcButton { width: 100%; min-height: 36px !important; padding: 0 8px !important; font-size: 13px !important; }
-.whaleDetailToggle,
-.whalePositionToggle { padding: 0; border: 0; background: transparent; color: #d9c45f; cursor: pointer; font-size: 12px; font-weight: 720; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
+.whaleDetailToggle { padding: 0; border: 0; background: transparent; color: #d9c45f; cursor: pointer; font-size: 12px; font-weight: 720; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
 
 .whaleTradeLoading { padding: 16px; background: #070805; color: #8d896a; font-size: 14px; text-align: center; }
 .whaleTradeDetail { border-top: 1px solid #514a21; background: #070805; }
@@ -8415,8 +8412,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleQuickAmounts button { min-height: 34px; padding: 0 12px; border: 1px solid #625820; background: #101108; color: #d0cba8; cursor: pointer; font-size: 13px; }
 .whaleQuickAmounts button:hover { border-color: #f2c319; color: #ffe052; }
 .whalePreviewLoading { min-height: 82px; display: grid; place-items: center; border: 1px dashed #514b23; color: #918b69; font-size: 14px; }
-.whaleFollowModal .pcFormError,
-.whaleSellModal .pcFormError { margin: 0; padding: 9px 11px; font-size: 14px !important; }
+.whaleFollowModal .pcFormError { margin: 0; padding: 9px 11px; font-size: 14px !important; }
 .whaleFollowPreview { display: grid; gap: 11px; }
 .whalePreviewHero { display: grid; gap: 5px; padding: 14px; border: 1px solid #76621c; border-left: 3px solid #f2c319; background: linear-gradient(105deg, #19190d, #101108); }
 .whalePreviewHero > span { color: #aaa47d; font-size: 14px; }
@@ -9136,7 +9132,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 /* Whale records */
 .whaleRecordMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
 .whaleRecordMetrics .pcMetricCard > strong { margin: 10px 0 8px !important; padding: 6px 8px !important; font-size: clamp(26px, 2.8vw, 38px) !important; }
-.whalePositionTable { min-width: 1360px; }
 .whaleAutoDecisionTable { min-width: 1360px; table-layout: fixed; }
 .whaleDecisionTimeColumn { width: 150px; }
 .whaleDecisionWalletColumn { width: 180px; }
@@ -9170,11 +9165,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 }
 .whaleAutoDecisionLink:hover strong { color: #ffe35d; }
 .whaleLedgerTable { min-width: 1200px; }
-.whalePositionTable td:first-child { min-width: 260px; }
-.whalePositionToggle { display: block; margin-top: 7px; }
-.whaleSellButton { display: block !important; min-height: 34px !important; margin-top: 7px; padding: 0 10px !important; font-size: 13px !important; }
-.whalePositionDetailRow > td { height: auto !important; padding: 0 !important; background: #060704 !important; }
-.whalePositionDetailRow:hover > td { background: #060704 !important; }
 .whaleCompactEmpty { min-height: 240px; }
 .whaleRecordsHeader { flex-wrap: wrap; }
 .whaleDateFilters { flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
@@ -9240,29 +9230,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleDecisionSelectMenu > button[aria-selected="true"] { color: #ffe052; font-weight: 750; }
 .whaleDecisionSelectMenu > button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .whaleClearDates { color: #aaa37c; }
-.whalePositionTimeline { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; padding: 16px 18px; }
-.whaleTimelineList { display: grid; }
-.whaleTimelineItem { display: grid; align-items: start; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 11px; padding: 10px 0; border-bottom: 1px solid #272618; }
-.whaleTimelineItem:last-child { border-bottom: 0; }
-.whaleTimelineDot { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid #625820; color: #bcb587; font-size: 12px; }
-.whaleTimelineDot.buy { border-color: #197da9; color: #53cfff; }
-.whaleTimelineDot.sell,
-.whaleTimelineDot.danger { border-color: #a92e46; color: #ff7186; }
-.whaleTimelineDot.success { border-color: #16845f; color: #3be6a1; }
-.whaleTimelineItem > div { min-width: 0; }
-.whaleTimelineItem strong { color: #ddd8b6; font-size: 14px; }
-.whaleTimelineItem p { margin: 5px 0 0; color: #8d896a; font-size: 13px; }
-.whaleTimelineItem small { display: block; margin-top: 5px; color: #777358; font-size: 13px !important; }
-.whaleTimelineItem > b { color: #aaa581; font-family: "Courier New", Consolas, monospace; font-size: 14px; }
-.whaleTimelineItem > b.profit { color: #3be6a1; }
-.whaleTimelineItem > b.loss { color: #ff7186; }
-.whalePositionConclusion { display: grid; align-content: center; gap: 8px; padding: 15px; border: 1px solid #625820; background: #101108; }
-.whalePositionConclusion span { color: #8d896a; font-size: 12px; }
-.whalePositionConclusion strong { color: #ddd8b6; font-size: 15px; line-height: 1.45; }
-.whalePositionConclusion b { font-family: "Courier New", Consolas, monospace; font-size: 18px; }
-.whalePositionConclusion b.profit { color: #3be6a1; }
-.whalePositionConclusion b.loss { color: #ff7186; }
-.whaleSellAll { min-height: 42px; gap: 9px; padding: 0 12px; border: 1px solid #625820; background: #101108; color: #c9c3a2; cursor: pointer; font-size: 15px; font-weight: 720; }
 .whaleAmountInput input:disabled { cursor: not-allowed; opacity: 0.48; }
 
 @media (max-width: 1280px) {
@@ -9311,7 +9278,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .whaleWallet { grid-column: span 2; }
   .whaleEntryActions { grid-row: span 2; align-self: stretch; }
   .whaleRecordMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .whalePositionTimeline { grid-template-columns: 1fr; }
   .whaleRequestMonitorHeader { align-items: flex-start; flex-direction: column; }
   .whaleRequestMonitorControls { justify-content: flex-start; }
   .whaleRequestLogHead,
@@ -11689,8 +11655,7 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .whaleHoldingMarketIcon,
 .whaleMarketIcon { border-radius: 8px; }
 
-.whaleToggleField,
-.whaleSellAll {
+.whaleToggleField {
   border: 1px solid #dfe0e5;
   border-radius: 8px;
   background: #fff;
@@ -12083,40 +12048,6 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 }
 .whaleStatsPagination button:not(:disabled):hover { background: #f0f2f6; color: #1f2328; }
 
-.whalePositionDetailRow > td,
-.whalePositionDetailRow:hover > td { background: #fbfbfc !important; }
-.whaleTimelineItem { border-bottom-color: var(--pc-line); }
-.whaleTimelineDot {
-  border-color: #dfe0e5;
-  border-radius: 7px;
-  background: #fff;
-  color: #696e7b;
-  font-weight: 500;
-}
-.whaleTimelineDot.buy { border-color: #d7defa; background: #f2f5ff; color: #5267e3; }
-.whaleTimelineDot.sell,
-.whaleTimelineDot.danger { border-color: #f2cfd1; background: #fff0f0; color: #d8454b; }
-.whaleTimelineDot.success { border-color: #cdeee2; background: #e8f7f1; color: #008f62; }
-.whaleTimelineItem strong { color: #1f2328; font-weight: 500; }
-.whaleTimelineItem p,
-.whaleTimelineItem small { color: #8d8e99; }
-.whaleTimelineItem > b {
-  color: #696e7b;
-  font-family: var(--pc-data-font);
-  font-weight: 600;
-}
-.whaleTimelineItem > b.profit,
-.whalePositionConclusion b.profit { color: #008f62; }
-.whaleTimelineItem > b.loss,
-.whalePositionConclusion b.loss { color: #d8454b; }
-.whalePositionConclusion {
-  border: 1px solid #d7defa;
-  border-radius: 10px;
-  background: #f7f9ff;
-}
-.whalePositionConclusion span { color: #8d8e99; }
-.whalePositionConclusion strong { color: #2a2a2e; font-weight: 500; }
-.whalePositionConclusion b { font-family: var(--pc-data-font); font-weight: 600; }
 .whaleDateFilters input { color-scheme: light; }
 
 .pcCommandHint code,
@@ -12149,7 +12080,6 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   .whaleStatsToolbar { align-items: stretch; flex-direction: column; }
   .whaleStatsBreakdownGrid,
   .whaleStatsBreakdownGrid.compact { grid-template-columns: 1fr; }
-  .whalePositionTimeline { grid-template-columns: 1fr; }
 }
 
 .whaleTerminalFrame {
@@ -12746,3 +12676,41 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
     grid-template-columns: 1fr;
   }
 }
+
+/* Execution-wallet position management. */
+.walletPositions { display: grid; gap: 20px; }
+.walletPositionPanel { padding: 20px; min-width: 0; }
+.walletPositionPanel > p { color: #6b7280; font-size: 13px; margin: 10px 0 18px; }
+.walletTableScroll { overflow-x: auto; }
+.walletTableScroll table { min-width: 760px; }
+.walletTableScroll small { display: block; margin-top: 6px; color: #6b7280; }
+.walletTableScroll td:first-child { max-width: 350px; }
+.walletTableScroll .pcButton { margin-top: 8px; }
+.walletEmpty { padding: 24px; text-align: center; }
+.walletSellForm { display: grid; gap: 16px; }
+.walletPreview { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--pc-line); border-radius: 12px; }
+
+.walletTableScroll .walletHoldingsTable { min-width: 1040px; table-layout: fixed; font-size: 14px; }
+.walletHoldingsTable th { height: 46px; font-size: 11px; letter-spacing: 0; background: #f8fafc; }
+.walletHoldingsTable th:first-child { width: 29%; }
+.walletHoldingsTable th:nth-child(2) { width: 23%; }
+.walletHoldingsTable th:nth-child(3) { width: 13%; }
+.walletHoldingsTable th:nth-child(4) { width: 15%; }
+.walletHoldingsTable th:nth-child(5) { width: 9%; }
+.walletHoldingsTable th:nth-child(6) { width: 11%; }
+.walletHoldingsTable td { padding-top: 22px; padding-bottom: 22px; vertical-align: middle; }
+.walletHoldingsTable .walletNumeric { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.walletMarketTitle { display: block; line-height: 1.55; font-weight: 600; overflow-wrap: anywhere; }
+.walletMetric { font-weight: 600; color: #172b4d; }
+.walletHoldingsTable small { margin-top: 9px; font-size: 12px; line-height: 1.5; }
+.walletOutcome { display: inline-block; padding: 2px 9px; border-radius: 5px; background: #f1f5f9; color: #526176; font-weight: 500; }
+.walletHoldingsTable .walletStatusColumn { text-align: center; }
+.walletHoldingsTable .walletActionColumn { text-align: right; }
+.walletPositionStatus { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; background: #f1f5f9; color: #64748b; }
+.walletPositionStatus.open { background: #edf8f2; color: #23744c; }
+.walletPositionStatus.open::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.walletPositionStatus.unavailable { background: #fff6e6; color: #936617; }
+.walletHoldingsTable .walletPositionReason { font-size: 11px; overflow-wrap: anywhere; }
+.walletHoldingsTable .walletActionColumn .pcButton { min-height: 38px; margin: 0; padding: 9px 14px; border-radius: 8px; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.walletHoldingsTable .walletLoss { color: #c2414d; }
+.walletHoldingsTable .walletProfit { color: #23835c; }

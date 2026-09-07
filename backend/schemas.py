@@ -1208,6 +1208,7 @@ class WhaleLedgerRead(APIModel):
     source: Literal[
         "follow",
         "manual",
+        "wallet_manual",
         "auto_follow",
         "conflict_exit",
         "chain_test",
@@ -1272,3 +1273,90 @@ class WhaleRecordListRead(APIModel):
     items: list[WhaleRecordRead] = Field(default_factory=list)
     summary: WhaleRecordSummaryRead
     total: int
+
+
+class WalletSellPreviewRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sell_all: Literal[True] = True
+    order_type: Literal["FAK"] = "FAK"
+    size: None = None
+    price: None = None
+
+
+DecimalString = Annotated[
+    Decimal,
+    PlainSerializer(lambda value: format(value, "f"), return_type=str, when_used="json"),
+]
+
+
+class WalletPositionRead(APIModel):
+    asset_id: str
+    title: str
+    outcome: str
+    size: DecimalString
+    reserved_size: DecimalString
+    available_size: DecimalString
+    price: DecimalString | None
+    market_value: DecimalString | None
+    cost: DecimalString | None
+    pnl: DecimalString | None
+    status: str
+    reason: str | None = None
+
+
+class WalletOrderRead(APIModel):
+    id: int | None
+    external_order_id: str | None
+    asset_id: str
+    title: str
+    outcome: str
+    order_type: str
+    price: DecimalString
+    size: DecimalString
+    filled_size: DecimalString
+    status: str
+    can_cancel: bool
+    reason: str | None = None
+
+
+class WalletPositionsRead(APIModel):
+    wallet: str
+    positions: list[WalletPositionRead]
+    orders: list[WalletOrderRead]
+    warning: str | None = None
+
+
+class WalletSellPreviewRead(APIModel):
+    confirmation_id: str
+    expires_at: datetime
+    wallet: str
+    asset_id: str
+    title: str
+    outcome: str
+    order_type: Literal["FAK", "GTC"]
+    size: DecimalString
+    price: DecimalString
+    estimated_proceeds: DecimalString
+    estimated_fee: DecimalString
+    estimated_pnl: DecimalString | None
+
+    @field_serializer("expires_at", when_used="json")
+    def serialize_expiry(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WalletCancelPreviewRead(APIModel):
+    confirmation_id: str
+    expires_at: datetime
+    order: WalletOrderRead
+
+    @field_serializer("expires_at", when_used="json")
+    def serialize_expiry(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WalletCancelExecuteRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation_id: str = Field(min_length=1, max_length=200)
+    confirmation_text: Literal["确认撤单"]

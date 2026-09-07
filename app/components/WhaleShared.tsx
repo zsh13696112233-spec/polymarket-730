@@ -359,39 +359,6 @@ export type WhaleOrder = {
   created_at: string;
 };
 
-export type WhalePosition = {
-  id: number;
-  asset_id: string;
-  condition_id: string;
-  title: string;
-  outcome: string;
-  outcome_index: number | null;
-  market_slug: string | null;
-  event_slug: string | null;
-  icon_url: string | null;
-  source_wallet: string | null;
-  source_whale_avg_price: Numeric | null;
-  size: Numeric;
-  avg_cost_price: Numeric | null;
-  cost_usdc: Numeric;
-  current_price: Numeric | null;
-  market_value_usdc: Numeric | null;
-  unrealized_pnl: Numeric | null;
-  realized_pnl: Numeric;
-  total_pnl: Numeric | null;
-  lifetime_bought_size: Numeric;
-  lifetime_bought_usdc: Numeric;
-  lifetime_sold_size: Numeric;
-  lifetime_sold_usdc: Numeric;
-  lifetime_fee_usdc: Numeric;
-  status: string;
-  opened_at: string | null;
-  closed_at: string | null;
-  valuation_status: "ok" | "unavailable" | "not_applicable" | string;
-  ledger?: WhaleRecord[];
-  records?: WhaleRecord[];
-};
-
 export type WhaleRecord = {
   id: number;
   position_id: number;
@@ -467,25 +434,6 @@ export type WhaleAutoDecision = {
 export type WhaleAutoDecisionList = {
   total: number;
   items: WhaleAutoDecision[];
-};
-
-export type WhalePositionList = {
-  items: WhalePosition[];
-  total?: number;
-};
-
-export type WhaleSellPreview = {
-  confirmation_id: string;
-  expires_at: string;
-  size: Numeric;
-  best_bid: Numeric;
-  worst_price: Numeric;
-  minimum_order_size: Numeric;
-  estimated_proceeds_usdc: Numeric;
-  estimated_fee_usdc: Numeric;
-  cost_basis_usdc: Numeric;
-  estimated_pnl_usdc: Numeric;
-  estimated_pnl_percent: Numeric;
 };
 
 export class ApiError extends Error {

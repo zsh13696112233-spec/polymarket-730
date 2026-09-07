@@ -1360,41 +1360,16 @@ describe("巨鲸命中率统计", () => {
 });
 
 describe("巨鲸跟单记录页", () => {
-  it("展示汇总、无法估值状态，并在卖出确认前禁用按钮", async () => {
+  it("保留汇总和流水筛选，持仓操作统一跳转持仓管理", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("/api/whales/positions?")) return json({ items: [{
-        id: 9,
-        asset_id: "asset-a",
-        condition_id: whaleMarket.condition_id,
-        title: whaleMarket.title,
-        outcome: "Movistar KOI",
-        outcome_index: 0,
-        market_slug: "lol-mkoi-navi",
-        event_slug: "lol-mkoi-navi",
-        icon_url: null,
-        source_wallet: "0x1111111111111111111111111111111111111111",
-        source_whale_avg_price: 0.52,
-        size: 31.25,
-        avg_cost_price: 0.6528,
-        cost_usdc: 20.4,
-        current_price: null,
-        market_value_usdc: null,
-        unrealized_pnl: null,
-        realized_pnl: 0,
-        total_pnl: null,
-        lifetime_bought_size: 31.25,
-        lifetime_bought_usdc: 20,
-        lifetime_sold_size: 0,
-        lifetime_sold_usdc: 0,
-        lifetime_fee_usdc: 0.4,
-        status: "open",
-        opened_at: "2026-08-16T09:00:00Z",
-        closed_at: null,
-        valuation_status: "unavailable",
-      }] });
       if (url.includes("/api/whales/records?")) return json({
-        items: [],
+        items: [{
+          id: 1, position_id: 9, order_id: null, type: "sell", source: "wallet_manual",
+          title: "历史卖出市场", outcome: "Yes", size: 10, price: 0.6,
+          amount_usdc: 6, fee_usdc: 0, realized_pnl: 1,
+          transaction_hash: null, detail: null, timestamp: "2026-08-16T09:00:00Z",
+        }],
         summary: {
           total_invested_usdc: 20.4,
           total_proceeds_usdc: 0,
@@ -1412,36 +1387,31 @@ describe("巨鲸跟单记录页", () => {
           average_profit_ratio_percent: null,
         },
       });
-      if (url.includes("/api/whales/auto-decisions?")) return json({ total: 0, items: [] });
-      if (url.includes("/sell/preview")) return json({
-        confirmation_id: "sell-token",
-        expires_at: "2026-08-16T09:05:00Z",
-        size: 31.25,
-        best_bid: 0.6,
-        worst_price: 0.57,
-        minimum_order_size: 5,
-        estimated_proceeds_usdc: 17.81,
-        estimated_fee_usdc: 0.2,
-        cost_basis_usdc: 20.4,
-        estimated_pnl_usdc: -2.79,
-        estimated_pnl_percent: -13.7,
-      });
       return json({ detail: "not found" }, 404);
     }));
 
     const user = userEvent.setup();
     render(<WhaleRecordsWorkspace />);
 
-    expect(await screen.findByText("无法估值")).toBeInTheDocument();
+    expect(await screen.findByText("历史卖出市场")).toBeInTheDocument();
+    expect(screen.getByText("持仓管理卖出")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "自动跟单决策" })).not.toBeInTheDocument();
     expect(screen.getAllByText("20.40 USDC").length).toBeGreaterThan(0);
     expect(screen.getByText("+66.7%")).toBeInTheDocument();
     expect(screen.getByText("2 胜 / 1 负 · 不含 2 笔分歧退出、1 笔链路测试")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "一键卖出" }));
-    const execute = screen.getByRole("button", { name: "确认卖出" });
-    expect(execute).toBeDisabled();
-    expect(await screen.findByText("预计回收", {}, { timeout: 2000 })).toBeInTheDocument();
-    expect(execute).toBeDisabled();
+    expect(screen.queryByRole("heading", { name: "当前持仓" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "一键卖出" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "展开完整流水" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看持仓管理" })).toHaveAttribute("href", "/positions");
+
+    await user.type(screen.getByLabelText("流水开始日期"), "2026-08-16");
+    await user.click(screen.getByRole("button", { name: "筛选" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("start_date=2026-08-16"))).toBe(true));
+    await user.click(screen.getByRole("button", { name: "清除" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /刷新记录/ })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: /刷新记录/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /刷新记录/ })).toBeEnabled());
+    expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).includes("/api/whales/records?"))).toBe(true);
   });
 });

@@ -4,13 +4,13 @@ import test from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
 
-async function render() {
+async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
+    new Request(`http://localhost${path}`, {
       headers: { accept: "text/html" },
     }),
     {
@@ -84,4 +84,25 @@ test("keeps home, chain monitoring and execution settings in the client", async 
   assert.match(css, /\.positionCards/);
   assert.match(icon, /viewBox="0 0 64 64"/);
   assert.match(icon, /polycopy-gradient/);
+});
+
+
+test("server-renders the position-management workspace", async () => {
+  const response = await render("/positions");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /持仓管理/);
+  assert.match(html, /当前持仓/);
+  assert.match(html, /卖出订单/);
+});
+
+
+test("server-renders follow records without duplicate position management", async () => {
+  const response = await render("/whales/records");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /跟单汇总/);
+  assert.match(html, /历史流水/);
+  assert.match(html, /查看持仓管理/);
+  assert.doesNotMatch(html, /当前持仓|暂无巨鲸跟单持仓|一键卖出|展开完整流水/);
 });

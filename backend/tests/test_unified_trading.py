@@ -548,3 +548,142 @@ async def test_cached_client_is_closed_explicitly():
 
     assert client.closed is True
     assert adapter._client is None
+
+
+async def test_limit_sell_uses_sdk_gtc_and_separate_submission():
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+
+    client = FakeClient()
+    client.create_limit_order = AsyncMock(
+        return_value=replace(
+            signed_order(),
+            side="SELL",
+            order_type="GTC",
+            maker_amount=10_000_000,
+            taker_amount=6_000_000,
+        )
+    )
+    sdk = trader(client)
+    request = MarketTradeRequest(
+        asset_id="99", side="SELL", amount=Decimal("10"), worst_price=Decimal("0.6")
+    )
+    prepared = await sdk.prepare_limit(request)
+    assert client.posted == []
+    client.create_limit_order.assert_awaited_once_with(
+        token_id="99",
+        side="SELL",
+        price=Decimal("0.6"),
+        size=Decimal("10"),
+        post_only=False,
+    )
+    result = await sdk.submit_prepared_limit(prepared)
+    assert result.external_order_id == "order-1"
+    assert result.status == "submitted"
+    assert len(client.posted) == 1
+
+
+@pytest.mark.parametrize(
+    "upstream,matched,confirmed,expected",
+    [
+        ("LIVE", "4", "4", "partially_filled_live"),
+        ("CANCELED", "4", "4", "cancelled"),
+        ("MATCHED", "10", "10", "filled"),
+        ("CANCELED", "4", "2", "reconciliation_pending"),
+    ],
+)
+async def test_gtc_status_keeps_unfilled_and_unsettled_shares_reserved(
+    upstream,
+    matched,
+    confirmed,
+    expected,
+):
+    from unittest.mock import AsyncMock
+
+    client = FakeClient()
+    client.get_order = AsyncMock(
+        return_value=SimpleNamespace(
+            original_size="10",
+            size_matched=matched,
+            status=upstream,
+            associate_trades=("trade",),
+        )
+    )
+    sdk = trader(client)
+    sdk._confirmed_fills = AsyncMock(
+        return_value=(
+            TradeFillResult(
+                external_trade_id="trade",
+                size=Decimal(confirmed),
+                price=Decimal("0.6"),
+                amount=Decimal(confirmed) * Decimal("0.6"),
+                fee_usdc=Decimal("0"),
+                transaction_hash="0xtx",
+                bucket_index=0,
+                settlement_status="confirmed",
+            ),
+        )
+    )
+    result = await sdk.order_status("order-1", order_type="GTC")
+    assert result.status == expected
+    assert result.filled_size == Decimal(confirmed)
+
+
+async def test_cancel_requires_sdk_acknowledgement():
+    from unittest.mock import AsyncMock
+
+    client = FakeClient()
+    client.cancel_order = AsyncMock(return_value=SimpleNamespace(canceled=(), not_canceled={}))
+    sdk = trader(client)
+    with pytest.raises(TradingUnavailable, match="未确认撤单"):
+        await sdk.cancel_confirmed("order-1")
+    client.cancel_order.return_value = SimpleNamespace(canceled=("order-1",), not_canceled={})
+    await sdk.cancel_confirmed("order-1")
+
+
+@pytest.mark.parametrize("empty", [False, True])
+async def test_open_orders_reads_every_sdk_page(empty):
+    from polymarket.pagination import AsyncPaginator, Page
+
+    cursors = []
+
+    async def fetch(cursor):
+        cursors.append(cursor)
+        if empty:
+            return Page(items=(), has_more=False)
+        if cursor is None:
+            return Page(items=("order-1", "order-2"), has_more=True, next_cursor="next")
+        return Page(items=("order-3",), has_more=False)
+
+    client = FakeClient()
+    client.list_open_orders = lambda: AsyncPaginator(fetch)
+    assert await trader(client).open_orders() == (
+        [] if empty else ["order-1", "order-2", "order-3"]
+    )
+    assert cursors == ([None] if empty else [None, "next"])
+
+
+@pytest.mark.parametrize(
+    "fees,closed,valid", [(False, False, True), (None, False, False), (False, True, False)]
+)
+async def test_wallet_market_metadata_fails_closed(fees, closed, valid):
+    from unittest.mock import AsyncMock
+
+    client = FakeClient()
+    market = SimpleNamespace(
+        condition_id=CONDITION,
+        outcomes=SimpleNamespace(
+            yes=SimpleNamespace(token_id="99"), no=SimpleNamespace(token_id="100")
+        ),
+        state=SimpleNamespace(closed=closed, active=True, accepting_orders=True, neg_risk=False),
+        trading=SimpleNamespace(fees_enabled=fees, fee_schedule=None),
+    )
+    client.list_markets = lambda **kwargs: SimpleNamespace(
+        first_page=AsyncMock(return_value=SimpleNamespace(items=[market]))
+    )
+    sdk = trader(client)
+    if valid:
+        assert await sdk.sell_market(CONDITION, "99") is market
+    else:
+        with pytest.raises(TradingUnavailable, match="资料不完整"):
+            await sdk.sell_market(CONDITION, "99")

@@ -1,209 +1,123 @@
-# PolyCopy Repository Instructions
+# PolyCopy 仓库协作规范
 
-These instructions apply to the entire repository. If a nested directory later adds its own
-`AGENTS.md` or `AGENTS.override.md`, follow the more specific file for work in that subtree.
+本文件适用于整个仓库。子目录存在 `AGENTS.md` 或 `AGENTS.override.md` 时，优先遵循对应子目录的更具体规范。
 
-## Project overview
+## 项目现状与边界
 
-PolyCopy is a local Polymarket on-chain monitoring and trading console. It detects whale activity,
-tracks positions and signals, and supports previewed, explicitly confirmed live trading through a
-separate execution wallet.
+PolyCopy 是本地运行的 Polymarket 链上资金监测与跟单控制台，包含真实资金交易能力。
 
-- The web application is a Next.js 16 / React 19 / TypeScript application under `app/`.
-- The web build and local runtime use vinext, Vite, and a Cloudflare Worker entry point in
-  `worker/index.ts`.
-- The API is an asynchronous Python 3.12 FastAPI application under `backend/`.
-- Persistence uses SQLAlchemy async sessions, SQLite by default, and Alembic migrations under
-  `backend/alembic/versions/`.
-- Frontend tests live in `tests/`; backend tests live in `backend/tests/`.
-- Design and implementation notes live in `docs/`. Treat them as useful context, but verify current
-  behavior against the code and tests.
+- 当前监测基于公开成交、市场数据和当前持仓，运行“新号大额”和“全量超大额”两条规则；两条规则共用监测分类，自动跟单分别设置价格区间、金额档位和允许分类。
+- 重点市场补充采集具有持久化进度、待补区间和暂存成交；历史补齐、持仓补充发现不能直接触发自动买入，也不能消耗后续新买入的首次决策机会。
+- 手动交易使用预览、明确确认、执行流程；自动交易由用户开启策略后经决策和执行器处理，不逐笔要求人工确认。两者共用交易账本和执行边界。
+- “持仓管理”负责执行钱包当前持仓、手动卖出和挂单管理；“我的跟单”负责跟单汇总、流水、费用、对账和赎回结果。
+- 固定钱包轮询、固定钱包持仓分析和固定钱包自动跟单已经退役，不得重新引入。后续自动化应消费当前链上监测信号，复用现有执行器。
+- 当前只支持 Deposit Wallet（`signature_type=3`）。这是本机控制台，API 不提供公网用户认证和多租户隔离。
 
-## Toolchain and setup
+## 技术栈与目录
 
-- Use Node.js 22.13 or newer, `npm`, Python 3.12 or newer, and `uv`.
-- Respect both lockfiles: `package-lock.json` and `uv.lock`.
-- Install dependencies with:
+- 前端：`app/` 下的 Next.js 16、React 19、TypeScript；实际构建和运行使用 vinext、Vite，Worker 入口为 `worker/index.ts`。
+- 后端：`backend/` 下的 Python 3.12、FastAPI、SQLAlchemy 异步会话；默认使用 SQLite。
+- 数据迁移：`backend/alembic/versions/`，API 启动时自动升级。
+- 前端测试：`tests/`；后端测试：`backend/tests/`。
+- `docs/` 是设计和实施参考资料，当前行为必须以代码与测试核实，不能直接把旧设计当成已实现功能。
 
-  ```bash
-  npm ci
-  UV_CACHE_DIR=.uv-cache uv sync
-  ```
+## 工具链与启动
 
-- Copy `.env.example` to `.env` only when local runtime configuration is needed. Never overwrite an
-  existing `.env` file.
-- Start the normal local stack with `npm run dev:all`. The frontend listens on port 3000 and the API
-  on port 8730 by default.
-- Do not introduce another package manager, build system, formatter, or test runner unless the user
-  explicitly requests it.
-- Do not add or upgrade dependencies speculatively. If a dependency change is necessary, explain
-  why and update the corresponding lockfile.
+使用 Node.js 22.13 或更高版本、`npm`、Python 3.12 或更高版本和 `uv`。尊重 `package-lock.json` 与 `uv.lock`。
 
-## Architecture and coding conventions
-
-### Frontend
-
-- Keep routes in `app/**/page.tsx`, shared UI behavior in `app/components/`, and global styling in
-  `app/globals.css`.
-- Follow the existing TypeScript and React style and let TypeScript, ESLint, and Vitest define the
-  enforceable rules.
-- Preserve the existing Chinese product language for user-facing copy unless the task explicitly
-  changes the product language.
-- Reuse established API helpers and shared types where they already fit. Keep frontend request and
-  response types aligned with the FastAPI schemas.
-- Preserve visibility-aware polling behavior: do not add overlapping requests or background polling
-  while the document is hidden.
-- When changing rendered pages or Worker behavior, remember that `npm run test:web` includes a
-  production build and the rendered-HTML test in addition to unit tests and type checking.
-
-### Backend
-
-- Keep FastAPI wiring and HTTP concerns in `backend/main.py`, request/response contracts in
-  `backend/schemas.py`, database models in `backend/models.py`, Polymarket API access in
-  `backend/polymarket.py`, and trade submission logic in `backend/trading.py` and `backend/whale.py`.
-- Use async I/O consistently. Do not add blocking network or database work to the event loop; follow
-  existing `asyncio.to_thread` boundaries when a synchronous library must be called.
-- Inject `Settings` and external clients in tests. Do not make unit tests depend on the live
-  Polymarket APIs, SMTP servers, macOS Keychain, or a developer's local database.
-- Use `Decimal`, not binary floating point, for prices, balances, order sizes, fees, and P&L. Preserve
-  explicit rounding, tick-size, and minimum-order rules.
-- Use `backend.time_utils.utcnow()` and preserve the repository's established UTC database timestamp
-  convention. Do not casually mix timezone-aware and naive values.
-- Keep API errors actionable without leaking credentials, signing material, or upstream secrets.
-- Preserve the preview/confirm/execute boundary for live actions. Confirmation IDs must remain
-  short-lived, single-use, validated against the previewed action, and protected by persistent
-  idempotency where applicable.
-- Preserve fail-closed behavior when credentials, authorization, balance, market data, or settlement
-  state is missing or contradictory.
-
-### Database migrations
-
-- Make schema changes through a new Alembic revision. Update models, schemas, application logic, and
-  tests together when the contract changes.
-- Do not rewrite or renumber an existing migration that may already have been applied unless the user
-  explicitly requests a migration-history repair.
-- Preserve user data. Avoid destructive migrations; when one is genuinely required, state the data
-  impact and provide a migration or recovery path before implementation.
-- Exercise both fresh-database creation and upgrade-from-prior-schema behavior for migration changes.
-
-## Safety and data integrity
-
-- Treat all order placement, selling, redemption, allowance, wallet, SMTP, and scanning operations as
-  potentially real. Do not trigger them against live services unless the user explicitly asks for
-  that exact external action.
-- For local runtime verification that does not require live behavior, disable it with
-  `POLYMARKET_TRADING_ENABLED=0`, and disable background monitoring with
-  `POLYMARKET_START_MONITOR=0` when appropriate.
-- Never read, print, log, commit, or return private keys, Builder API secrets, passphrases, full signed
-  payloads, SMTP authorization codes, or macOS Keychain contents.
-- Keep private keys and Builder credentials in macOS Keychain. The database and API may store only
-  non-secret Keychain service/account references.
-- Never commit `.env`, database files, WAL files, caches, logs, or generated build output. The
-  existing `.gitignore` is part of this safety boundary.
-- Do not delete or rewrite the local `data/` database as a troubleshooting shortcut. Use temporary
-  databases for tests and reproduction.
-- Do not weaken live-trading guards, confirmation text checks, spending limits, exposure limits,
-  slippage bounds, idempotency, or reconciliation behavior merely to make a test pass.
-
-## Verification
-
-Use the narrowest relevant checks while iterating, then run checks proportional to the final change.
-
-- Frontend unit tests: `npm run test:web:unit`
-- Type checking: `npm run typecheck`
-- Backend tests: `UV_CACHE_DIR=.uv-cache uv run pytest backend/tests`
-- A targeted backend test may be run by passing its file or node ID to `pytest`.
-- Full test suite: `npm test`
-- All configured lint and formatting checks: `npm run lint`
-
-For a bug fix, add or update a regression test that fails for the original behavior. For an API or
-schema change, verify both backend contract tests and the affected frontend tests. For a migration,
-verify migration-specific tests as well as the application path that consumes the new schema.
-
-Do not claim a check passed unless it was actually run. If a required check cannot run, report the
-exact command, the failure or blocker, and what remains unverified.
-
-## Change discipline
-
-- Keep diffs focused. Do not modify generated output, dependency locks, migrations, or documentation
-  unless the requested change requires it.
-- Preserve currently supported behavior unless the task explicitly changes it.
-- Do not resurrect the retired fixed-wallet polling or fixed-wallet auto-copy strategy. Future
-  automation should consume the current on-chain monitoring signals and reuse the existing execution
-  boundary.
-- When behavior changes, update the closest relevant test and any README or design documentation that
-  would otherwise become misleading.
-- Before handoff, inspect `git diff` and `git status` so unrelated user changes are not included or
-  overwritten.
-
----
-
-# Behavioral guidelines to reduce common LLM coding mistakes
-
-Merge with project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+```bash
+npm ci
+UV_CACHE_DIR=.uv-cache uv sync
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+- 仅在需要本地运行配置且 `.env` 不存在时，从 `.env.example` 复制；不得覆盖现有 `.env`。
+- 常规开发使用 `npm run dev:all`，前端默认端口为 3000，API 为 8730。开发和生产启动脚本均监听 `0.0.0.0`，只能在可信网络使用。
+- 内网访问需匹配 `NEXT_PUBLIC_API_BASE` 与 `POLYMARKET_CORS_ORIGINS`；修改后重启，生产前端需要重新构建。CORS 不是身份认证。
+- 后端通过配置的代理访问 Polymarket 与 Polygon RPC，代理失败不得悄悄回退直连。
+- 未经用户明确要求，不引入其他包管理器、构建系统、格式化工具或测试框架。
+- 不做推测性的依赖新增或升级；确有必要时说明原因并更新对应锁文件。
 
----
+## 前端约定
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+- 路由放在 `app/**/page.tsx`，共享界面行为放在 `app/components/`，全局样式放在 `app/globals.css`。
+- 保持已有 TypeScript 和 React 风格，以 TypeScript、ESLint、Vitest 规则为准。
+- 用户界面文案保留中文，除非任务明确要求更换语言。
+- 优先复用已有 API 辅助函数与共享类型，确保前端请求、响应类型与 FastAPI schemas 一致。
+- 保持页面可见性感知的轮询：文档隐藏时不轮询，不产生重叠请求。
+- 改动页面渲染或 Worker 行为时，运行包含生产构建与 HTML 渲染检查的 `npm run test:web`，不能仅依赖单元测试。
+
+## 后端约定
+
+- `backend/main.py` 负责 FastAPI 装配和 HTTP；`backend/schemas.py` 负责接口契约；`backend/models.py` 负责模型。
+- `backend/polymarket.py` 负责公开数据访问；`backend/whale.py` 负责扫描、规则、跟单、对账和赎回；`backend/trading.py` 负责 SDK 和链上执行边界。
+- 首页聚合在 `backend/home.py`；邮件与请求监控分别在 `backend/whale_email.py`、`backend/whale_requests.py`。
+- 使用异步 I/O，不在事件循环中加入阻塞网络或数据库操作；同步库遵循已有 `asyncio.to_thread` 边界。
+- 测试注入 `Settings` 和外部客户端，不依赖真实 Polymarket API、SMTP、macOS 钥匙串或开发者本地数据库。
+- 价格、余额、订单金额、费用和盈亏使用 `Decimal`，保留舍入、价格步进和市场最小下单量校验。
+- 使用 `backend.time_utils.utcnow()`，保持数据库既有 UTC 时间约定，不混用带时区和不带时区的值。首页机会统计使用北京时间自然日，不能混同于其他每日限额的 UTC 口径。
+- 错误信息应说明可采取的处理方式，不泄露凭证、签名材料或上游秘密。
+- 手动交易的确认 ID 必须短时有效、单次使用、绑定预览动作；需要持久化幂等的路径必须保留对应保护。
+- 凭证、授权、余额、市场数据、持仓归属或结算状态缺失、矛盾时，保留已有拒绝执行和待对账行为。
+- 不破坏来源持仓重新核验、分类过滤、历史补齐隔离、市场自动跟单累计限额和订单预占额度。
+
+### 必须准确描述的现有风控范围
+
+- 普通手动跟单与自动跟单校验单笔上限、余额与费用、市场状态等；自动跟单额外受策略价格、分类、同市场次数和金额上限约束。
+- 当前账户预算、现金储备、总敞口、每日买入和每日亏损限制，只在“链上环境测试买入”路径强制执行。普通跟单的现金储备是预览警告，不能把这些账户字段描述成自动跟单已生效的全局保护。
+- 同市场自动跟单上限跨两条规则共享，按 `condition_id` 累计自动买入本金，不包含手续费；卖出不重置累计值，不跨不同市场合并风险。
+- `POLYMARKET_TRADING_ENABLED=0` 会阻止新的买入和卖出，但不是所有链上动作的总开关；自动赎回另受账户与巨鲸设置中的两个 `auto_redeem` 开关控制。
+- `POLYMARKET_START_MONITOR=0` 阻止扫描器和邮件发送器随启动运行，但已有钱包订单的后台对账仍会运行。不要据此声称启动过程没有任何外部请求。
+- 上述内容是现有实现边界，不是应保留缺口的要求；若任务要求补齐风控，应统一执行路径并加入回归测试。
+
+## 数据库迁移
+
+- 通过新增 Alembic revision 修改结构，并同步更新模型、接口、应用逻辑和测试。
+- 不改写或重编号可能已应用的迁移，除非用户明确要求修复迁移历史。
+- 保留用户数据，避免破坏性迁移；确实需要时，在实现前说明影响并提供迁移或恢复路径。
+- 同时验证新建数据库与从旧结构升级，以及应用实际消费新结构的路径。
+- 扫描覆盖进度必须与完整批次入库保持一致；不完整补齐或接口异常不能被标成完整覆盖。
+
+## 真实操作与敏感数据
+
+- 下单、卖出、赎回、授权、钱包操作、SMTP 发送和扫描都可能访问真实服务；只有用户明确要求对应外部动作时才能触发。
+- 不需要实盘的本地验证使用 `POLYMARKET_TRADING_ENABLED=0`；适用时同时设置 `POLYMARKET_START_MONITOR=0`，使用临时数据库和模拟客户端。
+- 不读取、打印、记录、提交或返回私钥、Builder secret、passphrase、完整签名内容、SMTP 授权码或 macOS 钥匙串内容。
+- 私钥与 Builder 凭证保存在 macOS Keychain；数据库和 API 只能保存非秘密的服务名、账户引用。界面保存的 SMTP 授权码也使用钥匙串。
+- 查看用户当前配置时，仅查询必要的非秘密字段，优先只读访问；不能用模型默认值代替已保存配置。
+- 不提交 `.env`、数据库、WAL、缓存、日志和构建产物，保留 `.gitignore` 的保护。
+- 不通过删除或改写本地 `data/` 数据库排查问题；测试与复现使用临时数据库。
+- 不为了通过测试而削弱实盘开关、确认文本校验、已有金额与敞口限制、滑点、幂等或对账保护。
+
+## 验证
+
+迭代时选择最相关的检查，完成后按改动范围验证：
+
+```bash
+# 前端单元测试
+npm run test:web:unit
+# 类型检查
+npm run typecheck
+# 前端完整验证：类型、单测、构建、渲染 HTML
+npm run test:web
+# 后端测试，也可附具体文件或测试节点
+UV_CACHE_DIR=.uv-cache uv run pytest backend/tests
+# 完整测试
+npm test
+# 全部 lint 和格式检查
+npm run lint
+```
+
+- 修复缺陷时添加或更新能复现原问题的回归测试。
+- API 或 schema 变更验证后端契约及受影响的前端测试；迁移变更验证迁移和实际应用路径。
+- 纯文档变更核对相关代码、命令、路径和 `git diff --check`，不必重复运行无关的完整测试。
+- 没有实际运行就不能声称通过；检查无法完成时，报告准确命令、失败原因和未验证范围。
+
+## 修改与沟通原则
+
+- 实现前说明关键假设和验收方式；存在会改变任务结果的歧义时先澄清，不隐瞒不确定性。
+- 多步骤任务给出简短步骤和对应验证；持续执行到验收完成。
+- 使用满足需求的最小改动，不添加未请求的功能、抽象、配置或推测性防御代码。
+- 不顺手整理无关代码、注释和格式；保持现有风格，只清理本次改动造成的未使用内容。
+- 不改动与任务无关的生成文件、锁文件、迁移或文档。行为变化时，更新最近的相关测试和会误导读者的文档。
+- 交付前检查 `git diff` 与 `git status`，不得覆盖或混入无关的用户改动。
+- Git 提交说明使用中文；未要求提交或推送时，不把文档修改自动发布到远端。

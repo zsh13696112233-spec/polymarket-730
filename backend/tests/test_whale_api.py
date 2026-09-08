@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from backend.models import (
@@ -27,6 +28,8 @@ from backend.whale import WhaleFollowQuote, WhaleSellQuote
 CONDITION_ID = "0x" + "a" * 64
 ASSET_YES = "100000000000000000001"
 ASSET_NO = "100000000000000000002"
+
+
 WALLET_HEDGED = "0x1111111111111111111111111111111111111111"
 WALLET_DIRECTIONAL = "0x2222222222222222222222222222222222222222"
 
@@ -1272,3 +1275,141 @@ def test_whale_statistics_signal_filters_sort_and_validate(app_client_factory):
         ).status_code
         == 422
     )
+
+
+def test_monitor_categories_round_trip_and_validation(app_client_factory):
+    client, _ = app_client_factory([[]])
+    initial = client.get("/api/whales/settings").json()
+    assert set(initial["monitor_categories"]) == {
+        "sports",
+        "esports",
+        "politics",
+        "crypto",
+        "science_tech",
+        "entertainment",
+        "other",
+    }
+    response = client.put(
+        "/api/whales/settings",
+        json={"monitor_categories": ["esports", "science_tech", "esports"]},
+    )
+    assert response.status_code == 200
+    assert response.json()["monitor_categories"] == ["esports", "science_tech"]
+    # Older clients updating another field must preserve the selection.
+    response = client.put("/api/whales/settings", json={"registration_window_days": 5})
+    assert response.status_code == 200
+    assert response.json()["monitor_categories"] == ["esports", "science_tech"]
+    assert (
+        response.json()["new_account_auto_follow_categories"]
+        == initial["new_account_auto_follow_categories"]
+    )
+    for invalid in ([], ["football"]):
+        response = client.put("/api/whales/settings", json={"monitor_categories": invalid})
+        assert response.status_code == 422
+    assert client.get("/api/whales/settings").json()["monitor_categories"] == [
+        "esports",
+        "science_tech",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("slugs", "categories", "visible"),
+    [
+        (["politics"], ["sports", "esports"], False),
+        (["sports"], ["sports", "esports"], True),
+        (["sports", "esports"], ["sports"], False),
+        (["sports", "esports"], ["esports"], True),
+    ],
+)
+def test_monitor_categories_hide_existing_opportunities_and_restore_without_scanning(
+    app_client_factory, slugs, categories, visible
+):
+    client, _ = app_client_factory([[]])
+    database = client.app.state.database
+    client.portal.call(seed_two_sided_whale_market, database)
+    client.portal.call(move_directional_entry_to_settled_history, database)
+
+    async def set_tags():
+        async with database.sessions() as session:
+            market = await session.get(WhaleMarket, CONDITION_ID)
+            market.tags_json = json.dumps([{"slug": slug} for slug in slugs])
+            await session.commit()
+
+    client.portal.call(set_tags)
+    before_markets = {
+        rule: client.get(f"/api/whales/markets?rule={rule}&limit=1").json()
+        for rule in ("new_account", "large_amount")
+    }
+    assert all(payload["total"] == 1 for payload in before_markets.values())
+    before_history = client.get("/api/whales/history").json()
+    assert before_history["total"] == 1
+    before_counts = client.get("/api/home/overview").json()["opportunity_counts"]
+    before_settings = client.get("/api/whales/settings").json()
+
+    saved = client.put("/api/whales/settings", json={"monitor_categories": categories})
+    assert saved.status_code == 200
+    for rule in before_markets:
+        current = client.get(f"/api/whales/markets?rule={rule}&limit=1").json()
+        assert current["total"] == int(visible)
+        assert [item["condition_id"] for item in current["items"]] == (
+            [CONDITION_ID] if visible else []
+        )
+        assert saved.json()[f"{rule}_active_count"] == (
+            before_settings[f"{rule}_active_count"] if visible else 0
+        )
+        assert client.get(f"/api/whales/markets?rule={rule}&limit=1&offset=1").json()["items"] == []
+    assert client.get(f"/api/whales/markets/{CONDITION_ID}").status_code == (
+        200 if visible else 404
+    )
+    assert client.get("/api/whales/history").json() == before_history
+    assert client.get("/api/home/overview").json()["opportunity_counts"] == before_counts
+
+    restored = client.put(
+        "/api/whales/settings", json={"monitor_categories": before_settings["monitor_categories"]}
+    )
+    assert restored.status_code == 200
+    for rule, before in before_markets.items():
+        current = client.get(f"/api/whales/markets?rule={rule}&limit=1").json()
+        assert current["total"] == before["total"]
+        before_ids = [
+            entry["entry_id"] for side in before["items"][0]["sides"] for entry in side["entries"]
+        ]
+        current_ids = [
+            entry["entry_id"] for side in current["items"][0]["sides"] for entry in side["entries"]
+        ]
+        assert current_ids == before_ids
+        assert restored.json()[f"{rule}_active_count"] == before_settings[f"{rule}_active_count"]
+
+
+def test_verified_position_quality_fields_are_exposed_in_market_contract(app_client_factory):
+    client, _ = app_client_factory([[]])
+    client.portal.call(seed_two_sided_whale_market, client.app.state.database)
+
+    async def update_entry():
+        async with client.app.state.database.sessions() as session:
+            entry = await session.scalar(
+                select(WhaleEntry).where(WhaleEntry.proxy_wallet == WALLET_DIRECTIONAL)
+            )
+            entry.discovery_source = "positions"
+            entry.position_cost_usdc = Decimal("1234")
+            entry.opposite_size = Decimal("100")
+            entry.hedged = True
+            entry.position_checked_at = utcnow()
+            await session.commit()
+            return entry.id, entry.net_size
+
+    entry_id, size = client.portal.call(update_entry)
+    response = client.get("/api/whales/markets")
+    assert response.status_code == 200
+    entry = next(
+        entry
+        for market in response.json()["items"]
+        for side in market["sides"]
+        for entry in side["entries"]
+        if entry["entry_id"] == entry_id
+    )
+    assert entry["discovery_source"] == "positions"
+    assert Decimal(str(entry["position_cost_usdc"])) == Decimal("1234")
+    assert Decimal(str(entry["opposite_size"])) == Decimal("100")
+    assert Decimal(str(entry["directional_size"])) == max(Decimal("0"), size - Decimal("100"))
+    assert entry["position_checked_at"].endswith("Z")

@@ -87,6 +87,7 @@ class WhaleSettingsRead(APIModel):
     registration_window_days: int
     new_account_threshold_usdc: DecimalNumber
     large_amount_threshold_usdc: DecimalNumber
+    monitor_categories: list[WhaleMarketCategory]
     new_account_auto_follow_enabled: bool
     new_account_auto_follow_amount_usdc: DecimalNumber
     new_account_auto_follow_min_price: DecimalNumber
@@ -153,6 +154,7 @@ class WhaleSettingsUpdate(APIModel):
     registration_window_days: int | None = Field(default=None, ge=1, le=30)
     new_account_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_threshold_usdc: Decimal | None = Field(default=None, gt=0)
+    monitor_categories: list[WhaleMarketCategory] | None = Field(default=None, min_length=1)
     new_account_auto_follow_enabled: bool | None = None
     new_account_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     new_account_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
@@ -188,6 +190,7 @@ class WhaleSettingsUpdate(APIModel):
     auto_redeem: bool | None = None
 
     @field_validator(
+        "monitor_categories",
         "new_account_auto_follow_categories",
         "large_amount_auto_follow_categories",
     )
@@ -544,7 +547,7 @@ class HomeSystemRuleRead(APIModel):
 
 
 class HomeSystemRead(APIModel):
-    status: Literal["healthy", "error", "disabled"]
+    status: Literal["healthy", "degraded", "error", "disabled"]
     enabled: bool
     last_scan_at: datetime | None
     last_scan_error: str | None
@@ -635,12 +638,25 @@ class HomeAutoDecisionRead(APIModel):
         return _as_utc_iso(value) or ""
 
 
+class HomeOpportunityCountsRead(APIModel):
+    last_1_day: int
+    last_3_days: int
+    last_5_days: int
+    last_7_days: int
+
+
+class HomeRuleOpportunityCountsRead(APIModel):
+    new_account: HomeOpportunityCountsRead
+    large_amount: HomeOpportunityCountsRead
+
+
 class HomeOverviewRead(APIModel):
     as_of: datetime
     timezone: Literal["Asia/Shanghai"]
     range_start: date
     range_end: date
     system: HomeSystemRead
+    opportunity_counts: HomeRuleOpportunityCountsRead
     today: HomeTodayRead
     wallet: HomeWalletRead
     daily: list[HomeDailyRead] = Field(default_factory=list)
@@ -702,6 +718,11 @@ class WhaleEntryRead(APIModel):
     first_buy_at: datetime
     last_buy_at: datetime
     status: Literal["holding", "reduced", "exited"]
+    discovery_source: Literal["trades", "positions"] = "trades"
+    position_cost_usdc: DecimalNumber | None = None
+    opposite_size: DecimalNumber | None = None
+    directional_size: DecimalNumber | None = None
+    position_checked_at: datetime | None = None
     net_ratio: DecimalNumber
     hedged: bool
     price_delta_cents: DecimalNumber | None
@@ -713,6 +734,7 @@ class WhaleEntryRead(APIModel):
     follow_ineligible_reason: str | None
 
     @field_serializer(
+        "position_checked_at",
         "wallet_created_at",
         "first_buy_at",
         "last_buy_at",
@@ -740,6 +762,7 @@ class WhaleHistoryRead(APIModel):
     gross_buy_size: DecimalNumber
     avg_buy_price: DecimalNumber
     net_size: DecimalNumber
+    discovery_source: Literal["trades", "positions"] = "trades"
     first_buy_at: datetime
     first_triggered_at: datetime
     last_qualified_at: datetime

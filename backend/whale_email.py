@@ -173,12 +173,17 @@ def _add_entry_delivery(
     market_title = market.title if market is not None else entry.condition_id
     wallet_label = _wallet_label(wallet, entry)
     local_time = triggered_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(BEIJING)
+    amount_label = (
+        "持仓补充发现成本（买入时间未知）"
+        if entry.discovery_source == "positions"
+        else "窗口累计买入"
+    )
     body = "\n".join(
         (
             f"命中规则：{rule_labels}",
             f"市场：{market_title} / {entry.outcome}",
             f"钱包：{wallet_label}（{entry.proxy_wallet}）",
-            f"近 24 小时累计买入：{_decimal_text(entry.gross_buy_usdc)} USDC",
+            f"{amount_label}：{_decimal_text(entry.gross_buy_usdc)} USDC",
             f"买入均价：{_decimal_text(entry.avg_buy_price, places=4)} USDC"
             f"（{_decimal_text(entry.avg_buy_price * 100)}¢）",
             f"触发时间：{local_time:%Y-%m-%d %H:%M:%S} 北京时间",
@@ -249,11 +254,16 @@ def _add_divergence_delivery(
                 f"- {label}（{entry.proxy_wallet}）："
                 f"{_decimal_text(entry.gross_buy_usdc)} USDC，"
                 f"均价 {_decimal_text(entry.avg_buy_price, places=4)} USDC"
+                + (
+                    "（持仓补充发现，买入时间未知）"
+                    if entry.discovery_source == "positions"
+                    else ""
+                )
             )
         body_lines.append("")
     body_lines.extend(
         (
-            f"两侧方向性买入合计：{_decimal_text(total_usdc)} USDC",
+            f"两侧监测金额合计（累计买入或发现持仓成本）：{_decimal_text(total_usdc)} USDC",
             f"领先方向净差：{_decimal_text(difference_usdc)} USDC",
             "结论：方向高度分歧，不应把任一侧视为明确跟单信号。",
             f"触发时间：{local_time:%Y-%m-%d %H:%M:%S} 北京时间",

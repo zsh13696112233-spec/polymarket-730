@@ -88,6 +88,12 @@ class Settings:
             smtp_from_email=os.getenv("POLYMARKET_SMTP_FROM_EMAIL") or None,
             smtp_from_name=os.getenv("POLYMARKET_SMTP_FROM_NAME", "PolyCopy"),
             smtp_security=os.getenv("POLYMARKET_SMTP_SECURITY", "starttls").lower(),
+            cors_origins=Settings().cors_origins
+            + tuple(
+                origin.strip().rstrip("/")
+                for origin in os.getenv("POLYMARKET_CORS_ORIGINS", "").split(",")
+                if origin.strip()
+            ),
         )
 
     @property

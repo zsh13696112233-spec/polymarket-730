@@ -30,6 +30,10 @@ function overview(overrides: Record<string, unknown> = {}) {
   return {
     as_of: "2026-08-30T08:00:00Z",
     timezone: "Asia/Shanghai",
+    opportunity_counts: {
+      new_account: { last_1_day: 2, last_3_days: 6, last_5_days: 10, last_7_days: 15 },
+      large_amount: { last_1_day: 0, last_3_days: 1, last_5_days: 3, last_7_days: 5 },
+    },
     range_start: "2026-08-01",
     range_end: "2026-08-30",
     system: {
@@ -99,7 +103,7 @@ describe("首页运行与跟单看板", () => {
     expect(await screen.findByRole("heading", { name: "首页" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "首页" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "链上监测" })).toHaveAttribute("href", "/whales");
-    const flowCard = screen.getByLabelText("今日跟单买入与今日分歧退出回款");
+    const flowCard = await screen.findByLabelText("今日跟单买入与今日分歧退出回款");
     expect(within(flowCard).getByText("今日跟单资金流")).toBeInTheDocument();
     expect(within(flowCard).getByText("实际跟单买入")).toBeInTheDocument();
     expect(within(flowCard).getByText("20.50 USDC")).toBeInTheDocument();
@@ -124,6 +128,18 @@ describe("首页运行与跟单看板", () => {
     expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-mode", "finance");
     expect(screen.getByRole("button", { name: "近 7 日" })).toHaveAttribute("aria-pressed", "true");
     expect(container.querySelector(".homeChartLegend .roi")).not.toBeInTheDocument();
+    const opportunities = within(screen.getByLabelText("链上发现机会"));
+    expect(opportunities.getAllByRole("article")).toHaveLength(4);
+    for (const [label, newCount, largeCount] of [
+      ["最近 1 天（今日）", 2, 0],
+      ["最近 3 天", 6, 1],
+      ["最近 5 天", 10, 3],
+      ["最近 7 天", 15, 5],
+    ] as const) {
+      const card = within(opportunities.getByRole("article", { name: `${label}发现机会` }));
+      expect(card.getAllByRole("term").map((term) => term.textContent)).toEqual(["新号大额", "全量超大额"]);
+      expect(card.getAllByRole("definition").map((value) => value.textContent)).toEqual([String(newCount), String(largeCount)]);
+    }
     const runtime = screen.getByLabelText("运行概览");
     const metrics = screen.getByLabelText("今日核心指标");
     expect(metrics.compareDocumentPosition(runtime) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -226,4 +242,29 @@ describe("首页运行与跟单看板", () => {
     expect(container.querySelectorAll(".homeRuleDot.enabled")).toHaveLength(0);
     expect(screen.getAllByText("连接中断")).toHaveLength(2);
   });
+});
+
+it("将进行中的市场补齐与扫描异常区分显示", async () => {
+  const base = overview();
+  vi.stubGlobal("fetch", vi.fn(async () => json(overview({
+    wallet: { ...base.wallet, available: false },
+    system: {
+      ...base.system,
+      status: "degraded",
+      last_scan_error: "重点市场 0xabc 历史补齐中，拆单回溯不完整，未用于新增信号",
+    },
+  }))));
+  render(<HomeWorkspace />);
+  expect((await screen.findAllByText("重点市场历史补齐中")).length).toBeGreaterThan(0);
+  expect(screen.queryByText("链上扫描异常")).not.toBeInTheDocument();
+  const progress = screen.getByText(/重点市场 0xabc 历史补齐中/).closest(".homeAlert");
+  expect(progress).toHaveClass("homeAlertInfo");
+  expect(progress).toHaveAttribute("role", "status");
+  const runtime = screen.getByLabelText("运行概览");
+  expect(within(runtime).getAllByText("运行中")).toHaveLength(2);
+  expect(within(runtime).queryByText("未运行")).not.toBeInTheDocument();
+  expect(runtime.querySelectorAll(".homeRuleDot.enabled")).toHaveLength(2);
+  const error = screen.getByText("交易钱包不可用").closest(".homeAlert");
+  expect(error).not.toHaveClass("homeAlertInfo");
+  expect(error).toHaveAttribute("role", "alert");
 });

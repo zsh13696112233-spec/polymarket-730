@@ -174,7 +174,7 @@ export function buildWalletGroups(
           market,
           side,
           entry,
-          dualSided: (walletMarketSides.get(`${addressKey}:${market.condition_id}`)?.size ?? 0) > 1,
+          dualSided: entry.hedged || (walletMarketSides.get(`${addressKey}:${market.condition_id}`)?.size ?? 0) > 1,
           divergentMarket: divergentMarketIds.has(market.condition_id),
         });
         group.totalValue += holdingValue(entry);
@@ -545,6 +545,8 @@ export default function WhaleDiscoveryWorkspace() {
 
 const INACTIVE_REASON_LABELS: Record<string, string> = {
   position_exited: "触发后退出",
+  position_reduced: "巨鲸已明显减仓",
+  position_hedged: "巨鲸持有双向仓位",
   market_closed: "市场已结算",
   below_threshold: "滚出24小时门槛",
   account_age_exceeded: "账号超过新号窗口",
@@ -673,7 +675,7 @@ function WhaleHistoryRow({ item }: { item: WhaleHistory }) {
       <td><a href={link} target="_blank" rel="noreferrer">{item.title} ↗</a><small>{item.outcome}</small></td>
       <td className="numeric"><strong>{formatCompactUsdc(item.gross_buy_usdc)}</strong><small>{numeric(item.gross_buy_size).toFixed(2)} 份</small></td>
       <td className="numeric">{formatPrice(item.avg_buy_price)}</td>
-      <td><strong>建仓 {formatBeijing(item.first_buy_at)}</strong><small>触发 {formatBeijing(item.first_triggered_at)}</small><small>失效 {formatBeijing(item.inactive_at || item.last_qualified_at)}</small></td>
+      <td><strong>{item.discovery_source === "positions" ? "发现" : "建仓"} {formatBeijing(item.first_buy_at)}</strong><small>触发 {formatBeijing(item.first_triggered_at)}</small><small>失效 {formatBeijing(item.inactive_at || item.last_qualified_at)}</small></td>
       <td><span className="pcBadge muted">{reason}</span></td>
       <td className="numeric"><strong>{item.settlement_price == null ? "待结算" : formatPrice(item.settlement_price)}</strong><small className={item.hold_to_settlement_pnl_usdc != null && numeric(item.hold_to_settlement_pnl_usdc) >= 0 ? "profit" : "loss"}>{item.hold_to_settlement_pnl_usdc == null ? "—" : formatCompactSignedUsdc(item.hold_to_settlement_pnl_usdc)}</small></td>
     </tr>
@@ -937,12 +939,12 @@ function WhaleHoldingRow({ holding, onFollow }: { holding: WalletHolding; onFoll
           </div>
         </div>
       </div>
-      <div className="whaleHoldingMetric"><span>24小时买入</span><strong>{formatCompactUsdc(entry.gross_buy_usdc)}</strong><small>{entry.trade_count} 笔累计</small></div>
-      <div className="whaleHoldingMetric"><span>剩余持仓</span><strong>{numeric(entry.net_size).toFixed(2)}</strong><small>份</small></div>
+      <div className="whaleHoldingMetric"><span>{entry.discovery_source === "positions" ? "发现时持仓成本" : "窗口累计买入"}</span><strong>{formatCompactUsdc(entry.gross_buy_usdc)}</strong><small>{entry.discovery_source === "positions" ? "持仓补充发现" : `${entry.trade_count} 笔累计`}</small></div>
+      <div className="whaleHoldingMetric"><span>剩余持仓</span><strong>{numeric(entry.net_size).toFixed(2)}</strong><small>{entry.status === "reduced" ? "已减仓" : "持有"} · 保留 {numeric(entry.net_ratio).toFixed(1)}%</small><small>剩余成本 {entry.position_cost_usdc == null ? "—" : formatCompactUsdc(entry.position_cost_usdc)}</small>{entry.hedged && <small>反向 {entry.opposite_size == null ? "—" : numeric(entry.opposite_size).toFixed(2)} 份 · 净方向 {entry.directional_size == null ? "—" : numeric(entry.directional_size).toFixed(2)} 份</small>}</div>
       <div className="whaleHoldingMetric"><span>当前估值</span><strong>{entry.current_value_usdc == null ? "—" : formatCompactUsdc(entry.current_value_usdc)}</strong><small>按现价估算</small></div>
       <div className="whaleHoldingMetric"><span>买入均价</span><strong>{formatPrice(entry.avg_buy_price)}</strong><small>USDC</small></div>
       <div className="whaleHoldingMetric"><span>当前价</span><strong>{formatPrice(side.current_price)}</strong><small>USDC</small></div>
-      <div className="whaleHoldingMetric whaleHoldingTimes"><strong>{formatBeijing(entry.first_buy_at)}</strong><small>监测建仓</small><small>最近加仓 {formatBeijing(entry.last_buy_at)}</small><small>首次触发 {formatBeijing(entry.first_triggered_at)}</small></div>
+      <div className="whaleHoldingMetric whaleHoldingTimes"><strong>{formatBeijing(entry.first_buy_at)}</strong><small>{entry.discovery_source === "positions" ? "首次发现 · 买入时间未知" : "监测建仓"}</small>{entry.discovery_source !== "positions" && <small>最近加仓 {formatBeijing(entry.last_buy_at)}</small>}<small>首次触发 {formatBeijing(entry.first_triggered_at)}</small><small>持仓核验 {formatBeijing(entry.position_checked_at ?? null)}</small></div>
       <div className="whaleHoldingAction">
         <button className="pcButton primary" type="button" onClick={onFollow} disabled={Boolean(disabledReason)}>跟单</button>
         {disabledReason && <small>{disabledReason}</small>}

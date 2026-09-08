@@ -971,6 +971,7 @@ def create_app(
             if nullable_key in payload.model_fields_set and getattr(payload, nullable_key) is None:
                 values[nullable_key] = None
         for public_key, storage_key in (
+            ("monitor_categories", "monitor_categories_json"),
             (
                 "new_account_auto_follow_categories",
                 "new_account_auto_follow_categories_json",

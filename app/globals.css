@@ -8442,6 +8442,8 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 /* Simplified whale holdings */
 .whaleInlineSettings { scroll-margin-top: 16px; }
 .whaleInlineSettingsPanel { overflow: hidden; border-color: #75682a; box-shadow: inset 3px 0 #f2c319; }
+.whaleMonitorCategories { grid-column: 1 / -1; }
+.whaleMonitorCategories .whaleAutoCategories { padding: 0; }
 .whaleInlineSettingsBody { display: grid; align-items: start; grid-template-columns: minmax(0, 1fr) minmax(360px, 0.55fr); gap: 20px; }
 .whaleSettingsStatus { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #403b1f; background: #403b1f; }
 .whaleSettingsStatus > div { display: grid; min-height: 67px; align-content: center; gap: 5px; padding: 10px 12px; background: #0c0d08; }
@@ -9506,6 +9508,10 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   font-size: 12px;
   font-weight: 700;
 }
+.homeAlertInfo { border-color: #c6dcf4; background: #f0f7ff; color: #245b91; }
+.homeAlertInfo strong { color: #245b91; }
+.homeAlertInfo p { color: #41678d; }
+.homeAlertInfo > span { background: #397cbf; }
 .homeLoading { min-height: 320px; }
 .homeTopStatus,
 .homeTopHealth,
@@ -9532,7 +9538,16 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .homeStatusDot.healthy,
 .homeRuleDot.enabled { background: #18a36f; box-shadow: 0 0 0 4px rgba(24, 163, 111, .1); }
 .homeStatusDot.error { background: #dc514b; box-shadow: 0 0 0 4px rgba(220, 81, 75, .1); }
+.homeStatusDot.degraded { background: #397cbf; box-shadow: 0 0 0 4px rgba(57, 124, 191, .1); }
 .homeStatusDot.disabled { background: #e09a31; box-shadow: 0 0 0 4px rgba(224, 154, 49, .1); }
+.homeOpportunities { min-width: 0; }
+.homeOpportunities .homeSectionHeader { padding: 0 0 12px; }
+.homeOpportunityValues { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 0; }
+.homeOpportunityValues > div { min-width: 0; }
+.homeOpportunityValues > div + div { padding-left: 12px; border-left: 1px solid #e7eaf0; }
+.homeOpportunityValues dt { color: #969aa4; font-size: 10px; }
+.homeOpportunityValues dd { margin: 6px 0 0; color: #111216; font-family: var(--pc-data-font); font-size: clamp(19px, 1.6vw, 27px); font-weight: 650; line-height: 1.1; overflow-wrap: anywhere; }
+.homeOpportunityValues > div + div dd { color: #28758a; }
 .homeMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .homeMetricCard {
   position: relative;
@@ -9659,8 +9674,11 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .homeMetricCard:hover > span,
   .homeMetricCard:hover > strong,
   .homeMetricCard:hover > small,
+  .homeMetricCard:hover .homeOpportunityValues dt,
+  .homeMetricCard:hover .homeOpportunityValues dd,
   .homeMetricCard:hover .homeFlowValue > small,
   .homeMetricCard:hover .homeFlowValue > strong { color: rgba(255, 255, 255, .94); }
+  .homeMetricCard:hover .homeOpportunityValues > div + div,
   .homeMetricCard:hover .homeFlowValue + .homeFlowValue { border-left-color: rgba(255, 255, 255, .32); }
 }
 .homePortfolioGrid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr); gap: 14px; }
@@ -9825,6 +9843,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .homeWorkspace .pcContent { display: flex; flex-direction: column; gap: 12px; }
   .homeAlertStack { order: 0; }
   .homeMetrics { order: 1; grid-template-columns: 1fr 1fr; }
+  .homeOpportunities { order: 1; }
   .homeRuntimeFront { order: 2; }
   .homePortfolioGrid { display: contents; }
   .homeWalletPanel { order: 3; }
@@ -12163,6 +12182,99 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   padding: 4px 0;
   background: #fff;
   color: #5e5e66;
+}
+
+.whaleRequestMonitorInline .whaleTerminalChrome {
+  border-bottom: 0;
+  background: #fff;
+  padding: 14px 18px 8px;
+}
+
+.whaleRequestColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  padding: 4px 18px 14px;
+}
+
+.whaleRequestColumn { min-width: 0; }
+.whaleRequestColumn > h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 6px 0;
+  color: #696e7b;
+  font-size: 11px;
+  font-weight: 500;
+}
+.whaleRequestColumn > h3::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #18a36f;
+}
+.whaleRequestColumn.failed > h3::before { background: #dc514b; }
+.whaleRequestColumn .whaleRequestTerminal.recent .whaleTerminalEntry {
+  padding: 0;
+  border-bottom: 0;
+}
+.whaleRequestColumn .whaleTerminalLine {
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: start;
+  gap: 2px 10px;
+  padding: 9px 0;
+}
+.whaleRequestColumn .whaleTerminalLine > time { grid-column: 1; grid-row: 1; }
+.whaleRequestColumn .whaleTerminalLine > b {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 9px;
+}
+.whaleRequestColumn .whaleTerminalLine > b.failed { color: #d8454b !important; }
+.whaleRequestColumn .whaleTerminalLine > b.pending { color: #a46200 !important; }
+.whaleRequestColumn .whaleTerminalLine > code { grid-column: 2; grid-row: 1 / 3; }
+.whaleRequestColumn .whaleTerminalLine code > .whaleRequestSummary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 10px;
+  align-items: baseline;
+}
+.whaleRequestColumn .whaleTerminalLine code strong { color: #5e5e66; font-size: 11px; }
+.whaleRequestColumn .whaleTerminalLine .whaleRequestUrl {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  color: #8d8e99;
+  font-size: 11px;
+}
+.whaleRequestColumn .whaleTerminalLine code small {
+  grid-column: 2;
+  grid-row: 1;
+  text-align: right;
+  font-size: 10px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.whaleRequestColumn .whaleTerminalEmpty {
+  justify-content: flex-start;
+  padding: 9px 0;
+  font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  .whaleRequestColumns { gap: 16px; padding-inline: 12px; }
+  .whaleRequestColumn .whaleTerminalLine { grid-template-columns: minmax(0, 1fr) auto; gap: 3px 6px; }
+  .whaleRequestColumn .whaleTerminalLine > b { grid-column: 2; grid-row: 1; }
+  .whaleRequestColumn .whaleTerminalLine > code { grid-column: 1 / -1; grid-row: 2; }
+  .whaleRequestColumn .whaleTerminalLine code > .whaleRequestSummary { grid-template-columns: minmax(0, 1fr); }
+  .whaleRequestColumn .whaleTerminalLine code small { grid-column: 1; grid-row: 3; text-align: left; }
 }
 
 .whaleRequestTerminal.recent .whaleTerminalEntry {

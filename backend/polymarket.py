@@ -664,18 +664,16 @@ class PolymarketClient:
         end: datetime,
         limit: int = 500,
         offset: int = 0,
+        condition_ids: Iterable[str] | None = None,
     ) -> list[LargeTradeSnapshot]:
         """Fetch one descending Data API page for the whale scanner.
 
-        The public trades endpoint does not support a lower time boundary.  The
-        scanner therefore applies ``start`` locally and stops descending pages
-        once they cross it.  ``end`` remains in the request as a freshness key:
-        without a changing query value Cloudflare can serve the same trades page
-        for five minutes, which is too stale for automatic-follow discovery.
+        Both time boundaries are sent to the provider. The scanner also checks
+        them locally and partitions busy market windows to avoid the offset cap.
         """
 
-        if filter_amount_usdc <= ZERO:
-            raise ValueError("大额成交采集金额必须大于 0")
+        if filter_amount_usdc < ZERO:
+            raise ValueError("成交采集金额不能小于 0")
         if not 1 <= limit <= 500:
             raise ValueError("大额成交单页数量必须在 1 到 500 之间")
         if offset < 0:
@@ -699,7 +697,9 @@ class PolymarketClient:
                     "offset": offset,
                     "takerOnly": "false",
                     "side": "BUY",
+                    "start": int(start.replace(tzinfo=UTC).timestamp()),
                     "end": int(end.replace(tzinfo=UTC).timestamp()),
+                    **({"market": ",".join(dict.fromkeys(condition_ids))} if condition_ids else {}),
                 },
             )
         if not isinstance(payload, list):
@@ -708,6 +708,8 @@ class PolymarketClient:
         trades: list[LargeTradeSnapshot] = []
         for item in payload:
             if not isinstance(item, dict):
+                if condition_ids:
+                    raise PolymarketAPIError("重点市场成交包含无效记录，无法确认分页完整性")
                 continue
             side = str(item.get("side") or "").upper()
             proxy_wallet = str(item.get("proxyWallet") or "").lower()
@@ -726,6 +728,8 @@ class PolymarketClient:
                 or price > Decimal("1")
                 or timestamp is None
             ):
+                if condition_ids:
+                    raise PolymarketAPIError("重点市场成交包含无效记录，无法确认分页完整性")
                 continue
             outcome_index = self._optional_int(item.get("outcomeIndex"))
             display_name = self._optional_text(item.get("name")) or self._optional_text(
@@ -812,6 +816,26 @@ class PolymarketClient:
                 if condition_id in batch:
                     markets.append(self._parse_whale_market(item))
         return markets
+
+    async def fetch_discovery_markets(
+        self, *, min_liquidity_usdc: Decimal
+    ) -> list[WhaleMarketSnapshot]:
+        """Bound supplemental discovery to one page of high-volume markets."""
+        payload = await self._get_json(
+            f"{self.gamma_api_url}/markets",
+            params={
+                "closed": "false",
+                "active": "true",
+                "include_tag": "true",
+                "liquidity_num_min": str(min_liquidity_usdc),
+                "order": "volume24hr",
+                "ascending": "false",
+                "limit": 100,
+            },
+        )
+        if not isinstance(payload, list):
+            raise PolymarketAPIError("重点市场目录返回格式无效")
+        return [self._parse_whale_market(item) for item in payload if isinstance(item, dict)]
 
     async def fetch_active_whale_markets(
         self,

@@ -668,6 +668,79 @@ async def test_sell_all_writes_off_small_fak_remainder_once(database: Database):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("after_restart", [False, True])
+@pytest.mark.parametrize("requested,closed", [("12.43", True), ("12.42", False)])
+async def test_wallet_rounded_sell_all_finishes_on_sell_day(
+    database: Database, monkeypatch, after_restart: bool, requested: str, closed: bool
+):
+    from backend.home import _beijing_date, _finish_counts
+
+    position_id = await insert_position(
+        database, size="12.435898", cost="4.99792022", status="open"
+    )
+    order_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size=requested,
+        requested_usdc="12",
+        key="wallet-rounded-sell",
+    )
+    sold = Decimal(requested)
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        order.source = "wallet_manual"
+        if after_restart:
+            order.status = "filled"
+            order.filled_size = sold
+            order.updated_at = NOW
+            position = await session.get(WhaleFollowPosition, position_id)
+            position.size -= sold
+            position.cost_usdc *= position.size / Decimal("12.435898")
+            position.realized_pnl = Decimal("7.4")
+        await session.commit()
+
+    follow_executor = executor(database)
+    if after_restart:
+        monkeypatch.setattr("backend.whale.utcnow", lambda: NOW + timedelta(days=1))
+        assert await follow_executor.reconcile_terminal_sell_remainders() == int(closed)
+    else:
+        monkeypatch.setattr("backend.whale.utcnow", lambda: NOW)
+        result = TradeResult(
+            status="filled",
+            external_order_id="rounded-sell",
+            external_trade_id="rounded-fill",
+            filled_size=sold,
+            filled_usdc=sold * Decimal("0.999"),
+            average_price=Decimal("0.999"),
+        )
+        await follow_executor.apply_result(order_id, result)
+        await follow_executor.apply_result(order_id, result)
+    assert await follow_executor.reconcile_terminal_sell_remainders() == 0
+    async with database.sessions() as session:
+        position = await session.get(WhaleFollowPosition, position_id)
+        dust = list(
+            await session.scalars(
+                select(WhaleFollowLedger).where(
+                    WhaleFollowLedger.position_id == position_id,
+                    WhaleFollowLedger.type == "dust_writeoff",
+                )
+            )
+        )
+    assert len(dust) == int(closed)
+    counts = _finish_counts([position], set(), set())
+    if closed:
+        assert position.status == "closed"
+        assert position.size == position.cost_usdc == ZERO
+        assert position.closed_at == dust[0].timestamp == NOW
+        assert counts[_beijing_date(NOW)][0] == 1
+    else:
+        assert position.status == "open"
+        assert position.closed_at is None
+        assert counts == {}
+
+
+@pytest.mark.asyncio
 async def test_terminal_sell_remainder_is_written_off_after_restart(database: Database):
     position_id = await insert_position(
         database,

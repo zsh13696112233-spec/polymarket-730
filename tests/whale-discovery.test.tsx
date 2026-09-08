@@ -18,6 +18,7 @@ function json(payload: unknown, status = 200) {
 const settings = {
   enabled: true,
   window_hours: 24,
+  monitor_categories: ["sports", "esports", "politics", "crypto", "science_tech", "entertainment", "other"],
   registration_window_days: 7,
   new_account_threshold_usdc: 100000,
   large_amount_threshold_usdc: 500000,
@@ -63,19 +64,22 @@ describe("巨鲸页内设置", () => {
   it("在巨鲸页面内直接展示设置，保存后立即重新扫描", async () => {
     const user = userEvent.setup();
     const bodies: unknown[] = [];
+    const requests: string[] = [];
+    let savedSettings = settings;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      requests.push(`${init?.method ?? "GET"} ${url}`);
       if (url.endsWith("/api/whales/settings") && init?.method === "PUT") {
         const body = JSON.parse(String(init.body));
         bodies.push(body);
+        savedSettings = { ...settings, ...body };
         return json({
-          ...settings,
-          ...body,
+          ...savedSettings,
           single_trade_threshold_usdc: body.new_account_threshold_usdc,
           cumulative_threshold_usdc: body.new_account_threshold_usdc,
         });
       }
-      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.endsWith("/api/whales/settings")) return json(savedSettings);
       if (url.endsWith("/api/whales/exclusions")) return json({ total: 0, items: [] });
       if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
       if (url.includes("/api/whales/markets?")) return json({
@@ -101,7 +105,21 @@ describe("巨鲸页内设置", () => {
     await user.type(threshold, "25000");
     await user.clear(largeThreshold);
     await user.type(largeThreshold, "600000");
+    const categories = within(screen.getByRole("group", { name: "监测市场分类" }));
+    expect(categories.getAllByRole("checkbox")).toHaveLength(7);
+    for (const label of ["政治", "加密", "娱乐", "其他"]) {
+      await user.click(categories.getByRole("checkbox", { name: label }));
+    }
     const saveButton = screen.getByRole("button", { name: "保存监测条件" });
+    for (const label of ["传统体育", "电竞", "科学与科技"]) {
+      await user.click(categories.getByRole("checkbox", { name: label }));
+    }
+    await user.click(saveButton);
+    expect(await screen.findByRole("alert")).toHaveTextContent("监测至少需要选择一个市场分类。");
+    expect(bodies).toHaveLength(0);
+    for (const label of ["传统体育", "电竞", "科学与科技"]) {
+      await user.click(categories.getByRole("checkbox", { name: label }));
+    }
     const form = saveButton.closest("form");
     expect(form).not.toBeNull();
     expect(Array.from(form!.querySelectorAll("input")).filter((input) => !input.checkValidity()).map((input) => input.getAttribute("aria-label"))).toEqual([]);
@@ -110,12 +128,20 @@ describe("巨鲸页内设置", () => {
 
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toMatchObject({
+      monitor_categories: ["sports", "esports", "science_tech"],
       registration_window_days: 7,
       new_account_threshold_usdc: 25000,
       large_amount_threshold_usdc: 600000,
     });
     expect(bodies[0]).not.toHaveProperty("new_account_auto_follow_enabled");
     expect(await screen.findByText("巨鲸监测条件已保存，数据已重新扫描。")).toBeInTheDocument();
+    const saveIndex = requests.findIndex((request) => request.startsWith("PUT "));
+    const reloadIndex = requests.findIndex((request, index) => index > saveIndex && request.includes("/api/whales/markets?"));
+    const scanIndex = requests.findIndex((request) => request.includes("/api/whales/scan"));
+    expect(reloadIndex).toBeGreaterThan(saveIndex);
+    expect(scanIndex).toBeGreaterThan(reloadIndex);
+    expect(categories.getByRole("checkbox", { name: "政治" })).not.toBeChecked();
+    expect(categories.getByRole("checkbox", { name: "电竞" })).toBeChecked();
   });
 
   it("分别保存两套真实自动跟单策略和分类", async () => {
@@ -845,7 +871,7 @@ const whaleMarket = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("巨鲸请求监测面板", () => {
-  it("展示成功、失败与进行中请求，并在同一次请求重试成功后隐藏旧失败", async () => {
+  it("左右分栏展示成功与失败请求，并在同一次请求重试成功后隐藏旧失败", async () => {
     class FakeEventSource {
       static instance: FakeEventSource | null = null;
       onopen: ((event: Event) => void) | null = null;
@@ -902,7 +928,12 @@ describe("巨鲸请求监测面板", () => {
       "HTTP · GEThttps://data-api.polymarket.com/tradesHTTP 200 · 321ms",
     );
     expect(screen.getByText("HTTP 200 · 321ms")).toBeInTheDocument();
-    expect(screen.getByText("pending")).toBeInTheDocument();
+    const successColumn = screen.getByRole("region", { name: "成功日志" });
+    const failedColumn = screen.getByRole("region", { name: "错误日志" });
+    expect(within(successColumn).getByText("success")).toBeInTheDocument();
+    expect(within(successColumn).getByText("pending")).toBeInTheDocument();
+    expect(within(failedColumn).getByText("暂无失败请求。")).toBeInTheDocument();
+    expect(successColumn.nextElementSibling).toBe(failedColumn);
     expect(screen.queryByRole("button", { name: "仅失败" })).not.toBeInTheDocument();
     FakeEventSource.instance?.onopen?.(new Event("open"));
     expect(await screen.findByLabelText("请求监控状态：实时连接")).toBeInTheDocument();
@@ -921,7 +952,9 @@ describe("巨鲸请求监测面板", () => {
     }));
     expect(screen.getByText("16:00:00")).toBeInTheDocument();
     expect(await screen.findByText("failed")).toBeInTheDocument();
-    expect(screen.getByText(/Polymarket 接口返回 503/)).toBeInTheDocument();
+    expect(within(failedColumn).getByText(/Polymarket 接口返回 503/)).toBeInTheDocument();
+    expect(within(successColumn).queryByText("failed")).not.toBeInTheDocument();
+    expect(within(failedColumn).queryByText("success")).not.toBeInTheDocument();
 
     FakeEventSource.instance?.onmessage?.(new MessageEvent("message", {
       data: JSON.stringify({
@@ -993,7 +1026,8 @@ describe("巨鲸请求监测面板", () => {
     render(<WhaleRequestMonitorPanel />);
 
     expect(await screen.findByLabelText("请求监控状态：正在重连")).toBeInTheDocument();
-    expect(screen.getByText("暂无请求，收到新数据后会自动更新。")).toBeInTheDocument();
+    expect(screen.getByText("暂无成功或进行中的请求。")).toBeInTheDocument();
+    expect(screen.getByText("暂无失败请求。")).toBeInTheDocument();
     FailedEventSource.instance?.onopen?.(new Event("open"));
     expect(await screen.findByLabelText("请求监控状态：实时连接")).toBeInTheDocument();
   });
@@ -1414,4 +1448,43 @@ describe("巨鲸跟单记录页", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /刷新记录/ })).toBeEnabled());
     expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).includes("/api/whales/records?"))).toBe(true);
   });
+});
+
+it("展示持仓补充来源、减仓和窗口外对冲，并禁用不合格跟单", async () => {
+  const market = {
+    ...whaleMarket,
+    sides: [{
+      ...whaleMarket.sides[0],
+      entries: [{
+        ...whaleMarket.sides[0].entries[0],
+        discovery_source: "positions",
+        trade_count: 0,
+        status: "reduced",
+        net_ratio: 10,
+        position_cost_usdc: 1500,
+        opposite_size: 2000,
+        directional_size: 1000,
+        hedged: true,
+        position_checked_at: "2026-08-16T09:00:00Z",
+        follow_eligible: false,
+        follow_ineligible_reason: "position_hedged",
+      }],
+    }],
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/whales/settings")) return json(settings);
+    if (url.includes("/api/whales/markets?")) return json({ generated_at: "2026-08-16T09:00:00Z", total: 1, items: [market] });
+    if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
+    return json({ detail: "not found" }, 404);
+  }));
+  render(<WhaleDiscoveryWorkspace />);
+  expect(await screen.findByText("持仓补充发现")).toBeInTheDocument();
+  expect(screen.getByText("发现时持仓成本")).toBeInTheDocument();
+  expect(screen.getByText("首次发现 · 买入时间未知")).toBeInTheDocument();
+  expect(screen.getByText("已减仓 · 保留 10.0%")).toBeInTheDocument();
+  expect(screen.getByText("反向 2000.00 份 · 净方向 1000.00 份")).toBeInTheDocument();
+  expect(screen.getByText("钱包对冲")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "跟单" })).toBeDisabled();
+  expect(screen.queryByText("窗口累计买入")).not.toBeInTheDocument();
 });

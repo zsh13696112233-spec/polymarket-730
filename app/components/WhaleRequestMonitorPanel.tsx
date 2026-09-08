@@ -145,7 +145,7 @@ export function WhaleRequestMonitorPanel({
         <div className="whaleTerminalChrome">
           <span>
             <strong>请求监控</strong>
-            <small>当前进程最近请求 · 失败优先</small>
+            <small>当前进程最近请求</small>
           </span>
           <b
             className={`whaleTerminalLive ${connection}`}
@@ -155,28 +155,36 @@ export function WhaleRequestMonitorPanel({
             {connectionLabel}
           </b>
         </div>
-        <div className="whaleRequestTerminal recent" aria-live="polite" role="status">
-          {recentRequests.length ? (
-            recentRequests.map((record) => (
-              <div className={`whaleTerminalEntry ${record.status}`} key={record.id}>
-                <div className="whaleTerminalLine">
-                  <time>{consoleTime(record.finished_at || record.started_at)}</time>
-                  <b className={record.status}>{record.status}</b>
-                  <code>
-                    <span className="whaleRequestSummary">
-                      <strong>{record.source.toUpperCase()} · {record.method}</strong>
-                      <span className="whaleRequestUrl">{record.url}</span>
-                      <small>{record.status === "failed" ? `${record.error_message || record.error_type || "请求失败"} · ${record.duration_ms ?? 0}ms` : `HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
-                    </span>
-                  </code>
-                </div>
+        <div className="whaleRequestColumns">
+          {[
+            { status: "success", title: "成功日志", records: recentRequests.filter((record) => record.status !== "failed"), empty: "暂无成功或进行中的请求。" },
+            { status: "failed", title: "错误日志", records: recentRequests.filter((record) => record.status === "failed"), empty: "暂无失败请求。" },
+          ].map((column) => (
+            <section className={`whaleRequestColumn ${column.status}`} aria-label={column.title} key={column.status}>
+              <h3>{column.title}</h3>
+              <div className="whaleRequestTerminal recent" aria-live="polite" role="status">
+                {column.records.length ? (
+                  column.records.map((record) => (
+                    <div className={`whaleTerminalEntry ${record.status}`} key={record.id}>
+                      <div className="whaleTerminalLine">
+                        <time>{consoleTime(record.finished_at || record.started_at)}</time>
+                        <b className={record.status}>{record.status}</b>
+                        <code>
+                          <span className="whaleRequestSummary">
+                            <strong>{record.source.toUpperCase()} · {record.method}</strong>
+                            <span className="whaleRequestUrl">{record.url}</span>
+                            <small>{record.status === "failed" ? `${record.error_message || record.error_type || "请求失败"} · ${record.duration_ms ?? 0}ms` : `HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
+                          </span>
+                        </code>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="whaleTerminalEmpty">{column.empty}</div>
+                )}
               </div>
-            ))
-          ) : (
-            <div className="whaleTerminalEmpty">
-              暂无请求，收到新数据后会自动更新。
-            </div>
-          )}
+            </section>
+          ))}
         </div>
       </div>
     </section>

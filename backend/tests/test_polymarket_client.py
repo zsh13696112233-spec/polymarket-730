@@ -156,7 +156,7 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
         assert request.url.path == "/trades"
         assert request.url.params["filterType"] == "CASH"
         assert request.url.params["filterAmount"] == "1000.00"
-        assert "start" not in request.url.params
+        assert request.url.params["start"] == str(int(start.replace(tzinfo=UTC).timestamp()))
         assert request.url.params["end"] == str(int(end.replace(tzinfo=UTC).timestamp()))
         assert request.url.params["limit"] == "123"
         assert request.url.params["offset"] == "456"
@@ -1243,3 +1243,36 @@ def test_invalid_non_polymarket_url_is_rejected():
 
     with pytest.raises(InvalidWalletInput):
         parse_wallet_input(f"https://evil.test/profile/{TEST_ADDRESS}")
+
+
+async def test_supplemental_trades_allow_zero_threshold_and_filter_market():
+    condition_id = "0x" + "a" * 64
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        now = datetime(2026, 9, 7)
+        assert (
+            await client.fetch_large_trades(
+                filter_amount_usdc=Decimal("0"), start=now, end=now, condition_ids=[condition_id]
+            )
+            == []
+        )
+        assert requests[0].url.params["market"] == condition_id
+        assert requests[0].url.params["filterAmount"] == "0"
+        assert requests[0].url.params["side"] == "BUY"
+        await client.fetch_discovery_markets(min_liquidity_usdc=Decimal("5000"))
+        assert requests[1].url.path == "/markets"
+        assert requests[1].url.params["limit"] == "100"
+        assert requests[1].url.params["order"] == "volume24hr"
+    finally:
+        await client.close()

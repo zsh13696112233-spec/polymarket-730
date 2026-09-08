@@ -223,6 +223,12 @@ class WhaleSettings(Base):
     large_amount_threshold_usdc: Mapped[Decimal] = mapped_column(
         DECIMAL_TYPE, nullable=False, default=Decimal("500000")
     )
+    monitor_categories_json: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
+        server_default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
+    )
     new_account_auto_follow_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
@@ -452,6 +458,38 @@ class WhaleTrade(Base):
     imported_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class WhaleMarketScanState(Base):
+    __tablename__ = "whale_market_scan_states"
+
+    condition_id: Mapped[str] = mapped_column(String(66), primary_key=True)
+    coverage_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    coverage_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    batch_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    batch_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    pending_ranges_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    auto_follow_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WhaleBackfillSignalState(Base):
+    __tablename__ = "whale_backfill_signal_states"
+
+    proxy_wallet: Mapped[str] = mapped_column(String(42), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    auto_follow_after: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    awaiting_new_buy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class WhaleMarketScanPage(Base):
+    __tablename__ = "whale_market_scan_pages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class WhaleMarket(Base):
     __tablename__ = "whale_markets"
     __table_args__ = (
@@ -560,6 +598,9 @@ class WhaleEntry(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     follow_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     follow_ineligible_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovery_source: Mapped[str] = mapped_column(String(20), nullable=False, default="trades")
+    position_cost_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    opposite_size: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     position_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     settlement_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -19,12 +19,15 @@ from backend.models import (
     EmailSettings,
     WhaleAutoFollowDecision,
     WhaleAutoMarketLock,
+    WhaleBackfillSignalState,
     WhaleEmailDelivery,
     WhaleEntry,
     WhaleEntryRuleState,
     WhaleExclusion,
     WhaleFollowPosition,
     WhaleMarket,
+    WhaleMarketScanPage,
+    WhaleMarketScanState,
     WhaleOrder,
     WhaleScanRun,
     WhaleSettings,
@@ -33,6 +36,7 @@ from backend.models import (
 )
 from backend.polymarket import (
     LargeTradeSnapshot,
+    OfficialTag,
     PolymarketAPIError,
     PositionSnapshot,
     WhaleHolderSnapshot,
@@ -304,6 +308,9 @@ class PositionDiscoveryClient:
         self.trade_calls = 0
         self.holder_calls: list[dict[str, Any]] = []
         self.position_calls: list[str] = []
+
+    async def fetch_discovery_markets(self, **kwargs):
+        return []
 
     async def fetch_active_whale_markets(
         self, *, min_liquidity_usdc: Decimal, min_volume_usdc: Decimal
@@ -1592,6 +1599,7 @@ async def test_position_api_failure_preserves_last_holding_state(database, tmp_p
     )
     assert await scanner.tick() is True
     client.position_error = True
+    scanner._position_cache.clear()  # Force the scheduled refresh to exercise failure handling.
 
     assert await scanner.tick() is True
 
@@ -1928,7 +1936,7 @@ async def _fill_auto_decision(
         return position.id
 
 
-async def test_active_position_cache_skips_only_stored_wallet_checks(database):
+async def test_active_position_cache_refreshes_only_changed_candidate_markets(database):
     wallet = "0x7777777777777777777777777777777777777777"
     condition_id = "0x" + "7" * 64
     second_condition_id = "0x" + "8" * 64
@@ -1983,7 +1991,7 @@ async def test_active_position_cache_skips_only_stored_wallet_checks(database):
     assert client.calls == [
         (wallet, (condition_id,)),
         (wallet, (second_condition_id,)),
-        (wallet, (condition_id, second_condition_id)),
+        (wallet, (condition_id,)),
     ]
 
 
@@ -2004,7 +2012,16 @@ async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(data
         condition_id=condition_id,
     )
     scanner = build_scanner(database)
-    positions = {wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))}}
+    positions = {
+        wallet: {
+            "asset-yes": SimpleNamespace(
+                size=Decimal("1000000"),
+                condition_id=condition_id,
+                asset_id="asset-yes",
+                avg_price=Decimal("0.60"),
+            )
+        }
+    }
     kwargs = {
         "rule_matches": {(wallet, "asset-yes"): {"new_account", "large_amount"}},
         "positions_by_wallet": positions,
@@ -2044,7 +2061,17 @@ async def test_auto_follow_allows_different_wallets_on_same_asset(database):
         _auto_aggregate(wallet=wallet, asset_id="asset-yes", condition_id=condition_id)
         for wallet in wallets
     ]
-    positions = {wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))} for wallet in wallets}
+    positions = {
+        wallet: {
+            "asset-yes": SimpleNamespace(
+                size=Decimal("1000000"),
+                condition_id=condition_id,
+                asset_id="asset-yes",
+                avg_price=Decimal("0.60"),
+            )
+        }
+        for wallet in wallets
+    }
     scanner = build_scanner(database)
 
     pending = await scanner._persist_entries(
@@ -2078,7 +2105,16 @@ async def test_auto_follow_price_rejection_records_observed_book_once(database):
     pending = await scanner._persist_entries(
         [aggregate],
         rule_matches={(wallet, "asset-yes"): {"large_amount"}},
-        positions_by_wallet={wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))}},
+        positions_by_wallet={
+            wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            }
+        },
         failed_wallets=set(),
         config=config,
         now=utcnow(),
@@ -2212,8 +2248,22 @@ async def test_same_scan_cross_rule_signals_respect_priority_toggle(
             (large_wallet, "asset-no"): {"large_amount"},
         },
         positions_by_wallet={
-            new_wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))},
-            large_wallet: {"asset-no": SimpleNamespace(size=Decimal("100"))},
+            new_wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            },
+            large_wallet: {
+                "asset-no": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-no",
+                    avg_price=Decimal("0.60"),
+                )
+            },
         },
         failed_wallets=set(),
         config=config,
@@ -2275,7 +2325,16 @@ async def test_existing_position_respects_large_signal_priority(
     initial_pending = await scanner._persist_entries(
         [held],
         rule_matches={(held_wallet, "asset-yes"): {held_rule}},
-        positions_by_wallet={held_wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))}},
+        positions_by_wallet={
+            held_wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            }
+        },
         failed_wallets=set(),
         config=config,
         now=utcnow(),
@@ -2297,9 +2356,25 @@ async def test_existing_position_respects_large_signal_priority(
         positions_by_wallet={
             # 优先级模式下，原触发钱包退出也不能改变已成交仓位的策略等级。
             held_wallet: (
-                {} if priority_enabled else {"asset-yes": SimpleNamespace(size=Decimal("100"))}
+                {}
+                if priority_enabled
+                else {
+                    "asset-yes": SimpleNamespace(
+                        size=Decimal("1000000"),
+                        condition_id=condition_id,
+                        asset_id="asset-yes",
+                        avg_price=Decimal("0.60"),
+                    )
+                }
             ),
-            opposite_wallet: {"asset-no": SimpleNamespace(size=Decimal("100"))},
+            opposite_wallet: {
+                "asset-no": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-no",
+                    avg_price=Decimal("0.60"),
+                )
+            },
         },
         failed_wallets=set(),
         config=config,
@@ -2353,8 +2428,22 @@ async def test_mixed_position_uses_large_priority_and_rechecks_rule_upgrade(data
             (large_wallet, "asset-yes"): {"large_amount"},
         },
         positions_by_wallet={
-            new_wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))},
-            large_wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))},
+            new_wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            },
+            large_wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            },
         },
         failed_wallets=set(),
         config=config,
@@ -2373,9 +2462,30 @@ async def test_mixed_position_uses_large_priority_and_rechecks_rule_upgrade(data
         outcome_index=1,
     )
     positions = {
-        new_wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))},
-        large_wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))},
-        opposite_wallet: {"asset-no": SimpleNamespace(size=Decimal("100"))},
+        new_wallet: {
+            "asset-yes": SimpleNamespace(
+                size=Decimal("1000000"),
+                condition_id=condition_id,
+                asset_id="asset-yes",
+                avg_price=Decimal("0.60"),
+            )
+        },
+        large_wallet: {
+            "asset-yes": SimpleNamespace(
+                size=Decimal("1000000"),
+                condition_id=condition_id,
+                asset_id="asset-yes",
+                avg_price=Decimal("0.60"),
+            )
+        },
+        opposite_wallet: {
+            "asset-no": SimpleNamespace(
+                size=Decimal("1000000"),
+                condition_id=condition_id,
+                asset_id="asset-no",
+                avg_price=Decimal("0.60"),
+            )
+        },
     }
     await scanner._persist_entries(
         [opposite],
@@ -2449,8 +2559,22 @@ async def test_same_scan_opposite_auto_signals_lock_both_sides_before_buy(databa
             (no_wallet, "asset-no"): {"large_amount"},
         },
         positions_by_wallet={
-            yes_wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))},
-            no_wallet: {"asset-no": SimpleNamespace(size=Decimal("100"))},
+            yes_wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            },
+            no_wallet: {
+                "asset-no": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-no",
+                    avg_price=Decimal("0.60"),
+                )
+            },
         },
         failed_wallets=set(),
         config=config,
@@ -2482,7 +2606,16 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
     pending = await scanner._persist_entries(
         [aggregate],
         rule_matches={(wallet, "asset-yes"): {"large_amount"}},
-        positions_by_wallet={wallet: {"asset-yes": SimpleNamespace(size=Decimal("100"))}},
+        positions_by_wallet={
+            wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            }
+        },
         failed_wallets=set(),
         config=config,
         now=utcnow(),
@@ -2614,3 +2747,806 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
         market_lock = await session.get(WhaleAutoMarketLock, condition_id)
     assert decision is not None and decision.status == "exit_completed"
     assert market_lock is not None and market_lock.exit_status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("slugs", "categories", "allowed"),
+    [
+        (["sports"], ["sports", "science_tech"], True),
+        (["sports", "esports"], ["sports"], False),
+        (["sports", "esports"], ["esports"], True),
+        (["science"], ["science_tech"], True),
+        (["politics"], ["sports", "science_tech"], False),
+        ([], ["other"], True),
+        ([], ["sports"], False),
+    ],
+)
+async def test_monitor_categories_gate_both_rules_and_downstream_candidates(
+    database, slugs, categories, allowed
+):
+    class CategorizedClient(PositionDiscoveryClient):
+        async def fetch_markets_with_tags(self, condition_ids):
+            markets = await super().fetch_markets_with_tags(condition_ids)
+            return [replace(item, tags=tuple({"slug": slug} for slug in slugs)) for item in markets]
+
+    client = CategorizedClient()
+    await enable_email_notifications(database)
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        settings.monitor_categories_json = json.dumps(categories)
+        settings.large_amount_threshold_usdc = Decimal("100000")
+        await session.commit()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+
+    assert await scanner.tick() is True
+    assert await scanner.tick() is True
+
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(WhaleEntry)))) == int(allowed)
+        states = list(await session.scalars(select(WhaleEntryRuleState)))
+        assert {state.rule_type for state in states} == (
+            {"new_account", "large_amount"} if allowed else set()
+        )
+        assert len(list(await session.scalars(select(WhaleEmailDelivery)))) == int(allowed)
+        assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == int(allowed)
+
+
+async def test_narrowing_monitor_categories_preserves_history_and_refreshes_positions(database):
+    client = PositionDiscoveryClient()  # No tags: classified as other.
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        original = await session.scalar(select(WhaleEntryRuleState))
+        original_id, original_trigger = original.id, original.first_triggered_at
+        settings = await session.get(WhaleSettings, 1)
+        settings.monitor_categories_json = '["sports"]'
+        # The next scan would also hit large_amount if the new filter were ignored.
+        settings.large_amount_threshold_usdc = Decimal("100000")
+        await session.commit()
+    client.current_position_size = Decimal("120000")
+    scanner._position_cache.clear()  # Simulate expiry between scheduled scans.
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        states = list(await session.scalars(select(WhaleEntryRuleState)))
+        assert len(states) == 1
+        assert (states[0].id, states[0].first_triggered_at) == (original_id, original_trigger)
+        assert states[0].active is True
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.net_size == Decimal("120000")
+    client.position_available = False
+    scanner._position_cache.clear()
+    assert await scanner.tick() is True
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        state = await session.scalar(select(WhaleEntryRuleState))
+        assert entry.status == "exited"
+        assert state.active is False
+        assert state.first_triggered_at == original_trigger
+
+
+@pytest.mark.parametrize("remaining", ["3000", "150000"])
+async def test_reduced_whale_is_visible_but_cannot_be_followed(database, remaining):
+    client = PositionDiscoveryClient()
+    client.current_position_size = Decimal(remaining)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.status == "reduced"
+        assert entry.follow_eligible is False
+        assert entry.follow_ineligible_reason == "position_reduced"
+        assert entry.position_cost_usdc == Decimal(remaining) * Decimal("0.5")
+
+
+async def test_opposite_position_outside_trade_window_is_detected(database):
+    class Client(PositionDiscoveryClient):
+        async def fetch_active_positions(self, user, *, condition_ids=None):
+            positions = await super().fetch_active_positions(user, condition_ids=condition_ids)
+            return positions + [
+                replace(
+                    positions[0],
+                    asset_id="asset-no",
+                    outcome="No",
+                    outcome_index=1,
+                    size=Decimal("200000"),
+                )
+            ]
+
+    client = Client()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.hedged is True
+        assert entry.opposite_size == Decimal("200000")
+        assert entry.follow_eligible is False
+        assert entry.follow_ineligible_reason == "position_hedged"
+
+
+async def test_unchanged_candidate_uses_cache_but_new_buy_refreshes(database):
+    class Client(PositionDiscoveryClient):
+        def __init__(self):
+            super().__init__()
+            self.checks = 0
+
+        async def fetch_active_positions(self, user, *, condition_ids=None):
+            self.checks += 1
+            return await super().fetch_active_positions(user, condition_ids=condition_ids)
+
+    client = Client()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        checked_at = (await session.scalar(select(WhaleEntry))).position_checked_at
+    assert await scanner.tick()
+    assert client.checks == 1
+    async with database.sessions() as session:
+        assert (await session.scalar(select(WhaleEntry))).position_checked_at == checked_at
+    client.transaction_hash = "0xnew-buy"
+    client.trade_timestamp = utcnow()
+    assert await scanner.tick()
+    assert client.checks == 2
+
+
+async def test_excluded_category_never_fetches_wallet_profile(database):
+    calls = []
+
+    class Client(PositionDiscoveryClient):
+        async def fetch_public_profile(self, address):
+            calls.append(address)
+            return await super().fetch_public_profile(address)
+
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        settings.monitor_categories_json = '["sports"]'
+        await session.commit()
+    scanner = WhaleDiscoveryScanner(database=database, client=Client(), settings=database.settings)
+    assert await scanner.tick()
+    assert calls == []
+
+
+class SupplementalDiscoveryClient(PositionDiscoveryClient):
+    def __init__(self):
+        super().__init__()
+        self.catalog_calls = 0
+        self.small_trade_calls = 0
+        self.small_trades = []
+
+    async def fetch_discovery_markets(self, **kwargs):
+        self.catalog_calls += 1
+        return await self.fetch_active_whale_markets(
+            min_liquidity_usdc=Decimal("5000"),
+            min_volume_usdc=Decimal("10000"),
+        )
+
+    async def fetch_large_trades(self, **kwargs):
+        if kwargs.get("condition_ids"):
+            assert kwargs["condition_ids"] == [self.condition_id]
+            assert kwargs["filter_amount_usdc"] == 0
+            self.small_trade_calls += 1
+            trades = [
+                item
+                for item in self.small_trades
+                if kwargs["start"] <= item.timestamp.replace(microsecond=0) <= kwargs["end"]
+            ]
+            return trades[kwargs["offset"] : kwargs["offset"] + kwargs["limit"]]
+        return []
+
+
+async def test_split_buys_are_discovered_and_deduplicated(database):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    client.small_trades = [
+        replace(
+            original, transaction_hash=f"0xsmall{i}", size=Decimal("1500"), amount=Decimal("750")
+        )
+        for i in range(200)
+    ]
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.gross_buy_usdc == Decimal("150000")
+        assert entry.trade_count == 200
+        assert entry.discovery_source == "trades"
+        assert len(list(await session.scalars(select(WhaleTrade)))) == 200
+    assert client.catalog_calls == client.small_trade_calls == 1
+    assert client.position_calls == [client.condition_id]
+
+
+async def test_old_position_is_discovered_without_automatic_buy(database):
+    client = SupplementalDiscoveryClient()
+    await enable_email_notifications(database)
+    await _auto_follow_config(database, new_account_auto_follow_enabled=True)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entries = list(await session.scalars(select(WhaleEntry)))
+        assert len(entries) == 1  # totalBought=0 ghost wallet is excluded.
+        assert entries[0].discovery_source == "positions"
+        assert entries[0].trade_count == 0
+        assert entries[0].position_cost_usdc == Decimal("120000")
+        assert not list(await session.scalars(select(WhaleAutoFollowDecision)))
+        assert not list(await session.scalars(select(WhaleAutoMarketLock)))
+        delivery = await session.scalar(select(WhaleEmailDelivery))
+        assert "持仓补充发现成本（买入时间未知）" in delivery.body_text
+        assert "窗口累计买入" not in delivery.body_text
+
+
+async def test_incomplete_split_window_does_not_create_trade_signals(database):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    client.small_trades = [replace(original, transaction_hash=f"0xsmall{i}") for i in range(2000)]
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleTrade)))
+        assert not list(await session.scalars(select(WhaleAutoFollowDecision)))
+        assert (await session.scalar(select(WhaleEntry))).discovery_source == "positions"
+        settings = await session.get(WhaleSettings, 1)
+        assert settings.last_scan_error == (
+            "重点市场 Official position market 历史补齐中，拆单回溯不完整，未用于新增信号"
+        )
+    assert client.small_trade_calls == 4
+
+
+async def test_supplemental_failure_does_not_interrupt_main_discovery(database, monkeypatch):
+    client = PositionDiscoveryClient()
+
+    async def unavailable(**kwargs):
+        raise PolymarketAPIError("unavailable")
+
+    monkeypatch.setattr(client, "fetch_discovery_markets", unavailable)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+
+    async def retry_once(operation, **kwargs):
+        return await operation(**kwargs)
+
+    monkeypatch.setattr(scanner, "_retry", retry_once)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        assert (await session.scalar(select(WhaleEntry))).discovery_source == "trades"
+        assert "补充发现不可用" in (await session.get(WhaleSettings, 1)).last_scan_error
+
+
+async def test_supplement_skips_excluded_category_before_trade_or_position_queries(database):
+    client = SupplementalDiscoveryClient()
+    await _auto_follow_config(database, monitor_categories_json='["sports"]')
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    assert client.small_trade_calls == 0
+    assert client.position_calls == []
+
+
+@pytest.mark.parametrize("kind", ["reduced", "hedged", "exited", "failed"])
+async def test_source_position_is_rechecked_before_quote_and_execution(database, kind, monkeypatch):
+    from backend.tests.test_whale_execution import follow_quote
+    from backend.whale import WhaleFollowExecutor
+
+    client = PositionDiscoveryClient()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        entry_id = entry.id
+    original = client.fetch_active_positions
+
+    async def changed_positions(user, *, condition_ids=None):
+        if kind == "failed":
+            raise PolymarketAPIError("持仓查询失败")
+        if kind == "exited":
+            return []
+        positions = await original(user, condition_ids=condition_ids)
+        if kind == "reduced":
+            return [replace(positions[0], size=Decimal("1"))]
+        return positions + [replace(positions[0], asset_id="asset-no", outcome_index=1)]
+
+    monkeypatch.setattr(client, "fetch_active_positions", changed_positions)
+    executor = WhaleFollowExecutor(
+        database=database, client=client, settings=database.settings, keychain=SimpleNamespace()
+    )
+    error = PolymarketAPIError if kind == "failed" else ValueError
+    match = {"failed": "持仓查询失败", "reduced": "减仓", "hedged": "双向", "exited": "退出"}[kind]
+    with pytest.raises(error, match=match):
+        await executor.quote_follow(
+            asset_id=client.asset_id, amount_usdc=Decimal("15"), entry_id=entry_id
+        )
+    quote = replace(
+        follow_quote(),
+        entry_id=entry_id,
+        asset_id=client.asset_id,
+        condition_id=client.condition_id,
+        source_wallet=client.wallet,
+    )
+    with pytest.raises(error, match=match):
+        await executor.execute_follow(quote, "test-confirmation")
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleOrder)))
+
+
+async def test_repeated_position_discovery_preserves_reduction_baseline(database, monkeypatch):
+    client = SupplementalDiscoveryClient()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    original = client.fetch_market_positions
+
+    async def reduced_snapshot(condition_id, *, limit):
+        return [
+            replace(item, size=Decimal("210000"))
+            for item in await original(condition_id, limit=limit)
+        ]
+
+    monkeypatch.setattr(client, "fetch_market_positions", reduced_snapshot)
+    client.current_position_size = Decimal("210000")
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        state.last_checked_at = None
+        await session.commit()
+    scanner._position_cache.clear()
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.gross_buy_size == Decimal("300000")
+        assert entry.net_ratio == Decimal("70")
+        assert entry.status == "reduced"
+        assert not entry.follow_eligible
+
+
+async def test_supplemental_discovery_respects_wallet_exclusions(database):
+    client = SupplementalDiscoveryClient()
+    async with database.sessions() as session:
+        session.add(
+            WhaleExclusion(proxy_wallet=client.wallet, label="excluded", created_at=utcnow())
+        )
+        await session.commit()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleEntry)))
+
+
+async def test_position_discovery_can_transition_to_a_new_real_buy(database):
+    client = SupplementalDiscoveryClient()
+    await _auto_follow_config(database, new_account_auto_follow_enabled=True)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    client.trade_timestamp = utcnow()
+    client.small_trades = await PositionDiscoveryClient.fetch_large_trades(client)
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        state.last_checked_at = None
+        await session.commit()
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.discovery_source == "trades"
+        assert entry.first_buy_at == client.trade_timestamp
+        assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == 1
+
+
+async def test_candidate_cache_expiry_refreshes_and_preserves_failed_hedge_state(
+    database, monkeypatch
+):
+    class Client(PositionDiscoveryClient):
+        async def fetch_active_positions(self, user, *, condition_ids=None):
+            positions = await super().fetch_active_positions(user, condition_ids=condition_ids)
+            return positions + [replace(positions[0], asset_id="asset-no")]
+
+    client = Client()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    for key, (_, positions) in scanner._position_cache.items():
+        scanner._position_cache[key] = (0, positions)
+    client.position_error = True
+
+    async def retry_once(operation, **kwargs):
+        return await operation(**kwargs)
+
+    monkeypatch.setattr(scanner, "_retry", retry_once)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.hedged
+        assert not entry.follow_eligible
+        assert entry.follow_ineligible_reason == "position_check_failed"
+
+
+@pytest.mark.parametrize(
+    ("slugs", "categories", "allowed"),
+    [
+        (["sports"], ["sports"], True),
+        (["sports", "esports"], ["sports"], False),
+        (["sports", "esports"], ["esports"], True),
+        (["politics"], ["sports"], False),
+    ],
+)
+async def test_supplemental_discovery_serializes_official_tags(
+    database, slugs, categories, allowed
+):
+    class TaggedClient(SupplementalDiscoveryClient):
+        async def fetch_discovery_markets(self, **kwargs):
+            markets = await super().fetch_discovery_markets(**kwargs)
+            return [
+                replace(
+                    market,
+                    tags=tuple(
+                        OfficialTag(id=str(index), slug=slug, label=slug.title())
+                        for index, slug in enumerate(slugs)
+                    ),
+                )
+                for market in markets
+            ]
+
+    client = TaggedClient()
+    await _auto_follow_config(database, monitor_categories_json=json.dumps(categories))
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    completed = await scanner.tick()
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        assert completed, settings.last_scan_error
+        assert settings.last_scan_error is None
+        assert len(list(await session.scalars(select(WhaleEntry)))) == int(allowed)
+        if allowed:
+            market = await session.get(WhaleMarket, client.condition_id)
+            assert json.loads(market.tags_json) == [
+                {"id": str(index), "slug": slug, "label": slug.title()}
+                for index, slug in enumerate(slugs)
+            ]
+    assert client.small_trade_calls == int(allowed)
+    assert len(client.position_calls) == int(allowed)
+
+
+async def test_market_backfill_splits_checkpoints_and_then_queries_only_increment(database):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    now = utcnow().replace(microsecond=0)
+    start = now - timedelta(hours=24)
+    client.small_trades = [
+        replace(
+            original, timestamp=start + timedelta(seconds=30 * i), transaction_hash=f"0xbackfill{i}"
+        )
+        for i in range(2100)
+    ]
+    complete = False
+    for attempt in range(40):
+        scanner = WhaleDiscoveryScanner(
+            database=database, client=client, settings=database.settings
+        )
+        before = client.small_trade_calls
+        await scanner._backfill_market_trades(
+            client.condition_id, now=now + timedelta(minutes=attempt), window_start=start
+        )
+        assert client.small_trade_calls - before <= 4
+        async with database.sessions() as session:
+            state = await session.get(WhaleMarketScanState, client.condition_id)
+            trades = list(await session.scalars(select(WhaleTrade)))
+            if state.batch_end is None:
+                assert state.coverage_end == now
+                assert len(trades) == 2100
+                assert not list(await session.scalars(select(WhaleMarketScanPage)))
+                complete = True
+                break
+            assert trades == []
+            assert state.coverage_end is None
+    assert complete
+    next_now = now + timedelta(minutes=attempt + 15)
+    client.small_trades.append(
+        replace(
+            original, timestamp=next_now - timedelta(seconds=30), transaction_hash="0xincrement"
+        )
+    )
+    before = client.small_trade_calls
+    await scanner._backfill_market_trades(client.condition_id, now=next_now, window_start=start)
+    assert client.small_trade_calls - before == 1
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(WhaleTrade)))) == 2101
+
+
+async def test_market_backfill_same_second_pages_resume_and_overlap_deduplicates(
+    database, monkeypatch
+):
+    monkeypatch.setattr("backend.whale.FOCUS_TRADE_PAGES", 1)
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    now = utcnow().replace(microsecond=0)
+    client.small_trades = [
+        replace(original, timestamp=now, transaction_hash=f"0xsame{i}") for i in range(1100)
+    ]
+    for attempt in range(3):
+        scanner = WhaleDiscoveryScanner(
+            database=database, client=client, settings=database.settings
+        )
+        await scanner._backfill_market_trades(client.condition_id, now=now, window_start=now)
+        async with database.sessions() as session:
+            state = await session.get(WhaleMarketScanState, client.condition_id)
+            trades = list(await session.scalars(select(WhaleTrade)))
+            if attempt < 2:
+                assert json.loads(state.pending_ranges_json)[0][2] == (attempt + 1) * 500
+                assert not trades
+            else:
+                assert state.batch_end is None
+                assert len(trades) == 1100
+    # Re-reading the overlap must preserve identical fills within one transaction.
+    for _ in range(3):
+        await scanner._backfill_market_trades(client.condition_id, now=now, window_start=now)
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(WhaleTrade)))) == 1100
+
+
+async def test_market_backfill_rejects_ignored_time_bounds(database):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    now = utcnow().replace(microsecond=0)
+
+    async def ignores_bounds(**kwargs):
+        return [replace(original, timestamp=now - timedelta(days=2))]
+
+    client.fetch_large_trades = ignores_bounds
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    await scanner._backfill_market_trades(
+        client.condition_id, now=now, window_start=now - timedelta(days=1)
+    )
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        assert "start/end" in state.last_error
+        assert state.coverage_end is None
+        assert not list(await session.scalars(select(WhaleTrade)))
+
+
+async def test_market_backfill_publication_is_atomic_and_restartable(database, monkeypatch):
+    client = SupplementalDiscoveryClient()
+    client.small_trades = await PositionDiscoveryClient.fetch_large_trades(client)
+    now = utcnow().replace(microsecond=0)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    persist = scanner._persist_trades
+
+    async def interrupted(trades, *, session=None, backfill_until=None):
+        await persist(trades, session=session, backfill_until=backfill_until)
+        raise RuntimeError("interrupted before coverage commit")
+
+    monkeypatch.setattr(scanner, "_persist_trades", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await scanner._backfill_market_trades(
+            client.condition_id, now=now, window_start=now - timedelta(days=1)
+        )
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleTrade)))
+        assert list(await session.scalars(select(WhaleMarketScanPage)))
+        assert (await session.get(WhaleMarketScanState, client.condition_id)).coverage_end is None
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    before = client.small_trade_calls
+    await scanner._backfill_market_trades(
+        client.condition_id, now=now, window_start=now - timedelta(days=1)
+    )
+    assert client.small_trade_calls == before
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(WhaleTrade)))) == len(client.small_trades)
+        assert (await session.get(WhaleMarketScanState, client.condition_id)).coverage_end == now
+
+
+async def test_backfill_warning_survives_unselected_round_and_initial_history_cannot_buy(database):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    client.small_trades = [replace(original, transaction_hash=f"0xhistory{i}") for i in range(2000)]
+    await _auto_follow_config(database, new_account_auto_follow_enabled=True)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    before = client.small_trade_calls
+    assert await scanner.tick()
+    assert client.small_trade_calls == before
+    async with database.sessions() as session:
+        assert (await session.get(WhaleSettings, 1)).last_scan_error == (
+            "重点市场 Official position market 历史补齐中，拆单回溯不完整，未用于新增信号"
+        )
+    # Resume with a new scanner instance each round, preserving the original time window.
+    for _ in range(40):
+        async with database.sessions() as session:
+            state = await session.get(WhaleMarketScanState, client.condition_id)
+            state.last_checked_at = None
+            await session.commit()
+        scanner = WhaleDiscoveryScanner(
+            database=database, client=client, settings=database.settings
+        )
+        assert await scanner.tick()
+        async with database.sessions() as session:
+            state = await session.get(WhaleMarketScanState, client.condition_id)
+            if state.batch_end is None:
+                assert len(list(await session.scalars(select(WhaleTrade)))) == 2000
+                assert not list(await session.scalars(select(WhaleAutoFollowDecision)))
+                assert (await session.get(WhaleSettings, 1)).last_scan_error is None
+                break
+    else:
+        pytest.fail("backfill did not complete")
+
+
+async def test_backfill_identical_fills_and_window_extension(database):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    now = utcnow().replace(microsecond=0)
+    repeated = replace(
+        original, timestamp=now - timedelta(minutes=30), transaction_hash="0xidentical"
+    )
+    client.small_trades = [repeated, repeated]
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    await scanner._backfill_market_trades(
+        client.condition_id, now=now, window_start=now - timedelta(hours=1)
+    )
+    older = replace(original, timestamp=now - timedelta(hours=2), transaction_hash="0xolder")
+    client.small_trades.append(older)
+    await scanner._backfill_market_trades(
+        client.condition_id, now=now, window_start=now - timedelta(hours=24)
+    )
+    async with database.sessions() as session:
+        trades = list(await session.scalars(select(WhaleTrade)))
+        assert len(trades) == 3
+        assert sum(trade.transaction_hash == "0xidentical" for trade in trades) == 2
+        assert (await session.get(WhaleMarketScanState, client.condition_id)).coverage_start == (
+            now - timedelta(hours=24)
+        )
+
+
+@pytest.mark.parametrize("failure", ["repeated_page", "offset_cap"])
+async def test_backfill_same_second_failures_never_publish_partial_data(database, failure):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    now = utcnow().replace(microsecond=0)
+    if failure == "repeated_page":
+
+        async def repeated_page(**kwargs):
+            return [
+                replace(original, timestamp=now, transaction_hash=f"0xdup{i}") for i in range(500)
+            ]
+
+        client.fetch_large_trades = repeated_page
+    else:
+        from datetime import UTC
+
+        stamp = int(now.replace(tzinfo=UTC).timestamp())
+        async with database.sessions() as session:
+            session.add(
+                WhaleMarketScanState(
+                    condition_id=client.condition_id,
+                    batch_start=now,
+                    batch_end=now,
+                    pending_ranges_json=json.dumps([[stamp, stamp, 10500]]),
+                )
+            )
+            await session.commit()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    await scanner._backfill_market_trades(client.condition_id, now=now, window_start=now)
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        assert (
+            "重复" in state.last_error if failure == "repeated_page" else "容量" in state.last_error
+        )
+        assert state.coverage_end is None
+        assert state.batch_end is not None
+        assert not list(await session.scalars(select(WhaleTrade)))
+
+
+async def test_empty_supplement_does_not_block_core_signal(database):
+    class CoreClient(SupplementalDiscoveryClient):
+        async def fetch_large_trades(self, **kwargs):
+            if kwargs.get("condition_ids"):
+                return []
+            return await PositionDiscoveryClient.fetch_large_trades(self)
+
+    client = CoreClient()
+    await _auto_follow_config(database, new_account_auto_follow_enabled=True)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        assert (
+            await session.get(WhaleMarketScanState, client.condition_id)
+        ).auto_follow_after is None
+        assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == 1
+
+
+async def test_old_snapshot_completion_keeps_catching_up(database):
+    from datetime import UTC
+
+    client = SupplementalDiscoveryClient()
+    old_end = utcnow().replace(microsecond=0) - timedelta(minutes=31)
+    start = old_end - timedelta(hours=24)
+    async with database.sessions() as session:
+        session.add(
+            WhaleMarketScanState(
+                condition_id=client.condition_id,
+                batch_start=start,
+                batch_end=old_end,
+                pending_ranges_json=json.dumps(
+                    [
+                        [
+                            int(start.replace(tzinfo=UTC).timestamp()),
+                            int(old_end.replace(tzinfo=UTC).timestamp()),
+                            0,
+                        ]
+                    ]
+                ),
+            )
+        )
+        await session.commit()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    now = old_end + timedelta(minutes=31)
+    await scanner._backfill_market_trades(client.condition_id, now=now, window_start=start)
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        assert state.coverage_end == old_end
+        assert state.batch_end == now
+        assert json.loads(state.pending_ranges_json)
+    await scanner._backfill_market_trades(
+        client.condition_id, now=now + timedelta(minutes=1), window_start=start
+    )
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        assert state.coverage_end == now
+        assert state.batch_end is None
+
+
+@pytest.mark.parametrize("same_wallet", [False, True])
+async def test_core_signal_survives_unrelated_wallet_backfill(database, same_wallet):
+    class Client(SupplementalDiscoveryClient):
+        async def fetch_large_trades(self, **kwargs):
+            if kwargs.get("condition_ids"):
+                original = (await PositionDiscoveryClient.fetch_large_trades(self))[0]
+                return [
+                    replace(
+                        original,
+                        proxy_wallet=original.proxy_wallet if same_wallet else "0x" + "c" * 40,
+                        asset_id="other-direction" if same_wallet else original.asset_id,
+                        timestamp=self.trade_timestamp - timedelta(hours=2),
+                        transaction_hash="0xunrelatedhistory",
+                    )
+                ]
+            return await PositionDiscoveryClient.fetch_large_trades(self)
+
+    client = Client()
+    await _auto_follow_config(database, new_account_auto_follow_enabled=True)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        decisions = list(await session.scalars(select(WhaleAutoFollowDecision)))
+        assert len(decisions) == 1, (
+            "A separate wallet historical fill suppressed the valid core signal"
+        )
+
+
+async def test_new_buy_after_history_is_eligible(database, monkeypatch):
+    now = utcnow().replace(microsecond=0)
+    monkeypatch.setattr("backend.whale.utcnow", lambda: now)
+    client = SupplementalDiscoveryClient()
+    await _auto_follow_config(database, new_account_auto_follow_enabled=True)
+    client.small_trades = await PositionDiscoveryClient.fetch_large_trades(client)
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleAutoFollowDecision)))
+        assert (await session.scalar(select(WhaleEntry))).discovery_source == "trades"
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        state.last_checked_at = None
+        await session.commit()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()  # Restart without a new buy must not replay history.
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleAutoFollowDecision)))
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        state.last_checked_at = None
+        await session.commit()
+    now += timedelta(minutes=1)
+    client.trade_timestamp = now
+    fresh = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    client.small_trades.append(replace(fresh, transaction_hash="0xnewbuy"))
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry = await session.scalar(select(WhaleEntry))
+        assert entry.last_buy_at == client.trade_timestamp
+        assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == 1, (
+            "History consumed the first-trigger state permanently"
+        )
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == 1
+        gate = await session.scalar(select(WhaleBackfillSignalState))
+        assert gate.awaiting_new_buy is False

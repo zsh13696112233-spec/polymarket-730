@@ -140,6 +140,9 @@ class FakePolymarketClient:
                 results.append(item)
         return results
 
+    async def fetch_discovery_markets(self, **kwargs):
+        return []
+
     async def fetch_large_trades(
         self,
         *,

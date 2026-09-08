@@ -16,6 +16,7 @@ export type WhaleSettings = {
   registration_window_days: number;
   new_account_threshold_usdc: Numeric;
   large_amount_threshold_usdc: Numeric;
+  monitor_categories: WhaleMarketCategory[];
   new_account_auto_follow_enabled: boolean;
   new_account_auto_follow_amount_usdc: Numeric;
   new_account_auto_follow_min_price: Numeric;
@@ -105,6 +106,11 @@ export type WhaleEntry = {
   first_buy_at: string;
   last_buy_at: string;
   status: "holding" | "reduced" | "exited" | string;
+  discovery_source?: "trades" | "positions";
+  position_cost_usdc?: Numeric | null;
+  opposite_size?: Numeric | null;
+  directional_size?: Numeric | null;
+  position_checked_at?: string | null;
   net_ratio: Numeric;
   hedged: boolean;
   price_delta_cents: Numeric | null;
@@ -198,6 +204,7 @@ export type WhaleHistory = {
   gross_buy_size: Numeric;
   avg_buy_price: Numeric;
   net_size: Numeric;
+  discovery_source?: "trades" | "positions";
   first_buy_at: string;
   first_triggered_at: string;
   last_qualified_at: string;

@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from backend.db import Database
 from backend.models import (
@@ -113,6 +113,41 @@ async def home_overview(
     range_end = _beijing_day_start_utc(today_date + timedelta(days=1))
 
     async with database.sessions() as session:
+        # Each (entry, rule) has one durable first trigger; count each rule
+        # independently, including opportunities that have since exited.
+        opportunity_counts = {
+            rule: {"last_1_day": 0, "last_3_days": 0, "last_5_days": 0, "last_7_days": 0}
+            for rule in RULES
+        }
+        counts_by_rule = await session.execute(
+            select(
+                WhaleEntryRuleState.rule_type,
+                *[
+                    func.count(
+                        case(
+                            (
+                                WhaleEntryRuleState.first_triggered_at
+                                >= _beijing_day_start_utc(today_date - timedelta(days=days - 1)),
+                                1,
+                            )
+                        )
+                    ).label(f"last_{days}_day" if days == 1 else f"last_{days}_days")
+                    for days in (1, 3, 5, 7)
+                ],
+            )
+            .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
+            .where(
+                WhaleEntryRuleState.first_triggered_at <= generated_at,
+                ~select(WhaleExclusion.proxy_wallet)
+                .where(WhaleExclusion.proxy_wallet == WhaleEntry.proxy_wallet)
+                .exists(),
+            )
+            .group_by(WhaleEntryRuleState.rule_type)
+        )
+        for counts in counts_by_rule.mappings():
+            opportunity_counts[counts["rule_type"]] = {
+                key: value for key, value in counts.items() if key != "rule_type"
+            }
         settings = await session.get(WhaleSettings, 1)
         account = await session.get(ExecutionAccount, 1)
         ledger = list(
@@ -350,7 +385,17 @@ async def home_overview(
         system_status = "error"
     elif not settings.enabled:
         system_status = "disabled"
-    elif scan_error or settings.consecutive_failures:
+    elif (
+        coverage_incomplete_until is not None
+        or settings.consecutive_failures
+        or (
+            scan_error
+            and not all(
+                item.startswith("重点市场 ") and "历史补齐中" in item
+                for item in scan_error.split("；")
+            )
+        )
+    ):
         system_status = "error"
     elif scanner_running is False:
         system_status = "error"
@@ -364,7 +409,7 @@ async def home_overview(
         system_status = "error"
         scan_error = "最后扫描时间已过期"
     else:
-        system_status = "healthy"
+        system_status = "degraded" if scan_error else "healthy"
     return {
         "as_of": generated_at,
         "timezone": "Asia/Shanghai",
@@ -390,6 +435,7 @@ async def home_overview(
                 for rule in RULES
             ],
         },
+        "opportunity_counts": opportunity_counts,
         "today": today_payload,
         "wallet": {
             "status": account.status if account is not None else "unconfigured",

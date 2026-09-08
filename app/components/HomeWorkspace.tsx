@@ -71,7 +71,7 @@ type HomeOverview = {
   range_start: string;
   range_end: string;
   system: {
-    status: "healthy" | "error" | "disabled";
+    status: "healthy" | "degraded" | "error" | "disabled";
     enabled: boolean;
     last_scan_at: string | null;
     last_scan_error: string | null;
@@ -80,6 +80,12 @@ type HomeOverview = {
     scan_interval_seconds: number;
     rules: HomeSystemRule[];
   };
+  opportunity_counts: Record<WhaleRule, {
+    last_1_day: number;
+    last_3_days: number;
+    last_5_days: number;
+    last_7_days: number;
+  }>;
   today: HomeDaily & {
     unrealized_pnl_usdc: Numeric | null;
     win_rate_percent: Numeric | null;
@@ -525,13 +531,16 @@ export default function HomeWorkspace() {
       ? "运行状态连接中断"
       : runtimeStatus === "healthy"
         ? "系统运行正常"
+        : runtimeStatus === "degraded"
+          ? "重点市场历史补齐中"
         : runtimeStatus === "disabled"
           ? "链上扫描已停用"
           : "系统存在异常";
   const alerts = useMemo(() => {
     if (!overview) return [];
-    const items: Array<{ key: string; title: string; detail: string }> = [];
+    const items: Array<{ key: string; title: string; detail: string; informational?: boolean }> = [];
     if (overview.system.status === "error") items.push({ key: "scan", title: "链上扫描异常", detail: overview.system.last_scan_error || `已连续失败 ${overview.system.consecutive_failures} 次` });
+    if (overview.system.status === "degraded") items.push({ key: "scan", informational: true, title: "重点市场历史补齐中", detail: overview.system.last_scan_error || "正在继续补齐成交历史" });
     if (!overview.wallet.available) items.push({ key: "wallet", title: "交易钱包不可用", detail: overview.wallet.last_error || "请先在设置中完成交易账户配置。" });
     if (!overview.wallet.valuation_complete) items.push({ key: "valuation", title: "持仓估值不完整", detail: `${overview.wallet.unpriced_position_count} 个开放仓位缺少有效买一价，已暂停总资产估算。` });
     if (connection === "disconnected") items.push({ key: "stream", title: "请求实时流已断开", detail: "正在自动重连；下方仍保留当前进程的最近请求快照。" });
@@ -557,7 +566,7 @@ export default function HomeWorkspace() {
     >
       {error && <div className="pcAlert danger homeLoadAlert" role="alert"><div><strong>首页数据请求失败</strong><p>{error}</p></div><button type="button" onClick={() => void loadOverview()}>重试</button></div>}
 
-      {alerts.length > 0 && <section className="homeAlertStack" aria-label="首页告警">{alerts.map((item) => <div className="homeAlert" role="alert" key={item.key}><span aria-hidden="true">!</span><div><strong>{item.title}</strong><p>{item.detail}</p></div></div>)}</section>}
+      {alerts.length > 0 && <section className="homeAlertStack" aria-label="首页告警">{alerts.map((item) => <div className={`homeAlert${item.informational ? " homeAlertInfo" : ""}`} role={item.informational ? "status" : "alert"} key={item.key}><span aria-hidden="true">{item.informational ? "i" : "!"}</span><div><strong>{item.title}</strong><p>{item.detail}</p></div></div>)}</section>}
 
       {loading && !overview ? <div className="pcPanel pcLoading homeLoading">正在汇总运行与跟单数据…</div> : overview && <>
         <section className="homeMetrics" aria-label="今日核心指标">
@@ -567,16 +576,44 @@ export default function HomeWorkspace() {
           <MetricCard label="今日结束仓位胜率" value={formatRate(overview.today.win_rate_percent)} detail={`${overview.today.win_count} 胜 · ${overview.today.loss_count} 负${overview.today.flat_count ? ` · ${overview.today.flat_count} 平` : ""}${performanceExclusionDetail(overview.today.excluded_conflict_exit_count, overview.today.excluded_chain_test_count)}`} effectAngle={32} />
         </section>
 
+        <section className="homeOpportunities" aria-label="链上发现机会">
+          <header className="homeSectionHeader"><div><h2>链上发现机会</h2><p>北京时间自然日，均包含今天；每条规则按钱包、市场和方向首次触发去重，双规则命中各计一次。</p></div></header>
+          <div className="homeMetrics">
+            {([
+              ["last_1_day", "最近 1 天（今日）"],
+              ["last_3_days", "最近 3 天"],
+              ["last_5_days", "最近 5 天"],
+              ["last_7_days", "最近 7 天"],
+            ] as const).map(([key, label]) => (
+              <article
+                className="homeMetricCard"
+                aria-label={`${label}发现机会`}
+                key={key}
+                data-effect-angle={0}
+                onPointerMove={moveMetricCardEffect}
+                onPointerLeave={resetMetricCardEffect}
+                onPointerCancel={resetMetricCardEffect}
+              >
+                <span>{label}</span>
+                <dl className="homeOpportunityValues">
+                  <div><dt>新号大额</dt><dd>{overview.opportunity_counts.new_account[key]}</dd></div>
+                  <div><dt>全量超大额</dt><dd>{overview.opportunity_counts.large_amount[key]}</dd></div>
+                </dl>
+              </article>
+            ))}
+          </div>
+        </section>
+
         <section className="pcPanel homeRuntimePanel homeRuntimeFront" aria-label="运行概览">
           <header className="homeSectionHeader"><div><span>RUNTIME OVERVIEW</span><h2>运行概览</h2><p>先确认扫描与两套发现规则是否正常，再查看资金表现。</p></div><Link className="pcButton ghost" href="/whales/settings">监测设置</Link></header>
           <div className="homeRuntimeBody">
             <div className="homeRuleCards">{overview.system.rules.map((rule) => {
-              const ruleRunning = rule.enabled && runtimeStatus === "healthy";
+              const ruleRunning = rule.enabled && (runtimeStatus === "healthy" || runtimeStatus === "degraded");
               const monitorLabel = !rule.enabled
                 ? "已停用"
                 : connection === "disconnected" || error !== null
                   ? "连接中断"
-                  : runtimeStatus === "healthy"
+                  : ruleRunning
                     ? "运行中"
                     : "未运行";
               return <article key={rule.rule}><div><span className={`homeRuleDot ${ruleRunning ? "enabled" : ""}`} /><strong>{RULE_LABELS[rule.rule]}</strong></div><dl><div><dt>监测</dt><dd>{monitorLabel}</dd></div><div><dt>自动跟单</dt><dd>{rule.auto_follow_enabled ? "已开启" : "未开启"}</dd></div><div><dt>活跃钱包</dt><dd>{rule.active_wallet_count}</dd></div></dl></article>;

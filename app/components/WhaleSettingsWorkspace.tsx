@@ -175,6 +175,8 @@ export function WhaleSettingsPanel({
   onReload: () => Promise<void>;
   onClose?: () => void;
 }) {
+  const [monitorCategoriesInput, setMonitorCategoriesInput] = useState<WhaleMarketCategory[] | null>(null);
+  const monitorCategories = monitorCategoriesInput ?? settings?.monitor_categories ?? AUTO_CATEGORIES.map((item) => item.key);
   const [registrationDaysInput, setRegistrationDaysInput] = useState<string | null>(null);
   const [newAccountThresholdInput, setNewAccountThresholdInput] = useState<string | null>(null);
   const [largeAmountThresholdInput, setLargeAmountThresholdInput] = useState<string | null>(null);
@@ -187,6 +189,10 @@ export function WhaleSettingsPanel({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!monitorCategories.length) {
+      setError("监测至少需要选择一个市场分类。");
+      return;
+    }
     const days = Number(registrationDays);
     const newAccountAmount = Number(newAccountThreshold);
     const largeAmount = Number(largeAmountThreshold);
@@ -210,15 +216,18 @@ export function WhaleSettingsPanel({
       const next = await whaleApi<WhaleSettings>("/api/whales/settings", {
         method: "PUT",
         body: JSON.stringify({
+          monitor_categories: monitorCategories,
           registration_window_days: days,
           new_account_threshold_usdc: newAccountAmount,
           large_amount_threshold_usdc: largeAmount,
         }),
       });
       onSettingsChange(next);
+      setMonitorCategoriesInput(null);
       setRegistrationDaysInput(null);
       setNewAccountThresholdInput(null);
       setLargeAmountThresholdInput(null);
+      await onReload();
       const scan = await whaleApi<{ status: string }>("/api/whales/scan", {
         method: "POST",
       });
@@ -247,6 +256,22 @@ export function WhaleSettingsPanel({
         </header>
         <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={submit}>
           <div className="whaleInlineSettingsBody">
+            <div className="whaleMonitorCategories">
+              <fieldset className="whaleAutoCategories" disabled={!settings || busy}>
+                <legend>监测市场分类</legend>
+                {AUTO_CATEGORIES.map((item) => (
+                  <label key={item.key}>
+                    <input type="checkbox" checked={monitorCategories.includes(item.key)} onChange={() => setMonitorCategoriesInput(
+                      monitorCategories.includes(item.key)
+                        ? monitorCategories.filter((category) => category !== item.key)
+                        : [...monitorCategories, item.key],
+                    )} />
+                    <span>{item.label}</span>
+                  </label>
+                ))}
+              </fieldset>
+              <p className="pcFormHint">两条规则共用分类，控制新机会和当前列表；未选分类的已有机会隐藏，历史数据和已有持仓保留。</p>
+            </div>
             <div className="pcFormGrid three">
               <label className="pcField">
                 <span>注册窗口</span>

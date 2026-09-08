@@ -11,6 +11,9 @@ from backend.db import Database
 from backend.home import home_overview
 from backend.models import (
     ExecutionAccount,
+    WhaleEntry,
+    WhaleEntryRuleState,
+    WhaleExclusion,
     WhaleFollowLedger,
     WhaleFollowPosition,
     WhaleOrder,
@@ -29,6 +32,10 @@ def test_home_overview_route_returns_thirty_beijing_days(app_client_factory) -> 
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["opportunity_counts"] == {
+        rule: {"last_1_day": 0, "last_3_days": 0, "last_5_days": 0, "last_7_days": 0}
+        for rule in ("new_account", "large_amount")
+    }
     assert payload["timezone"] == "Asia/Shanghai"
     assert len(payload["daily"]) == 30
     assert payload["today"]["buy_count"] == 0
@@ -55,6 +62,93 @@ class MarksClient:
 
     async def fetch_order_book(self, asset_id: str) -> SimpleNamespace:
         return SimpleNamespace(best_bid=self.prices.get(asset_id))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_large", [False, True])
+async def test_opportunity_counts_use_first_trigger_and_beijing_calendar_days(
+    database, include_large
+):
+    midnight = datetime(2026, 8, 28, 16)  # Beijing August 29, 00:00.
+    triggers = [
+        midnight,
+        midnight - timedelta(microseconds=1),
+        midnight - timedelta(days=2),
+        midnight - timedelta(days=2, microseconds=1),
+        midnight - timedelta(days=4),
+        midnight - timedelta(days=4, microseconds=1),
+        midnight - timedelta(days=6),
+        midnight - timedelta(days=6, microseconds=1),
+        NOW + timedelta(seconds=1),  # Do not count future timestamps.
+        NOW,  # Excluded wallet.
+        NOW,  # A different direction for the first wallet.
+        NOW,  # Another wallet buying the same direction.
+    ]
+    async with database.sessions() as session:
+        session.add(
+            WhaleSettings(
+                id=1, created_at=NOW, updated_at=NOW, monitor_categories_json='["sports"]'
+            )
+        )
+        for index, triggered_at in enumerate(triggers):
+            wallet = FUNDER if index in (0, 10) else f"0x{index:040x}"
+            entry = WhaleEntry(
+                proxy_wallet=wallet,
+                asset_id="yes" if index in (0, 11) else f"asset-{index}",
+                condition_id=CONDITION_ID,
+                outcome="No" if index == 10 else "Yes",
+                outcome_index=1 if index == 10 else 0,
+                gross_buy_usdc=Decimal("100000"),
+                gross_buy_size=Decimal("200000"),
+                net_size=0,
+                net_ratio=0,
+                avg_buy_price=Decimal("0.5"),
+                max_single_usdc=Decimal("100000"),
+                trade_count=1,
+                first_buy_at=triggered_at - timedelta(days=2),
+                last_buy_at=triggered_at,
+                status="exited",
+                window_start=triggered_at,
+                computed_at=NOW,
+                settlement_price=Decimal("1") if index % 2 else None,
+                settled_at=NOW if index % 2 else None,
+            )
+            session.add(entry)
+            await session.flush()
+            session.add(
+                WhaleEntryRuleState(
+                    entry_id=entry.id,
+                    rule_type="new_account",
+                    active=False,
+                    first_triggered_at=triggered_at,
+                    last_qualified_at=NOW,
+                    threshold_usdc_snapshot=Decimal("100000"),
+                )
+            )
+            if include_large and index in (0, 7):
+                session.add(
+                    WhaleEntryRuleState(
+                        entry_id=entry.id,
+                        rule_type="large_amount",
+                        active=False,
+                        first_triggered_at=NOW,
+                        last_qualified_at=NOW,
+                        threshold_usdc_snapshot=Decimal("500000"),
+                    )
+                )
+            if index == 9:
+                session.add(WhaleExclusion(proxy_wallet=wallet, created_at=NOW))
+        await session.commit()
+
+    payload = await home_overview(database, MarksClient({}), now=NOW)
+
+    assert payload["opportunity_counts"] == {
+        "new_account": {"last_1_day": 3, "last_3_days": 5, "last_5_days": 7, "last_7_days": 9},
+        "large_amount": {
+            key: 2 if include_large else 0
+            for key in ("last_1_day", "last_3_days", "last_5_days", "last_7_days")
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -514,3 +608,21 @@ async def test_home_overview_empty_and_incomplete_valuation(database: Database) 
     assert payload["wallet"]["market_value_usdc"] is None
     assert payload["wallet"]["total_assets_usdc"] is None
     assert payload["wallet"]["unpriced_position_count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("running,expected", [(True, "degraded"), (False, "error")])
+async def test_home_distinguishes_pending_market_backfill_from_failure(database, running, expected):
+    async with database.sessions() as session:
+        session.add(
+            WhaleSettings(
+                id=1,
+                created_at=NOW,
+                updated_at=NOW,
+                last_scan_at=NOW,
+                last_scan_error="重点市场 0xabc 历史补齐中，拆单回溯不完整，未用于新增信号",
+            )
+        )
+        await session.commit()
+    payload = await home_overview(database, MarksClient({}), now=NOW, scanner_running=running)
+    assert payload["system"]["status"] == expected

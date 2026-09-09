@@ -9780,6 +9780,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .homeDecisionStatus.success { background: #eaf7f2; color: #0a8057; }
 .homeDecisionStatus.processing { background: #eef3ff; color: #315dd1; }
 .homeDecisionStatus.danger { background: #fff0ef; color: #bc443f; }
+.homeDecisionStatus.warning { background: #fff7e6; color: #a46200; }
 .homeDecisionStatus.risk { background: #fff5e7; color: #a36513; }
 .homeEmpty { min-height: 120px; display: grid; place-items: center; color: #9699a2; font-size: 11px; }
 .homeRuntimeBody { display: grid; grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr); align-items: stretch; }

@@ -329,6 +329,42 @@ def _market_price(value: Any) -> Decimal:
     return _decimal(value).quantize(MARKET_PRICE_QUANTUM)
 
 
+def _auto_follow_status_display(status: str, reason: str | None) -> str:
+    """Classify known policy rejections, including historical decisions, for display only."""
+    if status not in {"failed", "skipped"} or not reason:
+        return status
+    policy_reasons = {
+        "巨鲸持有双向仓位",
+        "巨鲸持有双向仓位，不能按单边信号跟买",
+        "巨鲸已明显减仓",
+        "巨鲸已明显减仓，不能继续跟买",
+        "巨鲸已退出，不能继续跟买",
+        "巨鲸触发时已经完全退出",
+        "巨鲸当前不满足跟单条件",
+        "该巨鲸信号当前不满足跟买条件",
+        "该巨鲸信号已经进入历史记录，不能继续跟买",
+        "该巨鲸账户已加入排除名单，不能继续跟买",
+        "市场已经关闭或结果已经确定",
+        "市场当前已不再开放交易",
+        "市场结果已经确定，不再接受跟单",
+        "市场当前没有可成交卖盘",
+        "执行钱包可用余额不足以支付买入金额与手续费",
+        "反向全量超大额信号优先，本次新号信号不买入",
+    }
+    policy_patterns = (
+        r"实际买价 [0-9.]+ (?:高于策略最高价|低于策略最低价) [0-9.]+",
+        r"同一市场自动跟单最多购买 \d+ 次，已经停止继续买入",
+        r"同一市场自动跟单累计金额不能超过 [0-9.]+ USDC，已经停止继续买入",
+        r"单笔跟单金额不能超过 [0-9.]+ USDC",
+        r"跟单金额不能低于最小下单额 [0-9.]+ USDC",
+    )
+    if reason in policy_reasons or any(
+        re.fullmatch(pattern, reason) for pattern in policy_patterns
+    ):
+        return "strategy_protected"
+    return status
+
+
 def _auto_follow_reason_display(reason: str | None) -> str | None:
     """Normalize prices embedded in both new and already-persisted decision reasons."""
     if not reason:
@@ -6112,7 +6148,10 @@ async def list_whale_auto_decisions(
         matched_rules = [str(value) for value in _json_list(decision.matched_rules_json)]
         if rule != "all" and rule not in matched_rules:
             continue
-        if status != "all" and decision.status != status:
+        if (
+            status != "all"
+            and _auto_follow_status_display(decision.status, decision.reason) != status
+        ):
             continue
         filtered.append(decision)
     total = len(filtered)
@@ -6139,7 +6178,7 @@ async def list_whale_auto_decisions(
                 "configured_max_price": decision.configured_max_price,
                 "selected_amount_usdc": decision.selected_amount_usdc,
                 "observed_best_ask": decision.observed_best_ask,
-                "status": decision.status,
+                "status": _auto_follow_status_display(decision.status, decision.reason),
                 "reason": _auto_follow_reason_display(decision.reason),
                 "buy_order_id": decision.buy_order_id,
                 "latest_sell_order_id": decision.latest_sell_order_id,

@@ -766,7 +766,7 @@ def test_whale_markets_empty_response_has_stable_shape(app_client_factory):
     assert payload["window_start"].endswith("Z")
 
 
-async def seed_auto_decision(database) -> None:
+async def seed_auto_decision(database, status="bought", reason=None) -> None:
     now = utcnow()
     async with database.sessions() as session:
         entry = await session.scalar(select(WhaleEntry).order_by(WhaleEntry.id))
@@ -786,8 +786,9 @@ async def seed_auto_decision(database) -> None:
                 configured_min_price=Decimal("0.60"),
                 configured_max_price=Decimal("0.80"),
                 observed_best_ask=Decimal("0.61"),
-                status="bought",
-                reason=("实际买价 0.85000000000000000000 高于策略最高价 0.75000000000000000000"),
+                status=status,
+                reason=reason
+                or "实际买价 0.85000000000000000000 高于策略最高价 0.75000000000000000000",
                 buy_order_id=None,
                 latest_sell_order_id=None,
                 processed_at=now,
@@ -816,6 +817,49 @@ def test_whale_auto_decisions_support_rule_and_status_filters(app_client_factory
     assert payload["items"][0]["event_slug"] == "championship-final"
     assert payload["items"][0]["reason"] == "实际买价 0.85 高于策略最高价 0.75"
     assert client.get("/api/whales/auto-decisions?rule=invalid").status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("stored_status", "reason", "display_status"),
+    [
+        ("failed", "实际买价 0.974 高于策略最高价 0.75", "strategy_protected"),
+        ("failed", "实际买价 0.4 低于策略最低价 0.5", "strategy_protected"),
+        ("failed", "巨鲸持有双向仓位，不能按单边信号跟买", "strategy_protected"),
+        ("skipped", "巨鲸持有双向仓位", "strategy_protected"),
+        ("failed", "巨鲸已明显减仓，不能继续跟买", "strategy_protected"),
+        ("failed", "市场已经关闭或结果已经确定", "strategy_protected"),
+        ("failed", "同一市场自动跟单最多购买 2 次，已经停止继续买入", "strategy_protected"),
+        ("failed", "Polymarket 接口请求过于频繁", "failed"),
+        ("failed", "SDK 签名失败，未提交订单", "failed"),
+        ("failed", "未知执行异常", "failed"),
+        ("skipped", "巨鲸当前持仓核验失败", "skipped"),
+        ("bought", "巨鲸持有双向仓位", "bought"),
+    ],
+)
+def test_auto_decision_policy_display_and_filters(
+    app_client_factory, stored_status, reason, display_status
+):
+    client, _ = app_client_factory([[]])
+    database = client.app.state.database
+    client.portal.call(seed_two_sided_whale_market, database)
+    client.portal.call(seed_auto_decision, database, stored_status, reason)
+    endpoint = "/api/whales/auto-decisions"
+    payload = client.get(endpoint).json()
+    assert payload["items"][0]["status"] == display_status
+    assert payload["items"][0]["reason"] == reason
+    assert client.get(f"{endpoint}?status={display_status}&limit=1").json()["total"] == 1
+    other_status = "failed" if display_status == "strategy_protected" else "strategy_protected"
+    assert client.get(f"{endpoint}?status={other_status}").json()["total"] == 0
+    home = client.get("/api/home/overview")
+    assert home.status_code == 200, home.text
+    assert home.json()["recent_auto_decisions"][0]["status"] == display_status
+
+    async def stored_decision():
+        async with database.sessions() as session:
+            decision = await session.scalar(select(WhaleAutoFollowDecision))
+            return decision.status, decision.reason
+
+    assert client.portal.call(stored_decision) == (stored_status, reason)
 
 
 def test_whale_market_api_merges_both_sides_and_returns_entry_trades(app_client_factory):

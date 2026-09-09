@@ -139,6 +139,7 @@ const DECISION_LABELS: Record<string, string> = {
   pending: "等待处理",
   bought: "已成交",
   skipped: "已跳过",
+  strategy_protected: "策略保护",
   failed: "执行失败",
   conflict_locked: "分歧锁定",
   exit_pending: "风控退出中",
@@ -146,6 +147,7 @@ const DECISION_LABELS: Record<string, string> = {
 };
 
 function decisionTone(status: string, riskExit: boolean): string {
+  if (status === "strategy_protected") return "warning";
   if (riskExit || status.startsWith("exit_")) return "risk";
   if (status === "bought") return "success";
   if (status === "failed" || status === "conflict_locked") return "danger";

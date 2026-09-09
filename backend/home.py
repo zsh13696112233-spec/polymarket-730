@@ -23,7 +23,12 @@ from backend.models import (
 )
 from backend.polymarket import PolymarketClient
 from backend.time_utils import utcnow
-from backend.whale import _auto_follow_reason_display, _json_list, _position_marks
+from backend.whale import (
+    _auto_follow_reason_display,
+    _auto_follow_status_display,
+    _json_list,
+    _position_marks,
+)
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 ZERO = Decimal("0")
@@ -359,7 +364,7 @@ async def home_overview(
                     decision.selected_amount_usdc or decision.configured_amount_usdc
                 ),
                 "filled_usdc": buy_order.filled_usdc + buy_order.fee_usdc if buy_order else ZERO,
-                "status": decision.status,
+                "status": _auto_follow_status_display(decision.status, decision.reason),
                 "reason": _auto_follow_reason_display(decision.reason),
                 "is_risk_exit": bool(
                     sell_order is not None and sell_order.source == "conflict_exit"

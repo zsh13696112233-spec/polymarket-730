@@ -95,6 +95,17 @@ afterEach(() => {
 });
 
 describe("首页运行与跟单看板", () => {
+  it.each([
+    ["strategy_protected", "策略保护", "warning"],
+    ["failed", "执行失败", "danger"],
+  ])("首页决策展示 %s 对应的文案和颜色", async (status, label, tone) => {
+    const data = overview();
+    data.recent_auto_decisions[0].status = status;
+    vi.stubGlobal("fetch", vi.fn(async () => json(data)));
+    render(<HomeWorkspace />);
+    expect(await screen.findByText(label)).toHaveClass(tone);
+  });
+
   it("展示首页导航、核心口径、钱包、决策并切换 7/30 日趋势", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(overview())));
     const user = userEvent.setup();

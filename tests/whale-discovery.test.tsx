@@ -218,7 +218,11 @@ describe("巨鲸页内设置", () => {
     expect(statusFilter).toHaveTextContent("等待处理");
   });
 
-  it("自动决策的钱包与市场信息均可打开对应页面", async () => {
+  it.each([
+    ["strategy_protected", "策略保护", "warning", "实际买价 0.97400000000000000000 高于策略最高价 0.75000000000000000000", "实际买价 0.974 高于策略最高价 0.75"],
+    ["strategy_protected", "策略保护", "warning", "巨鲸持有双向仓位", "巨鲸持有双向仓位"],
+    ["failed", "执行失败", "danger", "Polymarket 接口请求过于频繁", "Polymarket 接口请求过于频繁"],
+  ])("自动决策展示 %s 状态、原因和可打开的市场信息", async (status, label, tone, reason, displayedReason) => {
     const wallet = "0x1111111111111111111111111111111111111111";
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -244,8 +248,8 @@ describe("巨鲸页内设置", () => {
           configured_min_price: 0.5,
           configured_max_price: 0.75,
           observed_best_ask: 0.7,
-          status: "bought",
-          reason: "实际买价 0.85000000000000000000 高于策略最高价 0.75000000000000000000",
+          status,
+          reason,
           buy_order_id: 3,
           latest_sell_order_id: null,
           followed_wallet_count: 1,
@@ -265,8 +269,13 @@ describe("巨鲸页内设置", () => {
     const marketLink = screen.getByRole("link", { name: /Championship winner.*Yes/ });
     expect(marketLink).toHaveAttribute("href", "https://polymarket.com/event/championship-final");
     expect(marketLink).toHaveAttribute("target", "_blank");
-    expect(screen.getByText("实际买价 0.85 高于策略最高价 0.75")).toBeInTheDocument();
+    expect(screen.getByText(displayedReason)).toBeInTheDocument();
+    expect(screen.getByText(label)).toHaveClass(tone);
     expect(screen.queryByText(/0\.75000000000000000000/)).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "决策状态" }));
+    await user.click(screen.getByRole("option", { name: "策略保护" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("status=strategy_protected"))).toBe(true));
   });
 
   it("展示默认排除账户，并支持用个人页新增和移出", async () => {

@@ -26,6 +26,7 @@ const STATUS_OPTIONS = [
   ["pending", "等待处理"],
   ["bought", "已自动买入"],
   ["skipped", "已跳过"],
+  ["strategy_protected", "策略保护"],
   ["failed", "执行失败"],
   ["conflict_locked", "分歧锁定"],
   ["exit_pending", "风控退出中"],
@@ -146,6 +147,7 @@ function decisionLabel(status: string) {
 }
 
 function decisionTone(status: string) {
+  if (status === "strategy_protected") return "warning";
   if (status === "bought" || status === "exit_completed") return "success";
   if (status === "pending" || status === "exit_pending") return "processing";
   if (status === "failed" || status === "conflict_locked") return "danger";

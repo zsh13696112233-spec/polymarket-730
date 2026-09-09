@@ -1413,3 +1413,32 @@ def test_verified_position_quality_fields_are_exposed_in_market_contract(app_cli
     assert Decimal(str(entry["opposite_size"])) == Decimal("100")
     assert Decimal(str(entry["directional_size"])) == max(Decimal("0"), size - Decimal("100"))
     assert entry["position_checked_at"].endswith("Z")
+
+
+def test_dual_match_amount_settings_validation_and_clear(app_client_factory):
+    client, _ = app_client_factory([[]])
+    endpoint = "/api/whales/settings"
+    key = "dual_match_auto_follow_amount_usdc"
+    assert client.get(endpoint).json()[key] is None
+    for amount in (0, -1, 201):
+        assert client.put(endpoint, json={key: amount}).status_code == 422
+    response = client.put(endpoint, json={key: 25})
+    assert response.status_code == 200, response.text
+    assert Decimal(str(response.json()[key])) == Decimal("25")
+    assert Decimal(str(client.get(endpoint).json()[key])) == Decimal("25")
+    assert client.put(endpoint, json={"window_hours": 24}).json()[key] == response.json()[key]
+    assert (
+        client.put(
+            endpoint,
+            json={
+                "new_account_auto_follow_enabled": True,
+                "auto_follow_market_max_purchase_count": 2,
+                "auto_follow_market_max_amount_usdc": 20,
+            },
+        ).status_code
+        == 422
+    )
+    response = client.put(endpoint, json={key: None})
+    assert response.status_code == 200, response.text
+    assert response.json()[key] is None
+    assert client.get(endpoint).json()[key] is None

@@ -467,6 +467,8 @@ export function WhaleAutoSettingsPanel({
   const [largeLowPriceEnabled, setLargeLowPriceEnabled] = useState<boolean | null>(null);
   const [largeLowPriceMax, setLargeLowPriceMax] = useState<string | null>(null);
   const [largeLowPriceAmount, setLargeLowPriceAmount] = useState<string | null>(null);
+  const [dualEnabled, setDualEnabled] = useState<boolean | null>(null);
+  const [dualAmount, setDualAmount] = useState<string | null>(null);
   const [largeConflictPriorityEnabled, setLargeConflictPriorityEnabled] = useState<boolean | null>(null);
   const [marketCapEnabled, setMarketCapEnabled] = useState<boolean | null>(null);
   const [marketMaxPurchaseCount, setMarketMaxPurchaseCount] = useState<string | null>(null);
@@ -495,6 +497,8 @@ export function WhaleAutoSettingsPanel({
   const resolvedLargeLowPriceEnabled = largeLowPriceEnabled ?? settings?.large_amount_auto_follow_low_price_max_price != null;
   const resolvedLargeLowPriceMax = largeLowPriceMax ?? (settings?.large_amount_auto_follow_low_price_max_price == null ? "" : String(settings.large_amount_auto_follow_low_price_max_price));
   const resolvedLargeLowPriceAmount = largeLowPriceAmount ?? (settings?.large_amount_auto_follow_low_price_amount_usdc == null ? "" : String(settings.large_amount_auto_follow_low_price_amount_usdc));
+  const resolvedDualEnabled = dualEnabled ?? settings?.dual_match_auto_follow_amount_usdc != null;
+  const resolvedDualAmount = dualAmount ?? (settings?.dual_match_auto_follow_amount_usdc == null ? "" : String(settings.dual_match_auto_follow_amount_usdc));
   const resolvedLargeConflictPriorityEnabled = largeConflictPriorityEnabled ?? settings?.large_amount_conflict_priority_enabled ?? true;
   const resolvedMarketCapEnabled = marketCapEnabled ?? settings?.auto_follow_market_max_purchase_count != null;
   const resolvedMarketMaxPurchaseCount = marketMaxPurchaseCount ?? (settings?.auto_follow_market_max_purchase_count == null ? "" : String(settings.auto_follow_market_max_purchase_count));
@@ -530,6 +534,8 @@ export function WhaleAutoSettingsPanel({
     setLargeLowPriceEnabled(null);
     setLargeLowPriceMax(null);
     setLargeLowPriceAmount(null);
+    setDualEnabled(null);
+    setDualAmount(null);
     setLargeConflictPriorityEnabled(null);
     setMarketCapEnabled(null);
     setMarketMaxPurchaseCount(null);
@@ -579,6 +585,11 @@ export function WhaleAutoSettingsPanel({
         return;
       }
     }
+    const dualAmountValue = Number(resolvedDualAmount);
+    if (resolvedDualEnabled && (!Number.isFinite(dualAmountValue) || dualAmountValue <= 0)) {
+      setError("双重命中跟单金额必须大于 0。");
+      return;
+    }
     if (resolvedMarketCapEnabled) {
       if (!Number.isInteger(marketMaxPurchaseCountValue) || marketMaxPurchaseCountValue <= 0) {
         setError("单市场最大购买次数必须是正整数。");
@@ -589,6 +600,7 @@ export function WhaleAutoSettingsPanel({
         return;
       }
       const enabledBaseAmounts = [
+        resolvedDualEnabled && (resolvedNewAutoEnabled || resolvedLargeAutoEnabled) ? dualAmountValue : 0,
         resolvedNewAutoEnabled ? newAutoAmountValue : 0,
         resolvedLargeAutoEnabled ? largeAutoAmountValue : 0,
       ];
@@ -618,6 +630,7 @@ export function WhaleAutoSettingsPanel({
           large_amount_auto_follow_categories: resolvedLargeAutoCategories,
           large_amount_auto_follow_low_price_max_price: resolvedLargeLowPriceEnabled ? largeLowMaxValue : null,
           large_amount_auto_follow_low_price_amount_usdc: resolvedLargeLowPriceEnabled ? largeLowAmountValue : null,
+          dual_match_auto_follow_amount_usdc: resolvedDualEnabled ? dualAmountValue : null,
           large_amount_conflict_priority_enabled: resolvedLargeConflictPriorityEnabled,
           auto_follow_market_max_purchase_count: resolvedMarketCapEnabled ? marketMaxPurchaseCountValue : null,
           auto_follow_market_max_amount_usdc: resolvedMarketCapEnabled ? marketMaxAmountValue : null,
@@ -669,7 +682,7 @@ export function WhaleAutoSettingsPanel({
           </article>
         </div>
         <p className="pcFormHint whaleAutoMarketCapSummary">
-          分歧规则：{resolvedLargeConflictPriorityEnabled ? "全量超大额优先" : "任意反向信号退出"} · 单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
+          双重命中金额：{resolvedDualEnabled ? `${resolvedDualAmount} USDC` : "沿用原策略"} · 分歧规则：{resolvedLargeConflictPriorityEnabled ? "全量超大额优先" : "任意反向信号退出"} · 单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
         </p>
 
         {editing && (
@@ -721,6 +734,17 @@ export function WhaleAutoSettingsPanel({
                 onCategories={setLargeAutoCategories}
               />
             )}
+            <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
+              <header>
+                <div><span>DUAL MATCH</span><h3>双重命中跟单金额</h3></div>
+                <label className="whaleAutoToggle">
+                  <input type="checkbox" aria-label="启用双重命中独立金额" checked={resolvedDualEnabled} disabled={!settings || busy} onChange={(event) => setDualEnabled(event.target.checked)} />
+                  <b>{resolvedDualEnabled ? "已启用" : "沿用原策略"}</b>
+                </label>
+              </header>
+              {resolvedDualEnabled && <div className="whaleAutoFields"><label className="pcField"><span>单笔金额（USDC）</span><input type="number" aria-label="双重命中跟单金额" min="0.01" step="any" value={resolvedDualAmount} disabled={!settings || busy} onChange={(event) => setDualAmount(event.target.value)} /></label></div>}
+              <p className="pcFormHint">首次自动决策时同时命中两条规则，使用独立金额覆盖基础档和低价档；沿用所选策略的价格、分类及已有交易限制，只跟一笔。后续新增命中不补买。</p>
+            </section>
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
                 <div><span>CONFLICT PRIORITY</span><h3>分歧退出优先级</h3></div>

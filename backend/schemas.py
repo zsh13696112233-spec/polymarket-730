@@ -88,6 +88,7 @@ class WhaleSettingsRead(APIModel):
     new_account_threshold_usdc: DecimalNumber
     large_amount_threshold_usdc: DecimalNumber
     monitor_categories: list[WhaleMarketCategory]
+    dual_match_auto_follow_amount_usdc: DecimalNumber | None
     new_account_auto_follow_enabled: bool
     new_account_auto_follow_amount_usdc: DecimalNumber
     new_account_auto_follow_min_price: DecimalNumber
@@ -155,6 +156,7 @@ class WhaleSettingsUpdate(APIModel):
     new_account_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     monitor_categories: list[WhaleMarketCategory] | None = Field(default=None, min_length=1)
+    dual_match_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     new_account_auto_follow_enabled: bool | None = None
     new_account_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     new_account_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)

@@ -961,6 +961,7 @@ def create_app(
         database: Database = request.app.state.database
         values = payload.model_dump(exclude_none=True)
         for nullable_key in (
+            "dual_match_auto_follow_amount_usdc",
             "new_account_auto_follow_low_price_max_price",
             "new_account_auto_follow_low_price_amount_usdc",
             "large_amount_auto_follow_low_price_max_price",
@@ -1058,6 +1059,9 @@ def create_app(
                             status_code=422,
                             detail=f"{label}低价金额不能超过单笔买入上限",
                         )
+            dual_amount = merged["dual_match_auto_follow_amount_usdc"]
+            if dual_amount is not None and dual_amount > merged["max_follow_amount_usdc"]:
+                raise HTTPException(status_code=422, detail="双重命中金额不能超过单笔买入上限")
             market_count_cap = merged["auto_follow_market_max_purchase_count"]
             market_amount_cap = merged["auto_follow_market_max_amount_usdc"]
             if (market_count_cap is None) != (market_amount_cap is None):
@@ -1071,6 +1075,8 @@ def create_app(
                     if not merged[f"{prefix}_auto_follow_enabled"]:
                         continue
                     enabled_amounts.append(merged[f"{prefix}_auto_follow_amount_usdc"])
+                if enabled_amounts and dual_amount is not None:
+                    enabled_amounts.append(dual_amount)
                 if enabled_amounts and market_amount_cap < max(enabled_amounts):
                     raise HTTPException(
                         status_code=422,

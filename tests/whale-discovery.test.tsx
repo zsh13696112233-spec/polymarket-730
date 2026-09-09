@@ -16,6 +16,7 @@ function json(payload: unknown, status = 200) {
 }
 
 const settings = {
+  dual_match_auto_follow_amount_usdc: null,
   enabled: true,
   window_hours: 24,
   monitor_categories: ["sports", "esports", "politics", "crypto", "science_tech", "entertainment", "other"],
@@ -153,7 +154,7 @@ describe("巨鲸页内设置", () => {
         saved = JSON.parse(String(init.body));
         return json({ ...settings, ...saved });
       }
-      if (url.endsWith("/api/whales/settings")) return json(settings);
+      if (url.endsWith("/api/whales/settings")) return json({ ...settings, ...saved });
       if (url.includes("/api/whales/auto-decisions?")) return json({ total: 0, items: [] });
       if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
       return json({ detail: "not found" }, 404);
@@ -176,6 +177,8 @@ describe("巨鲸页内设置", () => {
     await user.click(within(newStrategy!).getByRole("checkbox", { name: "新号大额自动跟单启用低价小额" }));
     await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价分界" }), "0.7");
     await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价金额" }), "3");
+    await user.click(screen.getByRole("checkbox", { name: "启用双重命中独立金额" }));
+    await user.type(screen.getByRole("spinbutton", { name: "双重命中跟单金额" }), "25");
     await user.click(screen.getByRole("checkbox", { name: "启用单市场共享上限" }));
     await user.type(screen.getByRole("spinbutton", { name: "单市场最大购买次数" }), "2");
     await user.type(screen.getByRole("spinbutton", { name: "单市场累计投入上限" }), "30");
@@ -185,6 +188,7 @@ describe("巨鲸页内设置", () => {
     await waitFor(() => expect(saved).not.toBeNull());
     expect(saved).toMatchObject({
       new_account_auto_follow_enabled: true,
+      dual_match_auto_follow_amount_usdc: 25,
       new_account_auto_follow_categories: ["sports", "politics"],
       new_account_auto_follow_low_price_max_price: 0.7,
       new_account_auto_follow_low_price_amount_usdc: 3,
@@ -193,6 +197,12 @@ describe("巨鲸页内设置", () => {
       auto_follow_market_max_purchase_count: 2,
       auto_follow_market_max_amount_usdc: 30,
     });
+    await waitFor(() => expect(screen.getByText(/双重命中金额：25 USDC/)).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "编辑策略" }));
+    expect(screen.getByRole("spinbutton", { name: "双重命中跟单金额" })).toHaveValue(25);
+    await user.click(screen.getByRole("checkbox", { name: "启用双重命中独立金额" }));
+    await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
+    await waitFor(() => expect(saved).toMatchObject({ dual_match_auto_follow_amount_usdc: null }));
     expect(screen.queryByText(/模拟/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "自动跟单" })).toHaveClass("active");
 

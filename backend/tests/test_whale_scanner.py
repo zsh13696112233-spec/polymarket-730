@@ -1995,12 +1995,14 @@ async def test_active_position_cache_refreshes_only_changed_candidate_markets(da
     ]
 
 
-async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(database):
+@pytest.mark.parametrize("dual_amount", [None, Decimal("25")])
+async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(database, dual_amount):
     condition_id = "0x" + "7" * 64
     wallet = "0x7777777777777777777777777777777777777777"
     await _seed_auto_market(database, condition_id)
     config = await _auto_follow_config(
         database,
+        dual_match_auto_follow_amount_usdc=dual_amount,
         new_account_auto_follow_enabled=True,
         large_amount_auto_follow_enabled=True,
         large_amount_auto_follow_low_price_max_price=Decimal("0.65"),
@@ -2041,9 +2043,14 @@ async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(data
     assert repeated == []
     assert len(decisions) == 1
     assert decisions[0].selected_rule == "large_amount"
-    assert decisions[0].configured_amount_usdc == Decimal("10")
-    assert _auto_follow_price(decisions[0].configured_low_price_max_price) == Decimal("0.65")
-    assert decisions[0].configured_low_price_amount_usdc == Decimal("5")
+    assert decisions[0].configured_amount_usdc == (dual_amount or Decimal("10"))
+    if dual_amount is None:
+        assert _auto_follow_price(decisions[0].configured_low_price_max_price) == Decimal("0.65")
+        assert decisions[0].configured_low_price_amount_usdc == Decimal("5")
+    else:
+        assert decisions[0].configured_low_price_max_price is None
+        assert decisions[0].configured_low_price_amount_usdc is None
+    assert _auto_follow_price(decisions[0].configured_min_price) == Decimal("0.60")
     assert json.loads(decisions[0].matched_rules_json) == ["large_amount", "new_account"]
     assert decisions[0].status == "failed"
     assert decisions[0].reason == "服务重启前尚未提交自动买入，不补买"
@@ -3550,3 +3557,152 @@ async def test_new_buy_after_history_is_eligible(database, monkeypatch):
         assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == 1
         gate = await session.scalar(select(WhaleBackfillSignalState))
         assert gate.awaiting_new_buy is False
+
+
+@pytest.mark.parametrize(
+    ("rules", "enabled", "categories", "expected_amount"),
+    [
+        (["new_account"], True, ["sports"], Decimal("5")),
+        (["large_amount"], True, ["sports"], Decimal("10")),
+        (["new_account", "large_amount"], False, ["sports"], None),
+        (["new_account", "large_amount"], True, ["politics"], None),
+    ],
+)
+async def test_dual_amount_preserves_eligibility_and_does_not_top_up(
+    database, rules, enabled, categories, expected_amount
+):
+    condition_id = "0x" + "7" * 64
+    wallet = "0x7777777777777777777777777777777777777777"
+    await _seed_auto_market(database, condition_id)
+    config = await _auto_follow_config(
+        database,
+        dual_match_auto_follow_amount_usdc=Decimal("25"),
+        new_account_auto_follow_enabled=enabled,
+        large_amount_auto_follow_enabled=enabled,
+        new_account_auto_follow_categories_json=json.dumps(categories),
+        large_amount_auto_follow_categories_json=json.dumps(categories),
+        large_amount_auto_follow_low_price_max_price=Decimal("0.65"),
+        large_amount_auto_follow_low_price_amount_usdc=Decimal("5"),
+    )
+    aggregate = _auto_aggregate(
+        wallet=wallet,
+        asset_id="asset-yes",
+        condition_id=condition_id,
+    )
+    scanner = build_scanner(database)
+    positions = {
+        wallet: {
+            "asset-yes": SimpleNamespace(
+                size=Decimal("1000000"),
+                condition_id=condition_id,
+                asset_id="asset-yes",
+                avg_price=Decimal("0.60"),
+            )
+        }
+    }
+    kwargs = {
+        "rule_matches": {(wallet, "asset-yes"): set(rules)},
+        "positions_by_wallet": positions,
+        "failed_wallets": set(),
+        "config": config,
+        "now": utcnow(),
+        "window_start": utcnow() - timedelta(hours=24),
+    }
+
+    pending = await scanner._persist_entries([aggregate], **kwargs)
+    async with database.sessions() as session:
+        decision = await session.scalar(select(WhaleAutoFollowDecision))
+        assert decision.configured_amount_usdc == expected_amount
+        assert decision.status == ("pending" if expected_amount is not None else "skipped")
+        original_amount = decision.configured_amount_usdc
+    assert len(pending) == (1 if expected_amount is not None else 0)
+    kwargs["rule_matches"] = {(wallet, "asset-yes"): {"new_account", "large_amount"}}
+    assert await scanner._persist_entries([aggregate], **kwargs) == []
+    async with database.sessions() as session:
+        decisions = list(await session.scalars(select(WhaleAutoFollowDecision)))
+        assert len(decisions) == 1
+        assert decisions[0].configured_amount_usdc == original_amount
+
+
+@pytest.mark.parametrize("phase", ["quote", "execute"])
+@pytest.mark.parametrize("result", ["recovered", "exited", "exhausted", "cancelled"])
+async def test_buy_position_rate_limit_retries_before_proceeding(
+    database, monkeypatch, phase, result
+):
+    from backend.tests.test_whale_execution import follow_quote
+    from backend.whale import WhaleFollowExecutor
+
+    client = PositionDiscoveryClient()
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    assert await scanner.tick()
+    async with database.sessions() as session:
+        entry_id = (await session.scalar(select(WhaleEntry))).id
+    original = client.fetch_active_positions
+    calls = 0
+    delays = []
+    continued = []
+
+    async def limited_positions(user, *, condition_ids=None):
+        nonlocal calls
+        calls += 1
+        assert user == client.wallet
+        assert condition_ids == [client.condition_id]
+        if calls <= 2 or result == "exhausted":
+            raise PolymarketAPIError(
+                "Polymarket 接口请求过于频繁",
+                rate_limited=True,
+                retry_after=15 if calls == 1 else None,
+            )
+        if result == "exited":
+            return []
+        return await original(user, condition_ids=condition_ids)
+
+    async def record_sleep(delay):
+        delays.append(delay)
+        if result == "cancelled":
+            raise asyncio.CancelledError
+
+    class ReachedNextBuyCheck(Exception):
+        pass
+
+    async def next_buy_check(*args):
+        continued.append(phase)
+        raise ReachedNextBuyCheck
+
+    monkeypatch.setattr(client, "fetch_active_positions", limited_positions)
+    monkeypatch.setattr("backend.whale.asyncio.sleep", record_sleep)
+    executor = WhaleFollowExecutor(
+        database=database, client=client, settings=database.settings, keychain=SimpleNamespace()
+    )
+    # Stop at the next check: no credentials or real order submission are needed.
+    monkeypatch.setattr(executor, "_account", next_buy_check)
+    monkeypatch.setattr(client, "fetch_order_book", next_buy_check, raising=False)
+    expected = {
+        "recovered": ReachedNextBuyCheck,
+        "exited": ValueError,
+        "exhausted": PolymarketAPIError,
+        "cancelled": asyncio.CancelledError,
+    }[result]
+    with pytest.raises(expected) as raised:
+        if phase == "quote":
+            await executor.quote_follow(
+                asset_id=client.asset_id, amount_usdc=Decimal("15"), entry_id=entry_id
+            )
+        else:
+            quote = replace(
+                follow_quote(),
+                entry_id=entry_id,
+                asset_id=client.asset_id,
+                condition_id=client.condition_id,
+                source_wallet=client.wallet,
+            )
+            await executor.execute_follow(quote, "rate-limit-test", order_source="auto_follow")
+    if result == "exited":
+        assert "退出" in str(raised.value)
+    assert continued == ([phase] if result == "recovered" else [])
+    assert calls == {"recovered": 3, "exited": 3, "exhausted": 4, "cancelled": 1}[result]
+    assert delays == (
+        [15] if result == "cancelled" else [15, 20, 40] if result == "exhausted" else [15, 20]
+    )
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleOrder)))

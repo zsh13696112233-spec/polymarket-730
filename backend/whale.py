@@ -2852,6 +2852,15 @@ class WhaleDiscoveryScanner:
                     decision.configured_low_price_max_price,
                     decision.configured_low_price_amount_usdc,
                 ) = selected
+                dual_amount = config.get("dual_match_auto_follow_amount_usdc")
+                if (
+                    dual_amount is not None
+                    and NEW_ACCOUNT_RULE in matched_rules
+                    and LARGE_AMOUNT_RULE in matched_rules
+                ):
+                    decision.configured_amount_usdc = _decimal(dual_amount)
+                    decision.configured_low_price_max_price = None
+                    decision.configured_low_price_amount_usdc = None
                 pending_decision_ids.append(decision.id)
 
             active_entry_ids = {entry_id for (entry_id, _), state in states.items() if state.active}
@@ -3529,9 +3538,18 @@ class WhaleFollowExecutor:
             if await session.get(WhaleExclusion, entry.proxy_wallet.lower()) is not None:
                 raise ValueError("该巨鲸账户已加入排除名单，不能继续跟买")
             ratio_threshold = settings.holding_ratio_threshold
-        positions = await self.client.fetch_active_positions(
-            entry.proxy_wallet, condition_ids=[entry.condition_id]
-        )
+        for attempt in range(4):
+            try:
+                positions = await self.client.fetch_active_positions(
+                    entry.proxy_wallet, condition_ids=[entry.condition_id]
+                )
+                break
+            except PolymarketAPIError as error:
+                if not error.rate_limited or attempt == 3:
+                    raise
+                # Leave the Data API's ten-second window before retrying this
+                # read. Never retry order submission or use stale holdings.
+                await asyncio.sleep(max(10 * 2**attempt, float(error.retry_after or 0)))
         _, _, _, reason = _position_quality(entry, positions, ratio_threshold)
         if reason is not None:
             raise ValueError(

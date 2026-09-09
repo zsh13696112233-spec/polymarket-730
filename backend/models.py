@@ -111,6 +111,10 @@ class WhaleSettings(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_whale_settings_singleton"),
         CheckConstraint(
+            "dual_match_auto_follow_amount_usdc IS NULL OR dual_match_auto_follow_amount_usdc > 0",
+            name="ck_whale_settings_dual_match_amount",
+        ),
+        CheckConstraint(
             "single_trade_threshold_usdc >= collect_filter_amount_usdc",
             name="ck_whale_settings_single_threshold",
         ),
@@ -228,6 +232,9 @@ class WhaleSettings(Base):
         nullable=False,
         default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
         server_default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
+    )
+    dual_match_auto_follow_amount_usdc: Mapped[Decimal | None] = mapped_column(
+        DECIMAL_TYPE, nullable=True
     )
     new_account_auto_follow_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

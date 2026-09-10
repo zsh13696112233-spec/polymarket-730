@@ -3857,6 +3857,7 @@ class WhaleFollowExecutor:
                 order = await session.get(WhaleOrder, order_id)
                 assert order is not None
                 order.signed_order_hash = prepared.signed_order_hash
+                order.external_order_id = prepared.external_order_id
                 order.status = "signed"
                 order.updated_at = utcnow()
                 await session.commit()
@@ -3865,7 +3866,7 @@ class WhaleFollowExecutor:
             except TradingUnavailable as error:
                 await self._mark_order(order_id, "reconciliation_pending", str(error))
                 raise TradingUnavailable(
-                    "跟单提交结果待确认；系统不会自动重试，请到跟单记录核对"
+                    "跟单提交结果待确认；系统将自动核对，请勿重复下单，可到跟单记录查看进度"
                 ) from error
             result = await self._hydrate_fee(trader, result)
             await self.apply_result(order_id, result)
@@ -4019,7 +4020,19 @@ class WhaleFollowExecutor:
                 await asyncio.sleep(1)
         return result
 
-    async def reconcile_pending_orders(self) -> str | None:
+    @staticmethod
+    def _legacy_recovery_trade_id(order: WhaleOrder) -> str | None:
+        if order.status != "reconciliation_pending" or order.order_type != "FAK":
+            return None
+        # Older submissions lost the accepted ID when fee lookup raised. Only use
+        # this exact locally generated error, never guess from price or holdings.
+        match = re.match(
+            r"^无法计算成交 ([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}) 的平台费：",
+            order.reason or "",
+        )
+        return match.group(1) if match else None
+
+    async def reconcile_pending_orders(self, *, order_id: int | None = None) -> str | None:
         """Poll accepted orders before any automatic retry can submit another order."""
 
         if self._lock.locked():
@@ -4031,11 +4044,20 @@ class WhaleFollowExecutor:
                         await session.scalars(
                             select(WhaleOrder).where(
                                 WhaleOrder.status.in_(WALLET_PENDING_STATUSES),
-                                WhaleOrder.external_order_id.is_not(None),
+                                or_(
+                                    WhaleOrder.external_order_id.is_not(None),
+                                    WhaleOrder.status == "reconciliation_pending",
+                                ),
                             )
                         )
                     ).all()
                 )
+            orders = [
+                order
+                for order in orders
+                if (order_id is None or order.id == order_id)
+                and (order.external_order_id or self._legacy_recovery_trade_id(order))
+            ]
             if not orders:
                 return None
             try:
@@ -4049,15 +4071,90 @@ class WhaleFollowExecutor:
                         account = await self._account()
                         if order.execution_wallet != str(account.funder_address).lower():
                             continue
-                    result = await (
-                        trader.order_status(str(order.external_order_id), order_type="GTC")
-                        if order.order_type == "GTC"
-                        else trader.order_status(str(order.external_order_id))
-                    )
+                    if not order.external_order_id:
+                        account = await self._account()
+                        trade_id = self._legacy_recovery_trade_id(order)
+                        assert trade_id is not None
+                        recovered_id = await trader.recover_order_id_from_trade(
+                            trade_id,
+                            MarketTradeRequest(
+                                asset_id=order.asset_id,
+                                side=order.side,
+                                amount=(
+                                    order.requested_usdc
+                                    if order.side == "BUY"
+                                    else order.requested_size
+                                ),
+                                worst_price=order.limit_price,
+                                neg_risk=order.neg_risk,
+                            ),
+                            condition_id=order.condition_id,
+                            created_at=order.created_at,
+                            updated_at=order.updated_at,
+                        )
+                        async with self.database.sessions() as session:
+                            duplicate = await session.scalar(
+                                select(WhaleOrder.id).where(
+                                    WhaleOrder.id != order.id,
+                                    WhaleOrder.external_order_id == recovered_id,
+                                )
+                            )
+                            if duplicate is not None:
+                                raise TradingUnavailable(
+                                    "该交易所订单已关联其他本地订单，禁止重复补账"
+                                )
+                            stored = await session.get(WhaleOrder, order.id)
+                            assert stored is not None
+                            stored.external_order_id = recovered_id
+                            stored.external_trade_id = trade_id
+                            stored.execution_wallet = str(account.funder_address).lower()
+                            stored.updated_at = utcnow()
+                            await session.commit()
+                        # Save identity before any fee query so another failure is recoverable.
+                        order.external_order_id = recovered_id
+                        order.external_trade_id = trade_id
+                    try:
+                        result = await (
+                            trader.order_status(str(order.external_order_id), order_type="GTC")
+                            if order.order_type == "GTC"
+                            else trader.order_status(str(order.external_order_id))
+                        )
+                    except TradingUnavailable:
+                        if order.order_type != "FAK" or not order.external_trade_id:
+                            raise
+                        result = await trader.fak_order_status_from_trades(
+                            str(order.external_order_id),
+                            order.external_trade_id,
+                            MarketTradeRequest(
+                                asset_id=order.asset_id,
+                                side=order.side,
+                                amount=order.requested_usdc
+                                if order.side == "BUY"
+                                else order.requested_size,
+                                worst_price=order.limit_price,
+                                neg_risk=order.neg_risk,
+                            ),
+                            condition_id=order.condition_id,
+                            created_at=order.created_at,
+                        )
                     result = await self._hydrate_fee(trader, result)
                     await self.apply_result(order.id, result)
                 except Exception as error:
-                    warnings.append(f"订单 #{order.id} 对账失败：{error}")
+                    warning = f"订单 #{order.id} 对账失败：{error}"
+                    warnings.append(warning)
+                    async with self.database.sessions() as session:
+                        stored = await session.get(WhaleOrder, order.id)
+                        assert stored is not None
+                        original = (stored.reason or "").split("\n最近核对：", 1)[0]
+                        stored.reason = f"{original}\n最近核对：{warning}"[:1000]
+                        decision = await session.scalar(
+                            select(WhaleAutoFollowDecision).where(
+                                WhaleAutoFollowDecision.buy_order_id == order.id
+                            )
+                        )
+                        if decision is not None:
+                            decision.reason = f"成交结果仍在核对，请勿重复下单。{warning}"[:1000]
+                        await session.commit()
             return "；".join(warnings[:3]) or None
 
     async def apply_result(self, order_id: int, result: TradeResult) -> None:
@@ -4150,7 +4247,7 @@ class WhaleFollowExecutor:
             order.fee_usdc = result.fee_usdc
             order.status = result.status
             order.reason = result.reason
-            order.external_order_id = result.external_order_id
+            order.external_order_id = result.external_order_id or order.external_order_id
             order.external_trade_id = result.external_trade_id
             if result.signed_order_hash:
                 order.signed_order_hash = result.signed_order_hash
@@ -5213,6 +5310,7 @@ class WhaleFollowExecutor:
             async with self.database.sessions() as session:
                 order = await session.get(WhaleOrder, order_id)
                 order.signed_order_hash = prepared.signed_order_hash
+                order.external_order_id = prepared.external_order_id
                 order.status = "signed"
                 await session.commit()
             try:
@@ -5223,9 +5321,13 @@ class WhaleFollowExecutor:
                 )
             except Exception as error:
                 await self._mark_order(
-                    order_id, "reconciliation_pending", "提交结果待确认，禁止重试"
+                    order_id,
+                    "reconciliation_pending",
+                    "提交结果待确认，系统将自动核对，禁止重复下单",
                 )
-                raise TradingUnavailable("提交结果待确认，请查看订单，不要重复卖出") from error
+                raise TradingUnavailable(
+                    "提交结果待确认，系统将自动核对，请查看订单，不要重复卖出"
+                ) from error
             await self.apply_result(order_id, result)
             async with self.database.sessions() as session:
                 return self._wallet_order_read(await session.get(WhaleOrder, order_id))
@@ -5402,6 +5504,7 @@ class WhaleFollowExecutor:
                 order = await session.get(WhaleOrder, order_id)
                 assert order is not None
                 order.signed_order_hash = prepared.signed_order_hash
+                order.external_order_id = prepared.external_order_id
                 order.status = "signed"
                 order.updated_at = utcnow()
                 await session.commit()
@@ -5412,7 +5515,7 @@ class WhaleFollowExecutor:
                     order_id, "reconciliation_pending", str(error), restore=False
                 )
                 raise TradingUnavailable(
-                    "卖出提交结果待确认；系统不会自动重试，请到跟单记录核对"
+                    "卖出提交结果待确认；系统将自动核对，请勿重复下单，可到跟单记录查看进度"
                 ) from error
             result = await self._hydrate_fee(trader, result)
             await self.apply_result(order_id, result)

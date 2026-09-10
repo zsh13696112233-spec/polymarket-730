@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -20,6 +22,7 @@ from backend.trading import (
     TradeFillResult,
     TradingUnavailable,
     UnifiedPolymarketTrader,
+    prepare_order_identity,
 )
 
 FUNDER = "0x3333333333333333333333333333333333333333"
@@ -728,3 +731,204 @@ async def test_wallet_market_metadata_fails_closed(fees, closed, valid):
     else:
         with pytest.raises(TradingUnavailable, match="资料不完整"):
             await sdk.sell_market(CONDITION, "99")
+
+
+@pytest.mark.parametrize(
+    ("neg_risk", "expected"),
+    [
+        (False, "0xf28cc02e6eff4f27da7ad79dd9ec24fb094c97fe7703204a33c03c6c36dbbbc9"),
+        (True, "0x99038d46cb01d7cd5685e9d4fbbf5942427f3aaf91efea0bbd59712d8f32c12a"),
+    ],
+)
+def test_precomputed_id_matches_v2_exchange_hash_vectors(neg_risk, expected):
+    # V2 ABI-encoded domain and Order struct vector, independently of SDK typed data.
+    request = MarketTradeRequest("99", "BUY", Decimal("1"), Decimal("0.55"), neg_risk)
+    prepared = prepare_order_identity(request, signed_order())
+    assert prepared.external_order_id == expected
+    assert prepared.external_order_id != prepared.signed_order_hash
+    # Signature and wire-only expiry must not affect the exchange order ID.
+    changed = replace(signed_order("0xabcd"), expiration=999, order_type="GTD")
+    assert prepare_order_identity(request, changed).external_order_id == expected
+    assert prepare_order_identity(request, replace(changed, salt=8)).external_order_id != expected
+
+
+async def test_post_timeout_keeps_precomputed_query_id_without_resubmitting():
+    client = FakeClient()
+    adapter = trader(client)
+    prepared = await adapter.prepare_market(
+        MarketTradeRequest("99", "BUY", Decimal("1"), Decimal("0.55"))
+    )
+
+    async def timeout(order):
+        client.posted.append(order)
+        raise TimeoutError("lost response")
+
+    client.post_order = timeout
+    with pytest.raises(TradingUnavailable, match="提交结果不明"):
+        await adapter.submit_prepared_market(prepared)
+    assert len(client.posted) == 1
+    assert prepared.external_order_id.startswith("0x")
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        None,
+        "wallet",
+        "market",
+        "side",
+        "time",
+        "price",
+        "link",
+        "status",
+        "maker",
+        "duplicate",
+        "amount",
+    ],
+)
+async def test_legacy_trade_recovery_validates_exact_order_evidence(invalid):
+    from unittest.mock import AsyncMock
+
+    now = datetime(2026, 9, 9, 15, 48, 34)
+    trade = SimpleNamespace(
+        id="trade-id",
+        status="CONFIRMED",
+        transaction_hash="0xtx",
+        trader_side="TAKER",
+        token_id="99",
+        condition_id=CONDITION,
+        side="BUY",
+        taker_order_id="remote-id",
+        size=Decimal("2"),
+        price=Decimal("0.5"),
+    )
+    order = SimpleNamespace(
+        id="remote-id",
+        maker_address=FUNDER,
+        token_id="99",
+        condition_id=CONDITION,
+        side="BUY",
+        order_type="FAK",
+        associate_trades=("trade-id",),
+        created_at=now.replace(tzinfo=UTC),
+        price=Decimal("0.55"),
+    )
+    if invalid == "wallet":
+        order.maker_address = SIGNER
+    if invalid == "market":
+        order.condition_id = "another-market"
+    if invalid == "side":
+        trade.side = "SELL"
+    if invalid == "time":
+        order.created_at += timedelta(hours=1)
+    if invalid == "price":
+        order.price = Decimal("0.7")
+    if invalid == "link":
+        order.associate_trades = ()
+    if invalid == "status":
+        trade.status = "MINED"
+    if invalid == "maker":
+        trade.trader_side = "MAKER"
+    if invalid == "amount":
+        trade.size = Decimal("100")
+    client = FakeClient()
+    items = [trade, trade] if invalid == "duplicate" else [trade]
+    client.list_account_trades = lambda **kwargs: SimpleNamespace(
+        first_page=AsyncMock(return_value=SimpleNamespace(items=items))
+    )
+    client.get_order = AsyncMock(return_value=order)
+    adapter = trader(client)
+    operation = adapter.recover_order_id_from_trade(
+        "trade-id",
+        MarketTradeRequest("99", "BUY", Decimal("1"), Decimal("0.55")),
+        condition_id=CONDITION,
+        created_at=now,
+        updated_at=now + timedelta(seconds=20),
+    )
+    if invalid:
+        with pytest.raises(TradingUnavailable):
+            await operation
+    else:
+        assert await operation == "remote-id"
+    assert client.posted == []
+
+
+@pytest.mark.parametrize("failure", [None, "second_page", "wallet", "pending", "over_budget"])
+async def test_historical_fak_null_order_recovers_complete_confirmed_trades(failure):
+    from unittest.mock import AsyncMock
+
+    from polymarket.errors import UnexpectedResponseError
+
+    now = datetime(2026, 9, 9, 15, 48, 34)
+    first = SimpleNamespace(
+        id="original-trade",
+        status="CONFIRMED",
+        transaction_hash="0xtx1",
+        trader_side="TAKER",
+        token_id="99",
+        condition_id=CONDITION,
+        side="BUY",
+        taker_order_id="remote-id",
+        size=Decimal("1"),
+        price=Decimal("0.5"),
+        maker_address=FUNDER,
+        matched_at=now.replace(tzinfo=UTC),
+        bucket_index=0,
+    )
+    second = SimpleNamespace(**{**vars(first), "id": "other-trade", "transaction_hash": "0xtx2"})
+    if failure == "wallet":
+        second.maker_address = SIGNER
+    if failure == "pending":
+        second.status = "MINED"
+    if failure == "over_budget":
+        second.size = Decimal("100")
+
+    class Pages:
+        async def first_page(self):
+            return SimpleNamespace(items=[first])
+
+        def __aiter__(self):
+            return self.pages()
+
+        async def pages(self):
+            yield SimpleNamespace(items=[first])
+            if failure == "second_page":
+                raise TradingUnavailable("pagination failed")
+            yield SimpleNamespace(items=[second])
+
+    client = FakeClient()
+    client.list_account_trades = lambda **kwargs: Pages()
+    client.get_order = AsyncMock(side_effect=UnexpectedResponseError("null order"))
+    adapter = trader(client)
+    adapter._fee_for_trade = AsyncMock(return_value=Decimal("0.01"))
+    request = MarketTradeRequest("99", "BUY", Decimal("1"), Decimal("0.55"))
+    if failure:
+        with pytest.raises(TradingUnavailable):
+            await adapter.recover_order_id_from_trade(
+                "original-trade",
+                request,
+                condition_id=CONDITION,
+                created_at=now,
+                updated_at=now + timedelta(seconds=20),
+            )
+        adapter._fee_for_trade.assert_not_awaited()
+    else:
+        assert (
+            await adapter.recover_order_id_from_trade(
+                "original-trade",
+                request,
+                condition_id=CONDITION,
+                created_at=now,
+                updated_at=now + timedelta(seconds=20),
+            )
+            == "remote-id"
+        )
+        result = await adapter.fak_order_status_from_trades(
+            "remote-id", "original-trade", request, condition_id=CONDITION, created_at=now
+        )
+        assert result.status == "filled"
+        assert result.filled_size == Decimal("2")
+        assert result.filled_usdc == Decimal("1")
+        assert result.fee_usdc == Decimal("0.02")
+        assert len(result.fills) == 2
+    assert not client.posted

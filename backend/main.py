@@ -274,28 +274,9 @@ def create_app(
             while True:
                 await asyncio.sleep(10)
                 try:
-                    # Only resume orders already authorized by the user, even with scanning off.
-                    async with database.sessions() as session:
-                        pending = await session.scalar(
-                            select(WhaleOrder.id)
-                            .where(
-                                WhaleOrder.source == "wallet_manual",
-                                WhaleOrder.status.in_(
-                                    [
-                                        "submitted",
-                                        "live",
-                                        "matched",
-                                        "partially_filled_live",
-                                        "reconciliation_pending",
-                                        "delayed",
-                                    ]
-                                ),
-                                WhaleOrder.external_order_id.is_not(None),
-                            )
-                            .limit(1)
-                        )
-                    if pending is not None:
-                        await whale_executor.reconcile_pending_orders()
+                    # Query all previously authorized orders, including follow orders with
+                    # a precomputed ID whose POST response was lost, even with scanning off.
+                    await whale_executor.reconcile_pending_orders()
                 except Exception:
                     # Keep reservations intact; the next page refresh reports upstream errors.
                     continue

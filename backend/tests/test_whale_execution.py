@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -21,7 +23,7 @@ from backend.models import (
     WhaleSettings,
 )
 from backend.polymarket import PolymarketAPIError, RedemptionSnapshot, TradeSnapshot
-from backend.trading import TradeResult
+from backend.trading import TradeResult, TradingUnavailable
 from backend.whale import (
     WhaleFollowExecutor,
     WhaleFollowQuote,
@@ -1344,3 +1346,214 @@ async def test_unmatched_redemption_does_not_close_position(
     assert position.status == "open"
     assert position.size == Decimal("10")
     assert ledger == []
+
+
+@pytest.mark.parametrize("source", ["follow", "auto_follow"])
+async def test_lost_follow_response_reconciles_after_restart_without_resubmitting(database, source):
+    await configure_reconciliation(database)
+    await configure_whale_settings(database)
+    follow_executor = executor(database)
+    follow_executor.settings = Settings(trading_enabled=True, start_monitor=False)
+    follow_executor.client.fetch_order_book = AsyncMock(
+        return_value=SimpleNamespace(best_ask=Decimal("0.50"), tick_size=Decimal("0.01"))
+    )
+    prepared = SimpleNamespace(signed_order_hash="local-fingerprint", external_order_id="remote-id")
+
+    async def lose_response(_):
+        # Identity must already be durable when the POST begins.
+        async with database.sessions() as session:
+            order = await session.scalar(select(WhaleOrder))
+            assert order.status == "signed"
+            assert order.external_order_id == "remote-id"
+        raise TradingUnavailable("lost POST response")
+
+    trader = SimpleNamespace(
+        prepare_market=AsyncMock(return_value=prepared),
+        submit_prepared_market=AsyncMock(side_effect=lose_response),
+        order_status=AsyncMock(side_effect=TradingUnavailable("not found yet")),
+        trade_fee=AsyncMock(return_value=ZERO),
+    )
+    follow_executor._trader = AsyncMock(return_value=trader)
+    with pytest.raises(TradingUnavailable, match="自动核对"):
+        await follow_executor.execute_follow(follow_quote(), "lost-response", order_source=source)
+
+    restarted = executor(database)
+    restarted._trader = AsyncMock(return_value=trader)
+    assert "对账失败" in await restarted.reconcile_pending_orders()
+    async with database.sessions() as session:
+        order = await session.scalar(select(WhaleOrder))
+        assert order.status == "reconciliation_pending"
+        assert order.external_order_id == "remote-id"
+        assert _auto_follow_market_usage([order]) == (1, Decimal("15"))
+
+    trader.order_status.side_effect = None
+    trader.order_status.return_value = TradeResult(
+        status="filled",
+        external_order_id="remote-id",
+        filled_size=Decimal("30"),
+        filled_usdc=Decimal("15"),
+        average_price=Decimal("0.5"),
+        external_trade_id="confirmed-trade",
+    )
+    assert await restarted.reconcile_pending_orders() is None
+    assert await restarted.reconcile_pending_orders() is None
+    trader.submit_prepared_market.assert_awaited_once()
+    trader.prepare_market.assert_awaited_once()
+    async with database.sessions() as session:
+        order = await session.scalar(select(WhaleOrder))
+        assert order.status == "filled"
+        assert len(list(await session.scalars(select(WhaleFill)))) == 1
+        position = await session.get(WhaleFollowPosition, order.position_id)
+        assert position.size == Decimal("30")
+
+
+async def test_background_reconciles_follow_when_monitor_and_trading_disabled(
+    tmp_path, monkeypatch
+):
+    from backend.main import create_app
+
+    app = create_app(
+        settings=Settings(
+            database_url=f"sqlite+aiosqlite:///{tmp_path / 'reconcile.db'}",
+            start_monitor=False,
+            trading_enabled=False,
+        ),
+        client=SimpleNamespace(),
+    )
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def controlled_sleep(delay):
+        if delay == 10:
+            await release.wait()
+            release.clear()
+        else:
+            await real_sleep(delay)
+
+    monkeypatch.setattr("backend.main.asyncio.sleep", controlled_sleep)
+    async with app.router.lifespan_context(app):
+        database = app.state.database
+        await configure_reconciliation(database)
+        follow_executor = app.state.whale_executor
+        order_id = await follow_executor._create_order(
+            quote=follow_quote(), confirmation_id="background", side="BUY", order_source="follow"
+        )
+        async with database.sessions() as session:
+            order = await session.get(WhaleOrder, order_id)
+            order.status = "signed"  # Process stopped after POST, before persisting its response.
+            order.external_order_id = "precomputed-id"
+            await session.commit()
+        trader = SimpleNamespace(
+            order_status=AsyncMock(
+                return_value=TradeResult(status="unfilled", external_order_id="precomputed-id")
+            )
+        )
+        follow_executor._trader = AsyncMock(return_value=trader)
+        reconcile = follow_executor.reconcile_pending_orders
+
+        async def observed_reconcile():
+            await reconcile()
+            finished.set()
+
+        monkeypatch.setattr(follow_executor, "reconcile_pending_orders", observed_reconcile)
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=2)
+        trader.order_status.assert_awaited_once_with("precomputed-id")
+        async with database.sessions() as session:
+            assert (await session.get(WhaleOrder, order_id)).status == "unfilled"
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+async def test_reconciliation_does_not_guess_legacy_identity_or_use_another_wallet(
+    database, legacy
+):
+    await configure_reconciliation(database)
+    follow_executor = executor(database)
+    order_id = await follow_executor._create_order(
+        quote=follow_quote(), confirmation_id="unrecoverable", side="BUY", order_source="follow"
+    )
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        order.status = "reconciliation_pending"
+        order.signed_order_hash = "0x" + "1" * 64  # Legacy SHA256 is not an exchange ID.
+        order.external_order_id = None if legacy else "remote-id"
+        if not legacy:
+            order.execution_wallet = "0x" + "2" * 40
+        await session.commit()
+    trader = SimpleNamespace(order_status=AsyncMock())
+    follow_executor._trader = AsyncMock(return_value=trader)
+    assert await follow_executor.reconcile_pending_orders() is None
+    trader.order_status.assert_not_awaited()
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        assert order.status == "reconciliation_pending"
+        assert _auto_follow_market_usage([order]) == (1, Decimal("15"))
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+async def test_legacy_fee_failure_recovers_identity_before_fee_retry(database, duplicate):
+    await configure_reconciliation(database)
+    follow_executor = executor(database)
+    order_id = await follow_executor._create_order(
+        quote=follow_quote(), confirmation_id="legacy-fee", side="BUY", order_source="follow"
+    )
+    trade_id = "704d9677-f690-447b-aa2f-cbc0e9ac7f5a"
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        order.status = "reconciliation_pending"
+        order.reason = f"无法计算成交 {trade_id} 的平台费：Request failed"
+        assert order.execution_wallet is None
+        await session.commit()
+    if duplicate:
+        other_id = await follow_executor._create_order(
+            quote=follow_quote(), confirmation_id="other-order", side="BUY", order_source="follow"
+        )
+        async with database.sessions() as session:
+            other = await session.get(WhaleOrder, other_id)
+            other.status = "filled"
+            other.external_order_id = "recovered-id"
+            await session.commit()
+    trader = SimpleNamespace(
+        recover_order_id_from_trade=AsyncMock(return_value="recovered-id"),
+        order_status=AsyncMock(side_effect=TradingUnavailable("fee lookup still unavailable")),
+        fak_order_status_from_trades=AsyncMock(
+            side_effect=TradingUnavailable("fee lookup still unavailable")
+        ),
+        trade_fee=AsyncMock(return_value=Decimal("0.01")),
+    )
+    follow_executor._trader = AsyncMock(return_value=trader)
+    warning = await follow_executor.reconcile_pending_orders()
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        assert order.status == "reconciliation_pending"
+        if duplicate:
+            assert "禁止重复补账" in warning
+            assert order.external_order_id is None
+            trader.order_status.assert_not_awaited()
+            return
+        assert "fee lookup" in warning
+        assert order.external_order_id == "recovered-id"
+        assert order.external_trade_id == trade_id
+        assert order.execution_wallet == FUNDER_ADDRESS
+        assert _auto_follow_market_usage([order]) == (1, Decimal("15"))
+    restarted = executor(database)
+    restarted._trader = AsyncMock(return_value=trader)
+    trader.fak_order_status_from_trades.side_effect = None
+    trader.fak_order_status_from_trades.return_value = TradeResult(
+        status="filled",
+        external_order_id="recovered-id",
+        filled_size=Decimal("30"),
+        filled_usdc=Decimal("15"),
+        average_price=Decimal("0.5"),
+        external_trade_id=trade_id,
+    )
+    assert await restarted.reconcile_pending_orders() is None
+    assert await restarted.reconcile_pending_orders() is None
+    trader.recover_order_id_from_trade.assert_awaited_once()
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        assert order.status == "filled"
+        assert order.fee_usdc == Decimal("0.01")
+        assert len(list(await session.scalars(select(WhaleFill)))) == 1
+        assert (await session.get(WhaleFollowPosition, order.position_id)).size == Decimal("30")

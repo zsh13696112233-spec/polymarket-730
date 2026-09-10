@@ -5,6 +5,7 @@ import dataclasses
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 from urllib.error import URLError
@@ -12,6 +13,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.polymarket import OrderBookSnapshot, configure_polymarket_proxy
+from backend.time_utils import utcnow
 
 ZERO = Decimal("0")
 BASE_UNITS = Decimal("1000000")
@@ -122,6 +124,43 @@ class PreparedMarketOrder:
     request: MarketTradeRequest
     signed_order: Any
     signed_order_hash: str
+    external_order_id: str
+
+
+def prepare_order_identity(request: MarketTradeRequest, signed_order: Any) -> PreparedMarketOrder:
+    """Persist a queryable V2 order ID before POST, without persisting signature material."""
+    from eth_account.messages import encode_typed_data
+    from eth_utils.crypto import keccak
+    from polymarket._internal.actions.orders.typed_data import _build_standard_typed_data
+    from polymarket._internal.actions.orders.types import UnsignedOrder
+
+    try:
+        fields = {
+            field.name: getattr(signed_order, field.name)
+            for field in dataclasses.fields(signed_order)
+            if field.name != "signature"
+        }
+        canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
+        fingerprint = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
+        unsigned = UnsignedOrder(
+            **{
+                field.name: fields[field.name]
+                for field in dataclasses.fields(UnsignedOrder)
+                if field.name not in {"chain_id", "exchange_address"}
+            },
+            chain_id=137,
+            exchange_address=(
+                V2_NEG_RISK_EXCHANGE_ADDRESS if request.neg_risk else V2_EXCHANGE_ADDRESS
+            ),
+        )
+        # SDK 0.7.1: hash the exchange Order, not the DepositWallet TypedDataSign wrapper.
+        typed = encode_typed_data(
+            full_message=_build_standard_typed_data(unsigned, protocol_version="2")
+        )
+        order_id = "0x" + keccak(b"\x19" + typed.version + typed.header + typed.body).hex()
+    except Exception as error:
+        raise TradingUnavailable("无法生成订单核对标识，未提交订单") from error
+    return PreparedMarketOrder(request, signed_order, fingerprint, order_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,14 +369,7 @@ class UnifiedPolymarketTrader:
             raise
         except Exception as error:
             raise TradingUnavailable(f"Polymarket 统一 SDK FAK 签名失败：{error}") from error
-        canonical_fields = {
-            field.name: getattr(signed_order, field.name)
-            for field in dataclasses.fields(signed_order)
-            if field.name != "signature"
-        }
-        canonical = json.dumps(canonical_fields, sort_keys=True, separators=(",", ":"), default=str)
-        fingerprint = "0x" + hashlib.sha256(canonical.encode()).hexdigest()
-        return PreparedMarketOrder(request, signed_order, fingerprint)
+        return prepare_order_identity(request, signed_order)
 
     async def prepare_limit(self, request: MarketTradeRequest) -> PreparedMarketOrder:
         client = await self._client_async()
@@ -354,18 +386,7 @@ class UnifiedPolymarketTrader:
             )
         except Exception as error:
             raise TradingUnavailable("SDK 限价订单签名失败，请检查市场和账户配置") from error
-        fields = {
-            field.name: getattr(signed, field.name)
-            for field in dataclasses.fields(signed)
-            if field.name != "signature"
-        }
-        fingerprint = (
-            "0x"
-            + hashlib.sha256(
-                json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str).encode()
-            ).hexdigest()
-        )
-        return PreparedMarketOrder(request, signed, fingerprint)
+        return prepare_order_identity(request, signed)
 
     async def submit_prepared_limit(self, prepared: PreparedMarketOrder) -> TradeResult:
         client = await self._client_async()
@@ -684,6 +705,175 @@ class UnifiedPolymarketTrader:
             asset_type="CONDITIONAL", token_id=asset_id
         )
         return Decimal(payload.balance) / BASE_UNITS
+
+    async def recover_order_id_from_trade(
+        self,
+        trade_id: str,
+        request: MarketTradeRequest,
+        *,
+        condition_id: str,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> str:
+        """Recover a legacy FAK taker order using exact authenticated trade evidence."""
+        client = await self._client_async()
+        page = await client.list_account_trades(id=trade_id).first_page()
+        matches = [trade for trade in page.items if str(trade.id) == trade_id]
+        if len(matches) != 1:
+            raise TradingUnavailable("未找到唯一的原始成交，保留待对账，请稍后再核对")
+        trade = matches[0]
+        if (
+            str(trade.status).upper() != "CONFIRMED"
+            or not trade.transaction_hash
+            or str(trade.trader_side).upper() != "TAKER"
+            or str(trade.token_id) != request.asset_id
+            or str(trade.condition_id).lower() != condition_id.lower()
+            or str(trade.side).upper() != request.side
+            or not trade.taker_order_id
+        ):
+            raise TradingUnavailable("原始成交的状态、市场或方向不一致，禁止自动补账")
+        order_id = str(trade.taker_order_id)
+        from polymarket.errors import UnexpectedResponseError
+
+        try:
+            order = await client.get_order(order_id=order_id)
+        except UnexpectedResponseError:
+            # Historical FAK orders may return null even though their trades remain.
+            await self._confirmed_fak_order_trades(
+                order_id, trade_id, request, condition_id=condition_id, created_at=created_at
+            )
+            return order_id
+        remote_created = order.created_at
+        if remote_created.tzinfo is not None:
+            remote_created = remote_created.astimezone(UTC).replace(tzinfo=None)
+        if (
+            str(order.id) != order_id
+            or str(order.maker_address).lower() != self.funder_address.lower()
+            or str(order.token_id) != request.asset_id
+            or str(order.condition_id).lower() != condition_id.lower()
+            or str(order.side).upper() != request.side
+            or str(order.order_type).upper() != "FAK"
+            or trade_id not in order.associate_trades
+            or not created_at - timedelta(seconds=5)
+            <= remote_created
+            <= updated_at + timedelta(seconds=5)
+            or Decimal(order.price) != request.worst_price
+            or Decimal(trade.size) <= ZERO
+            or Decimal(trade.price) <= ZERO
+            or (request.side == "BUY" and Decimal(trade.price) > request.worst_price)
+            or (request.side == "SELL" and Decimal(trade.price) < request.worst_price)
+            or (
+                request.side == "BUY"
+                and Decimal(trade.size) * Decimal(trade.price) > request.amount
+            )
+            or (request.side == "SELL" and Decimal(trade.size) > request.amount)
+        ):
+            raise TradingUnavailable("找回的订单归属、时间或金额与本地记录不一致，禁止自动补账")
+        return order_id
+
+    async def _confirmed_fak_order_trades(
+        self,
+        order_id: str,
+        trade_id: str,
+        request: MarketTradeRequest,
+        *,
+        condition_id: str,
+        created_at: datetime,
+    ) -> tuple[Any, ...]:
+        if utcnow() - created_at < timedelta(minutes=2):
+            raise TradingUnavailable("等待历史 FAK 成交索引完整后再核对")
+        client = await self._client_async()
+        after = str(int((created_at.replace(tzinfo=UTC) - timedelta(seconds=5)).timestamp()))
+        trades: dict[str, Any] = {}
+        async for page in client.list_account_trades(
+            token_id=request.asset_id,
+            market=condition_id,
+            after=after,
+        ):
+            for trade in page.items:
+                if str(trade.taker_order_id) != order_id:
+                    continue
+                matched_at = trade.matched_at
+                if matched_at.tzinfo is not None:
+                    matched_at = matched_at.astimezone(UTC).replace(tzinfo=None)
+                if (
+                    str(trade.maker_address).lower() != self.funder_address.lower()
+                    or str(trade.trader_side).upper() != "TAKER"
+                    or str(trade.token_id) != request.asset_id
+                    or str(trade.condition_id).lower() != condition_id.lower()
+                    or str(trade.side).upper() != request.side
+                    or str(trade.status).upper() != "CONFIRMED"
+                    or not trade.transaction_hash
+                    or not created_at - timedelta(seconds=5)
+                    <= matched_at
+                    <= created_at + timedelta(minutes=2)
+                    or Decimal(trade.size) <= ZERO
+                    or Decimal(trade.price) <= ZERO
+                    or (request.side == "BUY" and Decimal(trade.price) > request.worst_price)
+                    or (request.side == "SELL" and Decimal(trade.price) < request.worst_price)
+                ):
+                    raise TradingUnavailable("历史成交归属、状态、时间或价格不一致，保留待对账")
+                key = str(trade.id)
+                if key in trades and trades[key] != trade:
+                    raise TradingUnavailable("历史成交重复且内容不一致，保留待对账")
+                trades[key] = trade
+        if trade_id not in trades:
+            raise TradingUnavailable("完整成交记录中未找到原始成交，保留待对账")
+        total = sum(
+            (
+                Decimal(t.size) * Decimal(t.price) if request.side == "BUY" else Decimal(t.size)
+                for t in trades.values()
+            ),
+            ZERO,
+        )
+        if total > request.amount:
+            raise TradingUnavailable("历史成交总额超过本地请求，禁止自动补账")
+        return tuple(trades.values())
+
+    async def fak_order_status_from_trades(
+        self,
+        order_id: str,
+        trade_id: str,
+        request: MarketTradeRequest,
+        *,
+        condition_id: str,
+        created_at: datetime,
+    ) -> TradeResult:
+        trades = await self._confirmed_fak_order_trades(
+            order_id, trade_id, request, condition_id=condition_id, created_at=created_at
+        )
+        fills = []
+        for trade in trades:
+            fills.append(
+                TradeFillResult(
+                    external_trade_id=str(trade.id),
+                    size=Decimal(trade.size),
+                    price=Decimal(trade.price),
+                    amount=Decimal(trade.size) * Decimal(trade.price),
+                    fee_usdc=await self._fee_for_trade(trade),
+                    transaction_hash=str(trade.transaction_hash),
+                    bucket_index=int(trade.bucket_index),
+                    settlement_status="confirmed",
+                )
+            )
+        size = sum((fill.size for fill in fills), ZERO)
+        amount = sum((fill.amount for fill in fills), ZERO)
+        return normalize_fak_result(
+            request,
+            TradeResult(
+                status="filled"
+                if (amount if request.side == "BUY" else size) >= request.amount
+                else "partially_filled",
+                external_order_id=order_id,
+                external_trade_id=trade_id,
+                external_trade_ids=tuple(str(trade.id) for trade in trades),
+                fills=tuple(fills),
+                filled_size=size,
+                filled_usdc=amount,
+                average_price=amount / size,
+                fee_usdc=sum((fill.fee_usdc for fill in fills), ZERO),
+            ),
+        )
 
     async def order_status(self, external_order_id: str, *, order_type: str = "FAK") -> TradeResult:
         try:

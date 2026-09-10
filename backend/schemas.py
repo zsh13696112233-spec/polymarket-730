@@ -589,6 +589,7 @@ class HomeWalletRead(APIModel):
     market_value_usdc: DecimalNumber | None
     total_assets_usdc: DecimalNumber | None
     unrealized_pnl_usdc: DecimalNumber | None
+    winning_pnl_usdc: DecimalNumber
     cash_reserve_usdc: DecimalNumber
     available_cash_usdc: DecimalNumber | None
     open_position_count: int

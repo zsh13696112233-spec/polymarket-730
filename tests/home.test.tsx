@@ -66,6 +66,7 @@ function overview(overrides: Record<string, unknown> = {}) {
       total_assets_usdc: 134.2,
       unrealized_pnl_usdc: 4.2,
       cash_reserve_usdc: 60,
+      winning_pnl_usdc: 16.33827784,
       available_cash_usdc: 40,
       open_position_count: 2,
       last_balance_at: "2026-08-30T07:59:20Z",
@@ -130,6 +131,8 @@ describe("首页运行与跟单看板", () => {
     expect(screen.getByText("134.20 USDC")).toBeInTheDocument();
     expect(screen.queryByText("钱包总资产估值")).not.toBeInTheDocument();
     expect(screen.getByText("当前持仓浮动盈亏合计")).toBeInTheDocument();
+    expect(screen.getByText("获胜收益")).toHaveTextContent("获胜收益 +16.34 USDC");
+    expect(screen.getByText("+16.34 USDC")).toHaveClass("profit");
     expect(screen.queryByText("当前浮盈亏")).not.toBeInTheDocument();
     expect(screen.getByText("1 胜 · 1 负 · 不含 2 笔分歧退出、1 笔链路测试")).toBeInTheDocument();
     expect(screen.getByText("北京时间自然日；跟单按买入日、胜率按仓位结束日统计，平局不计入胜率。")).toBeInTheDocument();
@@ -228,6 +231,7 @@ describe("首页运行与跟单看板", () => {
     render(<HomeWorkspace />);
 
     expect(await screen.findByText("持仓估值不完整")).toBeInTheDocument();
+    expect(screen.getByText("获胜收益")).toHaveTextContent("获胜收益 +16.34 USDC");
     expect(screen.getAllByText("估值不完整").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("2 个开放仓位缺少有效买一价，已暂停总资产估算。")).toBeInTheDocument();
   });

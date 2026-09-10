@@ -68,8 +68,12 @@ async def wallet_executor():
                 state=SimpleNamespace(neg_risk=False), trading=SimpleNamespace(fee_schedule=None)
             )
         ),
-        prepare_limit=AsyncMock(return_value=SimpleNamespace(signed_order_hash="hash")),
-        prepare_market=AsyncMock(return_value=SimpleNamespace(signed_order_hash="hash")),
+        prepare_limit=AsyncMock(
+            return_value=SimpleNamespace(signed_order_hash="hash", external_order_id="remote-1")
+        ),
+        prepare_market=AsyncMock(
+            return_value=SimpleNamespace(signed_order_hash="hash", external_order_id="remote-1")
+        ),
         submit_prepared_limit=AsyncMock(
             return_value=TradeResult(status="submitted", external_order_id="remote-1")
         ),
@@ -575,3 +579,25 @@ async def test_actual_balance_conflicts_still_block_sell(wallet_executor, chain,
     assert result["available_size"] == 0
     with pytest.raises(ValueError):
         await quote(executor, order_type="FAK", price=None)
+
+
+@pytest.mark.parametrize("order_type", ["FAK", "GTC"])
+async def test_uncertain_wallet_sell_reconciles_precomputed_id(wallet_executor, order_type):
+    executor, trader, _ = wallet_executor
+    preview = await quote(executor, order_type=order_type)
+    submit = trader.submit_prepared_limit if order_type == "GTC" else trader.submit_prepared_market
+    submit.side_effect = TradingUnavailable("lost response")
+    with pytest.raises(TradingUnavailable, match="自动核对"):
+        await executor.execute_wallet_sell(preview, "lost-response")
+    async with executor.database.sessions() as session:
+        order = await session.scalar(select(WhaleOrder))
+        assert order.external_order_id == "remote-1"
+        assert order.status == "reconciliation_pending"
+    trader.order_status.side_effect = TradingUnavailable("not found")
+    assert "对账失败" in await executor.reconcile_pending_orders()
+    assert (await executor.wallet_positions())["positions"][0]["available_size"] == 0
+    trader.order_status.side_effect = None
+    trader.order_status.return_value = TradeResult(status="cancelled", external_order_id="remote-1")
+    assert await executor.reconcile_pending_orders() is None
+    assert (await executor.wallet_positions())["positions"][0]["available_size"] == D("10")
+    submit.assert_awaited_once()

@@ -9637,6 +9637,9 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   overflow-wrap: anywhere;
 }
 .homeMetricCard > small { display: block; color: #9a9da5; font-size: 10px; line-height: 1.4; }
+.homeMetricCard > small + small { margin-top: 6px; }
+.homeMetricCard > small > .profit { color: var(--pc-green); }
+.homeMetricCard > small > .loss { color: var(--pc-red); }
 .homeFlowValues {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

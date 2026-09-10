@@ -480,6 +480,7 @@ async def home_overview(
             "market_value_usdc": market_value,
             "total_assets_usdc": total_assets,
             "unrealized_pnl_usdc": unrealized,
+            "winning_pnl_usdc": sum((item.size for item in open_positions), ZERO) - open_cost,
             "cash_reserve_usdc": cash_reserve,
             "available_cash_usdc": (
                 max(ZERO, cash_balance - cash_reserve) if cash_balance is not None else None

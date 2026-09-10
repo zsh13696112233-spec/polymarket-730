@@ -46,6 +46,7 @@ def test_home_overview_route_returns_thirty_beijing_days(app_client_factory) -> 
     assert payload["today"]["excluded_conflict_exit_count"] == 0
     assert payload["today"]["excluded_chain_test_count"] == 0
     assert payload["wallet"]["available"] is False
+    assert payload["wallet"]["winning_pnl_usdc"] == 0.0
 
 
 @pytest.fixture
@@ -498,6 +499,7 @@ async def test_home_overview_uses_beijing_days_and_all_whale_follow_sources(
     assert payload["daily"][-1]["win_rate_percent"] == Decimal("50")
     assert payload["wallet"]["market_value_usdc"] == Decimal("22.5")
     assert payload["wallet"]["unrealized_pnl_usdc"] == Decimal("2.5")
+    assert payload["wallet"]["winning_pnl_usdc"] == Decimal("5")
     assert payload["wallet"]["total_assets_usdc"] == Decimal("122.5")
     assert payload["wallet"]["available_cash_usdc"] == Decimal("40")
 
@@ -665,6 +667,29 @@ async def test_home_overview_empty_and_incomplete_valuation(database: Database) 
     assert payload["wallet"]["market_value_usdc"] is None
     assert payload["wallet"]["total_assets_usdc"] is None
     assert payload["wallet"]["unpriced_position_count"] == 1
+    assert payload["wallet"]["winning_pnl_usdc"] == Decimal("1")
+
+
+@pytest.mark.asyncio
+async def test_home_winning_pnl_uses_remaining_cost_and_sums_open_positions(database):
+    async with database.sessions() as session:
+        session.add_all(
+            [
+                position(
+                    "arsenal", status="open", size="44.370968", cost="28.03269016", realized="0"
+                ),
+                position("partial", status="closing", size="3", cost="2.1", realized="4"),
+                position("finished", status="redeemed", size="0", cost="0", realized="20"),
+            ]
+        )
+        await session.commit()
+
+    payload = await home_overview(database, MarksClient({}), now=NOW)
+
+    assert payload["wallet"]["winning_pnl_usdc"].quantize(Decimal("0.00000001")) == Decimal(
+        "17.23827784"
+    )
+    assert payload["wallet"]["unrealized_pnl_usdc"] is None
 
 
 @pytest.mark.asyncio

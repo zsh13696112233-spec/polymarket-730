@@ -86,6 +86,7 @@ type HomeOverview = {
     last_5_days: number;
     last_7_days: number;
   }>;
+  follow_counts: HomeOverview["opportunity_counts"];
   today: HomeDaily & {
     unrealized_pnl_usdc: Numeric | null;
     win_rate_percent: Numeric | null;
@@ -579,7 +580,7 @@ export default function HomeWorkspace() {
         </section>
 
         <section className="homeOpportunities" aria-label="链上发现机会">
-          <header className="homeSectionHeader"><div><h2>链上发现机会</h2><p>北京时间自然日，均包含今天；每条规则按钱包、市场和方向首次触发去重，双规则命中各计一次。</p></div></header>
+          <header className="homeSectionHeader"><div><h2>链上发现机会</h2><p>北京时间自然日，均包含今天；每条规则按钱包、市场和方向首次触发去重，双规则命中各计一次。已跟单按买入成交日和实际执行规则统计。</p></div></header>
           <div className="homeMetrics">
             {([
               ["last_1_day", "最近 1 天（今日）"],
@@ -598,8 +599,8 @@ export default function HomeWorkspace() {
               >
                 <span>{label}</span>
                 <dl className="homeOpportunityValues">
-                  <div><dt>新号大额</dt><dd>{overview.opportunity_counts.new_account[key]}</dd></div>
-                  <div><dt>全量超大额</dt><dd>{overview.opportunity_counts.large_amount[key]}</dd></div>
+                  <div><dt>新号大额</dt><dd>{overview.opportunity_counts.new_account[key]}<small>（已跟单 {overview.follow_counts.new_account[key]}）</small></dd></div>
+                  <div><dt>全量超大额</dt><dd>{overview.opportunity_counts.large_amount[key]}<small>（已跟单 {overview.follow_counts.large_amount[key]}）</small></dd></div>
                 </dl>
               </article>
             ))}

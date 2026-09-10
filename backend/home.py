@@ -153,6 +153,35 @@ async def home_overview(
             opportunity_counts[counts["rule_type"]] = {
                 key: value for key, value in counts.items() if key != "rule_type"
             }
+        # Count each executed automatic buy once, on its first actual fill date.
+        follow_counts = {rule: dict.fromkeys(opportunity_counts[rule], 0) for rule in RULES}
+        first_fills = (
+            select(
+                WhaleFollowLedger.order_id,
+                func.min(WhaleFollowLedger.timestamp).label("filled_at"),
+            )
+            .where(WhaleFollowLedger.type == "buy", WhaleFollowLedger.size > ZERO)
+            .group_by(WhaleFollowLedger.order_id)
+            .subquery()
+        )
+        followed_orders = await session.execute(
+            select(WhaleAutoFollowDecision.selected_rule, first_fills.c.filled_at)
+            .join(WhaleOrder, WhaleOrder.id == WhaleAutoFollowDecision.buy_order_id)
+            .join(first_fills, first_fills.c.order_id == WhaleOrder.id)
+            .where(
+                WhaleOrder.source == "auto_follow",
+                WhaleOrder.side == "BUY",
+                first_fills.c.filled_at >= _beijing_day_start_utc(today_date - timedelta(days=6)),
+                first_fills.c.filled_at <= generated_at,
+            )
+        )
+        for rule, filled_at in followed_orders:
+            if rule not in follow_counts:
+                continue
+            for days in (1, 3, 5, 7):
+                if filled_at >= _beijing_day_start_utc(today_date - timedelta(days=days - 1)):
+                    key = f"last_{days}_day" if days == 1 else f"last_{days}_days"
+                    follow_counts[rule][key] += 1
         settings = await session.get(WhaleSettings, 1)
         account = await session.get(ExecutionAccount, 1)
         ledger = list(
@@ -441,6 +470,7 @@ async def home_overview(
             ],
         },
         "opportunity_counts": opportunity_counts,
+        "follow_counts": follow_counts,
         "today": today_payload,
         "wallet": {
             "status": account.status if account is not None else "unconfigured",

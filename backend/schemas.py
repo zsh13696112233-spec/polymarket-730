@@ -659,6 +659,7 @@ class HomeOverviewRead(APIModel):
     range_end: date
     system: HomeSystemRead
     opportunity_counts: HomeRuleOpportunityCountsRead
+    follow_counts: HomeRuleOpportunityCountsRead
     today: HomeTodayRead
     wallet: HomeWalletRead
     daily: list[HomeDailyRead] = Field(default_factory=list)

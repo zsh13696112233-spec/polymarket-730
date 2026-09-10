@@ -11,6 +11,7 @@ from backend.db import Database
 from backend.home import home_overview
 from backend.models import (
     ExecutionAccount,
+    WhaleAutoFollowDecision,
     WhaleEntry,
     WhaleEntryRuleState,
     WhaleExclusion,
@@ -36,6 +37,7 @@ def test_home_overview_route_returns_thirty_beijing_days(app_client_factory) -> 
         rule: {"last_1_day": 0, "last_3_days": 0, "last_5_days": 0, "last_7_days": 0}
         for rule in ("new_account", "large_amount")
     }
+    assert payload["follow_counts"] == payload["opportunity_counts"]
     assert payload["timezone"] == "Asia/Shanghai"
     assert len(payload["daily"]) == 30
     assert payload["today"]["buy_count"] == 0
@@ -136,6 +138,56 @@ async def test_opportunity_counts_use_first_trigger_and_beijing_calendar_days(
                         threshold_usdc_snapshot=Decimal("500000"),
                     )
                 )
+            followed = position(
+                f"follow-{index}", status="closed", size="0", cost="0", realized="0", closed_at=NOW
+            )
+            session.add(followed)
+            await session.flush()
+            order = WhaleOrder(
+                position_id=followed.id,
+                idempotency_key=f"opportunity-{index}",
+                source="follow" if index == 11 else "auto_follow",
+                asset_id=entry.asset_id,
+                condition_id=CONDITION_ID,
+                title="跟单市场",
+                outcome=entry.outcome,
+                side="BUY",
+                limit_price=Decimal("0.5"),
+                status="failed" if index == 10 else "filled",
+                created_at=triggered_at - timedelta(days=1),
+                updated_at=NOW,
+            )
+            session.add(order)
+            await session.flush()
+            session.add(
+                WhaleAutoFollowDecision(
+                    entry_id=entry.id,
+                    proxy_wallet=wallet,
+                    asset_id=entry.asset_id,
+                    condition_id=CONDITION_ID,
+                    outcome=entry.outcome,
+                    category="sports",
+                    selected_rule="large_amount" if index == 9 else "new_account",
+                    matched_rules_json='["new_account", "large_amount"]',
+                    buy_order_id=order.id,
+                    status="failed" if index == 10 else "exited",
+                    created_at=triggered_at - timedelta(days=1),
+                    updated_at=NOW,
+                )
+            )
+            if index != 10:
+                for filled_at in (triggered_at, triggered_at + timedelta(seconds=1)):
+                    session.add(
+                        ledger(
+                            followed.id,
+                            "buy",
+                            source=order.source,
+                            amount="1",
+                            pnl="0",
+                            timestamp=filled_at,
+                            order_id=order.id,
+                        )
+                    )
             if index == 9:
                 session.add(WhaleExclusion(proxy_wallet=wallet, created_at=NOW))
         await session.commit()
@@ -148,6 +200,11 @@ async def test_opportunity_counts_use_first_trigger_and_beijing_calendar_days(
             key: 2 if include_large else 0
             for key in ("last_1_day", "last_3_days", "last_5_days", "last_7_days")
         },
+    }
+
+    assert payload["follow_counts"] == {
+        "new_account": {"last_1_day": 1, "last_3_days": 3, "last_5_days": 5, "last_7_days": 7},
+        "large_amount": {"last_1_day": 1, "last_3_days": 1, "last_5_days": 1, "last_7_days": 1},
     }
 
 

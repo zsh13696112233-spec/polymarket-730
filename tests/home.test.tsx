@@ -34,6 +34,10 @@ function overview(overrides: Record<string, unknown> = {}) {
       new_account: { last_1_day: 2, last_3_days: 6, last_5_days: 10, last_7_days: 15 },
       large_amount: { last_1_day: 0, last_3_days: 1, last_5_days: 3, last_7_days: 5 },
     },
+    follow_counts: {
+      new_account: { last_1_day: 1, last_3_days: 2, last_5_days: 3, last_7_days: 4 },
+      large_amount: { last_1_day: 0, last_3_days: 1, last_5_days: 2, last_7_days: 3 },
+    },
     range_start: "2026-08-01",
     range_end: "2026-08-30",
     system: {
@@ -141,15 +145,15 @@ describe("首页运行与跟单看板", () => {
     expect(container.querySelector(".homeChartLegend .roi")).not.toBeInTheDocument();
     const opportunities = within(screen.getByLabelText("链上发现机会"));
     expect(opportunities.getAllByRole("article")).toHaveLength(4);
-    for (const [label, newCount, largeCount] of [
-      ["最近 1 天（今日）", 2, 0],
-      ["最近 3 天", 6, 1],
-      ["最近 5 天", 10, 3],
-      ["最近 7 天", 15, 5],
+    for (const [label, newCount, largeCount, newFollow, largeFollow] of [
+      ["最近 1 天（今日）", 2, 0, 1, 0],
+      ["最近 3 天", 6, 1, 2, 1],
+      ["最近 5 天", 10, 3, 3, 2],
+      ["最近 7 天", 15, 5, 4, 3],
     ] as const) {
       const card = within(opportunities.getByRole("article", { name: `${label}发现机会` }));
       expect(card.getAllByRole("term").map((term) => term.textContent)).toEqual(["新号大额", "全量超大额"]);
-      expect(card.getAllByRole("definition").map((value) => value.textContent)).toEqual([String(newCount), String(largeCount)]);
+      expect(card.getAllByRole("definition").map((value) => value.textContent)).toEqual([`${newCount}（已跟单 ${newFollow}）`, `${largeCount}（已跟单 ${largeFollow}）`]);
     }
     const runtime = screen.getByLabelText("运行概览");
     const metrics = screen.getByLabelText("今日核心指标");

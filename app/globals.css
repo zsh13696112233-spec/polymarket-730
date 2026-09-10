@@ -9547,6 +9547,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .homeOpportunityValues > div + div { padding-left: 12px; border-left: 1px solid #e7eaf0; }
 .homeOpportunityValues dt { color: #969aa4; font-size: 10px; }
 .homeOpportunityValues dd { margin: 6px 0 0; color: #111216; font-family: var(--pc-data-font); font-size: clamp(19px, 1.6vw, 27px); font-weight: 650; line-height: 1.1; overflow-wrap: anywhere; }
+.homeOpportunityValues dd small { display: inline-block; color: #858b96; font-family: inherit; font-size: 11px; font-weight: 400; line-height: 1.5; white-space: nowrap; vertical-align: baseline; }
 .homeOpportunityValues > div + div dd { color: #28758a; }
 .homeMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .homeMetricCard {
@@ -9676,6 +9677,7 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .homeMetricCard:hover > small,
   .homeMetricCard:hover .homeOpportunityValues dt,
   .homeMetricCard:hover .homeOpportunityValues dd,
+  .homeMetricCard:hover .homeOpportunityValues dd small,
   .homeMetricCard:hover .homeFlowValue > small,
   .homeMetricCard:hover .homeFlowValue > strong { color: rgba(255, 255, 255, .94); }
   .homeMetricCard:hover .homeOpportunityValues > div + div,

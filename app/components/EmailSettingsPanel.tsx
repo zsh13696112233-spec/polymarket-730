@@ -156,9 +156,7 @@ export default function EmailSettingsPanel() {
     <section className="pcPanel emailSettingsPanel" aria-label="发件邮箱设置">
       <header className="pcPanelHeader">
         <div>
-          <span className="pcEyebrow">EMAIL DELIVERY</span>
           <h2>发件邮箱</h2>
-          <p>供系统通知统一使用；客户端授权码只保存到 macOS 钥匙串。</p>
         </div>
       </header>
       <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={save}>

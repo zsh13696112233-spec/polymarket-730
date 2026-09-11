@@ -28,6 +28,7 @@ from backend.whale import (
     _auto_follow_status_display,
     _json_list,
     _position_marks,
+    whale_strategy_price_filter,
 )
 
 BEIJING = ZoneInfo("Asia/Shanghai")
@@ -118,10 +119,18 @@ async def home_overview(
     range_end = _beijing_day_start_utc(today_date + timedelta(days=1))
 
     async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
         # Each (entry, rule) has one durable first trigger; count each rule
         # independently, including opportunities that have since exited.
         opportunity_counts = {
-            rule: {"last_1_day": 0, "last_3_days": 0, "last_5_days": 0, "last_7_days": 0}
+            rule: {
+                "last_1_day": 0,
+                "last_3_days": 0,
+                "last_5_days": 0,
+                "last_7_days": 0,
+                "last_15_days": 0,
+                "last_30_days": 0,
+            }
             for rule in RULES
         }
         counts_by_rule = await session.execute(
@@ -137,12 +146,13 @@ async def home_overview(
                             )
                         )
                     ).label(f"last_{days}_day" if days == 1 else f"last_{days}_days")
-                    for days in (1, 3, 5, 7)
+                    for days in (1, 3, 5, 7, 15, 30)
                 ],
             )
             .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
             .where(
                 WhaleEntryRuleState.first_triggered_at <= generated_at,
+                whale_strategy_price_filter(settings),
                 ~select(WhaleExclusion.proxy_wallet)
                 .where(WhaleExclusion.proxy_wallet == WhaleEntry.proxy_wallet)
                 .exists(),
@@ -171,18 +181,17 @@ async def home_overview(
             .where(
                 WhaleOrder.source == "auto_follow",
                 WhaleOrder.side == "BUY",
-                first_fills.c.filled_at >= _beijing_day_start_utc(today_date - timedelta(days=6)),
+                first_fills.c.filled_at >= _beijing_day_start_utc(today_date - timedelta(days=29)),
                 first_fills.c.filled_at <= generated_at,
             )
         )
         for rule, filled_at in followed_orders:
             if rule not in follow_counts:
                 continue
-            for days in (1, 3, 5, 7):
+            for days in (1, 3, 5, 7, 15, 30):
                 if filled_at >= _beijing_day_start_utc(today_date - timedelta(days=days - 1)):
                     key = f"last_{days}_day" if days == 1 else f"last_{days}_days"
                     follow_counts[rule][key] += 1
-        settings = await session.get(WhaleSettings, 1)
         account = await session.get(ExecutionAccount, 1)
         ledger = list(
             (

@@ -95,17 +95,15 @@ function HitRate({ metrics }: { metrics: WhaleStatisticsMetrics }) {
 
 function CohortCard({
   title,
-  eyebrow,
   metrics,
 }: {
   title: string;
-  eyebrow: string;
   metrics: WhaleStatisticsMetrics;
 }) {
   return (
     <article className="whaleStatsCohortCard">
       <header>
-        <div><span>{eyebrow}</span><h3>{title}</h3></div>
+        <div><h3>{title}</h3></div>
         <div className="whaleStatsCohortRate"><HitRate metrics={metrics} /></div>
       </header>
       <dl>
@@ -262,7 +260,6 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
     <div className="whaleStatisticsWorkspace" aria-label="巨鲸命中率统计">
       <section className="pcPanel whaleStatsToolbar">
         <div>
-          <span className="pcEyebrow">SIGNAL PERFORMANCE</span>
           <h2>链上信号表现</h2>
           <p>统计自 {fullBeijingDate(statistics?.coverage_start ?? null)} · 最后计算 {formatBeijing(statistics?.generated_at, true)}</p>
         </div>
@@ -277,7 +274,6 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
 
       <section className="pcPanel whaleStatsCategoryControls" aria-label="统计分类筛选">
         <div>
-          <span className="pcEyebrow">MARKET CATEGORY</span>
           <strong>市场分类</strong>
         </div>
         <div className="whaleStatsCategoryButtons">
@@ -324,17 +320,15 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
           </section>
 
           <section className="whaleStatsCohorts" aria-label="规则表现对比">
-            <CohortCard title="新号大额" eyebrow="NEW ACCOUNT" metrics={statistics.new_account} />
-            <CohortCard title="全量超大额" eyebrow="LARGE AMOUNT" metrics={statistics.large_amount} />
-            <CohortCard title="双重命中" eyebrow="DUAL MATCH" metrics={statistics.dual_match} />
+            <CohortCard title="新号大额" metrics={statistics.new_account} />
+            <CohortCard title="全量超大额" metrics={statistics.large_amount} />
+            <CohortCard title="双重命中" metrics={statistics.dual_match} />
           </section>
 
           <section className="pcPanel whaleStatsBreakdownPanel" aria-label="分类表现">
             <header className="pcPanelHeader">
               <div>
-                <span className="pcEyebrow">CATEGORY PERFORMANCE</span>
                 <h2>分类表现</h2>
-                <p>主分类互斥，电竞不会重复计入传统体育；点击分类可查看完整下钻统计。</p>
               </div>
             </header>
             <div className="whaleStatsBreakdownGrid">
@@ -371,7 +365,7 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
 
           <section className="whaleStatsAnalysisGrid">
             <article className="pcPanel whaleStatsTrendPanel">
-              <header className="pcPanelHeader"><div><span className="pcEyebrow">TREND</span><h2>命中趋势</h2><p>黄色为实际命中率，竖线为资金加权盈亏平衡率。</p></div></header>
+              <header className="pcPanelHeader"><div><h2>命中趋势</h2></div></header>
               {statistics.trend.length ? <div className="whaleStatsTrendList">{statistics.trend.map((slice) => {
                 const rate = Math.max(0, Math.min(100, numeric(slice.metrics.hit_rate_percent)));
                 const breakEven = Math.max(0, Math.min(100, numeric(slice.metrics.break_even_rate_percent)));
@@ -379,7 +373,7 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
               })}</div> : <div className="whaleHistoryEmpty">所选范围内暂无已结算信号。</div>}
             </article>
             <article className="pcPanel whaleStatsBandsPanel">
-              <header className="pcPanelHeader"><div><span className="pcEyebrow">AMOUNT TIERS</span><h2>金额分层</h2><p>按触发窗口累计买入金额比较信号质量。</p></div></header>
+              <header className="pcPanelHeader"><div><h2>金额分层</h2></div></header>
               <div className="whaleStatsBandGrid">{statistics.amount_bands.map((slice) => <button type="button" key={slice.key} onClick={() => setFilter(setAmountBand, slice.key as WhaleStatisticsAmountBand)}><span>{slice.label} USDC</span><strong>{percent(slice.metrics.hit_rate_percent)}</strong><small>{slice.metrics.hit_count} 胜 / {slice.metrics.miss_count} 负 · ROI {percent(slice.metrics.theoretical_roi_percent, true)}</small></button>)}</div>
             </article>
           </section>
@@ -387,7 +381,7 @@ export function WhaleStatisticsPanel({ refreshToken = 0 }: { refreshToken?: numb
       ) : null}
 
       <section className="pcPanel whaleStatsSignalsPanel" aria-label="已结算信号明细">
-        <header className="pcPanelHeader"><div><span className="pcEyebrow">SETTLED SIGNALS</span><h2>已结算信号明细</h2><p>命中率只计算结算价为 1 或 0 的方向；特殊派彩单独列出。</p></div><strong>{signals?.total ?? 0} 条</strong></header>
+        <header className="pcPanelHeader"><div><h2>已结算信号明细</h2></div><strong>{signals?.total ?? 0} 条</strong></header>
         <div className="whaleStatsFilters">
           <label><span>规则</span><select aria-label="统计规则筛选" value={rule} onChange={(event) => setFilter(setRule, event.target.value as WhaleStatisticsRule)}><option value="all">全部规则</option><option value="new_account">新号大额</option><option value="large_amount">全量超大额</option><option value="both">双重命中</option></select></label>
           <label><span>结果</span><select aria-label="统计结果筛选" value={result} onChange={(event) => setFilter(setResult, event.target.value as WhaleStatisticsResult)}><option value="all">全部结果</option><option value="hit">命中</option><option value="miss">未命中</option><option value="special">特殊结算</option></select></label>

@@ -1486,3 +1486,113 @@ def test_dual_match_amount_settings_validation_and_clear(app_client_factory):
     assert response.status_code == 200, response.text
     assert response.json()[key] is None
     assert client.get(endpoint).json()[key] is None
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum", "expected_entries"),
+    [("0.40", "0.60", 3), ("0.60", "0.80", 2), ("0.41", "0.59", 0)],
+)
+def test_market_strategy_price_filter_is_optional_and_rule_specific(
+    app_client_factory, monkeypatch, minimum, maximum, expected_entries
+):
+    client, _ = app_client_factory([[]])
+    database = client.app.state.database
+    client.portal.call(seed_two_sided_whale_market, database)
+
+    async def configure():
+        async with database.sessions() as session:
+            settings = await session.get(WhaleSettings, 1)
+            settings.new_account_auto_follow_min_price = Decimal(minimum)
+            settings.new_account_auto_follow_max_price = Decimal(maximum)
+            settings.large_amount_auto_follow_min_price = Decimal("0.61")
+            settings.large_amount_auto_follow_max_price = Decimal("0.80")
+            settings.new_account_auto_follow_enabled = False
+            settings.large_amount_auto_follow_enabled = False
+            await session.commit()
+
+    client.portal.call(configure)
+    now = utcnow()
+    monkeypatch.setattr("backend.whale.utcnow", lambda: now)
+    home = client.get("/api/home/overview").json()
+    assert home["opportunity_counts"]["new_account"]["last_1_day"] == expected_entries
+    assert home["opportunity_counts"]["large_amount"]["last_1_day"] == 0
+    endpoint = "/api/whales/markets"
+    history = client.get("/api/whales/history").json()
+    statistics = client.get("/api/whales/statistics").json()
+    original = client.get(endpoint).json()
+    filtered = client.get(f"{endpoint}?filter_strategy_price=true&limit=1").json()
+    entries = [
+        entry
+        for market in filtered["items"]
+        for side in market["sides"]
+        for entry in side["entries"]
+    ]
+    assert len(entries) == expected_entries
+    assert filtered["total"] == (1 if expected_entries else 0)
+    if entries:
+        market = filtered["items"][0]
+        assert market["total_whale_usdc"] == sum(entry["gross_buy_usdc"] for entry in entries)
+        assert market["whale_wallet_count"] == len({entry["proxy_wallet"] for entry in entries})
+    assert client.get(f"{endpoint}?filter_strategy_price=true&offset=1").json()["items"] == []
+    assert (
+        client.get(f"{endpoint}?rule=large_amount&filter_strategy_price=true").json()["total"] == 0
+    )
+    assert client.get(f"{endpoint}?rule=large_amount").json()["total"] == 1
+    unfiltered = client.get(f"{endpoint}?filter_strategy_price=false").json()
+    assert unfiltered["items"] == original["items"]
+    assert client.get(f"{endpoint}/{CONDITION_ID}").status_code == 200
+    assert client.get("/api/whales/history").json() == history
+    after_statistics = client.get("/api/whales/statistics").json()
+    after_statistics.pop("generated_at", None)
+    statistics.pop("generated_at", None)
+    assert after_statistics == statistics
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum", "expected"),
+    [("0.40", "0.60", 3), ("0.60", "0.80", 2), ("0.41", "0.59", 0)],
+)
+def test_history_price_filter_applies_before_pagination(
+    app_client_factory, monkeypatch, minimum, maximum, expected
+):
+    client, _ = app_client_factory([[]])
+    database = client.app.state.database
+    client.portal.call(seed_two_sided_whale_market, database)
+    now = utcnow()
+    monkeypatch.setattr("backend.whale.utcnow", lambda: now)
+
+    async def configure():
+        async with database.sessions() as session:
+            settings = await session.get(WhaleSettings, 1)
+            settings.new_account_auto_follow_min_price = Decimal(minimum)
+            settings.new_account_auto_follow_max_price = Decimal(maximum)
+            settings.large_amount_auto_follow_min_price = Decimal("0.61")
+            settings.large_amount_auto_follow_max_price = Decimal("0.80")
+            for state in (await session.scalars(select(WhaleEntryRuleState))).all():
+                state.active = False
+                state.inactive_at = now
+                state.inactive_reason = "market_closed"
+            await session.commit()
+
+    client.portal.call(configure)
+    endpoint = "/api/whales/history"
+    statistics = client.get("/api/whales/statistics").json()
+    original = client.get(endpoint).json()
+    assert original["total"] == 3
+    selected_ids = []
+    for offset in range(expected + 1):
+        response = client.get(f"{endpoint}?filter_strategy_price=true&limit=1&offset={offset}")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["total"] == expected
+        assert len(payload["items"]) == (1 if offset < expected else 0)
+        for item in payload["items"]:
+            assert Decimal(minimum) <= Decimal(str(item["avg_buy_price"])) <= Decimal(maximum)
+            selected_ids.append(item["entry_id"])
+    assert len(set(selected_ids)) == expected
+    assert client.get(f"{endpoint}?filter_strategy_price=false").json() == original
+    assert (
+        client.get(f"{endpoint}?rule=large_amount&filter_strategy_price=true").json()["total"] == 0
+    )
+    assert client.get(f"{endpoint}?rule=large_amount").json()["total"] == 1
+    assert client.get("/api/whales/statistics").json() == statistics

@@ -247,11 +247,16 @@ export function buildWhaleDivergences(markets: WhaleMarket[]): WhaleDivergence[]
   );
 }
 
+const STRATEGY_PRICE_STORAGE_KEY = "whale-filter-strategy-price";
+
 export default function WhaleDiscoveryWorkspace() {
   const [settings, setSettings] = useState<WhaleSettings | null>(null);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [markets, setMarkets] = useState<WhaleMarketList | null>(null);
   const [history, setHistory] = useState<WhaleHistoryList | null>(null);
+  const [filterStrategyPrice, setFilterStrategyPrice] = useState<boolean | null>(null);
+  const marketRequest = useRef<AbortController | null>(null);
+  const historyRequest = useRef<AbortController | null>(null);
   const [rule, setRule] = useState<WhaleRule>("new_account");
   const [statisticsVisible, setStatisticsVisible] = useState(false);
   const [fullHistoryVisible, setFullHistoryVisible] = useState(false);
@@ -267,6 +272,30 @@ export default function WhaleDiscoveryWorkspace() {
     entry: WhaleEntry;
   } | null>(null);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      let enabled = true;
+      try {
+        enabled = window.localStorage.getItem(STRATEGY_PRICE_STORAGE_KEY) !== "false";
+      } catch { /* Storage may be unavailable; keep the default. */ }
+      setFilterStrategyPrice(enabled);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      marketRequest.current?.abort();
+      historyRequest.current?.abort();
+    };
+  }, []);
+
+  const changePriceFilter = (enabled: boolean) => {
+    marketRequest.current?.abort();
+    historyRequest.current?.abort();
+    setFilterStrategyPrice(enabled);
+    try {
+      window.localStorage.setItem(STRATEGY_PRICE_STORAGE_KEY, String(enabled));
+    } catch { /* The filter still works without persistence. */ }
+  };
+
   const loadSettings = useCallback(async () => {
     try {
       setSettings(await whaleApi<WhaleSettings>("/api/whales/settings"));
@@ -276,32 +305,54 @@ export default function WhaleDiscoveryWorkspace() {
   }, []);
 
   const loadMarkets = useCallback(async (silent = false) => {
+    if (filterStrategyPrice === null) return;
+    marketRequest.current?.abort();
+    const controller = new AbortController();
+    marketRequest.current = controller;
     if (!silent) setLoading(true);
     setError(null);
     try {
       const nextMarkets = await whaleApi<WhaleMarketList>(
-        `/api/whales/markets?rule=${rule}&include_exited=false&include_hedged=true&limit=100&offset=0`,
+        `/api/whales/markets?rule=${rule}&include_exited=false&include_hedged=true&limit=100&offset=0&filter_strategy_price=${filterStrategyPrice}`,
+        { signal: controller.signal },
       );
+      if (controller.signal.aborted) return;
       setMarkets(nextMarkets);
       if (!buildWhaleDivergences(nextMarkets.items).length) setDivergenceOnly(false);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "巨鲸持仓加载失败");
+      if (!controller.signal.aborted) {
+        setError(requestError instanceof Error ? requestError.message : "巨鲸持仓加载失败");
+      }
     } finally {
-      if (!silent) setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
-  }, [rule]);
+  }, [rule, filterStrategyPrice]);
 
   const loadHistory = useCallback(async () => {
+    if (filterStrategyPrice === null) return;
+    historyRequest.current?.abort();
+    const controller = new AbortController();
+    historyRequest.current = controller;
     try {
-      setHistory(await whaleApi<WhaleHistoryList>(`/api/whales/history?rule=${rule}&limit=100&offset=0`));
+      const nextHistory = await whaleApi<WhaleHistoryList>(
+        `/api/whales/history?rule=${rule}&limit=100&offset=0&filter_strategy_price=${filterStrategyPrice}`,
+        { signal: controller.signal },
+      );
+      if (!controller.signal.aborted) setHistory(nextHistory);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "巨鲸历史记录加载失败");
+      if (!controller.signal.aborted) {
+        setError(requestError instanceof Error ? requestError.message : "巨鲸历史记录加载失败");
+      }
     }
-  }, [rule]);
+  }, [rule, filterStrategyPrice]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void Promise.all([loadSettings(), loadMarkets(), loadHistory()]), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      marketRequest.current?.abort();
+      historyRequest.current?.abort();
+    };
   }, [loadHistory, loadMarkets, loadSettings]);
 
   useVisibleAutoRefresh(async () => {
@@ -361,7 +412,6 @@ export default function WhaleDiscoveryWorkspace() {
     <PolyCopyShell
       active="whales"
       title="链上大额资金监测"
-      subtitle="分别监测新号大额买入和全量超大额买入，永久保留触发历史。"
       actions={
         <>
           <Link className="pcButton ghost" href="/whales/records">我的跟单</Link>
@@ -453,6 +503,10 @@ export default function WhaleDiscoveryWorkspace() {
                 </select>
               </label>
               <div className="whaleSimpleMeta">
+                <label className="whalePriceFilter">
+                  <input type="checkbox" checked={filterStrategyPrice ?? true} onChange={(event) => changePriceFilter(event.target.checked)} />
+                  仅显示均价在策略区间内
+                </label>
                 <strong>{divergenceOnly ? "分歧筛选 · " : ""}{walletGroups.length} 个钱包 · {visibleHoldingCount} 个持仓</strong>
                 <span>
                   {rule === "new_account" ? `注册 ≤ ${settings?.registration_window_days ?? 7} 天 · ` : "不限账号年龄 · "}
@@ -491,8 +545,8 @@ export default function WhaleDiscoveryWorkspace() {
             ) : (
               <section className="pcPanel pcEmptyState whaleEmptyState">
                 <div className="pcEmptyIcon">◈</div>
-                <h2>暂未发现仍在持有的巨鲸钱包</h2>
-                <p>刷新数据后，新发现的大额持仓会出现在这里。</p>
+                <h2>{filterStrategyPrice ? "当前策略均价区间内暂无持仓信号" : "暂未发现仍在持有的巨鲸钱包"}</h2>
+                <p>{filterStrategyPrice ? "可取消均价筛选查看全部监测持仓。" : "刷新数据后，新发现的大额持仓会出现在这里。"}</p>
               </section>
             )}
           </section>
@@ -517,7 +571,6 @@ export default function WhaleDiscoveryWorkspace() {
           <ModalShell
             className="whaleSettingsModal"
             title="巨鲸监测设置"
-            eyebrow="MONITOR SETTINGS"
             onClose={() => setSettingsVisible(false)}
           >
             <WhaleSettingsPanel
@@ -584,7 +637,6 @@ function WhaleRecentHistoryPanel({
     <section className="pcPanel whaleRecentHistory" aria-label={`${RULE_LABELS[rule]}最近历史`}>
       <header>
         <div>
-          <span className="pcEyebrow">RECENT HISTORY</span>
           <h2>最近触发</h2>
         </div>
         <strong>{history?.total ?? 0} 条</strong>
@@ -644,9 +696,7 @@ function WhaleHistorySection({ rule, history }: { rule: WhaleRule; history: Whal
     <section className="pcPanel whaleHistoryPanel" aria-label={`${RULE_LABELS[rule]}历史记录`}>
       <header className="pcPanelHeader">
         <div>
-          <span className="pcEyebrow">TRIGGER HISTORY</span>
           <h2>历史触发记录</h2>
-          <p>金额达标后永久保留；理论结算盈亏按触发窗口买入份额全部持有到结算计算。</p>
         </div>
         <strong>{history?.total ?? 0} 条</strong>
       </header>
@@ -1062,7 +1112,6 @@ function WhaleFollowModal({
   return (
     <ModalShell
       title="跟随巨鲸买入"
-      eyebrow="WHALE FOLLOW"
       onClose={onClose}
       className="whaleFollowModal"
       footer={

@@ -575,14 +575,12 @@ export function transactionUrl(hash: string): string {
 
 export function ModalShell({
   title,
-  eyebrow,
   onClose,
   children,
   footer,
   className = "",
 }: {
   title: string;
-  eyebrow: string;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
@@ -607,7 +605,6 @@ export function ModalShell({
       >
         <header>
           <div>
-            <span className="pcEyebrow">{eyebrow}</span>
             <h2 id="whale-modal-title">{title}</h2>
           </div>
           <button className="pcIconButton" type="button" aria-label="关闭" onClick={onClose}>

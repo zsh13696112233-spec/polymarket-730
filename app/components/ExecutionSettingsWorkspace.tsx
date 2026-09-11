@@ -306,10 +306,10 @@ export default function ExecutionSettingsWorkspace() {
   }
 
   return (
-    <PolyCopyShell active="settings" title="系统设置" subtitle="统一管理执行钱包、发件邮箱与系统安全配置">
+    <PolyCopyShell active="settings" title="系统设置">
       <section className="pcPanel pcExecutionAccountPanel">
         <header className="pcPanelHeader pcExecutionWalletHeader">
-          <div><span className="pcEyebrow">EXECUTION WALLET</span><h2>执行钱包</h2><p>仅用于链上监测产生的真实买入、卖出与赎回。</p></div>
+          <div><h2>执行钱包</h2></div>
           <div className="pcExecutionWalletMode" aria-label="钱包模式：Deposit Wallet">
             <span>钱包模式</span>
             <strong>Deposit Wallet</strong>
@@ -344,7 +344,7 @@ export default function ExecutionSettingsWorkspace() {
       </section>
       <section className="pcPanel pcChainTestPanel">
         <header className="pcPanelHeader">
-          <div><span className="pcEyebrow">ON-CHAIN TEST</span><h2>链上环境测试工具</h2><p>用小额真实买入和卖出验证 SDK、签名、授权、CLOB 与本地账本。</p></div>
+          <div><h2>链上环境测试工具</h2></div>
           <span className="pcBadge warning">真实资金</span>
         </header>
         <div className="pcChainTestWarning">本工具会产生真实成交、手续费和买卖价差。请使用可承受损失的小额资金。</div>

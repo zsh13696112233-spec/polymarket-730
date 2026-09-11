@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import HomeWorkspace, { buildHomeTrendData } from "../app/components/HomeWorkspace";
+import HomeWorkspace from "../app/components/HomeWorkspace";
 
 function json(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -31,8 +31,8 @@ function overview(overrides: Record<string, unknown> = {}) {
     as_of: "2026-08-30T08:00:00Z",
     timezone: "Asia/Shanghai",
     opportunity_counts: {
-      new_account: { last_1_day: 2, last_3_days: 6, last_5_days: 10, last_7_days: 15 },
-      large_amount: { last_1_day: 0, last_3_days: 1, last_5_days: 3, last_7_days: 5 },
+      new_account: { last_1_day: 2, last_3_days: 6, last_5_days: 10, last_7_days: 15, last_15_days: 20, last_30_days: 30 },
+      large_amount: { last_1_day: 0, last_3_days: 1, last_5_days: 3, last_7_days: 5, last_15_days: 8, last_30_days: 12 },
     },
     follow_counts: {
       new_account: { last_1_day: 1, last_3_days: 2, last_5_days: 3, last_7_days: 4 },
@@ -100,18 +100,7 @@ afterEach(() => {
 });
 
 describe("首页运行与跟单看板", () => {
-  it.each([
-    ["strategy_protected", "策略保护", "warning"],
-    ["failed", "执行失败", "danger"],
-  ])("首页决策展示 %s 对应的文案和颜色", async (status, label, tone) => {
-    const data = overview();
-    data.recent_auto_decisions[0].status = status;
-    vi.stubGlobal("fetch", vi.fn(async () => json(data)));
-    render(<HomeWorkspace />);
-    expect(await screen.findByText(label)).toHaveClass(tone);
-  });
-
-  it("展示首页导航、核心口径、钱包、决策并切换 7/30 日趋势", async () => {
+  it("展示首页导航、核心口径、钱包并切换 7/30 日趋势", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(overview())));
     const user = userEvent.setup();
     const { container } = render(<HomeWorkspace />);
@@ -126,7 +115,7 @@ describe("首页运行与跟单看板", () => {
     expect(within(flowCard).getByText("分歧退出回款")).toBeInTheDocument();
     expect(within(flowCard).getByText("8.75 USDC")).toBeInTheDocument();
     expect(within(flowCard).getByText("2 次买入 · 1 次分歧退出到账")).toBeInTheDocument();
-    expect(screen.getByText("-3.00 USDC")).toBeInTheDocument();
+    expect(screen.getAllByText("-3.00 USDC").length).toBeGreaterThan(0);
     expect(screen.getByText("已实现 ROI -25.0%")).toBeInTheDocument();
     expect(screen.getByText("134.20 USDC")).toBeInTheDocument();
     expect(screen.queryByText("钱包总资产估值")).not.toBeInTheDocument();
@@ -135,59 +124,101 @@ describe("首页运行与跟单看板", () => {
     expect(screen.getByText("+16.34 USDC")).toHaveClass("profit");
     expect(screen.queryByText("当前浮盈亏")).not.toBeInTheDocument();
     expect(screen.getByText("1 胜 · 1 负 · 不含 2 笔分歧退出、1 笔链路测试")).toBeInTheDocument();
-    expect(screen.getByText("北京时间自然日；跟单按买入日、胜率按仓位结束日统计，平局不计入胜率。")).toBeInTheDocument();
+    expect(screen.queryByText("DAILY PERFORMANCE")).not.toBeInTheDocument();
+    expect(screen.queryByText("北京时间 · 最新日期在前")).not.toBeInTheDocument();
+    expect(screen.queryByText("按账本发生日 · 不含浮动盈亏")).not.toBeInTheDocument();
     const trendSummary = screen.getByLabelText("所选区间跟单汇总");
-    expect(within(trendSummary).getByText("2 次")).toBeInTheDocument();
-    expect(within(trendSummary).getByText("2 个")).toBeInTheDocument();
+    expect(within(trendSummary).getByText("2 次独立买入")).toBeInTheDocument();
+    expect(within(trendSummary).getByText("2 个结束仓位 · 1 胜 / 1 负 / 0 平")).toBeInTheDocument();
     expect(within(trendSummary).getByText("50.0%")).toBeInTheDocument();
-    expect(screen.getByText("冠军归属市场")).toBeInTheDocument();
-    expect(screen.getByText("已成交")).toBeInTheDocument();
-    expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "7");
-    expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-mode", "finance");
+    expect(screen.queryByLabelText("最近自动跟单")).not.toBeInTheDocument();
+    expect(screen.queryByText("冠军归属市场")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "自动跟单" })).toHaveAttribute("href", "/whales/auto-follow");
+    expect(container.querySelector(".homeTrendDetails")).toHaveAttribute("data-point-count", "7");
+    expect(screen.getByText("亏损向左")).toBeInTheDocument();
+    expect(screen.getByText("盈利向右")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "近 7 日" })).toHaveAttribute("aria-pressed", "true");
     expect(container.querySelector(".homeChartLegend .roi")).not.toBeInTheDocument();
-    const opportunities = within(screen.getByLabelText("链上发现机会"));
-    expect(opportunities.getAllByRole("article")).toHaveLength(4);
-    for (const [label, newCount, largeCount, newFollow, largeFollow] of [
-      ["最近 1 天（今日）", 2, 0, 1, 0],
-      ["最近 3 天", 6, 1, 2, 1],
-      ["最近 5 天", 10, 3, 3, 2],
-      ["最近 7 天", 15, 5, 4, 3],
-    ] as const) {
-      const card = within(opportunities.getByRole("article", { name: `${label}发现机会` }));
-      expect(card.getAllByRole("term").map((term) => term.textContent)).toEqual(["新号大额", "全量超大额"]);
-      expect(card.getAllByRole("definition").map((value) => value.textContent)).toEqual([`${newCount}（已跟单 ${newFollow}）`, `${largeCount}（已跟单 ${largeFollow}）`]);
-    }
+    const opportunities = within(screen.getByLabelText("链上监测信号"));
+    expect(opportunities.getAllByRole("definition").map((value) => value.textContent)).toEqual(["15", "5"]);
+    expect(screen.getByLabelText("链上监测信号").closest(".homeTrendPanel")).toBeInTheDocument();
     const runtime = screen.getByLabelText("运行概览");
+    expect(runtime.parentElement).toBe(screen.getByLabelText("钱包资产").parentElement);
+    expect(runtime.parentElement).toHaveClass("homeStatusWalletGrid");
+    expect(runtime.parentElement?.parentElement).toHaveClass("homePortfolioGrid");
+    expect(runtime.parentElement?.previousElementSibling).toHaveClass("homeTrendPanel");
+    expect(runtime.nextElementSibling).toBe(screen.getByLabelText("钱包资产"));
+    expect(within(runtime).queryByText("监测中")).not.toBeInTheDocument();
+    expect(runtime.querySelectorAll(".homeStatusDot")).toHaveLength(1);
+    expect(within(runtime).queryByText("活跃钱包")).not.toBeInTheDocument();
+    expect(within(runtime).getByLabelText("新号大额")).toHaveTextContent("自动跟单已开启");
+    expect(within(runtime).getByLabelText("全量超大额")).toHaveTextContent("自动跟单未开启");
     const metrics = screen.getByLabelText("今日核心指标");
     expect(metrics.compareDocumentPosition(runtime) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByLabelText("系统状态").closest("header")).toHaveClass("pcTopbar");
+    expect(within(runtime).getByLabelText("系统状态")).toBeInTheDocument();
+    expect(within(runtime).getByText("最后扫描")).toBeInTheDocument();
+    expect(within(runtime).getByText("数据更新")).toBeInTheDocument();
+    expect(container.querySelector(".pcTopbar")).not.toHaveTextContent("最后扫描");
+    expect(container.querySelector(".pcTopbar")).not.toHaveTextContent("系统运行正常");
 
-    await user.click(screen.getByRole("button", { name: "次数与胜率" }));
-    expect(screen.getByRole("button", { name: "次数与胜率" })).toHaveAttribute("aria-pressed", "true");
-    expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-mode", "quality");
-    expect(container.querySelector(".homeChartLegend .count")).toHaveTextContent("跟单次数");
-    expect(container.querySelector(".homeChartLegend .winRate")).toHaveTextContent("结束仓位胜率");
+    expect(screen.queryByRole("button", { name: "次数与胜率" })).not.toBeInTheDocument();
+    const details = within(screen.getByRole("region", { name: "每日跟单明细" }));
+    expect(details.getAllByRole("row")).toHaveLength(8);
+    expect(details.getByText("进行中")).toBeInTheDocument();
+    expect(details.getAllByRole("row")[1]).toHaveTextContent("08-30进行中-3.0020.5021 胜 / 1 负 / 0 平50.0%");
+    expect(details.getAllByRole("row")[2]).toHaveTextContent("08-290.000.000——");
+    expect(within(trendSummary).getByText("-3.00 USDC")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "近 15 日" }));
-    expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "15");
+    expect(container.querySelector(".homeTrendDetails")).toHaveAttribute("data-point-count", "15");
+    expect(opportunities.getAllByRole("definition").map((value) => value.textContent)).toEqual(["20", "8"]);
 
     await user.click(screen.getByRole("button", { name: "近 30 日" }));
-    expect(container.querySelector(".homeTrendChart")).toHaveAttribute("data-point-count", "30");
+    expect(container.querySelector(".homeTrendDetails")).toHaveAttribute("data-point-count", "30");
+    expect(details.getAllByRole("row")).toHaveLength(31);
+    expect(opportunities.getAllByRole("definition").map((value) => value.textContent)).toEqual(["30", "12"]);
+    expect(screen.queryByRole("button", { name: "今日" })).not.toBeInTheDocument();
+    const todaySignals = within(flowCard).getByLabelText("今日监测信号");
+    expect(todaySignals).toHaveTextContent("新号大额 2");
+    expect(todaySignals).toHaveTextContent("全量超大额 0");
   });
 
-  it("正负盈亏跨越零轴时保持同一条连续序列", () => {
-    const daily = overview().daily.slice(0, 4).map((item, index) => ({
-      ...item,
-      realized_pnl_usdc: [0, 18, -6, 0][index],
-    }));
+  it("区间汇总按结束仓位数计算胜率，保留平局并随日期范围更新", async () => {
+    const data = overview();
+    Object.assign(data.daily[0], { buy_amount_usdc: 100, buy_count: 1, realized_pnl_usdc: 12, win_count: 9, loss_count: 0, flat_count: 2, win_rate_percent: 100 });
+    vi.stubGlobal("fetch", vi.fn(async () => json(data)));
+    const user = userEvent.setup();
+    render(<HomeWorkspace />);
+    const summary = within(await screen.findByLabelText("所选区间跟单汇总"));
+    expect(summary.getByText("50.0%")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "近 30 日" }));
+    expect(summary.getByText("90.9%")).toBeInTheDocument();
+    expect(summary.getByText("13 个结束仓位 · 10 胜 / 1 负 / 2 平")).toBeInTheDocument();
+    expect(summary.getByText("120.50 USDC")).toBeInTheDocument();
+    expect(summary.getByText("+9.00 USDC")).toBeInTheDocument();
+  });
 
-    expect(buildHomeTrendData(daily).map((item) => item.realizedPnlPlot)).toEqual([
-      0,
-      18,
-      -6,
-      0,
-    ]);
+  it("全零区间显示明确说明，没有结束仓位时胜率为空", async () => {
+    const data = overview();
+    data.daily = data.daily.map((day) => ({ ...day, buy_amount_usdc: 0, buy_count: 0, realized_pnl_usdc: 0, win_count: 0, loss_count: 0, flat_count: 0, win_rate_percent: null }));
+    vi.stubGlobal("fetch", vi.fn(async () => json(data)));
+    const { container } = render(<HomeWorkspace />);
+    expect(await screen.findByText("所选区间每日已实现盈亏均为 0")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("所选区间跟单汇总")).getByText("—")).toBeInTheDocument();
+    expect(container.querySelector(".homePnlBar")).not.toBeInTheDocument();
+  });
+
+  it("盈亏条共用比例，盈利向右、亏损向左，零值不画条", async () => {
+    const data = overview();
+    data.daily[28].realized_pnl_usdc = 6;
+    vi.stubGlobal("fetch", vi.fn(async () => json(data)));
+    render(<HomeWorkspace />);
+    const details = await screen.findByLabelText("每日跟单明细");
+    expect(details.querySelectorAll(".homePnlBar")).toHaveLength(2);
+    expect(details.querySelector(".homePnlBar.positive")).toHaveStyle({ width: "50%" });
+    expect(details.querySelector(".homePnlBar.negative")).toHaveStyle({ width: "25%" });
+    expect(within(details).getByText("+6.00")).toBeInTheDocument();
+    expect(within(details).getByText("-3.00")).toBeInTheDocument();
   });
 
   it("余额过期时在冷却窗口内只刷新一次，失败后保留缓存并告警", async () => {
@@ -256,10 +287,10 @@ describe("首页运行与跟单看板", () => {
     expect(await screen.findByText("系统运行正常")).toBeInTheDocument();
     FailedEventSource.instance?.onerror?.(new Event("error"));
 
-    expect(await screen.findByText("运行状态连接中断")).toBeInTheDocument();
-    expect(container.querySelector(".homeTopStatus .homeStatusDot")).toHaveClass("error");
+    expect((await screen.findAllByText("运行状态连接中断")).length).toBeGreaterThan(0);
+    expect(container.querySelector(".homeRuntimeHealth .homeStatusDot")).toHaveClass("error");
     expect(container.querySelectorAll(".homeRuleDot.enabled")).toHaveLength(0);
-    expect(screen.getAllByText("连接中断")).toHaveLength(2);
+    expect(screen.getAllByText("状态待确认")).toHaveLength(2);
   });
 });
 
@@ -276,13 +307,14 @@ it("将进行中的市场补齐与扫描异常区分显示", async () => {
   render(<HomeWorkspace />);
   expect((await screen.findAllByText("重点市场历史补齐中")).length).toBeGreaterThan(0);
   expect(screen.queryByText("链上扫描异常")).not.toBeInTheDocument();
-  const progress = screen.getByText(/重点市场 0xabc 历史补齐中/).closest(".homeAlert");
-  expect(progress).toHaveClass("homeAlertInfo");
-  expect(progress).toHaveAttribute("role", "status");
+  expect(within(screen.getByLabelText("首页告警")).queryByText("重点市场历史补齐中")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("首页告警").querySelector(".homeAlertInfo")).not.toBeInTheDocument();
   const runtime = screen.getByLabelText("运行概览");
-  expect(within(runtime).getAllByText("运行中")).toHaveLength(2);
+  expect(within(runtime).queryByText("监测中")).not.toBeInTheDocument();
   expect(within(runtime).queryByText("未运行")).not.toBeInTheDocument();
-  expect(runtime.querySelectorAll(".homeRuleDot.enabled")).toHaveLength(2);
+  expect(within(runtime).queryByLabelText("扫描状态")).not.toBeInTheDocument();
+  expect(within(runtime).getByText(/重点市场 0xabc 历史补齐中/)).toBeInTheDocument();
+  expect(runtime.querySelectorAll(".homeStatusDot")).toHaveLength(1);
   const error = screen.getByText("交易钱包不可用").closest(".homeAlert");
   expect(error).not.toHaveClass("homeAlertInfo");
   expect(error).toHaveAttribute("role", "alert");

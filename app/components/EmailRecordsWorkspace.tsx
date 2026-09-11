@@ -174,11 +174,9 @@ export default function EmailRecordsWorkspace() {
     <PolyCopyShell
       active="email-records"
       title="邮件记录"
-      subtitle="查看系统通知的逐收件人投递状态、重试次数与失败原因"
     >
       <section className="pcPanel weeklyEmailSummaryPanel" aria-label="每周邮件命中率汇总">
         <div className="weeklyEmailSummaryCopy">
-          <span className="pcEyebrow">WEEKLY HIT RATE</span>
           <h2>每周命中率汇总</h2>
           <p>每周一 00:00（北京时间）汇总上一周新结算的已发邮件信号，同一信号不会因多个收件人重复计算。</p>
           {summarySettings?.weekly_summary_enabled && !summarySettings.notifications_enabled && (
@@ -207,9 +205,7 @@ export default function EmailRecordsWorkspace() {
       <section className="pcPanel emailRecordsPanel" aria-label="邮件发送记录">
         <header className="pcPanelHeader emailDeliveryHeading">
           <div>
-            <span className="pcEyebrow">EMAIL DELIVERY LOG</span>
             <h2>发送记录</h2>
-            <p>记录巨鲸单笔提醒与市场分歧提醒，每位收件人的投递单独保存。</p>
           </div>
           <label className="emailRecordsFilter">
             <span>投递状态</span>

@@ -34,7 +34,14 @@ def test_home_overview_route_returns_thirty_beijing_days(app_client_factory) -> 
     assert response.status_code == 200
     payload = response.json()
     assert payload["opportunity_counts"] == {
-        rule: {"last_1_day": 0, "last_3_days": 0, "last_5_days": 0, "last_7_days": 0}
+        rule: {
+            "last_1_day": 0,
+            "last_3_days": 0,
+            "last_5_days": 0,
+            "last_7_days": 0,
+            "last_15_days": 0,
+            "last_30_days": 0,
+        }
         for rule in ("new_account", "large_amount")
     }
     assert payload["follow_counts"] == payload["opportunity_counts"]
@@ -86,11 +93,20 @@ async def test_opportunity_counts_use_first_trigger_and_beijing_calendar_days(
         NOW,  # Excluded wallet.
         NOW,  # A different direction for the first wallet.
         NOW,  # Another wallet buying the same direction.
+        midnight - timedelta(days=14),
+        midnight - timedelta(days=14, microseconds=1),
+        midnight - timedelta(days=29),
+        midnight - timedelta(days=29, microseconds=1),
     ]
     async with database.sessions() as session:
         session.add(
             WhaleSettings(
-                id=1, created_at=NOW, updated_at=NOW, monitor_categories_json='["sports"]'
+                id=1,
+                created_at=NOW,
+                updated_at=NOW,
+                monitor_categories_json='["sports"]',
+                new_account_auto_follow_min_price=Decimal("0.5"),
+                large_amount_auto_follow_min_price=Decimal("0.5"),
             )
         )
         for index, triggered_at in enumerate(triggers):
@@ -196,17 +212,57 @@ async def test_opportunity_counts_use_first_trigger_and_beijing_calendar_days(
     payload = await home_overview(database, MarksClient({}), now=NOW)
 
     assert payload["opportunity_counts"] == {
-        "new_account": {"last_1_day": 3, "last_3_days": 5, "last_5_days": 7, "last_7_days": 9},
+        "new_account": {
+            "last_1_day": 3,
+            "last_3_days": 5,
+            "last_5_days": 7,
+            "last_7_days": 9,
+            "last_15_days": 11,
+            "last_30_days": 13,
+        },
         "large_amount": {
             key: 2 if include_large else 0
-            for key in ("last_1_day", "last_3_days", "last_5_days", "last_7_days")
+            for key in (
+                "last_1_day",
+                "last_3_days",
+                "last_5_days",
+                "last_7_days",
+                "last_15_days",
+                "last_30_days",
+            )
         },
     }
 
     assert payload["follow_counts"] == {
-        "new_account": {"last_1_day": 1, "last_3_days": 3, "last_5_days": 5, "last_7_days": 7},
-        "large_amount": {"last_1_day": 1, "last_3_days": 1, "last_5_days": 1, "last_7_days": 1},
+        "new_account": {
+            "last_1_day": 1,
+            "last_3_days": 3,
+            "last_5_days": 5,
+            "last_7_days": 7,
+            "last_15_days": 9,
+            "last_30_days": 11,
+        },
+        "large_amount": {
+            "last_1_day": 1,
+            "last_3_days": 1,
+            "last_5_days": 1,
+            "last_7_days": 1,
+            "last_15_days": 1,
+            "last_30_days": 1,
+        },
     }
+
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        settings.new_account_auto_follow_min_price = Decimal("0.51")
+        await session.commit()
+    filtered = await home_overview(database, MarksClient({}), now=NOW)
+    assert all(value == 0 for value in filtered["opportunity_counts"]["new_account"].values())
+    assert (
+        filtered["opportunity_counts"]["large_amount"]
+        == payload["opportunity_counts"]["large_amount"]
+    )
+    assert filtered["follow_counts"] == payload["follow_counts"]
 
 
 @pytest.mark.asyncio

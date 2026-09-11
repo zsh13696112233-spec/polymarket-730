@@ -646,6 +646,8 @@ class HomeOpportunityCountsRead(APIModel):
     last_3_days: int
     last_5_days: int
     last_7_days: int
+    last_15_days: int
+    last_30_days: int
 
 
 class HomeRuleOpportunityCountsRead(APIModel):

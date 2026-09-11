@@ -228,7 +228,6 @@ export default function WhaleAutoFollowWorkspace() {
     <PolyCopyShell
       active="auto-follow"
       title="自动跟单"
-      subtitle="集中配置真实资金策略，并查看每一个信号的自动决策与风控退出结果。"
       actions={
         <>
           <Link className="pcButton ghost" href="/whales/records">查看持仓与流水</Link>
@@ -248,7 +247,7 @@ export default function WhaleAutoFollowWorkspace() {
 
       <section className="pcPanel whaleAutoDecisionPanel" aria-label="自动跟单决策记录">
         <header className="pcPanelHeader whaleRecordsHeader">
-          <div><span className="pcEyebrow">AUTO FOLLOW DECISIONS</span><h2>自动跟单决策</h2><p>每个钱包资产只判断一次；未成交信号也永久保留中文原因。</p></div>
+          <div><h2>自动跟单决策</h2></div>
           <div className="whaleDecisionFilters" aria-label="自动决策筛选">
             <DecisionFilterSelect
               label="命中规则"

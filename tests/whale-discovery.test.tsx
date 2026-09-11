@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WhaleDiscoveryWorkspace from "../app/components/WhaleDiscoveryWorkspace";
@@ -887,7 +887,10 @@ const whaleMarket = {
   ],
 };
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+});
 
 describe("巨鲸请求监测面板", () => {
   it("左右分栏展示成功与失败请求，并在同一次请求重试成功后隐藏旧失败", async () => {
@@ -1199,7 +1202,7 @@ describe("巨鲸持仓页", () => {
     expect(await screen.findByRole("heading", { name: "链上大额资金监测" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Request Monitor")).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "分歧市场" })).toBeInTheDocument();
-    expect(screen.getByLabelText("巨鲸分歧市场")).toHaveTextContent("1 个市场");
+    await waitFor(() => expect(screen.getByLabelText("巨鲸分歧市场")).toHaveTextContent("1 个市场"));
     expect(screen.getByLabelText("Movistar KOI方向")).toHaveTextContent("16.0K USDC");
     expect(screen.getByLabelText("Natus Vincere方向")).toHaveTextContent("10.0K USDC");
     expect(screen.getAllByText("反向巨鲸")).toHaveLength(2);
@@ -1506,4 +1509,62 @@ it("展示持仓补充来源、减仓和窗口外对冲，并禁用不合格跟�
   expect(screen.getByText("钱包对冲")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "跟单" })).toBeDisabled();
   expect(screen.queryByText("窗口累计买入")).not.toBeInTheDocument();
+});
+
+
+describe("监测均价筛选", () => {
+  it("默认筛选、切换规则共用选择，并在重新进入时记住取消状态", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.includes("/api/whales/settings")) return json(settings);
+      if (url.includes("/api/whales/markets?")) return json({ total: 0, items: [] });
+      if (url.includes("/api/whales/history?")) return json({ total: 0, items: [] });
+      return json({});
+    }));
+    const view = render(<WhaleDiscoveryWorkspace />);
+    const checkbox = await screen.findByRole("checkbox", { name: "仅显示均价在策略区间内" });
+    expect(checkbox).toBeChecked();
+    await waitFor(() => expect(requests.some((url) => url.includes("rule=new_account") && url.includes("filter_strategy_price=true"))).toBe(true));
+    expect(await screen.findByText("当前策略均价区间内暂无持仓信号")).toBeInTheDocument();
+    await user.click(checkbox);
+    await waitFor(() => expect(requests.some((url) => url.includes("filter_strategy_price=false"))).toBe(true));
+    await user.click(screen.getByRole("button", { name: /全量超大额/ }));
+    await waitFor(() => expect(requests.some((url) => url.includes("rule=large_amount") && url.includes("filter_strategy_price=false"))).toBe(true));
+    expect(checkbox).not.toBeChecked();
+    expect(requests.some((url) => url.includes("/history?rule=new_account") && url.includes("filter_strategy_price=true"))).toBe(true);
+    expect(requests.some((url) => url.includes("/history?rule=large_amount") && url.includes("filter_strategy_price=false"))).toBe(true);
+    view.unmount();
+    requests.length = 0;
+    render(<WhaleDiscoveryWorkspace />);
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "仅显示均价在策略区间内" })).not.toBeChecked());
+    await waitFor(() => expect(requests.some((url) => url.includes("filter_strategy_price=false"))).toBe(true));
+    expect(requests.some((url) => url.includes("filter_strategy_price=true"))).toBe(false);
+  });
+});
+
+
+it.each(["markets", "history"])("切换均价筛选会取消 %s 旧请求，迟到的错误不覆盖新列表", async (endpoint) => {
+  const user = userEvent.setup();
+  let finishOld: ((response: Response) => void) | undefined;
+  let oldSignal: AbortSignal | null | undefined;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/api/whales/settings")) return json(settings);
+    if (url.includes(`/api/whales/${endpoint}?`) && url.includes("filter_strategy_price=true")) {
+      oldSignal = init?.signal;
+      return await new Promise<Response>((resolve) => { finishOld = resolve; });
+    }
+    return json({ total: 0, items: [] });
+  }));
+  render(<WhaleDiscoveryWorkspace />);
+  await waitFor(() => expect(finishOld).toBeDefined());
+  await user.click(screen.getByRole("checkbox", { name: "仅显示均价在策略区间内" }));
+  expect(oldSignal?.aborted).toBe(true);
+  expect(await screen.findByText("暂未发现仍在持有的巨鲸钱包")).toBeInTheDocument();
+  await act(async () => { finishOld?.(json({ detail: "旧筛选请求失败" }, 500)); });
+  expect(screen.queryByText("旧筛选请求失败")).not.toBeInTheDocument();
+  expect(screen.getByText("暂未发现仍在持有的巨鲸钱包")).toBeInTheDocument();
 });

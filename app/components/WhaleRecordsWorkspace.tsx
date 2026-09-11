@@ -128,7 +128,6 @@ export default function WhaleRecordsWorkspace() {
     <PolyCopyShell
       active="whale-records"
       title="巨鲸跟单记录"
-      subtitle="从真实买入到卖出或结算赎回，逐笔还原投入、费用与最终盈亏。"
       actions={
         <>
           <Link className="pcButton ghost" href="/positions">查看持仓管理</Link>
@@ -157,7 +156,7 @@ export default function WhaleRecordsWorkspace() {
 
       <section className="pcPanel whaleLedgerPanel">
         <header className="pcPanelHeader whaleRecordsHeader">
-          <div><span className="pcEyebrow">FOLLOW LEDGER</span><h2>历史流水</h2><p>每一行对应一笔买入、卖出、赎回或结算亏损。</p></div>
+          <div><h2>历史流水</h2></div>
           <div className="whaleDateFilters">
             <label><span>开始</span><input aria-label="流水开始日期" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
             <label><span>结束</span><input aria-label="流水结束日期" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>

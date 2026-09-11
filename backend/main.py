@@ -1374,6 +1374,7 @@ def create_app(
         min_amount_usdc: Annotated[Decimal | None, Query(ge=0)] = None,
         min_remaining_minutes: Annotated[int | None, Query(ge=0)] = None,
         max_price_delta_cents: Annotated[Decimal | None, Query(ge=0)] = None,
+        filter_strategy_price: bool = False,
         include_exited: bool = False,
         include_hedged: bool = True,
         sort: str = Query(default="default"),
@@ -1390,6 +1391,7 @@ def create_app(
             min_amount_usdc=min_amount_usdc,
             min_remaining_minutes=min_remaining_minutes,
             max_price_delta_cents=max_price_delta_cents,
+            filter_strategy_price=filter_strategy_price,
             include_exited=include_exited,
             include_hedged=include_hedged,
             sort=sort,
@@ -1403,6 +1405,7 @@ def create_app(
     async def get_whale_history(
         request: Request,
         rule: str = Query(default="new_account", pattern="^(new_account|large_amount)$"),
+        filter_strategy_price: bool = False,
         limit: int = Query(default=100, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
     ) -> WhaleHistoryListRead:
@@ -1410,6 +1413,7 @@ def create_app(
         payload = await list_whale_history(
             request.app.state.database,
             rule=rule,
+            filter_strategy_price=filter_strategy_price,
             limit=limit,
             offset=offset,
         )

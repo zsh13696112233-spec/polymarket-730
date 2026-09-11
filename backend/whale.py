@@ -16,9 +16,11 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, or_, select
+import httpx
+from sqlalchemy import and_, delete, false, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from backend.config import Settings
 from backend.db import Database
@@ -3581,11 +3583,18 @@ class WhaleFollowExecutor:
                 )
                 break
             except PolymarketAPIError as error:
-                if not error.rate_limited or attempt == 3:
+                if not error.rate_limited and not isinstance(error.__cause__, httpx.TransportError):
                     raise
-                # Leave the Data API's ten-second window before retrying this
-                # read. Never retry order submission or use stale holdings.
-                await asyncio.sleep(max(10 * 2**attempt, float(error.retry_after or 0)))
+                if attempt == 3:
+                    raise PolymarketAPIError(
+                        f"{error}（已重试 3 次，仍失败）",
+                        rate_limited=error.rate_limited,
+                        retry_after=error.retry_after,
+                    ) from error
+                # Retry only this fresh position read, never order submission.
+                # Rate limits must leave the Data API's ten-second window.
+                delay = 10 * 2**attempt if error.rate_limited else 5
+                await asyncio.sleep(max(delay, float(error.retry_after or 0)))
         _, _, _, reason = _position_quality(entry, positions, ratio_threshold)
         if reason is not None:
             raise ValueError(
@@ -6294,6 +6303,22 @@ async def list_whale_auto_decisions(
     return {"total": total, "items": items}
 
 
+def whale_strategy_price_filter(settings: WhaleSettings | None) -> ColumnElement[bool]:
+    """Filter saved signal averages using each rule's current strategy bounds."""
+    if settings is None:
+        return false()
+    return or_(
+        *[
+            and_(
+                WhaleEntryRuleState.rule_type == rule,
+                WhaleEntry.avg_buy_price >= getattr(settings, f"{rule}_auto_follow_min_price"),
+                WhaleEntry.avg_buy_price <= getattr(settings, f"{rule}_auto_follow_max_price"),
+            )
+            for rule in WHALE_RULES
+        ]
+    )
+
+
 async def list_whale_markets(
     database: Database,
     *,
@@ -6308,6 +6333,7 @@ async def list_whale_markets(
     offset: int = 0,
     condition_id: str | None = None,
     include_trades: bool = False,
+    filter_strategy_price: bool = False,
     rule: str = NEW_ACCOUNT_RULE,
 ) -> dict[str, Any]:
     if rule not in WHALE_RULES:
@@ -6327,6 +6353,8 @@ async def list_whale_markets(
                 _not_excluded_wallet(WhaleEntry.proxy_wallet),
             )
         )
+        if filter_strategy_price:
+            entry_query = entry_query.where(whale_strategy_price_filter(settings))
         if condition_id:
             entry_query = entry_query.where(WhaleEntry.condition_id == condition_id)
         entries = list((await session.scalars(entry_query)).all())
@@ -6625,6 +6653,7 @@ async def list_whale_history(
     database: Database,
     *,
     rule: str,
+    filter_strategy_price: bool = False,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -6632,14 +6661,18 @@ async def list_whale_history(
         raise ValueError("巨鲸监控规则无效")
     now = utcnow()
     async with database.sessions() as session:
+        filters = [
+            WhaleEntryRuleState.rule_type == rule,
+            WhaleEntryRuleState.active.is_(False),
+            _not_excluded_wallet(WhaleEntry.proxy_wallet),
+        ]
+        if filter_strategy_price:
+            settings = await session.get(WhaleSettings, 1)
+            filters.append(whale_strategy_price_filter(settings))
         state_query = (
             select(WhaleEntryRuleState)
             .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
-            .where(
-                WhaleEntryRuleState.rule_type == rule,
-                WhaleEntryRuleState.active.is_(False),
-                _not_excluded_wallet(WhaleEntry.proxy_wallet),
-            )
+            .where(*filters)
             .order_by(
                 WhaleEntryRuleState.inactive_at.desc(),
                 WhaleEntryRuleState.last_qualified_at.desc(),
@@ -6650,11 +6683,7 @@ async def list_whale_history(
             await session.scalar(
                 select(func.count(WhaleEntryRuleState.id))
                 .join(WhaleEntry, WhaleEntry.id == WhaleEntryRuleState.entry_id)
-                .where(
-                    WhaleEntryRuleState.rule_type == rule,
-                    WhaleEntryRuleState.active.is_(False),
-                    _not_excluded_wallet(WhaleEntry.proxy_wallet),
-                )
+                .where(*filters)
             )
             or 0
         )

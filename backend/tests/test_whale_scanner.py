@@ -9,6 +9,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -3625,9 +3626,10 @@ async def test_dual_amount_preserves_eligibility_and_does_not_top_up(
 
 
 @pytest.mark.parametrize("phase", ["quote", "execute"])
+@pytest.mark.parametrize("error_kind", ["rate_limit", "connection"])
 @pytest.mark.parametrize("result", ["recovered", "exited", "exhausted", "cancelled"])
-async def test_buy_position_rate_limit_retries_before_proceeding(
-    database, monkeypatch, phase, result
+async def test_buy_position_read_retries_before_proceeding(
+    database, monkeypatch, phase, result, error_kind
 ):
     from backend.tests.test_whale_execution import follow_quote
     from backend.whale import WhaleFollowExecutor
@@ -3647,7 +3649,11 @@ async def test_buy_position_rate_limit_retries_before_proceeding(
         calls += 1
         assert user == client.wallet
         assert condition_ids == [client.condition_id]
-        if calls <= 2 or result == "exhausted":
+        if calls <= 3 or result == "exhausted":
+            if error_kind == "connection":
+                raise PolymarketAPIError(
+                    "Polymarket 接口连接失败（ConnectError，data-api.polymarket.com）"
+                ) from httpx.ConnectError("connection failed")
             raise PolymarketAPIError(
                 "Polymarket 接口请求过于频繁",
                 rate_limited=True,
@@ -3700,9 +3706,13 @@ async def test_buy_position_rate_limit_retries_before_proceeding(
     if result == "exited":
         assert "退出" in str(raised.value)
     assert continued == ([phase] if result == "recovered" else [])
-    assert calls == {"recovered": 3, "exited": 3, "exhausted": 4, "cancelled": 1}[result]
-    assert delays == (
-        [15] if result == "cancelled" else [15, 20, 40] if result == "exhausted" else [15, 20]
-    )
+    if result == "exhausted":
+        assert "已重试 3 次，仍失败" in str(raised.value)
+        assert ("ConnectError" if error_kind == "connection" else "请求过于频繁") in str(
+            raised.value
+        )
+    assert calls == (1 if result == "cancelled" else 4)
+    expected_delays = [15, 20, 40] if error_kind == "rate_limit" else [5, 5, 5]
+    assert delays == (expected_delays[:1] if result == "cancelled" else expected_delays)
     async with database.sessions() as session:
         assert not list(await session.scalars(select(WhaleOrder)))

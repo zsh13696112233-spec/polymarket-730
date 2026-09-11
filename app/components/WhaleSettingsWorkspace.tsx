@@ -100,7 +100,6 @@ function WhaleExclusionManager({ onReload }: { onReload: () => Promise<void> }) 
     <div className="whaleExclusionManager">
       <div className="whaleExclusionHeading">
         <div>
-          <span className="pcEyebrow">ACCOUNT FILTER</span>
           <h3>账户排除名单</h3>
           <p>排除后不再监测、统计或允许跟单；底层历史和真实交易账本不会删除。</p>
         </div>
@@ -248,9 +247,7 @@ export function WhaleSettingsPanel({
       <section className="pcPanel whaleInlineSettingsPanel" aria-label="巨鲸监测设置">
         <header className="pcPanelHeader">
           <div>
-            <span className="pcEyebrow">WHALE DISCOVERY</span>
             <h2>监测条件</h2>
-            <p>成交窗口固定为 24 小时；新号和全量超大额规则共用一次扫描。</p>
           </div>
           {onClose && <button className="whaleSettingsClose" type="button" onClick={onClose}>收起设置</button>}
         </header>
@@ -394,7 +391,7 @@ function AutoStrategyCard({
   return (
     <section className={`whaleAutoStrategyCard ${enabled ? "enabled" : ""}`}>
       <header>
-        <div><span>REAL AUTO FOLLOW</span><h3>{title}</h3></div>
+        <div><h3>{title}</h3></div>
         <label className="whaleAutoToggle">
           <input
             type="checkbox"
@@ -653,9 +650,7 @@ export function WhaleAutoSettingsPanel({
     <section className="pcPanel whaleInlineSettingsPanel" aria-label="巨鲸自动跟单设置">
       <header className="pcPanelHeader whaleAutoCompactHeader">
         <div>
-          <span className="pcEyebrow">REAL AUTO FOLLOW</span>
           <h2>自动跟单策略</h2>
-          <p>默认显示当前配置；需要调整时再展开编辑。</p>
         </div>
         <button
           className="pcButton ghost"
@@ -736,7 +731,7 @@ export function WhaleAutoSettingsPanel({
             )}
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
-                <div><span>DUAL MATCH</span><h3>双重命中跟单金额</h3></div>
+                <div><h3>双重命中跟单金额</h3></div>
                 <label className="whaleAutoToggle">
                   <input type="checkbox" aria-label="启用双重命中独立金额" checked={resolvedDualEnabled} disabled={!settings || busy} onChange={(event) => setDualEnabled(event.target.checked)} />
                   <b>{resolvedDualEnabled ? "已启用" : "沿用原策略"}</b>
@@ -747,7 +742,7 @@ export function WhaleAutoSettingsPanel({
             </section>
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
-                <div><span>CONFLICT PRIORITY</span><h3>分歧退出优先级</h3></div>
+                <div><h3>分歧退出优先级</h3></div>
                 <label className="whaleAutoToggle">
                   <input type="checkbox" aria-label="启用全量超大额优先规则" checked={resolvedLargeConflictPriorityEnabled} disabled={!settings || busy} onChange={(event) => setLargeConflictPriorityEnabled(event.target.checked)} />
                   <b>{resolvedLargeConflictPriorityEnabled ? "全量优先" : "旧版规则"}</b>
@@ -757,7 +752,7 @@ export function WhaleAutoSettingsPanel({
             </section>
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
-                <div><span>SHARED MARKET LIMIT</span><h3>单市场共享上限</h3></div>
+                <div><h3>单市场共享上限</h3></div>
                 <label className="whaleAutoToggle">
                   <input type="checkbox" aria-label="启用单市场共享上限" checked={resolvedMarketCapEnabled} disabled={!settings || busy} onChange={(event) => setMarketCapEnabled(event.target.checked)} />
                   <b>{resolvedMarketCapEnabled ? "已开启" : "暂不限制"}</b>
@@ -812,7 +807,6 @@ export default function WhaleSettingsWorkspace() {
     <PolyCopyShell
       active="whales"
       title="巨鲸监测"
-      subtitle="监测条件已经合并到巨鲸页面"
     >
       {loadError && <div className="pcAlert danger" role="alert">{loadError}</div>}
       <WhaleSettingsPanel settings={settings} onSettingsChange={setSettings} onReload={load} />

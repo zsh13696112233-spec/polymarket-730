@@ -33,7 +33,10 @@ function NavIcon({ id }: { id: WorkspaceView }) {
   if (id === "home") {
     return <svg {...common}><path d="m3.5 10 8.5-7 8.5 7" /><path d="M5.5 8.5V21h13V8.5" /><path d="M9.5 21v-7h5v7" /></svg>;
   }
-  if (id === "whale-records" || id === "positions") {
+  if (id === "positions") {
+    return <svg {...common}><rect x="3.5" y="7" width="17" height="13" rx="2" /><path d="M8 7V5a1.5 1.5 0 0 1 1.5-1.5h5A1.5 1.5 0 0 1 16 5v2" /><path d="M3.5 12a22 22 0 0 0 17 0" /><path d="M10 13h4v3h-4z" /></svg>;
+  }
+  if (id === "whale-records") {
     return <svg {...common}><path d="M8.5 6h11" /><path d="M8.5 12h11" /><path d="M8.5 18h11" /><path d="m3.75 6 1 1 1.75-2" /><path d="m3.75 12 1 1 1.75-2" /><path d="m3.75 18 1 1 1.75-2" /></svg>;
   }
   if (id === "auto-follow") {
@@ -51,13 +54,11 @@ function NavIcon({ id }: { id: WorkspaceView }) {
 export function PolyCopyShell({
   active,
   title,
-  subtitle,
   actions,
   children,
 }: {
   active: WorkspaceView;
   title: string;
-  subtitle: string;
   actions?: ReactNode;
   children: ReactNode;
 }) {
@@ -80,7 +81,6 @@ export function PolyCopyShell({
           />
           <span>
             <strong>PolyCopy</strong>
-            <small>ONCHAIN SIGNAL MONITOR</small>
           </span>
         </Link>
         <nav className="pcNavigation" aria-label="主导航">
@@ -133,7 +133,6 @@ export function PolyCopyShell({
             </button>
             <div>
               <h1>{title}</h1>
-              <p>{subtitle}</p>
             </div>
           </div>
           {actions && <div className="pcTopActions">{actions}</div>}

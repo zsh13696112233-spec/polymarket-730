@@ -61,7 +61,7 @@ export default function PositionsWorkspace() {
   useVisibleAutoRefresh(refresh, 10_000);
   const positions = portfolio?.positions.filter((position) => position.status !== "settled") ?? [];
   return (
-    <PolyCopyShell active="positions" title="持仓管理" subtitle="未结算持仓 · 一键卖出"
+    <PolyCopyShell active="positions" title="持仓管理"
       actions={<button className="pcButton ghost" disabled={loading} onClick={() => void refresh()}>{loading ? "刷新中…" : "刷新持仓"}</button>}>
       <div className="walletPositions">
         {error && <div className="pcFormError" role="alert">{error}；刷新成功前暂停操作。</div>}
@@ -140,7 +140,7 @@ function SellDialog({ position, onClose, onCompleted }: { position: Position; on
       setPreview(null); submitting.current = false; setBusy(false); void onCompleted();
     }
   };
-  return <ModalShell title="确认卖出全部可卖份额" eyebrow="SELL POSITION" onClose={() => { if (!submitting.current) onClose(); }}
+  return <ModalShell title="确认卖出全部可卖份额" onClose={() => { if (!submitting.current) onClose(); }}
     footer={result ? <button className="pcButton primary" onClick={onClose}>完成</button> : <>
       <button className="pcButton ghost" disabled={busy} onClick={onClose}>取消</button>
       {error && !preview && <button className="pcButton ghost" disabled={busy} onClick={() => void requestPreview()}>重新获取</button>}

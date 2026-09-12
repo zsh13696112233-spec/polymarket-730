@@ -389,7 +389,7 @@ export default function HomeWorkspace() {
       {loading && !overview ? <div className="pcPanel pcLoading homeLoading">正在汇总运行与跟单数据…</div> : overview && <>
         <section className="homeMetrics" aria-label="今日核心指标">
           <CopyFlowMetricCard buyAmount={overview.today.buy_amount_usdc} buyCount={overview.today.buy_count} exitProceeds={overview.today.conflict_exit_proceeds_usdc} exitCount={overview.today.conflict_exit_count} signals={overview.opportunity_counts} />
-          <MetricCard label="今日已实现盈亏" value={formatCompactSignedUsdc(overview.today.realized_pnl_usdc)} detail={`已实现 ROI ${formatPercent(overview.today.realized_roi_percent)}`} tone={pnlClass(overview.today.realized_pnl_usdc)} effectAngle={18} />
+          <MetricCard label="今日已实现盈亏" value={formatCompactSignedUsdc(overview.today.realized_pnl_usdc)} detail={`已实现收益率 ${formatPercent(overview.today.realized_roi_percent)}`} tone={pnlClass(overview.today.realized_pnl_usdc)} effectAngle={18} />
           <MetricCard label="当前持仓浮动盈亏合计" value={formatCompactSignedUsdc(overview.today.unrealized_pnl_usdc)} detail={overview.wallet.valuation_complete ? null : "估值不完整"} secondaryDetail={<>获胜收益 <span className={pnlClass(overview.wallet.winning_pnl_usdc)}>{formatCompactSignedUsdc(overview.wallet.winning_pnl_usdc)}</span></>} tone={pnlClass(overview.today.unrealized_pnl_usdc)} effectAngle={-24} />
           <MetricCard label="今日结束仓位胜率" value={formatRate(overview.today.win_rate_percent)} detail={`${overview.today.win_count} 胜 · ${overview.today.loss_count} 负${overview.today.flat_count ? ` · ${overview.today.flat_count} 平` : ""}${performanceExclusionDetail(overview.today.excluded_conflict_exit_count, overview.today.excluded_chain_test_count)}`} effectAngle={32} />
         </section>

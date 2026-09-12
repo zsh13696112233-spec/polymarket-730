@@ -116,7 +116,7 @@ describe("首页运行与跟单看板", () => {
     expect(within(flowCard).getByText("8.75 USDC")).toBeInTheDocument();
     expect(within(flowCard).getByText("2 次买入 · 1 次分歧退出到账")).toBeInTheDocument();
     expect(screen.getAllByText("-3.00 USDC").length).toBeGreaterThan(0);
-    expect(screen.getByText("已实现 ROI -25.0%")).toBeInTheDocument();
+    expect(screen.getByText("已实现收益率 -25.0%")).toBeInTheDocument();
     expect(screen.getByText("134.20 USDC")).toBeInTheDocument();
     expect(screen.queryByText("钱包总资产估值")).not.toBeInTheDocument();
     expect(screen.getByText("当前持仓浮动盈亏合计")).toBeInTheDocument();

@@ -5,12 +5,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from polymarket.models.clob.order_response import AcceptedOrder
 from polymarket.models.clob.orders import SignedOrder
 from pydantic import ValidationError
 
 from backend.keychain import KeychainReference
+from backend.polymarket import PolymarketClient
+from backend.public_requests import PublicRequestScheduler
 from backend.schemas import ExecutionAccountUpdate
 from backend.trading import (
     COLLATERAL_ADAPTER,
@@ -63,20 +66,11 @@ class FakeClient:
             trading=SimpleNamespace(fees_enabled=False, fee_schedule=None),
         )
 
-    async def get_order_book(self, *, token_id):
-        assert token_id == "99"
-        return SimpleNamespace(neg_risk=self.neg_risk)
+    async def get_order_book(self, **kwargs):
+        raise AssertionError("public reads must use HTTP")
 
-    def list_markets(self, *, condition_ids, page_size):
-        assert condition_ids == [self.market.condition_id]
-        assert page_size == 1
-        market = self.market
-
-        class Paginator:
-            async def first_page(self):
-                return SimpleNamespace(items=(market,))
-
-        return Paginator()
+    def list_markets(self, **kwargs):
+        raise AssertionError("public reads must use HTTP")
 
     async def create_market_order(self, **kwargs):
         self.created.append(kwargs)
@@ -99,7 +93,47 @@ class FakeClient:
 
 
 def trader(client: FakeClient) -> UnifiedPolymarketTrader:
+    def public_response(request):
+        if request.url.path == "/book":
+            assert request.url.params["token_id"] == "99"
+            return httpx.Response(200, json={"asset_id": "99", "neg_risk": client.neg_risk})
+        assert request.url.path == "/markets"
+        assert request.url.params["condition_ids"] == CONDITION
+        market = client.market
+        state = getattr(
+            market,
+            "state",
+            SimpleNamespace(closed=False, active=True, accepting_orders=True, neg_risk=False),
+        )
+        schedule = market.trading.fee_schedule
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "conditionId": market.condition_id,
+                    "clobTokenIds": ["99", "100"],
+                    "closed": state.closed,
+                    "active": state.active,
+                    "acceptingOrders": state.accepting_orders,
+                    "negRisk": state.neg_risk,
+                    "feesEnabled": market.trading.fees_enabled,
+                    "feeSchedule": {"rate": str(schedule.rate), "exponent": str(schedule.exponent)}
+                    if schedule
+                    else None,
+                }
+            ],
+        )
+
+    public = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        clob_api_url="https://clob.test",
+        timeout=1,
+        transport=httpx.MockTransport(public_response),
+        scheduler=PublicRequestScheduler(interval=0, trades_interval=0),
+    )
     result = UnifiedPolymarketTrader(
+        public_client=public,
         host="https://clob.test",
         keychain=SimpleNamespace(),
         key_reference=KeychainReference(service="test", account="test"),
@@ -711,8 +745,6 @@ async def test_open_orders_reads_every_sdk_page(empty):
     "fees,closed,valid", [(False, False, True), (None, False, False), (False, True, False)]
 )
 async def test_wallet_market_metadata_fails_closed(fees, closed, valid):
-    from unittest.mock import AsyncMock
-
     client = FakeClient()
     market = SimpleNamespace(
         condition_id=CONDITION,
@@ -722,12 +754,10 @@ async def test_wallet_market_metadata_fails_closed(fees, closed, valid):
         state=SimpleNamespace(closed=closed, active=True, accepting_orders=True, neg_risk=False),
         trading=SimpleNamespace(fees_enabled=fees, fee_schedule=None),
     )
-    client.list_markets = lambda **kwargs: SimpleNamespace(
-        first_page=AsyncMock(return_value=SimpleNamespace(items=[market]))
-    )
+    client.market = market
     sdk = trader(client)
     if valid:
-        assert await sdk.sell_market(CONDITION, "99") is market
+        assert (await sdk.sell_market(CONDITION, "99")).condition_id == CONDITION
     else:
         with pytest.raises(TradingUnavailable, match="资料不完整"):
             await sdk.sell_market(CONDITION, "99")

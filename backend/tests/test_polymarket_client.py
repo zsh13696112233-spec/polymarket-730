@@ -6,10 +6,8 @@ from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from time import monotonic
-from types import SimpleNamespace
 
 import httpx
-import polymarket
 import pytest
 
 from backend.polymarket import (
@@ -70,52 +68,32 @@ def test_configure_polymarket_proxy_overrides_process_proxy_environment(monkeypa
 
 @pytest.mark.asyncio
 async def test_resolve_localized_sports_url_uses_event_slug_and_maps_outcomes(monkeypatch):
-    market = SimpleNamespace(
-        condition_id="0x" + "9" * 64,
-        question="测试市场会通过吗？",
-        group_item_title=None,
-        slug="test-market",
-        icon=None,
-        image=None,
-        tags=(),
-        events=(SimpleNamespace(slug="test-event", title="测试事件"),),
-        outcomes=SimpleNamespace(
-            yes=SimpleNamespace(label="Yes", token_id="asset-yes", price=Decimal("0.51")),
-            no=SimpleNamespace(label="No", token_id="asset-no", price=Decimal("0.49")),
-        ),
-        state=SimpleNamespace(
-            closed=False,
-            active=True,
-            accepting_orders=True,
-            neg_risk=False,
-            end_date=None,
-        ),
-        trading=SimpleNamespace(
-            minimum_order_size=Decimal("5"),
-            minimum_tick_size=Decimal("0.01"),
-            fee_schedule=SimpleNamespace(rate=Decimal("0.05"), exponent=1),
-        ),
-        metrics=SimpleNamespace(liquidity=Decimal("1000"), volume_24hr=Decimal("2000")),
-        prices=SimpleNamespace(best_bid=Decimal("0.49"), best_ask=Decimal("0.51")),
-    )
+    def handler(request):
+        assert request.url.path == "/events/slug/epl-che-bri-2026-08-30"
+        return httpx.Response(
+            200,
+            json={
+                "title": "测试事件",
+                "slug": "test-event",
+                "markets": [
+                    {
+                        "conditionId": "0x" + "9" * 64,
+                        "question": "测试市场会通过吗？",
+                        "slug": "test-market",
+                        "outcomes": '["Yes", "No"]',
+                        "clobTokenIds": '["asset-yes", "asset-no"]',
+                        "outcomePrices": '["0.51", "0.49"]',
+                        "feeSchedule": {"rate": "0.05", "exponent": 1},
+                    }
+                ],
+            },
+        )
 
-    class FakePublicClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        async def get_event(self, *, slug: str):
-            assert slug == "epl-che-bri-2026-08-30"
-            return SimpleNamespace(title="测试事件", slug="test-event", markets=(market,))
-
-    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
     client = PolymarketClient(
         data_api_url="https://data.test",
         gamma_api_url="https://gamma.test",
         timeout=1,
-        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        transport=httpx.MockTransport(handler),
     )
     try:
         resolved = await client.resolve_market_url(
@@ -245,7 +223,8 @@ async def test_large_trade_requests_are_serialized_and_paced():
         timeout=1,
         transport=httpx.MockTransport(handler),
     )
-    client.LARGE_TRADE_REQUEST_INTERVAL_SECONDS = 0.05
+    client._scheduler.trades_interval = 0.05
+    client._scheduler.interval = 0
     now = datetime(2026, 8, 16, 2, 3, 4)
     try:
         await asyncio.gather(
@@ -422,6 +401,38 @@ async def test_official_holders_and_market_positions_are_parsed(monkeypatch):
     asset_id = "asset-yes"
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/market-positions":
+            assert dict(request.url.params) == {
+                "market": condition_id,
+                "status": "OPEN",
+                "sortBy": "TOKENS",
+                "sortDirection": "DESC",
+                "limit": "20",
+                "offset": "0",
+            }
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "token": asset_id,
+                        "positions": [
+                            {
+                                "proxyWallet": TEST_ADDRESS.upper(),
+                                "asset": asset_id,
+                                "conditionId": condition_id,
+                                "avgPrice": "0.40",
+                                "size": "25000.5",
+                                "totalBought": "25000.5",
+                                "currPrice": "0.60",
+                                "currentValue": "15000.3",
+                                "outcome": "Yes",
+                                "outcomeIndex": 0,
+                                "verified": True,
+                            }
+                        ],
+                    }
+                ],
+            )
         assert request.url.path == "/holders"
         assert request.url.params["market"] == condition_id
         assert request.url.params["limit"] == "20"
@@ -446,45 +457,6 @@ async def test_official_holders_and_market_positions_are_parsed(monkeypatch):
             ],
         )
 
-    position = SimpleNamespace(
-        wallet=TEST_ADDRESS.upper(),
-        token_id=asset_id,
-        condition_id=condition_id,
-        avg_price=Decimal("0.40"),
-        size=Decimal("25000.5"),
-        total_bought=Decimal("25000.5"),
-        cur_price=Decimal("0.60"),
-        current_value=Decimal("15000.3"),
-        outcome="Yes",
-        outcome_index=0,
-        name="Position Whale",
-        profile_image="https://example.test/whale.png",
-        verified=True,
-    )
-
-    class FakePaginator:
-        async def first_page(self):
-            return SimpleNamespace(items=(SimpleNamespace(token=asset_id, positions=(position,)),))
-
-    class FakePublicClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        def list_market_positions(self, **kwargs):
-            assert kwargs == {
-                "market": condition_id,
-                "status": "OPEN",
-                "sort_by": "TOKENS",
-                "sort_direction": "DESC",
-                "page_size": 20,
-            }
-            return FakePaginator()
-
-    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
-
     client = PolymarketClient(
         data_api_url="https://data.test",
         gamma_api_url="https://gamma.test",
@@ -507,28 +479,17 @@ async def test_official_holders_and_market_positions_are_parsed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_profile_uses_public_sdk(monkeypatch):
-    class FakePublicClient:
-        async def __aenter__(self):
-            return self
+async def test_resolve_profile_uses_public_http(monkeypatch):
+    def handler(request):
+        assert request.url.path == "/public-profile"
+        assert request.url.params["address"] == TEST_ADDRESS
+        return httpx.Response(200, json={"proxyWallet": TEST_ADDRESS.upper(), "name": "HTTP Whale"})
 
-        async def __aexit__(self, *_):
-            return None
-
-        async def get_public_profile(self, address):
-            assert address == TEST_ADDRESS
-            return SimpleNamespace(
-                wallet=TEST_ADDRESS.upper(),
-                name="SDK Whale",
-                pseudonym="sdk-whale",
-            )
-
-    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
     client = PolymarketClient(
         data_api_url="https://data.test",
         gamma_api_url="https://gamma.test",
         timeout=1,
-        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        transport=httpx.MockTransport(handler),
     )
     try:
         profile = await client.resolve_profile(TEST_ADDRESS, None)
@@ -537,7 +498,7 @@ async def test_resolve_profile_uses_public_sdk(monkeypatch):
 
     assert profile.submitted_address == TEST_ADDRESS
     assert profile.proxy_wallet == TEST_ADDRESS
-    assert profile.label == "SDK Whale"
+    assert profile.label == "HTTP Whale"
 
 
 @pytest.mark.asyncio
@@ -590,33 +551,28 @@ async def test_whale_public_profile_parses_fields_and_returns_none_for_404():
 
 @pytest.mark.asyncio
 async def test_fetch_official_tags_uses_stable_order_and_skips_invalid_rows(monkeypatch):
-    class FakePaginator:
-        async def iter_items(self):
-            for item in (
-                SimpleNamespace(id=1, slug="sports", label="Sports"),
-                SimpleNamespace(id=64, slug="esports", label="Esports"),
-                SimpleNamespace(id=65, slug=None, label="missing slug"),
-            ):
-                yield item
-
-    class FakePublicClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        def list_tags(self, **kwargs):
-            assert kwargs == {"order": "id", "ascending": True, "page_size": 100}
-            return FakePaginator()
-
-    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
+    def handler(request):
+        assert request.url.path == "/tags"
+        assert dict(request.url.params) == {
+            "order": "id",
+            "ascending": "true",
+            "limit": "100",
+            "offset": "0",
+        }
+        return httpx.Response(
+            200,
+            json=[
+                {"id": 1, "slug": "sports", "label": "Sports"},
+                {"id": 64, "slug": "esports", "label": "Esports"},
+                {"id": 65, "label": "missing slug"},
+            ],
+        )
 
     client = PolymarketClient(
         data_api_url="https://data.test",
         gamma_api_url="https://gamma.test",
         timeout=1,
-        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        transport=httpx.MockTransport(handler),
     )
     try:
         tags = await client.fetch_tags()
@@ -1274,5 +1230,285 @@ async def test_supplemental_trades_allow_zero_threshold_and_filter_market():
         assert requests[1].url.path == "/markets"
         assert requests[1].url.params["limit"] == "100"
         assert requests[1].url.params["order"] == "volume24hr"
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    "path,resource",
+    [
+        ("event/example", "events"),
+        ("zh/event/example", "events"),
+        ("market/example", "markets"),
+        ("event/parent/example", "markets"),
+        ("zh-CN/market/example", "markets"),
+        ("sports/epl/example", "events"),
+    ],
+)
+async def test_market_url_http_routes_and_metadata(path, resource):
+    def handler(request):
+        assert request.url.path == f"/{resource}/slug/example"
+        market = {
+            "conditionId": "condition",
+            "question": "市场",
+            "slug": "example",
+            "outcomes": ["Yes", "No"],
+            "clobTokenIds": ["1", "2"],
+            "tags": [{"id": "1", "slug": "sports", "label": "体育"}],
+        }
+        if resource == "events":
+            payload = {"title": "事件", "slug": "example", "markets": [market]}
+        else:
+            payload = {**market, "events": [{"title": "事件", "slug": "parent"}]}
+        return httpx.Response(200, json=payload)
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.resolve_market_url(f"https://polymarket.com/{path}")
+        assert result.event_title == "事件"
+        assert result.markets[0].tags[0].slug == "sports"
+        assert result.markets[0].clob_token_ids == ("1", "2")
+    finally:
+        await client.close()
+
+
+async def test_tags_http_pages_respect_limit_and_monitor_each_page():
+    from backend.whale_requests import WhaleRequestMonitor, capture_whale_requests
+
+    calls = []
+
+    def handler(request):
+        offset, limit = int(request.url.params["offset"]), int(request.url.params["limit"])
+        calls.append((offset, limit))
+        return httpx.Response(
+            200, json=[{"id": i, "slug": f"tag-{i}"} for i in range(offset + 1, offset + limit + 1)]
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    monitor = WhaleRequestMonitor()
+    try:
+        with capture_whale_requests(monitor, "tags"):
+            tags = await client.fetch_tags(limit=125)
+        assert len(tags) == 125
+        assert calls == [(0, 100), (100, 25)]
+        assert len(await monitor.snapshot()) == 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("payload", [None, {}, [{"token": "1", "positions": {}}]])
+async def test_market_positions_reject_malformed_payload(payload):
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
+    )
+    try:
+        with pytest.raises(PolymarketAPIError):
+            await client.fetch_market_positions("condition")
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"conditionId": "wrong"},
+        {"feesEnabled": None, "feeSchedule": None},
+        {"feeSchedule": {"rate": "0.04"}},
+        {"feeSchedule": {"rate": "NaN", "exponent": 1}},
+        {"negRisk": None},
+    ],
+)
+async def test_trading_market_rejects_missing_or_conflicting_metadata(changes):
+    payload = {
+        "conditionId": "condition",
+        "closed": False,
+        "active": True,
+        "acceptingOrders": True,
+        "negRisk": False,
+        "feesEnabled": False,
+        **changes,
+    }
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=[payload])),
+    )
+    try:
+        with pytest.raises(PolymarketAPIError):
+            await client.fetch_trading_market("condition", require_state=True)
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("payload", [{"asset_id": "99"}, {"asset_id": "wrong", "neg_risk": False}])
+async def test_signing_book_rejects_missing_or_wrong_metadata(payload):
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
+    )
+    try:
+        with pytest.raises(PolymarketAPIError):
+            await client.fetch_order_book("99", require_metadata=True)
+    finally:
+        await client.close()
+
+
+async def test_market_positions_preserves_empty_groups_and_filters_other_markets():
+    payload = [
+        {"token": "1", "positions": None},
+        {
+            "token": "2",
+            "positions": [
+                {
+                    "proxyWallet": TEST_ADDRESS,
+                    "conditionId": "other",
+                    "size": "100",
+                }
+            ],
+        },
+    ]
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
+    )
+    try:
+        assert await client.fetch_market_positions("condition") == []
+    finally:
+        await client.close()
+
+
+async def test_market_link_rejects_incomplete_outcome_mapping():
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={
+                    "conditionId": "condition",
+                    "outcomes": ["Yes", "No"],
+                    "clobTokenIds": ["1"],
+                },
+            )
+        ),
+    )
+    try:
+        with pytest.raises(PolymarketAPIError, match="没有可识别"):
+            await client.resolve_market_url("https://polymarket.com/market/example")
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("schedule", [{}, [], "invalid", '{"rate": "0.01"}'])
+async def test_malformed_fee_schedule_is_not_treated_as_fee_free(schedule):
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json=[
+                    {
+                        "conditionId": "condition",
+                        "feesEnabled": False,
+                        "feeSchedule": schedule,
+                    }
+                ],
+            )
+        ),
+    )
+    try:
+        with pytest.raises(PolymarketAPIError, match="手续费"):
+            await client.fetch_trading_market("condition")
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("size", "NaN"),
+        ("size", "Infinity"),
+        ("currentValue", "Infinity"),
+        ("avgPrice", "not-a-price"),
+        ("outcomeIndex", "invalid"),
+        ("proxyWallet", "invalid-wallet"),
+    ],
+)
+async def test_market_positions_reject_invalid_fields(field, value):
+    row = {"proxyWallet": TEST_ADDRESS, "conditionId": "condition", "size": "1", field: value}
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json=[
+                    {
+                        "token": "1",
+                        "positions": [row],
+                    }
+                ],
+            )
+        ),
+    )
+    try:
+        with pytest.raises(PolymarketAPIError):
+            await client.fetch_market_positions("condition")
+    finally:
+        await client.close()
+
+
+async def test_market_positions_normalizes_numeric_strings_and_false_badge():
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json=[
+                    {
+                        "token": "1",
+                        "positions": [
+                            {
+                                "proxyWallet": TEST_ADDRESS,
+                                "conditionId": "condition",
+                                "size": "1.25",
+                                "outcomeIndex": "1",
+                                "verified": "false",
+                            }
+                        ],
+                    }
+                ],
+            )
+        ),
+    )
+    try:
+        position = (await client.fetch_market_positions("condition"))[0]
+        assert position.outcome_index == 1
+        assert position.size == Decimal("1.25")
+        assert position.verified_badge is False
     finally:
         await client.close()

@@ -12,7 +12,12 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
-from backend.polymarket import OrderBookSnapshot, configure_polymarket_proxy
+from backend.polymarket import (
+    OrderBookSnapshot,
+    PolymarketClient,
+    WhaleMarketSnapshot,
+    configure_polymarket_proxy,
+)
 from backend.time_utils import utcnow
 
 ZERO = Decimal("0")
@@ -258,7 +263,9 @@ class UnifiedPolymarketTrader:
         relayer_url: str = "https://relayer-v2.polymarket.com",
         rpc_url: str = "https://polygon.drpc.org",
         proxy_url: str | None = None,
+        public_client: PolymarketClient | None = None,
     ) -> None:
+        self.public_client = public_client
         self.host = host
         self.keychain = keychain
         self.key_reference = key_reference
@@ -329,6 +336,11 @@ class UnifiedPolymarketTrader:
             raise TradingUnavailable(f"SDK 钱包类型 {client.wallet_type} 与 signature_type 不一致")
         return client
 
+    def _public_client(self) -> PolymarketClient:
+        if self.public_client is None:
+            raise TradingUnavailable("公开查询客户端未配置，请重启服务后重试")
+        return self.public_client
+
     async def signer_address(self) -> str:
         return str((await self._client_async()).signer).lower()
 
@@ -342,12 +354,12 @@ class UnifiedPolymarketTrader:
     async def prepare_market(self, request: MarketTradeRequest) -> PreparedMarketOrder:
         client = await self._client_async()
         try:
-            # The pinned SDK owns market metadata resolution. This explicit check
-            # prevents stale local attribution data from changing the exchange used.
-            book = await client.get_order_book(token_id=request.asset_id)
-            sdk_neg_risk = book.neg_risk
-            if sdk_neg_risk != request.neg_risk:
-                raise TradingUnavailable("本地 Neg Risk 标记与 SDK 市场元数据不一致")
+            # Verify exchange attribution with fresh public data before SDK signing.
+            book = await self._public_client().fetch_order_book(
+                request.asset_id, require_metadata=True
+            )
+            if book.neg_risk != request.neg_risk:
+                raise TradingUnavailable("本地 Neg Risk 标记与公开市场元数据不一致")
             if request.side == "BUY":
                 signed_order = await client.create_market_order(
                     token_id=request.asset_id,
@@ -374,9 +386,11 @@ class UnifiedPolymarketTrader:
     async def prepare_limit(self, request: MarketTradeRequest) -> PreparedMarketOrder:
         client = await self._client_async()
         try:
-            book = await client.get_order_book(token_id=request.asset_id)
+            book = await self._public_client().fetch_order_book(
+                request.asset_id, require_metadata=True
+            )
             if book.neg_risk != request.neg_risk:
-                raise TradingUnavailable("本地 Neg Risk 标记与 SDK 市场元数据不一致")
+                raise TradingUnavailable("本地 Neg Risk 标记与公开市场元数据不一致")
             signed = await client.create_limit_order(
                 token_id=request.asset_id,
                 side="SELL",
@@ -416,28 +430,15 @@ class UnifiedPolymarketTrader:
         except Exception as error:
             raise TradingUnavailable("无法核对钱包挂单，暂时不能卖出") from error
 
-    async def sell_market(self, condition_id: str, asset_id: str) -> Any:
+    async def sell_market(self, condition_id: str, asset_id: str) -> WhaleMarketSnapshot:
         try:
-            page = (
-                await (await self._client_async())
-                .list_markets(condition_ids=[condition_id], page_size=1)
-                .first_page()
+            market = await self._public_client().fetch_trading_market(
+                condition_id, require_state=True
             )
-            if len(page.items) != 1:
-                raise ValueError("missing market")
-            market = page.items[0]
-            tokens = (market.outcomes.yes.token_id, market.outcomes.no.token_id)
-            if str(market.condition_id) != condition_id or asset_id not in map(str, tokens):
+            if market.condition_id != condition_id or asset_id not in market.clob_token_ids:
                 raise ValueError("wrong market")
-            if (
-                market.state.closed is not False
-                or market.state.active is not True
-                or market.state.accepting_orders is not True
-                or market.state.neg_risk is None
-            ):
+            if market.closed or not market.active or not market.accepting_orders:
                 raise ValueError("closed market")
-            if market.trading.fees_enabled is not False and market.trading.fee_schedule is None:
-                raise ValueError("missing fees")
             return market
         except Exception as error:
             raise TradingUnavailable("市场未开放交易或资料不完整，无法卖出") from error
@@ -631,25 +632,10 @@ class UnifiedPolymarketTrader:
         if str(trade.trader_side).upper() != "TAKER":
             return ZERO
         try:
-            client = await self._client_async()
-            page = await client.list_markets(
-                condition_ids=[trade.condition_id],
-                page_size=1,
-            ).first_page()
-            market = next(
-                (item for item in page.items if str(item.condition_id) == str(trade.condition_id)),
-                None,
-            )
-            if market is None:
-                raise TradingUnavailable("公开 SDK 未返回成交市场元数据")
-            schedule = market.trading.fee_schedule
-            if schedule is None:
-                if market.trading.fees_enabled is False:
-                    return ZERO
-                raise TradingUnavailable("公开 SDK 市场元数据缺少手续费参数")
+            market = await self._public_client().fetch_trading_market(str(trade.condition_id))
             price = Decimal(trade.price)
-            rate = Decimal(schedule.rate)
-            exponent = Decimal(str(schedule.exponent))
+            rate = market.fee_rate
+            exponent = market.fee_exponent
             effective_rate = rate * ((price * (Decimal(1) - price)) ** exponent)
             fee = Decimal(trade.size) * effective_rate
             return fee.quantize(Decimal("0.00001"), rounding=ROUND_DOWN)

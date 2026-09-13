@@ -65,7 +65,7 @@ async def wallet_executor():
         open_orders=AsyncMock(return_value=[]),
         sell_market=AsyncMock(
             return_value=SimpleNamespace(
-                state=SimpleNamespace(neg_risk=False), trading=SimpleNamespace(fee_schedule=None)
+                neg_risk=False, fee_rate=Decimal("0"), fee_exponent=Decimal("1")
             )
         ),
         prepare_limit=AsyncMock(

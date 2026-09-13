@@ -1615,6 +1615,7 @@ class WhaleDiscoveryScanner:
                     page = list(
                         await self._retry(
                             self.client.fetch_large_trades,
+                            retry_rate_limits=False,
                             filter_amount_usdc=ZERO,
                             start=datetime.fromtimestamp(lower, UTC).replace(tzinfo=None),
                             end=datetime.fromtimestamp(upper, UTC).replace(tzinfo=None),
@@ -1878,12 +1879,14 @@ class WhaleDiscoveryScanner:
                 return results, False
         return results, True
 
-    async def _retry(self, operation: Any, /, **kwargs: Any) -> Any:
+    async def _retry(
+        self, operation: Any, /, *, retry_rate_limits: bool = True, **kwargs: Any
+    ) -> Any:
         for attempt in range(3):
             try:
                 return await operation(**kwargs)
             except PolymarketAPIError as error:
-                if attempt >= 2:
+                if attempt >= 2 or (error.rate_limited and not retry_rate_limits):
                     raise
                 # A 429 is the only API error carrying Retry-After.  When the
                 # provider omits it, use a slightly wider exponential fallback
@@ -3521,6 +3524,7 @@ class WhaleFollowExecutor:
             relayer_url=self.settings.relayer_api_url,
             rpc_url=self.settings.polygon_rpc_url,
             proxy_url=self.settings.proxy_url,
+            public_client=self.client,
         )
         self._trader_cache = trader
         self._trader_cache_key = key
@@ -5214,12 +5218,11 @@ class WhaleFollowExecutor:
             raise ValueError("卖出价格超出市场允许范围")
         if price % book.tick_size != ZERO:
             raise ValueError(f"卖出价格必须符合最小跳动 {book.tick_size}")
-        schedule = market.trading.fee_schedule
         fee = estimated_market_fee(
             selected,
             price,
-            schedule.rate if schedule else ZERO,
-            Decimal(str(schedule.exponent)) if schedule else ONE,
+            market.fee_rate,
+            market.fee_exponent,
         )
         cost = None
         if local is not None:
@@ -5233,7 +5236,7 @@ class WhaleFollowExecutor:
             "title": position.title,
             "outcome": position.outcome,
             "outcome_index": position.outcome_index,
-            "neg_risk": bool(market.state.neg_risk),
+            "neg_risk": bool(market.neg_risk),
             "position_id": local.id if local else None,
             "order_type": order_type,
             "size": selected,

@@ -5,10 +5,8 @@ import json
 from datetime import datetime
 from decimal import Decimal
 from functools import partial
-from types import SimpleNamespace
 
 import httpx
-import polymarket
 import pytest
 
 from backend.polymarket import PolymarketAPIError, PolymarketClient
@@ -115,37 +113,25 @@ async def test_polymarket_request_capture_is_scoped_and_preserves_repeated_query
 
 
 @pytest.mark.asyncio
-async def test_public_sdk_request_capture_records_sdk_source(monkeypatch):
-    class FakePublicClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        async def get_public_profile(self, address):
-            assert address == "0x" + "1" * 40
-            return SimpleNamespace(wallet=address, name="SDK Whale", pseudonym=None)
-
-    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
+async def test_public_profile_capture_records_http_source(monkeypatch):
     monitor = WhaleRequestMonitor()
     client = PolymarketClient(
         data_api_url="https://data.test",
         gamma_api_url="https://gamma.test",
         timeout=1,
-        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"name": "HTTP Whale"})),
     )
     try:
-        with capture_whale_requests(monitor, "scan-sdk"):
+        with capture_whale_requests(monitor, "scan-http"):
             await client.resolve_profile("0x" + "1" * 40, None)
     finally:
         await client.close()
 
     record = (await monitor.snapshot())[0]
-    assert record.scan_id == "scan-sdk"
+    assert record.scan_id == "scan-http"
     assert record.status == "success"
-    assert record.source == "sdk"
-    assert record.url == "https://gamma-api.polymarket.com/public-profile"
+    assert record.source == "http"
+    assert record.url == "https://gamma.test/public-profile"
     assert record.query_params == {"address": "0x" + "1" * 40}
     assert record.http_status == 200
 

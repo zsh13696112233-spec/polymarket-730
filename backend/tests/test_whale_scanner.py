@@ -3716,3 +3716,42 @@ async def test_buy_position_read_retries_before_proceeding(
     assert delays == (expected_delays[:1] if result == "cancelled" else expected_delays)
     async with database.sessions() as session:
         assert not list(await session.scalars(select(WhaleOrder)))
+
+
+async def test_backfill_rate_limit_stops_retries_and_resumes_saved_page(database):
+    client = SupplementalDiscoveryClient()
+    original = (await PositionDiscoveryClient.fetch_large_trades(client))[0]
+    now = utcnow().replace(microsecond=0)
+    calls = []
+    limited = True
+
+    async def fetch(**kwargs):
+        calls.append(kwargs["offset"])
+        if kwargs["offset"] == 0:
+            return [
+                replace(original, timestamp=now, transaction_hash=f"0xrate{i}") for i in range(500)
+            ]
+        if limited:
+            raise PolymarketAPIError("限流", rate_limited=True, retry_after=30)
+        return []
+
+    client.fetch_large_trades = fetch
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    await scanner._backfill_market_trades(client.condition_id, now=now, window_start=now)
+    assert calls == [0, 500]
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        assert state.coverage_end is None
+        assert json.loads(state.pending_ranges_json)[0][2] == 500
+        assert len(list(await session.scalars(select(WhaleMarketScanPage)))) == 1
+        assert not list(await session.scalars(select(WhaleTrade)))
+    limited = False
+    scanner = WhaleDiscoveryScanner(database=database, client=client, settings=database.settings)
+    await scanner._backfill_market_trades(client.condition_id, now=now, window_start=now)
+    assert calls == [0, 500, 500]
+    async with database.sessions() as session:
+        state = await session.get(WhaleMarketScanState, client.condition_id)
+        assert state.coverage_end == now
+        assert state.last_error is None
+        assert len(list(await session.scalars(select(WhaleTrade)))) == 500
+        assert not list(await session.scalars(select(WhaleAutoFollowDecision)))

@@ -371,6 +371,7 @@ def create_app(
                 relayer_url=resolved_settings.relayer_api_url,
                 rpc_url=resolved_settings.polygon_rpc_url,
                 proxy_url=resolved_settings.proxy_url,
+                public_client=request.app.state.polymarket_client,
             )
             try:
                 await trader.ensure_ready_approvals()

@@ -11,6 +11,7 @@ from sqlalchemy import case, func, select
 from backend.db import Database
 from backend.models import (
     ExecutionAccount,
+    TakeProfitPolicy,
     WhaleAutoFollowDecision,
     WhaleEntry,
     WhaleEntryRuleState,
@@ -193,6 +194,11 @@ async def home_overview(
                     key = f"last_{days}_day" if days == 1 else f"last_{days}_days"
                     follow_counts[rule][key] += 1
         account = await session.get(ExecutionAccount, 1)
+        take_profit_policy = (
+            await session.get(TakeProfitPolicy, account.funder_address.lower())
+            if account is not None and account.funder_address
+            else None
+        )
         ledger = list(
             (
                 await session.scalars(
@@ -466,6 +472,7 @@ async def home_overview(
             "coverage_incomplete_until": coverage_incomplete_until,
             "consecutive_failures": settings.consecutive_failures if settings is not None else 0,
             "scan_interval_seconds": settings.scan_interval_seconds if settings is not None else 0,
+            "take_profit_enabled": bool(take_profit_policy and take_profit_policy.enabled),
             "rules": [
                 {
                     "rule": rule,

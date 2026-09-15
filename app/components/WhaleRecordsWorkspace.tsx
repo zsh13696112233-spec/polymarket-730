@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import { TakeProfitStatisticsPanel } from "./TakeProfitPanels";
 import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import {
   WhaleRecord,
@@ -61,6 +62,7 @@ function recordSourceLabel(source: string) {
     follow: "跟单成交",
     manual: "手动交易",
     wallet_manual: "持仓管理卖出",
+    auto_take_profit: "自动止盈",
     auto_follow: "自动跟单",
     conflict_exit: "分歧风控",
     chain_test: "链路测试",
@@ -153,6 +155,8 @@ export default function WhaleRecordsWorkspace() {
           <strong>记录读取未完成</strong><p>{error}</p><button type="button" onClick={() => void loadData()}>重试</button>
         </div>
       )}
+
+      <TakeProfitStatisticsPanel />
 
       <section className="pcPanel whaleLedgerPanel">
         <header className="pcPanelHeader whaleRecordsHeader">

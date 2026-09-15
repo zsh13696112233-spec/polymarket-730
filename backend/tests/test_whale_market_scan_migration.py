@@ -15,11 +15,16 @@ def test_market_scan_progress_migration_preserves_settings(tmp_path, existing):
         command.upgrade(config, "0045_whale_position_quality")
         with sqlite3.connect(path) as connection:
             connection.execute("UPDATE whale_settings SET last_scan_error='keep me' WHERE id=1")
-            previous = connection.execute("SELECT * FROM whale_settings").fetchall()
+            cursor = connection.execute("SELECT * FROM whale_settings")
+            original_columns = ", ".join(f'"{column[0]}"' for column in cursor.description)
+            previous = cursor.fetchall()
     command.upgrade(config, "head")
     with sqlite3.connect(path) as connection:
         if existing:
-            assert connection.execute("SELECT * FROM whale_settings").fetchall() == previous
+            assert (
+                connection.execute(f"SELECT {original_columns} FROM whale_settings").fetchall()
+                == previous
+            )
         connection.execute(
             "INSERT INTO whale_market_scan_states(condition_id,pending_ranges_json) VALUES (?,?)",
             ("market", "[[1,2,0]]"),

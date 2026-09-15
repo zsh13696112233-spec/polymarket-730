@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PositionsWorkspace from "../app/components/PositionsWorkspace";
@@ -11,10 +11,14 @@ const portfolio = {
 };
 const preview = { confirmation_id: "token", expires_at: "2099-01-01T00:00:00Z", wallet: "0x123", asset_id: "99", title: "测试持仓", outcome: "Yes", order_type: "FAK", size: "20", price: "0.6", estimated_proceeds: "12", estimated_fee: "0", estimated_pnl: null };
 
+const policy = { wallet: portfolio.wallet, enabled: false, threshold_percent: "90", running: false,
+  reason: "自动止盈已关闭", last_checked_at: null, protections: [] };
+
 function mockApi(previewResponse = () => json(preview)) {
   const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     void _init;
     const path = String(input);
+    if (path.endsWith("/take-profit")) return json(policy);
     if (path.endsWith("/sell/preview")) return previewResponse();
     if (path.endsWith("/sell/execute")) return json({ ...portfolio.orders[0], id: 1, filled_size: "20", status: "filled" });
     return json(portfolio);
@@ -28,7 +32,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("持仓一键卖出", () => {
   it("shows holdings without limit-order or cancellation controls", async () => {
     mockApi(); render(<PositionsWorkspace />);
-    expect(await screen.findByText("测试持仓")).toBeInTheDocument();
+    expect(await screen.findByText("测试持仓", { selector: "strong" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "持仓管理" })).toHaveAttribute("href", "/positions");
     expect(screen.getAllByText("未知")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "撤单" })).not.toBeInTheDocument();
@@ -46,7 +50,7 @@ describe("持仓一键卖出", () => {
     expect(screen.queryByLabelText("卖出限价")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("真实卖出确认文案")).not.toBeInTheDocument();
     await user.dblClick(screen.getByRole("button", { name: "确认真实卖出" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("已成交");
+    expect(await within(screen.getByRole("dialog")).findByRole("status")).toHaveTextContent("已成交");
     const submits = fetcher.mock.calls.filter(([path]) => String(path).endsWith("/sell/execute"));
     expect(submits).toHaveLength(1);
     expect(JSON.parse(submits[0][1]?.body as string)).toEqual({ confirmation_id: "token", confirmation_text: "确认真实卖出" });
@@ -83,9 +87,9 @@ describe("持仓一键卖出", () => {
   it("shows only unsettled holdings without search, filters or wallet details", async () => {
     const active = { ...portfolio.positions[0], title: "Will Arsenal FC win on 2026-09-06?", size: "6.636362", available_size: "6.636362" };
     const settled = { ...portfolio.positions[0], asset_id: "100", title: "US Open ATP: Marcos Giron vs Ignacio Buse", size: "51.157893", available_size: "0", price: "0", market_value: "0", status: "settled" };
-    vi.stubGlobal("fetch", vi.fn(async () => json({ ...portfolio, positions: [active, settled] })));
+    vi.stubGlobal("fetch", vi.fn(async (input) => json(String(input).endsWith("/take-profit") ? policy : { ...portfolio, positions: [active, settled] })));
     render(<PositionsWorkspace />);
-    expect(await screen.findByText(active.title)).toBeInTheDocument();
+    expect(await screen.findByText(active.title, { selector: "strong" })).toBeInTheDocument();
     expect(screen.queryByText(settled.title)).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "一键卖出" })).toHaveLength(1);
     expect(screen.queryByLabelText("搜索持仓")).not.toBeInTheDocument();
@@ -98,9 +102,12 @@ describe("持仓一键卖出", () => {
     const fetcher = mockApi();
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     render(<PositionsWorkspace />);
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
     expect(fetcher).not.toHaveBeenCalled();
     visibility.mockReturnValue("visible");
     document.dispatchEvent(new Event("visibilitychange"));
-    await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(fetcher.mock.calls.filter(([path]) => String(path).endsWith("/positions"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([path]) => String(path).endsWith("/take-profit"))).toHaveLength(1);
   });
 });

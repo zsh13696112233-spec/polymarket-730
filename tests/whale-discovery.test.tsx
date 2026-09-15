@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import WhaleDiscoveryWorkspace from "../app/components/WhaleDiscoveryWorkspace";
+import WhaleDiscoveryWorkspace, { buildWhaleDivergences } from "../app/components/WhaleDiscoveryWorkspace";
+import type { WhaleMarket } from "../app/components/WhaleShared";
 import WhaleRecordsWorkspace from "../app/components/WhaleRecordsWorkspace";
 import WhaleAutoFollowWorkspace from "../app/components/WhaleAutoFollowWorkspace";
 import ExecutionSettingsWorkspace from "../app/components/ExecutionSettingsWorkspace";
@@ -785,7 +786,7 @@ describe("邮件记录工作台", () => {
   });
 });
 
-const whaleMarket = {
+const whaleMarket: WhaleMarket = {
   condition_id: `0x${"1".repeat(64)}`,
   title: "LoL: Movistar KOI vs Natus Vincere",
   icon_url: "https://example.test/market.png",
@@ -834,7 +835,7 @@ const whaleMarket = {
         last_buy_at: "2026-08-16T08:10:00Z",
         status: "holding",
         net_ratio: 100,
-        hedged: true,
+        hedged: false,
         price_delta_cents: 9,
         price_delta_percent: 17.3,
         matched_rules: ["new_account", "large_amount"],
@@ -886,6 +887,31 @@ const whaleMarket = {
     },
   ],
 };
+
+it.each([
+  { hedged: true },
+  { status: "reduced" },
+  { net_size: 0 },
+])("分歧统计排除无效单边持仓 %j", (override) => {
+  const market = structuredClone(whaleMarket);
+  Object.assign(market.sides[0].entries[0], override);
+  expect(buildWhaleDivergences([market])).toEqual([]);
+});
+
+it("分歧金额和钱包数仅统计有效持仓", () => {
+  const market = structuredClone(whaleMarket);
+  market.sides[0].entries.push({
+    ...market.sides[0].entries[0],
+    entry_id: 99,
+    proxy_wallet: `0x${"9".repeat(40)}`,
+    gross_buy_usdc: 900000,
+    hedged: true,
+  });
+  const result = buildWhaleDivergences([market]);
+  expect(result).toHaveLength(1);
+  expect(result[0].totalUsdc).toBe(26000);
+  expect(result[0].sides.map((side) => side.walletCount)).toEqual([1, 1]);
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -1468,7 +1494,7 @@ describe("巨鲸跟单记录页", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /刷新记录/ })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: /刷新记录/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: /刷新记录/ })).toBeEnabled());
-    expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).includes("/api/whales/records?"))).toBe(true);
+    expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).includes("/api/whales/records?") || String(url).includes("/api/execution-account/take-profit/statistics?"))).toBe(true);
   });
 });
 
@@ -1507,6 +1533,8 @@ it("展示持仓补充来源、减仓和窗口外对冲，并禁用不合格跟�
   expect(screen.getByText("已减仓 · 保留 10.0%")).toBeInTheDocument();
   expect(screen.getByText("反向 2000.00 份 · 净方向 1000.00 份")).toBeInTheDocument();
   expect(screen.getByText("钱包对冲")).toBeInTheDocument();
+  expect(screen.getByText("双向持仓 · 不计入分歧统计")).toBeInTheDocument();
+  expect(screen.queryByText("已减仓 · 不计入分歧统计")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "跟单" })).toBeDisabled();
   expect(screen.queryByText("窗口累计买入")).not.toBeInTheDocument();
 });

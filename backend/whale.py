@@ -29,6 +29,8 @@ from backend.models import (
     EmailSettings,
     ExecutionAccount,
     RedemptionExecution,
+    TakeProfitExecution,
+    TakeProfitProtection,
     WhaleAutoFollowDecision,
     WhaleAutoMarketLock,
     WhaleBackfillSignalState,
@@ -51,11 +53,13 @@ from backend.models import (
 )
 from backend.polymarket import (
     LargeTradeSnapshot,
+    OrderBookSnapshot,
     PolymarketAPIError,
     PolymarketClient,
     WhaleMarketPositionSnapshot,
     WhaleMarketSnapshot,
 )
+from backend.take_profit import TakeProfitService, ensure_no_take_profit_rebuy
 from backend.time_utils import utcnow
 from backend.trading import (
     FAK_IGNORABLE_REMAINDER_USDC,
@@ -3365,6 +3369,7 @@ class WhaleFollowExecutor:
         self._lock = execution_lock or asyncio.Lock()
         self._trader_cache: UnifiedPolymarketTrader | None = None
         self._trader_cache_key: tuple[Any, ...] | None = None
+        self.take_profit = TakeProfitService(self)
 
     async def close(self) -> None:
         trader, self._trader_cache = self._trader_cache, None
@@ -3381,6 +3386,18 @@ class WhaleFollowExecutor:
                     raise
                 fallback = 2 ** (attempt + 1) if error.rate_limited else attempt + 1
                 await asyncio.sleep(max(0.05, float(error.retry_after or fallback)))
+        raise AssertionError("unreachable")
+
+    async def _buy_order_book(self, asset_id: str) -> OrderBookSnapshot:
+        for attempt in range(4):
+            try:
+                return await self.client.fetch_order_book(asset_id)
+            except PolymarketAPIError as error:
+                if not isinstance(error.__cause__, httpx.TransportError):
+                    raise
+                if attempt == 3:
+                    raise PolymarketAPIError(f"{error}（订单簿查询已重试 3 次，仍失败）") from error
+                await asyncio.sleep(2**attempt)
         raise AssertionError("unreachable")
 
     async def refresh_balance(self) -> Decimal:
@@ -3671,7 +3688,7 @@ class WhaleFollowExecutor:
         self._ensure_market_open(market)
         if market_price_is_settled(market):
             raise ValueError("市场结果已经确定，不再接受跟单")
-        book = await self.client.fetch_order_book(asset_id)
+        book = await self._buy_order_book(asset_id)
         if book.best_ask is None:
             raise AutoFollowQuoteRejected("市场当前没有可成交卖盘")
         if minimum_price is not None and book.best_ask < minimum_price:
@@ -3808,6 +3825,11 @@ class WhaleFollowExecutor:
         async with self._lock:
             if not self.settings.trading_enabled:
                 raise ValueError("自动实盘已被系统紧急停用")
+            if order_source == "auto_follow":
+                wallet = await self.take_profit.wallet()
+                if wallet:
+                    async with self.database.sessions() as session:
+                        await ensure_no_take_profit_rebuy(session, wallet, quote.asset_id)
             if order_source == "chain_test":
                 await self._ensure_chain_test_buy_limits(quote, refresh_balance=True)
             if quote.source_wallet is not None:
@@ -3816,7 +3838,7 @@ class WhaleFollowExecutor:
                         raise ValueError("该巨鲸账户已加入排除名单，不能继续跟买")
             if quote.entry_id is not None:
                 await self._verify_source_position(quote.entry_id, quote.asset_id)
-            book = await self.client.fetch_order_book(quote.asset_id)
+            book = await self._buy_order_book(quote.asset_id)
             if book.best_ask is None:
                 raise AutoFollowQuoteRejected("市场当前没有可成交卖盘")
             if (
@@ -4266,6 +4288,14 @@ class WhaleFollowExecutor:
                 order.signed_order_hash = result.signed_order_hash
             order.updated_at = now
 
+            if order.source == "auto_take_profit" and order.filled_size > ZERO:
+                protection = await session.get(
+                    TakeProfitProtection, (order.execution_wallet, order.asset_id)
+                )
+                if protection is not None:
+                    protection.rebuy_blocked = True
+                    protection.updated_at = now
+
             if order.source == "auto_follow" and order.filled_size > ZERO:
                 decision = await session.scalar(
                     select(WhaleAutoFollowDecision).where(
@@ -4378,6 +4408,8 @@ class WhaleFollowExecutor:
                                 else (
                                     "链上环境测试卖出"
                                     if order.source == "chain_test"
+                                    else "自动止盈卖出"
+                                    if order.source == "auto_take_profit"
                                     else "人工卖出巨鲸跟单持仓"
                                 )
                             ),
@@ -4539,7 +4571,7 @@ class WhaleFollowExecutor:
             "signed",
         }
         full_size = order.filled_size + position.size
-        if order.source == "wallet_manual":
+        if order.source in {"wallet_manual", "auto_take_profit"}:
             # Wallet sell-all quotes round down to the supported two decimal places.
             full_size = full_size.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         if (
@@ -5246,31 +5278,54 @@ class WhaleFollowExecutor:
             "estimated_proceeds": selected * price,
             "estimated_fee": fee,
             "estimated_pnl": selected * price - fee - cost if cost is not None else None,
+            "cost_source": "ledger" if local is not None else "public_average",
+            "sell_slippage_cents": slippage,
+            "cost_consistent": local is not None
+            or (
+                position.avg_price > ZERO
+                and position.initial_value > ZERO
+                and abs(position.initial_value - position.avg_price * position.size)
+                < Decimal("0.01")
+            ),
         }
 
     async def execute_wallet_sell(
-        self, quote: dict[str, Any], confirmation_id: str
+        self, quote: dict[str, Any], confirmation_id: str, *, auto_take_profit: bool = False
     ) -> dict[str, Any]:
         async with self._lock:
-            current = await self.quote_wallet_sell(
-                quote["asset_id"],
-                size=quote["size"],
-                sell_all=False,
-                order_type=quote["order_type"],
-                price=quote["price"] if quote["order_type"] == "GTC" else None,
-            )
-            if any(
-                current[key] != quote[key]
-                for key in (
-                    "wallet",
-                    "condition_id",
-                    "neg_risk",
-                    "position_id",
-                    "tick_size",
-                    "minimum_order_size",
+            current = (
+                await self.take_profit.quote(quote["asset_id"])
+                if auto_take_profit
+                else await self.quote_wallet_sell(
+                    quote["asset_id"],
+                    size=quote["size"],
+                    sell_all=False,
+                    order_type=quote["order_type"],
+                    price=quote["price"] if quote["order_type"] == "GTC" else None,
                 )
-            ) or (quote["order_type"] == "FAK" and current["price"] < quote["price"]):
+            )
+            if (
+                any(
+                    current[key] != quote[key]
+                    for key in (
+                        "wallet",
+                        "condition_id",
+                        "neg_risk",
+                        "position_id",
+                        "tick_size",
+                        "minimum_order_size",
+                    )
+                )
+                or (auto_take_profit and current["size"] != quote["size"])
+                or (
+                    not auto_take_profit
+                    and quote["order_type"] == "FAK"
+                    and current["price"] < quote["price"]
+                )
+            ):
                 raise ValueError("账户、盘口或持仓已变化，请重新预览")
+            if auto_take_profit:
+                quote = current
             async with self.database.sessions() as session:
                 if await session.scalar(
                     select(WhaleOrder.id).where(
@@ -5281,7 +5336,7 @@ class WhaleFollowExecutor:
                 now = utcnow()
                 order = WhaleOrder(
                     position_id=quote["position_id"],
-                    source="wallet_manual",
+                    source="auto_take_profit" if auto_take_profit else "wallet_manual",
                     execution_wallet=quote["wallet"],
                     order_type=quote["order_type"],
                     idempotency_key=f"wallet:{confirmation_id}",
@@ -5300,6 +5355,17 @@ class WhaleFollowExecutor:
                     updated_at=now,
                 )
                 session.add(order)
+                if auto_take_profit:
+                    await session.flush()
+                    session.add(
+                        TakeProfitExecution(
+                            order_id=order.id,
+                            threshold_percent=quote["threshold_percent"],
+                            unit_cost=quote["unit_cost"],
+                            cost_source=quote["cost_source"],
+                            created_at=now,
+                        )
+                    )
                 await session.commit()
                 order_id = order.id
             trader = await self._trader()

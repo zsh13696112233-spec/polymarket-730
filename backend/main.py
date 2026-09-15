@@ -53,6 +53,10 @@ from backend.schemas import (
     ExecutionAccountUpdate,
     HealthRead,
     HomeOverviewRead,
+    TakeProfitProtectionUpdate,
+    TakeProfitRead,
+    TakeProfitStatisticsRead,
+    TakeProfitUpdate,
     WalletCancelExecuteRequest,
     WalletCancelPreviewRead,
     WalletOrderRead,
@@ -282,9 +286,18 @@ def create_app(
                     continue
 
         reconciliation_task = asyncio.create_task(reconcile_wallet_orders())
+        take_profit_task = (
+            asyncio.create_task(whale_executor.take_profit.run(), name="wallet-take-profit")
+            if resolved_settings.start_monitor
+            else None
+        )
         try:
             yield
         finally:
+            if take_profit_task is not None:
+                take_profit_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await take_profit_task
             reconciliation_task.cancel()
             with suppress(asyncio.CancelledError):
                 await reconciliation_task
@@ -746,6 +759,40 @@ def create_app(
         expires_at = now + timedelta(minutes=5)
         previews[confirmation_id] = {"key": key, "quote": quote, "expires_at": expires_at}
         return {**quote, "confirmation_id": confirmation_id, "expires_at": expires_at}
+
+    @application.get("/api/execution-account/take-profit", response_model=TakeProfitRead)
+    async def read_take_profit(request: Request) -> Any:
+        return await wallet_call(request.app.state.whale_executor.take_profit.read())
+
+    @application.put("/api/execution-account/take-profit", response_model=TakeProfitRead)
+    async def update_take_profit(payload: TakeProfitUpdate, request: Request) -> Any:
+        return await wallet_call(
+            request.app.state.whale_executor.take_profit.update(**payload.model_dump())
+        )
+
+    @application.put(
+        "/api/execution-account/positions/{asset_id}/take-profit", response_model=TakeProfitRead
+    )
+    async def update_take_profit_protection(
+        asset_id: str, payload: TakeProfitProtectionUpdate, request: Request
+    ) -> Any:
+        return await wallet_call(
+            request.app.state.whale_executor.take_profit.protect(
+                asset_id=asset_id, **payload.model_dump()
+            )
+        )
+
+    @application.get(
+        "/api/execution-account/take-profit/statistics", response_model=TakeProfitStatisticsRead
+    )
+    async def take_profit_statistics(
+        request: Request,
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ) -> Any:
+        return await wallet_call(
+            request.app.state.whale_executor.take_profit.statistics(limit, offset)
+        )
 
     @application.get("/api/execution-account/positions", response_model=WalletPositionsRead)
     async def get_wallet_positions(request: Request) -> Any:

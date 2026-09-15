@@ -94,6 +94,7 @@ test("server-renders the position-management workspace", async () => {
   assert.match(html, /持仓管理/);
   assert.match(html, /当前持仓/);
   assert.match(html, /卖出订单/);
+  assert.match(html, /自动止盈/);
 });
 
 
@@ -103,6 +104,7 @@ test("server-renders follow records without duplicate position management", asyn
   const html = await response.text();
   assert.match(html, /跟单汇总/);
   assert.match(html, /历史流水/);
+  assert.match(html, /自动止盈效果/);
   assert.match(html, /查看持仓管理/);
   assert.doesNotMatch(html, /当前持仓|暂无巨鲸跟单持仓|一键卖出|展开完整流水/);
 });

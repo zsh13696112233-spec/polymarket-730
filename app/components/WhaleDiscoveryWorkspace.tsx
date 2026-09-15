@@ -218,7 +218,8 @@ export function buildWhaleDivergences(markets: WhaleMarket[]): WhaleDivergence[]
     );
     const sides = market.sides.flatMap((side) => {
       const entries = side.entries.filter(
-        (entry) => numeric(entry.net_size) > 0 && !hedgingWallets.has(entry.proxy_wallet.toLowerCase()),
+        (entry) => entry.status === "holding" && !entry.hedged
+          && numeric(entry.net_size) > 0 && !hedgingWallets.has(entry.proxy_wallet.toLowerCase()),
       );
       if (!entries.length) return [];
       return [{
@@ -805,6 +806,7 @@ function WhaleDivergencePanel({
         <div className="whaleDivergenceTitle">
           <div>
             <h2>分歧市场</h2>
+            <p className="pcFormHint">不同钱包的单边持仓方向存在分歧。自动退出按策略优先级及后台风控判定执行。</p>
           </div>
         </div>
         <div className="whaleDivergenceActions">
@@ -984,6 +986,11 @@ function WhaleHoldingRow({ holding, onFollow }: { holding: WalletHolding; onFoll
           <div>
             <span className={`whaleOutcomeMark ${side.outcome_index === 0 ? "positive" : "negative"}`}>{side.outcome}</span>
             {holding.dualSided && <span className="pcBadge muted">钱包对冲</span>}
+            {holding.dualSided ? (
+              <span className="pcBadge muted">双向持仓 · 不计入分歧统计</span>
+            ) : entry.status === "reduced" ? (
+              <span className="pcBadge muted">已减仓 · 不计入分歧统计</span>
+            ) : null}
             {holding.divergentMarket && <span className="pcBadge warning">反向巨鲸</span>}
             <WhaleRuleBadges rules={entry.matched_rules} />
           </div>

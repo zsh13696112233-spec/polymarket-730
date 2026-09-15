@@ -11,6 +11,7 @@ from backend.db import Database
 from backend.home import home_overview
 from backend.models import (
     ExecutionAccount,
+    TakeProfitPolicy,
     WhaleAutoFollowDecision,
     WhaleEntry,
     WhaleEntryRuleState,
@@ -54,6 +55,7 @@ def test_home_overview_route_returns_thirty_beijing_days(app_client_factory) -> 
     assert payload["today"]["excluded_chain_test_count"] == 0
     assert payload["wallet"]["available"] is False
     assert payload["wallet"]["winning_pnl_usdc"] == 0.0
+    assert payload["system"]["take_profit_enabled"] is False
 
 
 @pytest.fixture
@@ -72,6 +74,29 @@ class MarksClient:
 
     async def fetch_order_book(self, asset_id: str) -> SimpleNamespace:
         return SimpleNamespace(best_bid=self.prices.get(asset_id))
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_home_take_profit_uses_current_wallet_saved_policy(database, enabled):
+    async with database.sessions() as session:
+        session.add(ExecutionAccount(id=1, funder_address=FUNDER, created_at=NOW, updated_at=NOW))
+        session.add(
+            TakeProfitPolicy(wallet=FUNDER, enabled=enabled, threshold_percent=90, updated_at=NOW)
+        )
+        session.add(
+            TakeProfitPolicy(
+                wallet="0x" + "a" * 40, enabled=not enabled, threshold_percent=90, updated_at=NOW
+            )
+        )
+        await session.commit()
+    payload = await home_overview(database, MarksClient({}), now=NOW)
+    assert payload["system"]["take_profit_enabled"] is enabled
+    async with database.sessions() as session:
+        account = await session.get(ExecutionAccount, 1)
+        account.funder_address = "0x" + "b" * 40
+        await session.commit()
+    payload = await home_overview(database, MarksClient({}), now=NOW)
+    assert payload["system"]["take_profit_enabled"] is False
 
 
 @pytest.mark.asyncio

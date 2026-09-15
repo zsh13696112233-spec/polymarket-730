@@ -6,6 +6,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -204,6 +205,117 @@ def executor(database: Database) -> WhaleFollowExecutor:
         settings=database.settings,
         keychain=SimpleNamespace(),  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.parametrize("phase", ["quote", "execute"])
+@pytest.mark.parametrize("failure", ["connect", "timeout", "exhausted", "business", "cancel"])
+async def test_buy_book_retry_preserves_price_rejection(database, monkeypatch, phase, failure):
+    follow_executor = executor(database)
+    follow_executor.settings = Settings(trading_enabled=True, start_monitor=False)
+    async with database.sessions() as session:
+        session.add(
+            WhaleSettings(
+                id=1, max_follow_amount_usdc=Decimal("200"), created_at=NOW, updated_at=NOW
+            )
+        )
+        await session.commit()
+    market = SimpleNamespace(
+        closed=False, active=True, accepting_orders=True, outcome_prices_json='["0.5","0.5"]'
+    )
+    monkeypatch.setattr(follow_executor, "_account", AsyncMock(return_value=SimpleNamespace()))
+    monkeypatch.setattr(
+        follow_executor, "_market_for_asset", AsyncMock(return_value=(market, 0, "Yes"))
+    )
+    calls = []
+    delays = []
+
+    async def fetch_book(asset_id):
+        calls.append(asset_id)
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        if failure == "business":
+            raise PolymarketAPIError("市场不可用")
+        if len(calls) < 4 or failure == "exhausted":
+            cause = (
+                httpx.ReadTimeout("timeout")
+                if failure == "timeout"
+                else httpx.ConnectError("connection failed")
+            )
+            raise PolymarketAPIError("Polymarket 接口连接失败") from cause
+        return SimpleNamespace(best_ask=Decimal("0.90"))
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    follow_executor.client = SimpleNamespace(fetch_order_book=fetch_book)
+    monkeypatch.setattr("backend.whale.asyncio.sleep", sleep)
+    expected = (
+        asyncio.CancelledError
+        if failure == "cancel"
+        else PolymarketAPIError
+        if failure in {"business", "exhausted"}
+        else ValueError
+    )
+    with pytest.raises(expected) as raised:
+        if phase == "quote":
+            await follow_executor.quote_follow(
+                asset_id=ASSET_ID,
+                amount_usdc=Decimal("15"),
+                entry_id=None,
+                maximum_price=Decimal("0.75"),
+            )
+        else:
+            await follow_executor.execute_follow(follow_quote(), "book-retry-test")
+    assert len(calls) == (1 if failure in {"business", "cancel"} else 4)
+    assert delays == ([] if failure in {"business", "cancel"} else [1, 2, 4])
+    if failure == "exhausted":
+        assert "订单簿查询已重试 3 次，仍失败" in str(raised.value)
+    elif failure in {"connect", "timeout"}:
+        assert "价" in str(raised.value)
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(WhaleOrder)))
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_buy_book_recovery_submits_only_once(database, monkeypatch, uncertain):
+    follow_executor = executor(database)
+    follow_executor.settings = Settings(trading_enabled=True, start_monitor=False)
+    error = PolymarketAPIError("连接失败")
+    error.__cause__ = httpx.ConnectError("connection failed")
+    book = SimpleNamespace(best_ask=Decimal("0.50"), tick_size=Decimal("0.01"))
+    fetch = AsyncMock(side_effect=[error, book])
+    follow_executor.client = SimpleNamespace(fetch_order_book=fetch)
+    monkeypatch.setattr("backend.whale.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr(follow_executor, "_account", AsyncMock(return_value=SimpleNamespace()))
+    result = SimpleNamespace()
+    trader = SimpleNamespace(
+        prepare_market=AsyncMock(
+            return_value=SimpleNamespace(
+                signed_order_hash="test-hash", external_order_id="test-order"
+            )
+        ),
+        submit_prepared_market=AsyncMock(
+            side_effect=TradingUnavailable("提交结果不明") if uncertain else None,
+            return_value=result,
+        ),
+    )
+    monkeypatch.setattr(follow_executor, "_trader", AsyncMock(return_value=trader))
+    monkeypatch.setattr(follow_executor, "_hydrate_fee", AsyncMock(return_value=result))
+    apply = AsyncMock()
+    monkeypatch.setattr(follow_executor, "apply_result", apply)
+    if uncertain:
+        with pytest.raises(TradingUnavailable, match="系统将自动核对"):
+            await follow_executor.execute_follow(follow_quote(), "book-recovered")
+    else:
+        await follow_executor.execute_follow(follow_quote(), "book-recovered")
+    assert fetch.await_count == 2
+    trader.submit_prepared_market.assert_awaited_once()
+    assert apply.await_count == (0 if uncertain else 1)
+    async with database.sessions() as session:
+        orders = list(await session.scalars(select(WhaleOrder)))
+        assert len(orders) == 1
+        if uncertain:
+            assert orders[0].status == "reconciliation_pending"
 
 
 class ManualTradeClient:

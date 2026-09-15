@@ -47,6 +47,7 @@ function overview(overrides: Record<string, unknown> = {}) {
       last_scan_error: null,
       consecutive_failures: 0,
       scan_interval_seconds: 60,
+      take_profit_enabled: false,
       rules: [
         { rule: "new_account", enabled: true, auto_follow_enabled: true, active_wallet_count: 3 },
         { rule: "large_amount", enabled: true, auto_follow_enabled: false, active_wallet_count: 2 },
@@ -100,6 +101,14 @@ afterEach(() => {
 });
 
 describe("首页运行与跟单看板", () => {
+  it("在运行概览展示已开启的自动止盈设置", async () => {
+    const data = overview();
+    data.system.take_profit_enabled = true;
+    vi.stubGlobal("fetch", vi.fn(async () => json(data)));
+    render(<HomeWorkspace />);
+    expect(await screen.findByLabelText("自动止盈状态")).toHaveTextContent("已开启");
+  });
+
   it("展示首页导航、核心口径、钱包并切换 7/30 日趋势", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(overview())));
     const user = userEvent.setup();
@@ -153,6 +162,8 @@ describe("首页运行与跟单看板", () => {
     expect(within(runtime).queryByText("活跃钱包")).not.toBeInTheDocument();
     expect(within(runtime).getByLabelText("新号大额")).toHaveTextContent("自动跟单已开启");
     expect(within(runtime).getByLabelText("全量超大额")).toHaveTextContent("自动跟单未开启");
+    expect(within(runtime).getByLabelText("自动止盈状态")).toHaveTextContent("已关闭");
+    expect(within(runtime).getByRole("link", { name: "止盈设置 ↗" })).toHaveAttribute("href", "/positions");
     const metrics = screen.getByLabelText("今日核心指标");
     expect(metrics.compareDocumentPosition(runtime) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(runtime).getByLabelText("系统状态")).toBeInTheDocument();
@@ -290,7 +301,8 @@ describe("首页运行与跟单看板", () => {
     expect((await screen.findAllByText("运行状态连接中断")).length).toBeGreaterThan(0);
     expect(container.querySelector(".homeRuntimeHealth .homeStatusDot")).toHaveClass("error");
     expect(container.querySelectorAll(".homeRuleDot.enabled")).toHaveLength(0);
-    expect(screen.getAllByText("状态待确认")).toHaveLength(2);
+    expect(screen.getAllByText("状态待确认")).toHaveLength(3);
+    expect(screen.getByLabelText("自动止盈状态")).toHaveTextContent("状态待确认");
   });
 });
 

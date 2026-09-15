@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import { TakeProfitSettingsPanel } from "./TakeProfitPanels";
 import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import { ModalShell, whaleApi, formatUsdc, formatPrice } from "./WhaleShared";
 
@@ -66,6 +67,7 @@ export default function PositionsWorkspace() {
       <div className="walletPositions">
         {error && <div className="pcFormError" role="alert">{error}；刷新成功前暂停操作。</div>}
         {portfolio?.warning && <div className="pcFormError" role="status">{portfolio.warning}</div>}
+        <TakeProfitSettingsPanel holdings={positions} wallet={error ? null : portfolio?.wallet ?? null} />
         <section className="pcPanel walletPositionPanel"><h2>当前持仓</h2>
           <p>可卖份额已扣除挂单占用。市值按买一价估算；缺失价格或成本时显示未知。</p>
           <div className="walletTableScroll"><table className="positionsTable walletHoldingsTable"><thead><tr>

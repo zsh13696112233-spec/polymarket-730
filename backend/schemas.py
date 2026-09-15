@@ -551,6 +551,7 @@ class HomeSystemRuleRead(APIModel):
 class HomeSystemRead(APIModel):
     status: Literal["healthy", "degraded", "error", "disabled"]
     enabled: bool
+    take_profit_enabled: bool
     last_scan_at: datetime | None
     last_scan_error: str | None
     coverage_incomplete_until: datetime | None
@@ -1238,6 +1239,7 @@ class WhaleLedgerRead(APIModel):
         "follow",
         "manual",
         "wallet_manual",
+        "auto_take_profit",
         "auto_follow",
         "conflict_exit",
         "chain_test",
@@ -1317,6 +1319,79 @@ DecimalString = Annotated[
     Decimal,
     PlainSerializer(lambda value: format(value, "f"), return_type=str, when_used="json"),
 ]
+
+
+class TakeProfitUpdate(APIModel):
+    model_config = ConfigDict(extra="forbid")
+    wallet: str = Field(pattern=r"^0x[a-fA-F0-9]{40}$")
+    enabled: bool
+    threshold_percent: Decimal = Field(gt=0, lt=100, decimal_places=2)
+
+
+class TakeProfitProtectionUpdate(APIModel):
+    model_config = ConfigDict(extra="forbid")
+    wallet: str = Field(pattern=r"^0x[a-fA-F0-9]{40}$")
+    enabled: bool
+
+
+class TakeProfitProtectionRead(APIModel):
+    asset_id: str
+    enabled: bool
+    rebuy_blocked: bool
+    reason: str | None
+
+
+class TakeProfitRead(APIModel):
+    wallet: str | None
+    enabled: bool
+    threshold_percent: DecimalString
+    running: bool
+    reason: str
+    last_checked_at: datetime | None
+    protections: list[TakeProfitProtectionRead]
+
+    @field_serializer("last_checked_at", when_used="json")
+    def serialize_checked(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class TakeProfitSummaryRead(APIModel):
+    realized_profit: DecimalString
+    saved: DecimalString
+    foregone: DecimalString
+    net_impact: DecimalString
+    filled_count: int
+    pending_resolution_count: int
+    pending_reconciliation_count: int
+
+
+class TakeProfitRecordRead(APIModel):
+    order_id: int
+    title: str
+    outcome: str
+    threshold_percent: DecimalString
+    filled_size: DecimalString
+    net_proceeds: DecimalString | None
+    cost: DecimalString | None
+    cost_source: str
+    realized_profit: DecimalString | None
+    hypothetical_payout: DecimalString | None
+    saved: DecimalString | None
+    foregone: DecimalString | None
+    status: str
+    order_status: str
+    created_at: datetime
+    resolved_at: datetime | None
+
+    @field_serializer("created_at", "resolved_at", when_used="json")
+    def serialize_dates(self, value: datetime | None) -> str | None:
+        return _as_utc_iso(value)
+
+
+class TakeProfitStatisticsRead(APIModel):
+    summary: TakeProfitSummaryRead
+    items: list[TakeProfitRecordRead]
+    total: int
 
 
 class WalletPositionRead(APIModel):

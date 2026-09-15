@@ -51,6 +51,38 @@ def finished_position(asset_id: str, realized_pnl: str) -> WhaleFollowPosition:
 
 
 @pytest.mark.asyncio
+async def test_records_accept_auto_take_profit_ledger(database: Database) -> None:
+    async with database.sessions() as session:
+        position = finished_position("take-profit", "2")
+        session.add(position)
+        await session.flush()
+        session.add(
+            WhaleFollowLedger(
+                position_id=position.id,
+                type="sell",
+                source="auto_take_profit",
+                size=Decimal("10"),
+                price=Decimal("0.7"),
+                amount_usdc=Decimal("7"),
+                fee_usdc=Decimal("0"),
+                realized_pnl=Decimal("2"),
+                timestamp=NOW,
+            )
+        )
+        await session.commit()
+
+    payload = await list_whale_records(database, object())  # type: ignore[arg-type]
+    validated = WhaleRecordListRead.model_validate(payload)
+
+    assert validated.total == 1
+    assert validated.items[0].source == "auto_take_profit"
+    assert validated.items[0].type == "sell"
+    assert validated.summary.total_proceeds_usdc == Decimal("7")
+    assert validated.summary.realized_pnl == Decimal("2")
+    assert validated.summary.win_count == 1
+
+
+@pytest.mark.asyncio
 async def test_record_win_rate_excludes_conflict_exits_and_flats(database: Database) -> None:
     async with database.sessions() as session:
         positions = [

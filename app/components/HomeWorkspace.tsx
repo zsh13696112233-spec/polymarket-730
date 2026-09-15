@@ -63,6 +63,7 @@ type HomeOverview = {
     coverage_incomplete_until: string | null;
     consecutive_failures: number;
     scan_interval_seconds: number;
+    take_profit_enabled: boolean;
     rules: HomeSystemRule[];
   };
   opportunity_counts: Record<WhaleRule, {
@@ -412,6 +413,15 @@ export default function HomeWorkspace() {
                 const monitorLabel = !rule.enabled ? "已停用" : error !== null || connection === "disconnected" ? "状态待确认" : runtimeStatus === "disabled" ? "未运行" : runtimeStatus === "error" ? "监测异常" : "监测中";
                 return <div className="homeRuntimeRule" key={rule.rule} aria-label={RULE_LABELS[rule.rule]}><strong>{RULE_LABELS[rule.rule]}</strong><div>{monitorLabel !== "监测中" && <span className="homeRuleNotice">{monitorLabel}</span>}<span>自动跟单{rule.auto_follow_enabled ? "已开启" : "未开启"}</span></div></div>;
               })}
+              <div className="homeRuntimeRule" aria-label="自动止盈状态">
+                <strong>自动止盈</strong>
+                <div>
+                  <span title="当前执行钱包的策略开关状态；实际执行还受实盘交易和后台监测开关控制">
+                    {error !== null || connection === "disconnected" || typeof overview.system.take_profit_enabled !== "boolean" ? "状态待确认" : overview.system.take_profit_enabled ? "已开启" : "已关闭"}
+                  </span>
+                  <Link className="homeRuntimeSettings" href="/positions">止盈设置 ↗</Link>
+                </div>
+              </div>
               {(runtimeStatus === "error" || runtimeStatus === "degraded") && <p className="homeRuntimeReason">{error || (connection === "disconnected" ? "连接中断，正在重连" : overview.system.last_scan_error) || runtimeLabel}</p>}
               <footer className="homeRuntimeFooter">
                 <dl><div><dt>最后扫描</dt><dd>{formatClock(overview.system.last_scan_at)}</dd></div><div><dt>数据更新</dt><dd>{formatClock(overview.as_of)}</dd></div></dl>

@@ -25,6 +25,49 @@ class Base(DeclarativeBase):
     pass
 
 
+class TakeProfitPolicy(Base):
+    __tablename__ = "take_profit_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "threshold_percent > 0 AND threshold_percent < 100", name="ck_take_profit_threshold"
+        ),
+    )
+
+    wallet: Mapped[str] = mapped_column(String(42), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    threshold_percent: Mapped[Decimal] = mapped_column(PERCENT_TYPE, nullable=False, default=90)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class TakeProfitProtection(Base):
+    __tablename__ = "take_profit_protections"
+
+    wallet: Mapped[str] = mapped_column(String(42), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    present: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    rebuy_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class TakeProfitExecution(Base):
+    __tablename__ = "take_profit_executions"
+
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("whale_orders.id", ondelete="RESTRICT"), primary_key=True
+    )
+    threshold_percent: Mapped[Decimal] = mapped_column(PERCENT_TYPE, nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(DECIMAL_TYPE, nullable=False)
+    cost_source: Mapped[str] = mapped_column(String(30), nullable=False)
+    payout_rate: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class ExecutionAccount(Base):
     __tablename__ = "execution_accounts"
     __table_args__ = (

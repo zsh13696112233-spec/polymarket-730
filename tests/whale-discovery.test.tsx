@@ -146,6 +146,62 @@ describe("巨鲸页内设置", () => {
     expect(categories.getByRole("checkbox", { name: "电竞" })).toBeChecked();
   });
 
+  it("独立编辑来源金额档位，校验并保存回显", async () => {
+    const user = userEvent.setup();
+    let saved: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/whales/settings") && init?.method === "PUT") {
+        saved = JSON.parse(String(init.body));
+        return json({ ...settings, ...saved });
+      }
+      if (url.endsWith("/api/whales/settings")) return json({ ...settings, ...saved });
+      if (url.includes("/api/whales/auto-decisions?")) return json({ total: 0, items: [] });
+      if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
+      return json({ detail: "not found" }, 404);
+    }));
+    render(<WhaleAutoFollowWorkspace />);
+    await user.click(await screen.findByRole("button", { name: "编辑策略" }));
+    expect(screen.getByRole("button", { name: "添加档位" })).toHaveClass("pcButton", "primary");
+    await user.click(screen.getByLabelText("启用来源金额分档"));
+    await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
+    expect(await screen.findByText(/启用时至少配置一档/)).toBeInTheDocument();
+    expect(saved).toBeNull();
+    await user.click(screen.getByRole("button", { name: "添加档位" }));
+    await user.type(screen.getByLabelText("第1档来源金额下限"), "1000000");
+    await user.type(screen.getByLabelText("第1档跟单金额"), "20");
+    await user.click(screen.getByRole("button", { name: "添加档位" }));
+    await user.type(screen.getByLabelText("第2档来源金额下限"), "1000000");
+    await user.type(screen.getByLabelText("第2档跟单金额"), "40");
+    await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
+    expect(saved).toBeNull();
+    await user.clear(screen.getByLabelText("第2档来源金额下限"));
+    await user.type(screen.getByLabelText("第2档来源金额下限"), "2000000");
+    await user.click(screen.getByRole("tab", { name: "全量超大额" }));
+    expect(screen.getByLabelText("启用来源金额分档")).not.toBeChecked();
+    expect(screen.queryByLabelText("第1档跟单金额")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("启用来源金额分档"));
+    await user.click(screen.getByRole("button", { name: "添加档位" }));
+    await user.type(screen.getByLabelText("第1档来源金额下限"), "2000000");
+    await user.type(screen.getByLabelText("第1档跟单金额"), "60");
+    await user.click(screen.getByRole("button", { name: "添加档位" }));
+    await user.click(screen.getByLabelText("删除第2档"));
+    await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
+    await waitFor(() => expect(saved).toMatchObject({
+      new_account_auto_follow_source_tiers_enabled: true,
+      new_account_auto_follow_source_tiers: [
+        { min_source_amount_usdc: "1000000", follow_amount_usdc: "20" },
+        { min_source_amount_usdc: "2000000", follow_amount_usdc: "40" },
+      ],
+      large_amount_auto_follow_source_tiers_enabled: true,
+      large_amount_auto_follow_source_tiers: [{ min_source_amount_usdc: "2000000", follow_amount_usdc: "60" }],
+    }));
+    await user.click(await screen.findByRole("button", { name: "编辑策略" }));
+    expect(screen.getByLabelText("第1档跟单金额")).toHaveValue(60);
+    await user.click(screen.getByRole("tab", { name: "新号大额" }));
+    expect(screen.getByLabelText("第2档跟单金额")).toHaveValue(40);
+  });
+
   it("分别保存两套真实自动跟单策略和分类", async () => {
     const user = userEvent.setup();
     let saved: Record<string, unknown> | null = null;
@@ -244,6 +300,9 @@ describe("巨鲸页内设置", () => {
           selected_rule: "large_amount",
           category: "esports",
           category_label: "电竞",
+          source_buy_amount_usdc: 2100000,
+          source_tier_min_usdc: 2000000,
+          amount_basis: "source_tier",
           configured_amount_usdc: 10,
           selected_amount_usdc: 10,
           configured_min_price: 0.5,
@@ -271,6 +330,7 @@ describe("巨鲸页内设置", () => {
     expect(marketLink).toHaveAttribute("href", "https://polymarket.com/event/championship-final");
     expect(marketLink).toHaveAttribute("target", "_blank");
     expect(screen.getByText(displayedReason)).toBeInTheDocument();
+    expect(screen.getByText(/金额依据：来源累计 ≥ 2000000 USDC · 来源累计 2100000 USDC/)).toBeInTheDocument();
     expect(screen.getByText(label)).toHaveClass(tone);
     expect(screen.queryByText(/0\.75000000000000000000/)).not.toBeInTheDocument();
     const user = userEvent.setup();

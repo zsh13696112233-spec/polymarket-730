@@ -812,6 +812,9 @@ def test_whale_auto_decisions_support_rule_and_status_filters(app_client_factory
     assert payload["total"] == 1
     assert payload["items"][0]["selected_rule"] == "large_amount"
     assert payload["items"][0]["category_label"] == "电竞"
+    assert payload["items"][0]["source_buy_amount_usdc"] is None
+    assert payload["items"][0]["source_tier_min_usdc"] is None
+    assert payload["items"][0]["amount_basis"] is None
     assert payload["items"][0]["observed_best_ask"] == 0.61
     assert payload["items"][0]["market_slug"] == "championship-winner"
     assert payload["items"][0]["event_slug"] == "championship-final"
@@ -1596,3 +1599,36 @@ def test_history_price_filter_applies_before_pagination(
     )
     assert client.get(f"{endpoint}?rule=large_amount").json()["total"] == 1
     assert client.get("/api/whales/statistics").json() == statistics
+
+
+@pytest.mark.parametrize("prefix", ["new_account", "large_amount"])
+def test_source_tiers_settings_round_trip_and_validation(app_client_factory, prefix):
+    client, _ = app_client_factory([[]])
+    endpoint = "/api/whales/settings"
+    enabled = f"{prefix}_auto_follow_source_tiers_enabled"
+    key = f"{prefix}_auto_follow_source_tiers"
+    initial = client.get(endpoint).json()
+    assert initial[enabled] is False
+    assert initial[key] == []
+    assert client.put(endpoint, json={enabled: True}).status_code == 422
+    for tiers in (
+        [{"min_source_amount_usdc": 0, "follow_amount_usdc": 20}],
+        [{"min_source_amount_usdc": 1000000, "follow_amount_usdc": -1}],
+        [{"min_source_amount_usdc": 1000000, "follow_amount_usdc": 201}],
+        [{"min_source_amount_usdc": 1000000, "follow_amount_usdc": 20}] * 2,
+    ):
+        assert client.put(endpoint, json={key: tiers}).status_code == 422
+    tiers = [
+        {"min_source_amount_usdc": 2000000, "follow_amount_usdc": 40},
+        {"min_source_amount_usdc": 1000000, "follow_amount_usdc": 20},
+    ]
+    response = client.put(endpoint, json={enabled: True, key: tiers})
+    assert response.status_code == 200, response.text
+    assert response.json()[key] == tiers[::-1]
+    assert client.get(endpoint).json()[key] == tiers[::-1]
+    assert client.put(endpoint, json={"window_hours": 24}).json()[key] == tiers[::-1]
+    assert client.put(endpoint, json={"max_follow_amount_usdc": 30}).status_code == 422
+    other = "large_amount" if prefix == "new_account" else "new_account"
+    assert response.json()[f"{other}_auto_follow_source_tiers"] == []
+    assert client.put(endpoint, json={enabled: False}).json()[key] == tiers[::-1]
+    assert client.put(endpoint, json={key: []}).json()[key] == []

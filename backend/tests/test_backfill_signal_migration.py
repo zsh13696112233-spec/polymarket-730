@@ -100,6 +100,14 @@ def test_backfill_eligibility_upgrade_recovers_without_replaying_buys(tmp_path, 
                 category="other",
                 status="skipped",
             )
+            previous_columns = {
+                table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
+                for table in (
+                    "whale_entries",
+                    "whale_entry_rule_states",
+                    "whale_auto_follow_decisions",
+                )
+            }
             previous = {
                 table: connection.execute(f"SELECT * FROM {table}").fetchall()
                 for table in (
@@ -123,4 +131,5 @@ def test_backfill_eligibility_upgrade_recovers_without_replaying_buys(tmp_path, 
                 wallets[2]: (CUTOFF, 0),
             }
             for table, before in previous.items():
-                assert connection.execute(f"SELECT * FROM {table}").fetchall() == before
+                columns = ",".join(previous_columns[table])
+                assert connection.execute(f"SELECT {columns} FROM {table}").fetchall() == before

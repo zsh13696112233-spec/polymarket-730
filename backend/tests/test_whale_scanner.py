@@ -1997,7 +1997,7 @@ async def test_active_position_cache_refreshes_only_changed_candidate_markets(da
 
 
 @pytest.mark.parametrize("dual_amount", [None, Decimal("25")])
-async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(database, dual_amount):
+async def test_auto_follow_decision_is_one_shot_and_new_rule_has_priority(database, dual_amount):
     condition_id = "0x" + "7" * 64
     wallet = "0x7777777777777777777777777777777777777777"
     await _seed_auto_market(database, condition_id)
@@ -2006,8 +2006,8 @@ async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(data
         dual_match_auto_follow_amount_usdc=dual_amount,
         new_account_auto_follow_enabled=True,
         large_amount_auto_follow_enabled=True,
-        large_amount_auto_follow_low_price_max_price=Decimal("0.65"),
-        large_amount_auto_follow_low_price_amount_usdc=Decimal("5"),
+        new_account_auto_follow_low_price_max_price=Decimal("0.70"),
+        new_account_auto_follow_low_price_amount_usdc=Decimal("3"),
     )
     aggregate = _auto_aggregate(
         wallet=wallet,
@@ -2043,15 +2043,15 @@ async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(data
     assert len(pending) == 1
     assert repeated == []
     assert len(decisions) == 1
-    assert decisions[0].selected_rule == "large_amount"
-    assert decisions[0].configured_amount_usdc == (dual_amount or Decimal("10"))
+    assert decisions[0].selected_rule == "new_account"
+    assert decisions[0].configured_amount_usdc == (dual_amount or Decimal("5"))
     if dual_amount is None:
-        assert _auto_follow_price(decisions[0].configured_low_price_max_price) == Decimal("0.65")
-        assert decisions[0].configured_low_price_amount_usdc == Decimal("5")
+        assert _auto_follow_price(decisions[0].configured_low_price_max_price) == Decimal("0.70")
+        assert decisions[0].configured_low_price_amount_usdc == Decimal("3")
     else:
         assert decisions[0].configured_low_price_max_price is None
         assert decisions[0].configured_low_price_amount_usdc is None
-    assert _auto_follow_price(decisions[0].configured_min_price) == Decimal("0.60")
+    assert _auto_follow_price(decisions[0].configured_min_price) == Decimal("0.65")
     assert json.loads(decisions[0].matched_rules_json) == ["large_amount", "new_account"]
     assert decisions[0].status == "failed"
     assert decisions[0].reason == "服务重启前尚未提交自动买入，不补买"
@@ -2303,6 +2303,8 @@ async def test_same_scan_cross_rule_signals_respect_priority_toggle(
     ("priority_enabled", "held_rule", "opposite_rule", "should_exit"),
     [
         (True, "large_amount", "new_account", False),
+        (True, "both", "new_account", False),
+        (True, "both", "large_amount", True),
         (True, "new_account", "large_amount", True),
         (False, "large_amount", "new_account", True),
     ],
@@ -2332,7 +2334,11 @@ async def test_existing_position_respects_large_signal_priority(
     scanner = build_scanner(database)
     initial_pending = await scanner._persist_entries(
         [held],
-        rule_matches={(held_wallet, "asset-yes"): {held_rule}},
+        rule_matches={
+            (held_wallet, "asset-yes"): {"new_account", "large_amount"}
+            if held_rule == "both"
+            else {held_rule}
+        },
         positions_by_wallet={
             held_wallet: {
                 "asset-yes": SimpleNamespace(
@@ -2350,6 +2356,11 @@ async def test_existing_position_respects_large_signal_priority(
     )
     assert len(initial_pending) == 1
     await _fill_auto_decision(database, initial_pending[0])
+    if held_rule == "both":
+        async with database.sessions() as session:
+            decision = await session.get(WhaleAutoFollowDecision, initial_pending[0])
+            assert decision.selected_rule == "new_account"
+            assert decision.conflict_rule == "large_amount"
 
     opposite = _auto_aggregate(
         wallet=opposite_wallet,
@@ -3755,3 +3766,185 @@ async def test_backfill_rate_limit_stops_retries_and_resumes_saved_page(database
         assert state.last_error is None
         assert len(list(await session.scalars(select(WhaleTrade)))) == 500
         assert not list(await session.scalars(select(WhaleAutoFollowDecision)))
+
+
+@pytest.mark.parametrize(
+    (
+        "rules",
+        "new_enabled",
+        "new_categories",
+        "tiers_enabled",
+        "source",
+        "dual",
+        "expected_rule",
+        "amount",
+        "threshold",
+    ),
+    [
+        ({"new_account"}, True, ["sports"], False, "2100000", None, "new_account", "5", None),
+        ({"new_account"}, True, ["sports"], True, "999999", None, "new_account", "5", None),
+        ({"new_account"}, True, ["sports"], True, "1000000", None, "new_account", "20", "1000000"),
+        ({"new_account"}, True, ["sports"], True, "2000000", None, "new_account", "40", "2000000"),
+        (
+            {"large_amount"},
+            True,
+            ["sports"],
+            True,
+            "2100000",
+            None,
+            "large_amount",
+            "60",
+            "2000000",
+        ),
+        (
+            {"new_account", "large_amount"},
+            True,
+            ["sports"],
+            True,
+            "2100000",
+            None,
+            "new_account",
+            "40",
+            "2000000",
+        ),
+        (
+            {"new_account", "large_amount"},
+            False,
+            ["sports"],
+            True,
+            "2100000",
+            None,
+            "large_amount",
+            "60",
+            "2000000",
+        ),
+        (
+            {"new_account", "large_amount"},
+            True,
+            ["politics"],
+            True,
+            "2100000",
+            None,
+            "large_amount",
+            "60",
+            "2000000",
+        ),
+        (
+            {"new_account", "large_amount"},
+            True,
+            ["sports"],
+            True,
+            "2100000",
+            Decimal("25"),
+            "new_account",
+            "25",
+            None,
+        ),
+    ],
+)
+async def test_source_amount_tiers_snapshot_and_no_top_up(
+    database,
+    rules,
+    new_enabled,
+    new_categories,
+    tiers_enabled,
+    source,
+    dual,
+    expected_rule,
+    amount,
+    threshold,
+):
+    condition_id = "0x" + "7" * 64
+    wallet = "0x7777777777777777777777777777777777777777"
+    await _seed_auto_market(database, condition_id)
+    config = await _auto_follow_config(
+        database,
+        new_account_auto_follow_enabled=new_enabled,
+        new_account_auto_follow_categories_json=json.dumps(new_categories),
+        large_amount_auto_follow_enabled=True,
+        dual_match_auto_follow_amount_usdc=dual,
+        new_account_auto_follow_source_tiers_enabled=tiers_enabled,
+        large_amount_auto_follow_source_tiers_enabled=tiers_enabled,
+        new_account_auto_follow_source_tiers_json=json.dumps(
+            [
+                {"min_source_amount_usdc": "2000000", "follow_amount_usdc": "40"},
+                {"min_source_amount_usdc": "1000000", "follow_amount_usdc": "20"},
+            ]
+        ),
+        large_amount_auto_follow_source_tiers_json=json.dumps(
+            [
+                {"min_source_amount_usdc": "1000000", "follow_amount_usdc": "30"},
+                {"min_source_amount_usdc": "2000000", "follow_amount_usdc": "60"},
+            ]
+        ),
+        new_account_auto_follow_low_price_max_price=Decimal("0.70"),
+        new_account_auto_follow_low_price_amount_usdc=Decimal("3"),
+        large_amount_auto_follow_low_price_max_price=Decimal("0.65"),
+        large_amount_auto_follow_low_price_amount_usdc=Decimal("5"),
+    )
+    aggregate = replace(
+        _auto_aggregate(wallet=wallet, asset_id="asset-yes", condition_id=condition_id),
+        gross_buy_usdc=Decimal(source),
+        max_single_usdc=Decimal("900000"),
+        trade_count=3,
+    )
+    scanner = build_scanner(database)
+    kwargs = dict(
+        rule_matches={(wallet, "asset-yes"): rules},
+        positions_by_wallet={
+            wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            }
+        },
+        failed_wallets=set(),
+        config=config,
+        now=utcnow(),
+        window_start=utcnow() - timedelta(hours=24),
+    )
+    pending = await scanner._persist_entries([aggregate], **kwargs)
+    assert len(pending) == 1
+    async with database.sessions() as session:
+        decision = await session.get(WhaleAutoFollowDecision, pending[0])
+        assert decision.selected_rule == expected_rule
+        assert decision.source_buy_amount_usdc == Decimal(source)
+        assert decision.source_tier_min_usdc == (Decimal(threshold) if threshold else None)
+        assert decision.configured_amount_usdc == Decimal(amount)
+        assert decision.amount_basis == (
+            "dual_match" if dual else "source_tier" if threshold else "strategy"
+        )
+        if threshold or dual:
+            assert decision.configured_low_price_max_price is None
+            assert decision.configured_low_price_amount_usdc is None
+        else:
+            assert decision.configured_low_price_amount_usdc is not None
+    # A later buy crossing tiers and edited settings cannot change the existing decision.
+    config["new_account_auto_follow_source_tiers_json"] = "[]"
+    assert (
+        await scanner._persist_entries(
+            [replace(aggregate, gross_buy_usdc=Decimal("3000000"), last_buy_at=utcnow())], **kwargs
+        )
+        == []
+    )
+    async with database.sessions() as session:
+        decisions = list(await session.scalars(select(WhaleAutoFollowDecision)))
+        assert len(decisions) == 1
+        assert decisions[0].configured_amount_usdc == Decimal(amount)
+        assert decisions[0].source_buy_amount_usdc == Decimal(source)
+    quoted = {}
+
+    async def quote_follow(**kwargs):
+        quoted.update(kwargs)
+        raise ValueError("测试报价终止")
+
+    scanner.executor = SimpleNamespace(quote_follow=quote_follow)
+    await scanner._process_auto_decisions(pending)
+    assert quoted["amount_usdc"] == Decimal(amount)
+    assert quoted["require_active_signal"] is False
+    if threshold or dual:
+        assert quoted["low_price_max_price"] is None
+        assert quoted["low_price_amount_usdc"] is None

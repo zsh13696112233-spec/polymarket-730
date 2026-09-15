@@ -179,7 +179,7 @@ function DecisionRow({ decision }: { decision: WhaleAutoDecision }) {
       <td><span className="pcBadge neutral">{decision.category_label}</span></td>
       <td className="numeric"><strong>{selectedAmount == null ? "—" : formatUsdc(selectedAmount)}</strong><small>{usedLowPriceAmount ? "低价小额" : ""}</small></td>
       <td className="numeric"><strong>{decision.configured_min_price == null ? "—" : `${formatPrice(decision.configured_min_price)}–${formatPrice(decision.configured_max_price)}`}</strong><small>盘口 {formatPrice(decision.observed_best_ask)}</small></td>
-      <td><strong>{decisionReason(decision.reason)}</strong><small>{decision.buy_order_id ? `买单 #${decision.buy_order_id}` : ""}{decision.latest_sell_order_id ? ` · 卖单 #${decision.latest_sell_order_id}` : ""}</small></td>
+      <td><strong>{decisionReason(decision.reason)}</strong>{decision.amount_basis && <small>金额依据：{decision.amount_basis === "dual_match" ? "双重命中专用金额" : decision.amount_basis === "source_tier" ? `来源累计 ≥ ${decision.source_tier_min_usdc} USDC` : "原策略金额"} · 来源累计 {decision.source_buy_amount_usdc} USDC</small>}<small>{decision.buy_order_id ? `买单 #${decision.buy_order_id}` : ""}{decision.latest_sell_order_id ? ` · 卖单 #${decision.latest_sell_order_id}` : ""}</small></td>
     </tr>
   );
 }

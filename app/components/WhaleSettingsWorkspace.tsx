@@ -7,6 +7,8 @@ import {
   WhaleExclusionList,
   WhaleMarketCategory,
   WhaleSettings,
+  WhaleRule,
+  WhaleSourceAmountTier,
   formatBeijing,
   formatCompactUsdc,
   numeric,
@@ -448,6 +450,14 @@ export function WhaleAutoSettingsPanel({
   onSettingsChange: (settings: WhaleSettings) => void;
   onReload: () => Promise<void>;
 }) {
+  const [tierDrafts, setTierDrafts] = useState<Partial<Record<WhaleRule, { enabled: boolean; tiers: WhaleSourceAmountTier[] }>>>({});
+  const sourceTiers = (rule: WhaleRule) => tierDrafts[rule] ?? {
+    enabled: settings?.[`${rule}_auto_follow_source_tiers_enabled`] ?? false,
+    tiers: settings?.[`${rule}_auto_follow_source_tiers`] ?? [],
+  };
+  const updateSourceTiers = (rule: WhaleRule, value: { enabled: boolean; tiers: WhaleSourceAmountTier[] }) => {
+    setTierDrafts((current) => ({ ...current, [rule]: value }));
+  };
   const [newAutoEnabled, setNewAutoEnabled] = useState<boolean | null>(null);
   const [newAutoAmount, setNewAutoAmount] = useState<string | null>(null);
   const [newAutoMinPrice, setNewAutoMinPrice] = useState<string | null>(null);
@@ -515,6 +525,7 @@ export function WhaleAutoSettingsPanel({
   };
 
   const resetDraft = () => {
+    setTierDrafts({});
     setNewAutoEnabled(null);
     setNewAutoAmount(null);
     setNewAutoMinPrice(null);
@@ -545,6 +556,20 @@ export function WhaleAutoSettingsPanel({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    for (const rule of ["new_account", "large_amount"] as const) {
+      const draft = sourceTiers(rule);
+      const thresholds = draft.tiers.map((tier) => Number(tier.min_source_amount_usdc));
+      if ((draft.enabled && draft.tiers.length === 0)
+        || new Set(thresholds).size !== thresholds.length
+        || draft.tiers.some((tier) => !Number.isFinite(Number(tier.min_source_amount_usdc))
+          || Number(tier.min_source_amount_usdc) <= 0
+          || !Number.isFinite(Number(tier.follow_amount_usdc))
+          || Number(tier.follow_amount_usdc) <= 0
+          || Number(tier.follow_amount_usdc) > Number(settings?.max_follow_amount_usdc))) {
+        setError("来源金额档位需填写正数、门槛不可重复，跟单金额不能超过单笔上限；启用时至少配置一档。");
+        return;
+      }
+    }
     const newAutoAmountValue = Number(resolvedNewAutoAmount);
     const newAutoMinValue = Number(resolvedNewAutoMinPrice);
     const newAutoMaxValue = Number(resolvedNewAutoMaxPrice);
@@ -613,6 +638,10 @@ export function WhaleAutoSettingsPanel({
       const next = await whaleApi<WhaleSettings>("/api/whales/settings", {
         method: "PUT",
         body: JSON.stringify({
+          new_account_auto_follow_source_tiers_enabled: sourceTiers("new_account").enabled,
+          new_account_auto_follow_source_tiers: sourceTiers("new_account").tiers,
+          large_amount_auto_follow_source_tiers_enabled: sourceTiers("large_amount").enabled,
+          large_amount_auto_follow_source_tiers: sourceTiers("large_amount").tiers,
           new_account_auto_follow_enabled: resolvedNewAutoEnabled,
           new_account_auto_follow_amount_usdc: newAutoAmountValue,
           new_account_auto_follow_min_price: newAutoMinValue,
@@ -677,7 +706,7 @@ export function WhaleAutoSettingsPanel({
           </article>
         </div>
         <p className="pcFormHint whaleAutoMarketCapSummary">
-          双重命中金额：{resolvedDualEnabled ? `${resolvedDualAmount} USDC` : "沿用原策略"} · 分歧规则：{resolvedLargeConflictPriorityEnabled ? "全量超大额优先" : "任意反向信号退出"} · 单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
+          来源金额分档：新号大额 {sourceTiers("new_account").enabled ? `${sourceTiers("new_account").tiers.length} 档` : "未启用"} / 全量超大额 {sourceTiers("large_amount").enabled ? `${sourceTiers("large_amount").tiers.length} 档` : "未启用"} · 双重命中金额：{resolvedDualEnabled ? `${resolvedDualAmount} USDC` : "沿用原策略"} · 分歧规则：{resolvedLargeConflictPriorityEnabled ? "全量超大额优先" : "任意反向信号退出"} · 单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
         </p>
 
         {editing && (
@@ -729,6 +758,21 @@ export function WhaleAutoSettingsPanel({
                 onCategories={setLargeAutoCategories}
               />
             )}
+            <section className="whaleAutoStrategyCard whaleSourceTiersCard" aria-label="来源累计买入金额档位">
+              <label className="whaleAutoToggle">
+                <input type="checkbox" aria-label="启用来源金额分档" checked={sourceTiers(activeStrategy).enabled} disabled={!settings || busy} onChange={(event) => updateSourceTiers(activeStrategy, { ...sourceTiers(activeStrategy), enabled: event.target.checked })} />
+                <b>按来源累计买入金额分档</b>
+              </label>
+              <p className="pcFormHint">沿用监测窗口内同一钱包、同一市场方向的累计买入金额。取最高命中档位，覆盖低价小额；未命中沿用原金额。跨档不会自动追加买入。</p>
+              {sourceTiers(activeStrategy).tiers.map((tier, index) => (
+                <div className="whaleAutoFields whaleSourceTierRow" key={index}>
+                  <label className="pcField"><span>来源累计买入 ≥（USDC）</span><input aria-label={`第${index + 1}档来源金额下限`} type="number" min="0.01" step="any" value={tier.min_source_amount_usdc} disabled={busy} onChange={(event) => updateSourceTiers(activeStrategy, { ...sourceTiers(activeStrategy), tiers: sourceTiers(activeStrategy).tiers.map((item, position) => position === index ? { ...item, min_source_amount_usdc: event.target.value } : item) })} /></label>
+                  <label className="pcField"><span>本次跟单金额（USDC）</span><input aria-label={`第${index + 1}档跟单金额`} type="number" min="0.01" step="any" value={tier.follow_amount_usdc} disabled={busy} onChange={(event) => updateSourceTiers(activeStrategy, { ...sourceTiers(activeStrategy), tiers: sourceTiers(activeStrategy).tiers.map((item, position) => position === index ? { ...item, follow_amount_usdc: event.target.value } : item) })} /></label>
+                  <button type="button" className="pcButton ghost" disabled={busy} aria-label={`删除第${index + 1}档`} onClick={() => updateSourceTiers(activeStrategy, { ...sourceTiers(activeStrategy), tiers: sourceTiers(activeStrategy).tiers.filter((_, position) => position !== index) })}>删除</button>
+                </div>
+              ))}
+              <button type="button" className="pcButton primary" disabled={!settings || busy} onClick={() => updateSourceTiers(activeStrategy, { ...sourceTiers(activeStrategy), tiers: [...sourceTiers(activeStrategy).tiers, { min_source_amount_usdc: "", follow_amount_usdc: "" }] })}><span aria-hidden="true">＋</span>添加档位</button>
+            </section>
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
                 <div><h3>双重命中跟单金额</h3></div>
@@ -737,6 +781,7 @@ export function WhaleAutoSettingsPanel({
                   <b>{resolvedDualEnabled ? "已启用" : "沿用原策略"}</b>
                 </label>
               </header>
+              <p>双重命中专用金额优先于来源金额档位和低价小额；未设置时优先使用符合启用和分类条件的新号策略。</p>
               {resolvedDualEnabled && <div className="whaleAutoFields"><label className="pcField"><span>单笔金额（USDC）</span><input type="number" aria-label="双重命中跟单金额" min="0.01" step="any" value={resolvedDualAmount} disabled={!settings || busy} onChange={(event) => setDualAmount(event.target.value)} /></label></div>}
               <p className="pcFormHint">首次自动决策时同时命中两条规则，使用独立金额覆盖基础档和低价档；沿用所选策略的价格、分类及已有交易限制，只跟一笔。后续新增命中不补买。</p>
             </section>

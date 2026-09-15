@@ -10,6 +10,11 @@ export type Numeric = number | string;
 export type WhaleRule = "new_account" | "large_amount";
 export type WhaleMarketCategory = "esports" | "sports" | "politics" | "crypto" | "science_tech" | "entertainment" | "other";
 
+export type WhaleSourceAmountTier = {
+  min_source_amount_usdc: Numeric;
+  follow_amount_usdc: Numeric;
+};
+
 export type WhaleSettings = {
   enabled: boolean;
   window_hours: number;
@@ -18,6 +23,8 @@ export type WhaleSettings = {
   large_amount_threshold_usdc: Numeric;
   monitor_categories: WhaleMarketCategory[];
   dual_match_auto_follow_amount_usdc: Numeric | null;
+  new_account_auto_follow_source_tiers_enabled: boolean;
+  new_account_auto_follow_source_tiers: WhaleSourceAmountTier[];
   new_account_auto_follow_enabled: boolean;
   new_account_auto_follow_amount_usdc: Numeric;
   new_account_auto_follow_min_price: Numeric;
@@ -25,6 +32,8 @@ export type WhaleSettings = {
   new_account_auto_follow_categories: WhaleMarketCategory[];
   new_account_auto_follow_low_price_max_price: Numeric | null;
   new_account_auto_follow_low_price_amount_usdc: Numeric | null;
+  large_amount_auto_follow_source_tiers_enabled: boolean;
+  large_amount_auto_follow_source_tiers: WhaleSourceAmountTier[];
   large_amount_auto_follow_enabled: boolean;
   large_amount_auto_follow_amount_usdc: Numeric;
   large_amount_auto_follow_min_price: Numeric;
@@ -424,6 +433,9 @@ export type WhaleAutoDecision = {
   selected_rule: WhaleRule | null;
   category: WhaleMarketCategory;
   category_label: string;
+  source_buy_amount_usdc: Numeric | null;
+  source_tier_min_usdc: Numeric | null;
+  amount_basis: "strategy" | "source_tier" | "dual_match" | null;
   configured_amount_usdc: Numeric | null;
   configured_min_price: Numeric | null;
   configured_max_price: Numeric | null;

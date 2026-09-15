@@ -276,6 +276,18 @@ class WhaleSettings(Base):
         default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
         server_default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
     )
+    new_account_auto_follow_source_tiers_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    new_account_auto_follow_source_tiers_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
+    large_amount_auto_follow_source_tiers_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    large_amount_auto_follow_source_tiers_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
     dual_match_auto_follow_amount_usdc: Mapped[Decimal | None] = mapped_column(
         DECIMAL_TYPE, nullable=True
     )
@@ -711,6 +723,10 @@ class WhaleAutoFollowDecision(Base):
     matched_rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     selected_rule: Mapped[str | None] = mapped_column(String(30), nullable=True)
     category: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_buy_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    source_tier_min_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    conflict_rule: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    amount_basis: Mapped[str | None] = mapped_column(String(30), nullable=True)
     configured_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     configured_min_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     configured_max_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)

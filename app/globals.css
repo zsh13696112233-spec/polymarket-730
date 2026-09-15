@@ -12823,3 +12823,14 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .takeProfitMetric { display: grid; gap: 8px; padding: 16px; }
 .takeProfitMetric strong { font-size: 24px; font-variant-numeric: tabular-nums; }
 .takeProfitPagination { display: flex; justify-content: flex-end; align-items: center; gap: 16px; margin-top: 16px; }
+
+
+.whaleSourceTiersCard { margin-top: 12px; padding: 18px; }
+.whaleSourceTiersCard > .pcFormHint { margin: 12px 0 16px; line-height: 1.7; }
+.whaleSourceTiersCard .whaleSourceTierRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; padding: 0 0 16px; }
+.whaleSourceTiersCard .whaleSourceTierRow .pcField:first-child { grid-column: auto; }
+.whaleSourceTiersCard .pcButton:focus-visible { outline: 3px solid #b8c6ff; outline-offset: 3px; }
+@media (max-width: 640px) {
+  .whaleSourceTiersCard .whaleSourceTierRow { grid-template-columns: minmax(0, 1fr); }
+  .whaleSourceTiersCard .whaleSourceTierRow .pcButton { justify-self: start; }
+}

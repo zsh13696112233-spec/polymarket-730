@@ -64,7 +64,7 @@ async def test_pre_migration_database_replays_from_its_actual_revision(tmp_path:
         }
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
-    assert revision == "0049_auto_take_profit"
+    assert revision == "0050_source_amount_tiers"
     assert RETIRED_TABLES.isdisjoint(tables)
     assert set(Base.metadata.tables) == tables - {"alembic_version"}
 

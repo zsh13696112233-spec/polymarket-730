@@ -2610,7 +2610,7 @@ class WhaleDiscoveryScanner:
                         condition_id
                     ].items():
                         priority_rules_by_asset.setdefault(asset_id, set()).update(
-                            decision.selected_rule
+                            decision.conflict_rule or decision.selected_rule
                             for decision in decisions
                             if decision.selected_rule is not None
                         )
@@ -2847,7 +2847,7 @@ class WhaleDiscoveryScanner:
                     ]
                     | None
                 ) = None
-                for rule_type in (LARGE_AMOUNT_RULE, NEW_ACCOUNT_RULE):
+                for rule_type in (NEW_ACCOUNT_RULE, LARGE_AMOUNT_RULE):
                     if rule_type not in matched_rules:
                         continue
                     prefix = "large_amount" if rule_type == LARGE_AMOUNT_RULE else "new_account"
@@ -2856,6 +2856,10 @@ class WhaleDiscoveryScanner:
                         for value in _json_list(config[f"{prefix}_auto_follow_categories_json"])
                     }
                     if bool(config[f"{prefix}_auto_follow_enabled"]) and category in categories:
+                        # Sizing prefers new accounts; conflict exits retain large-rule priority.
+                        decision.conflict_rule = rule_type
+                        if selected is not None:
+                            continue
                         selected = (
                             rule_type,
                             _decimal(config[f"{prefix}_auto_follow_amount_usdc"]),
@@ -2874,7 +2878,6 @@ class WhaleDiscoveryScanner:
                                 else None
                             ),
                         )
-                        break
                 if selected is None:
                     enabled_rules = []
                     for rule_type in matched_rules:
@@ -2897,12 +2900,34 @@ class WhaleDiscoveryScanner:
                     decision.configured_low_price_max_price,
                     decision.configured_low_price_amount_usdc,
                 ) = selected
+                decision.source_buy_amount_usdc = entry.gross_buy_usdc
+                decision.amount_basis = "strategy"
+                prefix = decision.selected_rule
+                if config.get(f"{prefix}_auto_follow_source_tiers_enabled", False):
+                    tiers = _json_list(config.get(f"{prefix}_auto_follow_source_tiers_json"))
+                    eligible_tiers = [
+                        tier
+                        for tier in tiers
+                        if _decimal(tier["min_source_amount_usdc"]) <= entry.gross_buy_usdc
+                    ]
+                    if eligible_tiers:
+                        tier = max(
+                            eligible_tiers,
+                            key=lambda item: _decimal(item["min_source_amount_usdc"]),
+                        )
+                        decision.source_tier_min_usdc = _decimal(tier["min_source_amount_usdc"])
+                        decision.configured_amount_usdc = _decimal(tier["follow_amount_usdc"])
+                        decision.amount_basis = "source_tier"
+                        decision.configured_low_price_max_price = None
+                        decision.configured_low_price_amount_usdc = None
                 dual_amount = config.get("dual_match_auto_follow_amount_usdc")
                 if (
                     dual_amount is not None
                     and NEW_ACCOUNT_RULE in matched_rules
                     and LARGE_AMOUNT_RULE in matched_rules
                 ):
+                    decision.amount_basis = "dual_match"
+                    decision.source_tier_min_usdc = None
                     decision.configured_amount_usdc = _decimal(dual_amount)
                     decision.configured_low_price_max_price = None
                     decision.configured_low_price_amount_usdc = None
@@ -6144,6 +6169,10 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
             column.name: getattr(settings, column.name)
             for column in WhaleSettings.__table__.columns
         }
+        for prefix in ("new_account", "large_amount"):
+            values[f"{prefix}_auto_follow_source_tiers"] = _json_list(
+                values.pop(f"{prefix}_auto_follow_source_tiers_json")
+            )
         values["monitor_categories"] = _json_list(values.pop("monitor_categories_json"))
         values["new_account_auto_follow_categories"] = _json_list(
             values.pop("new_account_auto_follow_categories_json")
@@ -6354,6 +6383,9 @@ async def list_whale_auto_decisions(
                 "selected_rule": decision.selected_rule,
                 "category": decision.category,
                 "category_label": WHALE_STATISTICS_CATEGORY_LABELS.get(decision.category, "其他"),
+                "source_buy_amount_usdc": decision.source_buy_amount_usdc,
+                "source_tier_min_usdc": decision.source_tier_min_usdc,
+                "amount_basis": decision.amount_basis,
                 "configured_amount_usdc": decision.configured_amount_usdc,
                 "configured_min_price": decision.configured_min_price,
                 "configured_max_price": decision.configured_max_price,

@@ -1014,6 +1014,14 @@ def create_app(
             categories = values.pop(public_key, None)
             if categories is not None:
                 values[storage_key] = json.dumps(categories, separators=(",", ":"))
+        for prefix in ("new_account", "large_amount"):
+            tiers = values.pop(f"{prefix}_auto_follow_source_tiers", None)
+            if tiers is not None:
+                values[f"{prefix}_auto_follow_source_tiers_json"] = json.dumps(
+                    sorted(tiers, key=lambda tier: tier["min_source_amount_usdc"]),
+                    default=str,
+                    separators=(",", ":"),
+                )
         # The page exposes one “重仓阈值”.  Keep single and cumulative gates in
         # lockstep when only the cumulative value is supplied, otherwise raising
         # the visible threshold would not necessarily narrow results.
@@ -1052,6 +1060,21 @@ def create_app(
                 ("新号大额", "new_account"),
                 ("全量超大额", "large_amount"),
             ):
+                tiers = json.loads(merged[f"{prefix}_auto_follow_source_tiers_json"])
+                if merged[f"{prefix}_auto_follow_source_tiers_enabled"] and not tiers:
+                    raise HTTPException(
+                        status_code=422, detail=f"{label}启用来源金额分档时至少配置一档"
+                    )
+                thresholds = [Decimal(tier["min_source_amount_usdc"]) for tier in tiers]
+                if len(set(thresholds)) != len(thresholds):
+                    raise HTTPException(status_code=422, detail=f"{label}来源金额档位门槛不能重复")
+                if any(
+                    Decimal(tier["follow_amount_usdc"]) > merged["max_follow_amount_usdc"]
+                    for tier in tiers
+                ):
+                    raise HTTPException(
+                        status_code=422, detail=f"{label}档位跟单金额不能超过单笔买入上限"
+                    )
                 amount = merged[f"{prefix}_auto_follow_amount_usdc"]
                 minimum = merged[f"{prefix}_auto_follow_min_price"]
                 maximum = merged[f"{prefix}_auto_follow_max_price"]

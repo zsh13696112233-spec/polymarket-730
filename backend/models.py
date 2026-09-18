@@ -450,7 +450,8 @@ class WhaleEmailDelivery(Base):
             name="uq_whale_email_delivery_dedupe_recipient",
         ),
         CheckConstraint(
-            "notification_kind IN ('entry','divergence','weekly_summary')",
+            "notification_kind IN ('entry','divergence','weekly_summary',"
+            "'weekly_auto_follow_report')",
             name="ck_whale_email_delivery_kind",
         ),
         CheckConstraint(
@@ -465,7 +466,7 @@ class WhaleEmailDelivery(Base):
     entry_id: Mapped[int | None] = mapped_column(
         ForeignKey("whale_entries.id", ondelete="RESTRICT"), nullable=True
     )
-    notification_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="entry")
+    notification_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="entry")
     condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
     entry_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)

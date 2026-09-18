@@ -64,7 +64,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        {process.env.NEXT_PUBLIC_HIDE_SYSTEM_INFO !== "0" ? (
+          <main className="systemInfoHidden">页面信息已隐藏</main>
+        ) : children}
+      </body>
     </html>
   );
 }

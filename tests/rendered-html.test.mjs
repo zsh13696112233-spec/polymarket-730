@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import { loadEnv } from "vite";
+
+const hidden = loadEnv("production", process.cwd(), "NEXT_PUBLIC_HIDE_SYSTEM_INFO")
+  .NEXT_PUBLIC_HIDE_SYSTEM_INFO !== "0";
 
 const templateRoot = new URL("../", import.meta.url);
 
@@ -25,7 +29,7 @@ async function render(path = "/") {
   );
 }
 
-test("server-renders the home workspace and product metadata", async () => {
+test("server-renders the home workspace and product metadata", { skip: hidden }, async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -87,7 +91,7 @@ test("keeps home, chain monitoring and execution settings in the client", async 
 });
 
 
-test("server-renders the position-management workspace", async () => {
+test("server-renders the position-management workspace", { skip: hidden }, async () => {
   const response = await render("/positions");
   assert.equal(response.status, 200);
   const html = await response.text();
@@ -98,7 +102,7 @@ test("server-renders the position-management workspace", async () => {
 });
 
 
-test("server-renders follow records without duplicate position management", async () => {
+test("server-renders follow records without duplicate position management", { skip: hidden }, async () => {
   const response = await render("/whales/records");
   assert.equal(response.status, 200);
   const html = await response.text();
@@ -108,3 +112,24 @@ test("server-renders follow records without duplicate position management", asyn
   assert.match(html, /查看持仓管理/);
   assert.doesNotMatch(html, /当前持仓|暂无巨鲸跟单持仓|一键卖出|展开完整流水/);
 });
+
+for (const path of ["/", "/whales", "/whales/auto-follow", "/whales/records", "/whales/settings", "/positions", "/email-records", "/settings"]) {
+  test(`${hidden ? "hides" : "restores"} business content at ${path}`, async () => {
+    let response = await render(path);
+    if (path === "/whales/settings") {
+      assert.equal(response.status, 307);
+      assert.equal(response.headers.get("location"), "http://localhost/whales#whale-monitor-settings");
+      response = await render("/whales");
+    }
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    if (!hidden) {
+      assert.match(html, /<nav class="pcNavigation"/);
+      assert.doesNotMatch(html, /页面信息已隐藏/);
+      return;
+    }
+    assert.match(html, /<main class="systemInfoHidden">页面信息已隐藏<\/main>/);
+    assert.doesNotMatch(html, /<nav\b|<table\b|<input\b|<button\b/);
+    assert.doesNotMatch(html, /当前持仓|跟单汇总|历史流水|卖出订单|每周命中率汇总/);
+  });
+}

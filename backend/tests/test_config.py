@@ -29,3 +29,21 @@ def test_settings_accept_lan_cors_origins(monkeypatch):
         "http://192.168.3.6:3000",
         "http://192.168.3.6:5173",
     )
+
+
+def test_weekly_report_recipients(monkeypatch):
+    monkeypatch.setenv(
+        "POLYMARKET_WEEKLY_REPORT_TO", " a@example.com, b@example.com, a@example.com, "
+    )
+    assert Settings.from_env().weekly_report_to == ("a@example.com", "b@example.com")
+    monkeypatch.setenv("POLYMARKET_WEEKLY_REPORT_TO", "")
+    assert Settings.from_env().weekly_report_to == ()
+
+
+def test_weekly_report_rejects_invalid_recipient_without_echoing_value(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("POLYMARKET_WEEKLY_REPORT_TO", "a@example.com\nBcc: b@example.com")
+    with pytest.raises(ValueError, match="POLYMARKET_WEEKLY_REPORT_TO 格式错误") as error:
+        Settings.from_env()
+    assert "Bcc" not in str(error.value)

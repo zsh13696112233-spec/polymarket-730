@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +32,7 @@ class Settings:
     whale_scan_interval_seconds: float = 60.0
     whale_max_scan_pages: int = 20
     whale_profile_batch_limit: int = 50
+    weekly_report_to: tuple[str, ...] = ()
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
@@ -81,6 +83,7 @@ class Settings:
             ),
             whale_max_scan_pages=int(os.getenv("POLYMARKET_WHALE_MAX_SCAN_PAGES", "20")),
             whale_profile_batch_limit=int(os.getenv("POLYMARKET_WHALE_PROFILE_BATCH_LIMIT", "50")),
+            weekly_report_to=_weekly_report_recipients(),
             smtp_host=os.getenv("POLYMARKET_SMTP_HOST") or None,
             smtp_port=int(os.getenv("POLYMARKET_SMTP_PORT", "587")),
             smtp_username=os.getenv("POLYMARKET_SMTP_USERNAME") or None,
@@ -123,3 +126,16 @@ class Settings:
         if database_path == ":memory:" or database_path.startswith("file:"):
             return
         Path(database_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
+
+def _weekly_report_recipients() -> tuple[str, ...]:
+    recipients = tuple(
+        dict.fromkeys(
+            value.strip()
+            for value in os.getenv("POLYMARKET_WEEKLY_REPORT_TO", "").split(",")
+            if value.strip()
+        )
+    )
+    if any(not re.fullmatch(r"[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+", value) for value in recipients):
+        raise ValueError("POLYMARKET_WEEKLY_REPORT_TO 格式错误，请填写逗号分隔的邮箱地址")
+    return recipients

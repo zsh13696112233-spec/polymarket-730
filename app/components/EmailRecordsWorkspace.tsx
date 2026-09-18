@@ -12,7 +12,7 @@ const API_BASE = (
 const PAGE_SIZE = 50;
 
 type DeliveryStatus = "pending" | "sending" | "retrying" | "sent" | "failed";
-type NotificationKind = "entry" | "divergence" | "weekly_summary";
+type NotificationKind = "entry" | "divergence" | "weekly_summary" | "weekly_auto_follow_report";
 type SignalResult = "pending" | "hit" | "miss" | "special" | "not_applicable";
 
 type EmailDelivery = {
@@ -239,10 +239,13 @@ export default function EmailRecordsWorkspace() {
                     {item.notification_kind === "weekly_summary" && (
                       <span className="pcBadge warning">每周汇总</span>
                     )}
+                    {item.notification_kind === "weekly_auto_follow_report" && (
+                      <span className="pcBadge warning">自动跟单周报</span>
+                    )}
                     {item.notification_kind === "divergence" && (
                       <span className="pcBadge danger">分歧市场</span>
                     )}
-                    {item.notification_kind !== "weekly_summary" && (
+                    {(item.notification_kind === "entry" || item.notification_kind === "divergence") && (
                       <span className={`pcBadge ${resultTones[item.result]}`}>{resultLabels[item.result]}</span>
                     )}
                   </div>
@@ -252,7 +255,7 @@ export default function EmailRecordsWorkspace() {
                     <span>
                       {item.notification_kind === "divergence"
                         ? `市场级提醒 · ${item.entry_ids.length} 条关联记录`
-                        : item.notification_kind === "weekly_summary"
+                        : (item.notification_kind === "weekly_summary" || item.notification_kind === "weekly_auto_follow_report")
                           ? "北京时间 · 自动周报"
                           : `记录 #${item.entry_id}`}
                     </span>
@@ -263,7 +266,7 @@ export default function EmailRecordsWorkspace() {
                 </div>
               </header>
 
-              {item.notification_kind !== "weekly_summary" && <div className="emailRecordMarketGrid" aria-label="买入摘要">
+              {(item.notification_kind === "entry" || item.notification_kind === "divergence") && <div className="emailRecordMarketGrid" aria-label="买入摘要">
                 <div className="emailRecordSectionHeading">
                   <strong>买入摘要</strong>
                   <span>{item.market_summaries.length > 0 ? `${item.market_summaries.length} 个市场方向` : "暂无市场方向"}</span>

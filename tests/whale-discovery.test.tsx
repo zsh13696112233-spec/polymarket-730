@@ -743,6 +743,55 @@ describe("邮件记录工作台", () => {
     expect(checkbox).toBeChecked();
   });
 
+  it("展示独立自动跟单周报且不混入买入信号摘要", async () => {
+    const settings = {
+      notifications_enabled: true,
+      weekly_summary_enabled: false,
+      weekly_summary_enabled_at: null,
+      weekly_summary_last_sent_at: "2026-08-17T16:00:05Z",
+      weekly_summary_next_run_at: null,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/email-settings")) return json(settings);
+      if (url.includes("/api/email-notifications?")) return json({
+        total: 1,
+        items: [{
+          id: 20,
+          entry_id: null,
+          notification_kind: "weekly_auto_follow_report",
+          condition_id: "weekly-auto-follow",
+          entry_ids: [],
+          rules: [],
+          recipient_email: "alerts@example.com",
+          market_title: "自动跟单周报｜2026-08-17 至 2026-08-23",
+          wallet_label: "命中 6 · 未命中 4 · 待结算 3",
+          market_summaries: [],
+          subject: "[PolyCopy] 自动跟单周报｜08-17 至 08-23",
+          body_text: "有效样本：10\n命中：6\n未命中：4\n有效命中率：60%",
+          result: "not_applicable",
+          status: "sent",
+          attempt_count: 1,
+          next_attempt_at: null,
+          last_error: null,
+          created_at: "2026-08-23T16:00:00Z",
+          sent_at: "2026-08-23T16:00:05Z",
+        }],
+      });
+      return json({ detail: "not found" }, 404);
+    }));
+
+    render(<EmailRecordsWorkspace />);
+
+    const checkbox = await screen.findByRole("checkbox", { name: "启用每周命中率汇总" });
+    expect(checkbox).not.toBeChecked();
+    expect(await screen.findByText("自动跟单周报")).toBeInTheDocument();
+    expect(screen.getByText("命中 6 · 未命中 4 · 待结算 3")).toBeInTheDocument();
+    expect(screen.queryByText("买入摘要")).not.toBeInTheDocument();
+    expect(screen.queryByText("记录 #null")).not.toBeInTheDocument();
+    expect(screen.getByText("北京时间 · 自动周报")).toBeInTheDocument();
+  });
+
   it("独立展示逐收件人投递记录并支持状态筛选", async () => {
     const requestedUrls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {

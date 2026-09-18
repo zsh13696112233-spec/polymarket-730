@@ -242,10 +242,22 @@ def create_app(
             settings=resolved_settings,
             keychain=keychain,
         )
+
+        async def enqueue_auto_follow_report() -> int:
+            from backend.weekly_report import enqueue_weekly_report
+
+            return await enqueue_weekly_report(
+                database,
+                resolved_settings,
+                polymarket_client,
+                refresh_balance=whale_executor.refresh_balance,
+            )
+
         whale_email_notifier = WhaleEmailNotifier(
             database=database,
             settings=resolved_settings,
             keychain=keychain,
+            weekly_report=enqueue_auto_follow_report,
         )
         whale_scanner = WhaleDiscoveryScanner(
             database=database,

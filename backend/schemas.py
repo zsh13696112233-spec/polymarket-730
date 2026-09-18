@@ -319,7 +319,7 @@ class EmailDeliveryMarketSummaryRead(APIModel):
 class EmailDeliveryRead(APIModel):
     id: int
     entry_id: int | None
-    notification_kind: Literal["entry", "divergence", "weekly_summary"]
+    notification_kind: Literal["entry", "divergence", "weekly_summary", "weekly_auto_follow_report"]
     condition_id: str
     entry_ids: list[int]
     rules: list[Literal["new_account", "large_amount"]]

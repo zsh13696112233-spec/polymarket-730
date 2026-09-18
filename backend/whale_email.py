@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import smtplib
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -603,10 +605,12 @@ class WhaleEmailNotifier:
         database: Database,
         settings: Settings,
         keychain: MacOSKeychain | None = None,
+        weekly_report: Callable[[], Awaitable[int]] | None = None,
     ) -> None:
         self.database = database
         self.settings = settings
         self.keychain = keychain
+        self.weekly_report = weekly_report
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._test_lock = asyncio.Lock()
@@ -630,6 +634,16 @@ class WhaleEmailNotifier:
     async def _run(self) -> None:
         await self.recover_stale_deliveries()
         while True:
+            if self.weekly_report is not None:
+                try:
+                    await self.weekly_report()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Do not include upstream errors or credentials in logs.
+                    logging.getLogger(__name__).warning(
+                        "自动跟单周报生成失败，下轮重试；请检查数据库及周报配置"
+                    )
             try:
                 await enqueue_due_weekly_summary(self.database)
                 sent = await self.deliver_once()

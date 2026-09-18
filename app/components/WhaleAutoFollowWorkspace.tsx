@@ -28,7 +28,7 @@ const STATUS_OPTIONS = [
   ["skipped", "已跳过"],
   ["strategy_protected", "策略保护"],
   ["failed", "执行失败"],
-  ["conflict_locked", "分歧锁定"],
+  ["conflict_locked", "分歧暂停"],
   ["exit_pending", "风控退出中"],
   ["exit_completed", "风控退出完成"],
 ] as const;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -131,8 +132,10 @@ def follow_quote(amount: str = "15") -> WhaleFollowQuote:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("opposite", [True, False])
 async def test_create_auto_order_enforces_shared_market_cap_and_releases_unfilled(
     database: Database,
+    opposite: bool,
 ):
     await configure_whale_settings(database)
     async with database.sessions() as session:
@@ -143,6 +146,11 @@ async def test_create_auto_order_enforces_shared_market_cap_and_releases_unfille
         await session.commit()
 
     follow_executor = executor(database)
+    next_quote = (
+        replace(follow_quote(), asset_id="other-side", outcome="No", outcome_index=1)
+        if opposite
+        else follow_quote()
+    )
     first_order_id = await follow_executor._create_order(
         quote=follow_quote(),
         confirmation_id="auto:one",
@@ -152,7 +160,7 @@ async def test_create_auto_order_enforces_shared_market_cap_and_releases_unfille
 
     with pytest.raises(ValueError, match="最多购买 1 次"):
         await follow_executor._create_order(
-            quote=follow_quote(),
+            quote=next_quote,
             confirmation_id="auto:two",
             side="BUY",
             order_source="auto_follow",
@@ -168,7 +176,7 @@ async def test_create_auto_order_enforces_shared_market_cap_and_releases_unfille
         await session.commit()
 
     second_order_id = await follow_executor._create_order(
-        quote=follow_quote(),
+        quote=next_quote,
         confirmation_id="auto:three",
         side="BUY",
         order_source="auto_follow",
@@ -1461,7 +1469,9 @@ async def test_unmatched_redemption_does_not_close_position(
 
 
 @pytest.mark.parametrize("source", ["follow", "auto_follow"])
-async def test_lost_follow_response_reconciles_after_restart_without_resubmitting(database, source):
+async def test_lost_follow_response_reconciles_after_restart_without_resubmitting(
+    database, source, monkeypatch
+):
     await configure_reconciliation(database)
     await configure_whale_settings(database)
     follow_executor = executor(database)
@@ -1469,6 +1479,8 @@ async def test_lost_follow_response_reconciles_after_restart_without_resubmittin
     follow_executor.client.fetch_order_book = AsyncMock(
         return_value=SimpleNamespace(best_ask=Decimal("0.50"), tick_size=Decimal("0.01"))
     )
+    # This test isolates submission/reconciliation; direction admission has scanner/executor tests.
+    monkeypatch.setattr("backend.whale._auto_conflict_reason", AsyncMock(return_value=None))
     prepared = SimpleNamespace(signed_order_hash="local-fingerprint", external_order_id="remote-id")
 
     async def lose_response(_):
@@ -1669,3 +1681,143 @@ async def test_legacy_fee_failure_recovers_identity_before_fee_retry(database, d
         assert order.fee_usdc == Decimal("0.01")
         assert len(list(await session.scalars(select(WhaleFill)))) == 1
         assert (await session.get(WhaleFollowPosition, order.position_id)).size == Decimal("30")
+
+
+@pytest.mark.parametrize("evidence", ["none", "signed", "trade", "filled", "unknown", "manual"])
+async def test_retire_only_certainly_unsubmitted_legacy_conflict_exit(database, evidence):
+    from backend.whale import _auto_conflict_reason
+
+    await configure_whale_settings(database)
+    position_id = await insert_position(database, size="10", cost="5", status="closing")
+    order_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="10",
+        requested_usdc="6",
+        key="legacy:unsubmitted",
+    )
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        order.source = "conflict_exit"
+        if evidence == "signed":
+            order.signed_order_hash = "test-signature-reference"
+        elif evidence == "trade":
+            order.external_trade_id = "test-trade-id"
+        elif evidence == "filled":
+            order.filled_size = Decimal("1")
+        elif evidence == "unknown":
+            order.status = "reconciliation_pending"
+        elif evidence == "manual":
+            order.source = "wallet_manual"
+        await session.commit()
+
+    follow_executor = executor(database)
+    follow_executor._trader = AsyncMock(side_effect=AssertionError("Must not contact SDK"))
+    assert await follow_executor.reconcile_pending_orders() is None
+    assert await follow_executor.reconcile_pending_orders() is None
+    follow_executor._trader.assert_not_awaited()
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        position = await session.get(WhaleFollowPosition, position_id)
+        reason = await _auto_conflict_reason(session, CONDITION_ID, ASSET_ID)
+        ledger = list(await session.scalars(select(WhaleFollowLedger)))
+    assert order.status == (
+        "blocked"
+        if evidence == "none"
+        else "reconciliation_pending"
+        if evidence == "unknown"
+        else "planned"
+    )
+    assert position.status == ("open" if evidence == "none" else "closing")
+    assert position.size == Decimal("10")
+    assert position.cost_usdc == Decimal("5")
+    assert ledger == []
+    if evidence == "none":
+        assert "未提交" in order.reason
+        assert "历史分歧退出订单" not in reason
+    elif evidence != "manual":
+        assert "尚待对账" in reason
+
+
+async def test_retiring_legacy_exit_honors_execution_lock_and_other_pending_sell(database):
+    position_id = await insert_position(database, size="10", cost="5", status="closing")
+    retired_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="10",
+        requested_usdc="6",
+        key="legacy:retire-under-lock",
+    )
+    retained_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="1",
+        requested_usdc="0.6",
+        key="manual:unknown-sell",
+    )
+    async with database.sessions() as session:
+        (await session.get(WhaleOrder, retired_id)).source = "conflict_exit"
+        other = await session.get(WhaleOrder, retained_id)
+        other.source = "wallet_manual"
+        other.status = "reconciliation_pending"
+        await session.commit()
+    follow_executor = executor(database)
+    async with follow_executor._lock:
+        assert await follow_executor.reconcile_pending_orders() is None
+        async with database.sessions() as session:
+            assert (await session.get(WhaleOrder, retired_id)).status == "planned"
+    assert await follow_executor.reconcile_pending_orders() is None
+    async with database.sessions() as session:
+        assert (await session.get(WhaleOrder, retired_id)).status == "blocked"
+        assert (await session.get(WhaleOrder, retained_id)).status == "reconciliation_pending"
+        assert (await session.get(WhaleFollowPosition, position_id)).status == "closing"
+
+
+@pytest.mark.parametrize("evidence", ["fill", "ledger"])
+async def test_legacy_planned_exit_with_execution_records_is_not_retired(database, evidence):
+    position_id = await insert_position(database, size="10", cost="5", status="closing")
+    order_id = await insert_order(
+        database,
+        position_id=position_id,
+        side="SELL",
+        requested_size="10",
+        requested_usdc="6",
+        key="legacy:inconsistent-execution-record",
+    )
+    async with database.sessions() as session:
+        (await session.get(WhaleOrder, order_id)).source = "conflict_exit"
+        if evidence == "fill":
+            session.add(
+                WhaleFill(
+                    order_id=order_id,
+                    fingerprint="review-fix-fill",
+                    size=Decimal("1"),
+                    price=Decimal("0.6"),
+                    amount=Decimal("0.6"),
+                    fee_usdc=ZERO,
+                    timestamp=NOW,
+                )
+            )
+        else:
+            session.add(
+                WhaleFollowLedger(
+                    position_id=position_id,
+                    order_id=order_id,
+                    type="sell",
+                    source="conflict_exit",
+                    size=Decimal("1"),
+                    price=Decimal("0.6"),
+                    amount_usdc=Decimal("0.6"),
+                    fee_usdc=ZERO,
+                    realized_pnl=ZERO,
+                    timestamp=NOW,
+                )
+            )
+        await session.commit()
+    assert await executor(database).reconcile_pending_orders() is None
+    async with database.sessions() as session:
+        assert (await session.get(WhaleOrder, order_id)).status == "planned"
+        assert (await session.get(WhaleFollowPosition, position_id)).status == "closing"

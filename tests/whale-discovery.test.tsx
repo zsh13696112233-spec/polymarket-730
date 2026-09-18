@@ -239,6 +239,9 @@ describe("巨鲸页内设置", () => {
     await user.click(screen.getByRole("checkbox", { name: "启用单市场共享上限" }));
     await user.type(screen.getByRole("spinbutton", { name: "单市场最大购买次数" }), "2");
     await user.type(screen.getByRole("spinbutton", { name: "单市场累计投入上限" }), "30");
+    expect(screen.getByRole("heading", { name: "分歧买入优先级" })).toBeInTheDocument();
+    expect(screen.getByText(/同方向至少 2 个有效钱包时直接放行/)).toBeInTheDocument();
+    expect(screen.queryByText(/锁定并退出原仓位/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: "启用全量超大额优先规则" }));
     await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
 

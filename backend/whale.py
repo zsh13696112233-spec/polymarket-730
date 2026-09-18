@@ -169,25 +169,120 @@ def _strongest_whale_rule(rules: Iterable[str]) -> str | None:
     return strongest
 
 
-def _decision_requires_conflict_exit(
-    decision: WhaleAutoFollowDecision,
-    market_lock: WhaleAutoMarketLock | None,
-) -> bool:
-    if market_lock is None:
-        return False
-    if decision.status in {"pending", "exit_pending"}:
-        return True
-    return bool(
-        market_lock.trigger_asset_id is None or decision.asset_id != market_lock.trigger_asset_id
+class AutoFollowConflictPaused(ValueError):
+    """A pre-order pause that may be reevaluated while the signal is fresh."""
+
+
+LEGACY_CONFLICT_PRIORITY_REASON = "反向全量超大额信号优先，本次新号信号不买入"
+
+
+async def _auto_conflict_reason(
+    session: AsyncSession,
+    condition_id: str,
+    asset_id: str,
+    *,
+    priority_enabled: bool | None = None,
+    client: PolymarketClient | None = None,
+) -> str | None:
+    """Count distinct current source wallets; old market locks are audit records only."""
+    settings = await session.get(WhaleSettings, 1)
+    if settings is None:
+        return "巨鲸模块尚未初始化"
+    if priority_enabled is None:
+        priority_enabled = settings.large_amount_conflict_priority_enabled
+    pending_exit = await session.scalar(
+        select(WhaleOrder.id)
+        .where(
+            WhaleOrder.condition_id == condition_id,
+            WhaleOrder.source == "conflict_exit",
+            WhaleOrder.status.in_(AUTO_FOLLOW_RESERVED_ORDER_STATUSES),
+        )
+        .limit(1)
     )
-
-
-@dataclass(frozen=True, slots=True)
-class AutoConflictResolution:
-    blocked_asset_ids: frozenset[str]
-    exit_asset_ids: frozenset[str]
-    trigger_entry: WhaleEntry | None
-    lock_required: bool
+    if pending_exit is not None:
+        return "历史分歧退出订单尚待对账，暂不重新买入"
+    rows = (
+        await session.execute(
+            select(WhaleEntry, WhaleEntryRuleState.rule_type)
+            .join(WhaleEntryRuleState, WhaleEntryRuleState.entry_id == WhaleEntry.id)
+            .where(
+                WhaleEntry.condition_id == condition_id,
+                or_(
+                    WhaleEntryRuleState.active.is_(True),
+                    WhaleEntry.follow_ineligible_reason == "position_check_failed",
+                ),
+                WhaleEntry.discovery_source == "trades",
+                _not_excluded_wallet(WhaleEntry.proxy_wallet),
+            )
+        )
+    ).all()
+    gates = {
+        (gate.proxy_wallet, gate.asset_id): gate
+        for gate in (
+            await session.scalars(
+                select(WhaleBackfillSignalState).where(
+                    WhaleBackfillSignalState.condition_id == condition_id
+                )
+            )
+        ).all()
+    }
+    candidates = []
+    for entry, rule in rows:
+        gate = gates.get((entry.proxy_wallet, entry.asset_id))
+        if gate is not None and (
+            gate.awaiting_new_buy or entry.last_buy_at <= gate.auto_follow_after
+        ):
+            continue
+        if entry.follow_ineligible_reason in {"position_check_failed", "coverage_incomplete"}:
+            return "市场来源持仓或扫描覆盖未核验完整，暂不放行"
+        # A reduced or hedged wallet may recover before submission. Refresh all
+        # eligible rule sources before applying position-quality filters.
+        if client is not None or (
+            entry.status == "holding" and not entry.hedged and entry.net_size > ZERO
+        ):
+            candidates.append((entry, rule))
+    fresh_positions = {}
+    if client is not None:
+        # Recheck every current participant, not just the wallet being copied.
+        # A failed read cannot turn an unknown opposite position into zero votes.
+        for wallet in dict.fromkeys(entry.proxy_wallet for entry, _ in candidates):
+            try:
+                fresh_positions[wallet] = await client.fetch_active_positions(
+                    wallet, condition_ids=[condition_id]
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return "分歧钱包持仓重新核验失败，暂不放行"
+    wallets: defaultdict[str, set[str]] = defaultdict(set)
+    rules: defaultdict[str, set[str]] = defaultdict(set)
+    for entry, rule in candidates:
+        if client is not None:
+            _, _, _, reason = _position_quality(
+                entry, fresh_positions[entry.proxy_wallet], settings.holding_ratio_threshold
+            )
+            if reason is not None:
+                continue
+        elif entry.net_ratio < settings.holding_ratio_threshold:
+            continue
+        wallets[entry.asset_id].add(entry.proxy_wallet.lower())
+        rules[entry.asset_id].add(rule)
+    if not wallets.get(asset_id):
+        return "本方向没有已核验的有效来源钱包，暂不放行"
+    opponents = set(wallets) - {asset_id}
+    if not opponents or len(wallets[asset_id]) >= 2:
+        return None
+    own_priority = WHALE_RULE_PRIORITY.get(_strongest_whale_rule(rules[asset_id]) or "", 0)
+    opposing_priority = max(
+        WHALE_RULE_PRIORITY.get(_strongest_whale_rule(rules[other]) or "", 0) for other in opponents
+    )
+    if priority_enabled and own_priority > opposing_priority:
+        return None
+    counts = (
+        f"本方向 {len(wallets[asset_id])} 人，反方向 {sum(len(wallets[a]) for a in opponents)} 人"
+    )
+    policy = "全量超大额优先" if priority_enabled else "未启用全量超大额优先"
+    return f"分歧暂停：{counts}；{policy}，本方向未达到双钱包放行条件"
 
 
 WHALE_STATISTICS_SCIENCE_TECH_TAGS = frozenset(
@@ -1099,17 +1194,8 @@ class WhaleDiscoveryScanner:
                 if order is not None:
                     decision.buy_order_id = order.id
                 if order is not None and order.filled_size > ZERO:
-                    market_lock = await session.get(WhaleAutoMarketLock, decision.condition_id)
-                    requires_exit = _decision_requires_conflict_exit(decision, market_lock)
-                    decision.status = "exit_pending" if requires_exit else "bought"
-                    decision.reason = (
-                        "恢复中断决策：买入已成交，等待分歧风控退出"
-                        if requires_exit
-                        else "恢复中断决策：自动买入已经成交"
-                    )
-                    if requires_exit and market_lock is not None:
-                        market_lock.exit_status = "pending"
-                        market_lock.updated_at = now
+                    decision.status = "bought"
+                    decision.reason = "自动跟单买入已执行"
                 else:
                     decision.status = "failed"
                     decision.reason = (
@@ -2534,204 +2620,73 @@ class WhaleDiscoveryScanner:
                 return []
 
             pending_decision_ids: list[int] = []
-            active_rules_by_condition_asset: defaultdict[str, defaultdict[str, set[str]]] = (
-                defaultdict(lambda: defaultdict(set))
+            # Only conflict-paused decisions without any order can be reconsidered.
+            await session.flush()
+            paused = list(
+                (
+                    await session.scalars(
+                        select(WhaleAutoFollowDecision)
+                        .where(
+                            or_(
+                                WhaleAutoFollowDecision.status == "conflict_locked",
+                                and_(
+                                    WhaleAutoFollowDecision.status == "skipped",
+                                    WhaleAutoFollowDecision.reason
+                                    == LEGACY_CONFLICT_PRIORITY_REASON,
+                                ),
+                            )
+                        )
+                        .order_by(WhaleAutoFollowDecision.created_at, WhaleAutoFollowDecision.id)
+                    )
+                ).all()
             )
-            active_entries_by_condition_asset: defaultdict[
-                str, defaultdict[str, list[WhaleEntry]]
-            ] = defaultdict(lambda: defaultdict(list))
-            for (entry_id, _rule_type), state in states.items():
-                if not state.active:
+            candidate_ids = {candidate[0].id for candidate in auto_candidates}
+            resumable_ids: set[int] = set()
+            for decision in paused:
+                order = await session.scalar(
+                    select(WhaleOrder).where(
+                        WhaleOrder.idempotency_key == f"whale:auto:{decision.id}"
+                    )
+                )
+                if decision.buy_order_id is not None or order is not None:
+                    if order is not None:
+                        decision.buy_order_id = order.id
                     continue
-                active_entry = entries_by_id.get(entry_id)
-                if (
-                    active_entry is not None
-                    and active_entry.net_size > ZERO
-                    and active_entry.discovery_source == "trades"
-                    and active_entry.status == "holding"
-                    and not active_entry.hedged
+                if decision.created_at < window_start:
+                    decision.status = "skipped"
+                    decision.reason = "分歧暂停信号已超过监测窗口，不再补买"
+                    decision.updated_at = now
+                    continue
+                row = entries_by_id.get(decision.entry_id)
+                if row is None:
+                    continue
+                gate = backfill_states.get((row.proxy_wallet, row.asset_id))
+                if row.discovery_source != "trades" or (
+                    gate is not None
+                    and (gate.awaiting_new_buy or row.last_buy_at <= gate.auto_follow_after)
                 ):
-                    active_rules_by_condition_asset[active_entry.condition_id][
-                        active_entry.asset_id
-                    ].add(state.rule_type)
-                    entries = active_entries_by_condition_asset[active_entry.condition_id][
-                        active_entry.asset_id
-                    ]
-                    if active_entry not in entries:
-                        entries.append(active_entry)
-
-            held_decisions = (
-                list(
-                    (
-                        await session.scalars(
-                            select(WhaleAutoFollowDecision)
-                            .join(
-                                WhaleOrder,
-                                WhaleOrder.id == WhaleAutoFollowDecision.buy_order_id,
-                            )
-                            .join(
-                                WhaleFollowPosition,
-                                WhaleFollowPosition.id == WhaleOrder.position_id,
-                            )
-                            .where(
-                                WhaleAutoFollowDecision.condition_id.in_(relevant_condition_ids),
-                                WhaleAutoFollowDecision.selected_rule.is_not(None),
-                                WhaleOrder.filled_size > ZERO,
-                                WhaleFollowPosition.size > ZERO,
-                                WhaleFollowPosition.status.in_(["opening", "open", "closing"]),
-                            )
+                    continue
+                resumable_ids.add(decision.id)
+                if row.id not in candidate_ids:
+                    market = markets.get(row.condition_id)
+                    auto_candidates.append(
+                        (
+                            row,
+                            set(),
+                            market,
+                            row.proxy_wallet in failed_wallets,
+                            row.net_size > ZERO,
+                            market is None
+                            or market.closed
+                            or not market.active
+                            or market_price_is_settled(market),
                         )
-                    ).all()
-                )
-                if relevant_condition_ids
-                else []
+                    )
+                    candidate_ids.add(row.id)
+            paused_times = {d.entry_id: (d.created_at, d.id) for d in paused}
+            auto_candidates.sort(
+                key=lambda candidate: paused_times.get(candidate[0].id, (now, candidate[0].id))
             )
-            held_decisions_by_condition_asset: defaultdict[
-                str, defaultdict[str, list[WhaleAutoFollowDecision]]
-            ] = defaultdict(lambda: defaultdict(list))
-            for decision in held_decisions:
-                held_decisions_by_condition_asset[decision.condition_id][decision.asset_id].append(
-                    decision
-                )
-
-            candidate_entry_ids = {candidate[0].id for candidate in auto_candidates}
-            conflict_resolutions: dict[str, AutoConflictResolution] = {}
-            large_priority_enabled = bool(config["large_amount_conflict_priority_enabled"])
-            priority_condition_ids = set(active_rules_by_condition_asset)
-            if large_priority_enabled:
-                priority_condition_ids.update(held_decisions_by_condition_asset)
-            for condition_id in priority_condition_ids:
-                priority_rules_by_asset = {
-                    asset_id: set(rules)
-                    for asset_id, rules in active_rules_by_condition_asset[condition_id].items()
-                }
-                if large_priority_enabled:
-                    for asset_id, decisions in held_decisions_by_condition_asset[
-                        condition_id
-                    ].items():
-                        priority_rules_by_asset.setdefault(asset_id, set()).update(
-                            decision.conflict_rule or decision.selected_rule
-                            for decision in decisions
-                            if decision.selected_rule is not None
-                        )
-                if len(priority_rules_by_asset) < 2:
-                    continue
-                strongest_by_asset = {
-                    asset_id: _strongest_whale_rule(rules)
-                    for asset_id, rules in priority_rules_by_asset.items()
-                }
-                highest_priority = max(
-                    WHALE_RULE_PRIORITY.get(rule or "", 0) for rule in strongest_by_asset.values()
-                )
-                highest_assets = {
-                    asset_id
-                    for asset_id, rule in strongest_by_asset.items()
-                    if WHALE_RULE_PRIORITY.get(rule or "", 0) == highest_priority
-                }
-                held_asset_ids = set(held_decisions_by_condition_asset[condition_id])
-                if not large_priority_enabled:
-                    highest_assets = set(priority_rules_by_asset)
-                    blocked_asset_ids = set(priority_rules_by_asset)
-                    exit_asset_ids = set(held_asset_ids)
-                    lock_required = True
-                elif len(highest_assets) > 1:
-                    blocked_asset_ids = set(priority_rules_by_asset)
-                    exit_asset_ids = set(held_asset_ids)
-                    lock_required = True
-                else:
-                    winning_asset_id = next(iter(highest_assets))
-                    blocked_asset_ids = set(priority_rules_by_asset) - {winning_asset_id}
-                    exit_asset_ids = held_asset_ids & blocked_asset_ids
-                    lock_required = bool(exit_asset_ids)
-
-                trigger_entry: WhaleEntry | None = None
-                if lock_required:
-                    trigger_assets = highest_assets - exit_asset_ids or highest_assets
-                    trigger_entries = [
-                        entry
-                        for asset_id in trigger_assets
-                        for entry in active_entries_by_condition_asset[condition_id][asset_id]
-                        if (
-                            strongest_by_asset[asset_id] is not None
-                            and (entry.id, strongest_by_asset[asset_id]) in states
-                            and states[(entry.id, strongest_by_asset[asset_id])].active
-                        )
-                    ]
-                    if trigger_entries:
-                        trigger_entry = min(
-                            trigger_entries,
-                            key=lambda entry: (
-                                entry.id not in candidate_entry_ids,
-                                entry.id,
-                            ),
-                        )
-                conflict_resolutions[condition_id] = AutoConflictResolution(
-                    blocked_asset_ids=frozenset(blocked_asset_ids),
-                    exit_asset_ids=frozenset(exit_asset_ids),
-                    trigger_entry=trigger_entry,
-                    lock_required=lock_required,
-                )
-
-            candidate_conditions = {
-                candidate[0].condition_id for candidate in auto_candidates
-            } | set(conflict_resolutions)
-            existing_locks = (
-                {
-                    lock.condition_id: lock
-                    for lock in (
-                        await session.scalars(
-                            select(WhaleAutoMarketLock).where(
-                                WhaleAutoMarketLock.condition_id.in_(candidate_conditions)
-                            )
-                        )
-                    ).all()
-                }
-                if candidate_conditions
-                else {}
-            )
-
-            for condition_id, resolution in conflict_resolutions.items():
-                if not resolution.lock_required or condition_id in existing_locks:
-                    continue
-                trigger_entry = resolution.trigger_entry
-                if trigger_entry is None:
-                    continue
-                trigger_rules = sorted(
-                    active_rules_by_condition_asset[condition_id][trigger_entry.asset_id]
-                )
-                lock = WhaleAutoMarketLock(
-                    condition_id=condition_id,
-                    trigger_entry_id=trigger_entry.id,
-                    trigger_wallet=trigger_entry.proxy_wallet,
-                    trigger_asset_id=trigger_entry.asset_id,
-                    trigger_outcome=trigger_entry.outcome,
-                    trigger_amount_usdc=trigger_entry.gross_buy_usdc,
-                    trigger_rules_json=_json_dump(trigger_rules),
-                    reason=(
-                        f"反向钱包 {trigger_entry.proxy_wallet} 触发 "
-                        f"{','.join(trigger_rules)}，金额 {trigger_entry.gross_buy_usdc} USDC"
-                    ),
-                    exit_status=("pending" if resolution.exit_asset_ids else "not_required"),
-                    last_error=None,
-                    created_at=now,
-                    updated_at=now,
-                )
-                session.add(lock)
-                existing_locks[condition_id] = lock
-
-            for condition_id, resolution in conflict_resolutions.items():
-                if not resolution.exit_asset_ids:
-                    continue
-                lock = existing_locks.get(condition_id)
-                if lock is None:
-                    continue
-                for asset_id in resolution.exit_asset_ids:
-                    for bought in held_decisions_by_condition_asset[condition_id][asset_id]:
-                        bought.status = "exit_pending"
-                        bought.reason = "持仓后出现同级或更高优先级反向信号，等待风控卖出"
-                        bought.updated_at = now
-                lock.exit_status = "pending"
-                lock.updated_at = now
 
             for (
                 entry,
@@ -2757,60 +2712,49 @@ class WhaleDiscoveryScanner:
                     if (entry.id, rule_type) in states and states[(entry.id, rule_type)].active
                 )
                 matched_rules = active_rules or sorted(new_rules)
-                resolution = conflict_resolutions.get(entry.condition_id)
                 if decision is not None:
                     decision.matched_rules_json = _json_dump(matched_rules)
                     decision.updated_at = now
-                    if decision.buy_order_id is None:
-                        if entry.condition_id in existing_locks:
-                            decision.status = "conflict_locked"
-                            decision.reason = "该市场已经被永久分歧锁定"
-                            decision.processed_at = now
-                        elif resolution is not None and entry.asset_id in (
-                            resolution.blocked_asset_ids
-                        ):
-                            decision.status = "skipped"
-                            decision.reason = "反向全量超大额信号优先，本次新号信号不买入"
-                            decision.processed_at = now
-                    continue
-                decision = WhaleAutoFollowDecision(
-                    entry_id=entry.id,
-                    proxy_wallet=entry.proxy_wallet,
-                    asset_id=entry.asset_id,
-                    condition_id=entry.condition_id,
-                    outcome=entry.outcome,
-                    outcome_index=entry.outcome_index,
-                    matched_rules_json=_json_dump(matched_rules),
-                    selected_rule=None,
-                    category=category,
-                    configured_amount_usdc=None,
-                    configured_min_price=None,
-                    configured_max_price=None,
-                    configured_low_price_max_price=None,
-                    configured_low_price_amount_usdc=None,
-                    selected_amount_usdc=None,
-                    observed_best_ask=None,
-                    status="pending",
-                    reason=None,
-                    buy_order_id=None,
-                    latest_sell_order_id=None,
-                    processed_at=None,
-                    created_at=now,
-                    updated_at=now,
-                )
-                session.add(decision)
-                await session.flush()
+                    if decision.id not in resumable_ids:
+                        continue
+                    decision.status = "pending"
+                    decision.reason = None
+                    decision.processed_at = None
+                    decision.category = category
+                    decision.selected_rule = None
+                    decision.conflict_rule = None
+                    decision.source_tier_min_usdc = None
+                    decision.selected_amount_usdc = None
+                    decision.observed_best_ask = None
+                else:
+                    decision = WhaleAutoFollowDecision(
+                        entry_id=entry.id,
+                        proxy_wallet=entry.proxy_wallet,
+                        asset_id=entry.asset_id,
+                        condition_id=entry.condition_id,
+                        outcome=entry.outcome,
+                        outcome_index=entry.outcome_index,
+                        matched_rules_json=_json_dump(matched_rules),
+                        selected_rule=None,
+                        category=category,
+                        configured_amount_usdc=None,
+                        configured_min_price=None,
+                        configured_max_price=None,
+                        configured_low_price_max_price=None,
+                        configured_low_price_amount_usdc=None,
+                        selected_amount_usdc=None,
+                        observed_best_ask=None,
+                        status="pending",
+                        reason=None,
+                        buy_order_id=None,
+                        latest_sell_order_id=None,
+                        processed_at=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(decision)
+                    await session.flush()
 
-                if entry.condition_id in existing_locks:
-                    decision.status = "conflict_locked"
-                    decision.reason = "该市场已经被永久分歧锁定"
-                    decision.processed_at = now
-                    continue
-                if resolution is not None and entry.asset_id in resolution.blocked_asset_ids:
-                    decision.status = "skipped"
-                    decision.reason = "反向全量超大额信号优先，本次新号信号不买入"
-                    decision.processed_at = now
-                    continue
                 if position_failed:
                     decision.status = "skipped"
                     decision.reason = "巨鲸当前持仓核验失败"
@@ -2856,7 +2800,7 @@ class WhaleDiscoveryScanner:
                         for value in _json_list(config[f"{prefix}_auto_follow_categories_json"])
                     }
                     if bool(config[f"{prefix}_auto_follow_enabled"]) and category in categories:
-                        # Sizing prefers new accounts; conflict exits retain large-rule priority.
+                        # Sizing prefers new accounts; direction priority uses the strongest rule.
                         decision.conflict_rule = rule_type
                         if selected is not None:
                             continue
@@ -2892,6 +2836,19 @@ class WhaleDiscoveryScanner:
                     )
                     decision.processed_at = now
                     continue
+                # Only signals admitted by the strategy may wait for a conflict to clear.
+                conflict_reason = await _auto_conflict_reason(
+                    session,
+                    entry.condition_id,
+                    entry.asset_id,
+                    priority_enabled=bool(config["large_amount_conflict_priority_enabled"]),
+                )
+                if conflict_reason is not None:
+                    decision.status = "conflict_locked"
+                    decision.reason = conflict_reason
+                    decision.processed_at = now
+                    continue
+
                 (
                     decision.selected_rule,
                     decision.configured_amount_usdc,
@@ -2951,9 +2908,13 @@ class WhaleDiscoveryScanner:
                     decision = await session.get(WhaleAutoFollowDecision, decision_id)
                     if decision is None or decision.status != "pending":
                         continue
-                    if await session.get(WhaleAutoMarketLock, decision.condition_id) is not None:
+                    if (
+                        conflict_reason := await _auto_conflict_reason(
+                            session, decision.condition_id, decision.asset_id
+                        )
+                    ) is not None:
                         decision.status = "conflict_locked"
-                        decision.reason = "该市场已经被永久分歧锁定"
+                        decision.reason = conflict_reason
                         decision.processed_at = utcnow()
                         decision.updated_at = utcnow()
                         await session.commit()
@@ -2990,9 +2951,13 @@ class WhaleDiscoveryScanner:
                     decision.observed_best_ask = quote.best_ask
                     decision.selected_amount_usdc = quote.amount_usdc
                     decision.updated_at = utcnow()
-                    if await session.get(WhaleAutoMarketLock, decision.condition_id) is not None:
+                    if (
+                        conflict_reason := await _auto_conflict_reason(
+                            session, decision.condition_id, decision.asset_id
+                        )
+                    ) is not None:
                         decision.status = "conflict_locked"
-                        decision.reason = "下单前市场出现分歧，已经永久锁定"
+                        decision.reason = conflict_reason
                         decision.processed_at = utcnow()
                         await session.commit()
                         continue
@@ -3011,17 +2976,8 @@ class WhaleDiscoveryScanner:
                     decision.processed_at = utcnow()
                     decision.updated_at = utcnow()
                     if order is not None and order.filled_size > ZERO:
-                        market_lock = await session.get(WhaleAutoMarketLock, decision.condition_id)
-                        requires_exit = _decision_requires_conflict_exit(decision, market_lock)
-                        decision.status = "exit_pending" if requires_exit else "bought"
-                        decision.reason = (
-                            "买入成交后市场出现分歧，等待风控卖出"
-                            if requires_exit
-                            else "自动跟单买入已执行"
-                        )
-                        if requires_exit and market_lock is not None:
-                            market_lock.exit_status = "pending"
-                            market_lock.updated_at = utcnow()
+                        decision.status = "bought"
+                        decision.reason = "自动跟单买入已执行"
                     else:
                         decision.status = "failed"
                         decision.reason = (
@@ -3045,212 +3001,63 @@ class WhaleDiscoveryScanner:
                         if observed_best_ask is not None:
                             decision.observed_best_ask = _decimal(observed_best_ask)
                         if order is not None and order.filled_size > ZERO:
-                            market_lock = await session.get(
-                                WhaleAutoMarketLock, decision.condition_id
-                            )
-                            requires_exit = _decision_requires_conflict_exit(decision, market_lock)
-                            decision.status = "exit_pending" if requires_exit else "bought"
-                            decision.reason = (
-                                "买入成交后市场出现分歧，等待风控卖出"
-                                if requires_exit
-                                else "自动跟单买入已执行"
-                            )
-                            if requires_exit and market_lock is not None:
-                                market_lock.exit_status = "pending"
-                                market_lock.updated_at = utcnow()
+                            decision.status = "bought"
+                            decision.reason = "自动跟单买入已执行"
                         else:
-                            decision.status = "failed"
+                            decision.status = (
+                                "conflict_locked"
+                                if isinstance(error, AutoFollowConflictPaused) and order is None
+                                else "failed"
+                            )
                             decision.reason = str(error)[:1000]
                         decision.processed_at = utcnow()
                         decision.updated_at = utcnow()
                         await session.commit()
 
     async def _process_conflict_exits(self) -> None:
-        if self.executor is None:
-            return
+        """Retire unsubmitted legacy exits; existing orders keep normal reconciliation."""
         async with self.database.sessions() as session:
-            locks = list(
+            decisions = list(
                 (
                     await session.scalars(
-                        select(WhaleAutoMarketLock).where(
-                            WhaleAutoMarketLock.exit_status.in_(["pending", "exiting"])
+                        select(WhaleAutoFollowDecision).where(
+                            WhaleAutoFollowDecision.status == "exit_pending"
                         )
                     )
                 ).all()
             )
-        for market_lock in locks:
-            try:
-                async with self.database.sessions() as session:
-                    bought_decisions = list(
-                        (
-                            await session.scalars(
-                                select(WhaleAutoFollowDecision)
-                                .join(
-                                    WhaleOrder,
-                                    WhaleOrder.id == WhaleAutoFollowDecision.buy_order_id,
-                                )
-                                .where(
-                                    WhaleAutoFollowDecision.condition_id
-                                    == market_lock.condition_id,
-                                    WhaleAutoFollowDecision.status == "exit_pending",
-                                    WhaleOrder.filled_size > ZERO,
-                                )
-                            )
-                        ).all()
+            for decision in decisions:
+                pending = await session.scalar(
+                    select(WhaleOrder.id)
+                    .where(
+                        WhaleOrder.condition_id == decision.condition_id,
+                        WhaleOrder.source == "conflict_exit",
+                        WhaleOrder.status.in_(AUTO_FOLLOW_RESERVED_ORDER_STATUSES),
                     )
-                    asset_ids = list(dict.fromkeys(row.asset_id for row in bought_decisions))
-                    positions = (
-                        list(
-                            (
-                                await session.scalars(
-                                    select(WhaleFollowPosition).where(
-                                        WhaleFollowPosition.condition_id
-                                        == market_lock.condition_id,
-                                        WhaleFollowPosition.asset_id.in_(asset_ids),
-                                        WhaleFollowPosition.size > ZERO,
-                                        WhaleFollowPosition.status.in_(
-                                            ["opening", "open", "closing"]
-                                        ),
-                                    )
-                                )
-                            ).all()
-                        )
-                        if asset_ids
-                        else []
-                    )
-                    lock_row = await session.get(WhaleAutoMarketLock, market_lock.condition_id)
-                    if lock_row is None:
-                        continue
-                    if not positions:
-                        lock_row.exit_status = "completed"
-                        lock_row.last_error = None
-                        lock_row.updated_at = utcnow()
-                        for decision in bought_decisions:
-                            decision.status = "exit_completed"
-                            decision.reason = "分歧市场风控退出已完成"
-                            decision.updated_at = utcnow()
-                        await session.commit()
-                        continue
-                    lock_row.exit_status = "exiting"
-                    lock_row.updated_at = utcnow()
-                    await session.commit()
-
-                pending = False
-                latest_order_by_asset: dict[str, int] = {}
-                for position in positions:
-                    if await self.executor.write_off_terminal_sell_remainder(position.id):
-                        continue
-                    if position.status == "closing":
-                        pending = True
-                        continue
-                    quote = await self.executor.quote_sell(
-                        position_id=position.id,
-                        size=None,
-                        sell_all=True,
-                    )
-                    order_id = await self.executor.execute_sell(
-                        quote,
-                        f"conflict:{market_lock.condition_id}:{position.id}:{uuid4().hex}",
-                        order_source="conflict_exit",
-                    )
-                    latest_order_by_asset[position.asset_id] = order_id
-                    async with self.database.sessions() as session:
-                        current = await session.get(WhaleFollowPosition, position.id)
-                        if current is not None and current.size > ZERO:
-                            pending = True
-
-                async with self.database.sessions() as session:
-                    lock_row = await session.get(WhaleAutoMarketLock, market_lock.condition_id)
-                    if lock_row is None:
-                        continue
-                    decisions = list(
-                        (
-                            await session.scalars(
-                                select(WhaleAutoFollowDecision)
-                                .join(
-                                    WhaleOrder,
-                                    WhaleOrder.id == WhaleAutoFollowDecision.buy_order_id,
-                                )
-                                .where(
-                                    WhaleAutoFollowDecision.condition_id
-                                    == market_lock.condition_id,
-                                    WhaleAutoFollowDecision.status == "exit_pending",
-                                    WhaleOrder.filled_size > ZERO,
-                                )
-                            )
-                        ).all()
-                    )
-                    lock_row.exit_status = "pending" if pending else "completed"
-                    lock_row.last_error = None
-                    lock_row.updated_at = utcnow()
-                    for decision in decisions:
-                        decision.status = "exit_pending" if pending else "exit_completed"
-                        decision.reason = (
-                            "分歧市场仍有剩余份额，等待继续退出"
-                            if pending
-                            else "分歧市场风控退出已完成"
-                        )
-                        decision.latest_sell_order_id = latest_order_by_asset.get(
-                            decision.asset_id, decision.latest_sell_order_id
-                        )
-                        decision.updated_at = utcnow()
-                    await session.commit()
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                message = str(error)[:1000]
-                async with self.database.sessions() as session:
-                    lock_row = await session.get(WhaleAutoMarketLock, market_lock.condition_id)
-                    if lock_row is None:
-                        continue
-                    lock_row.last_error = message
-                    lock_row.exit_status = (
-                        "market_closed"
-                        if "不再开放" in message or "结果已经确定" in message
-                        else "pending"
-                    )
-                    lock_row.updated_at = utcnow()
-                    decisions = list(
-                        (
-                            await session.scalars(
-                                select(WhaleAutoFollowDecision)
-                                .join(
-                                    WhaleOrder,
-                                    WhaleOrder.id == WhaleAutoFollowDecision.buy_order_id,
-                                )
-                                .where(
-                                    WhaleAutoFollowDecision.condition_id
-                                    == market_lock.condition_id,
-                                    WhaleAutoFollowDecision.status == "exit_pending",
-                                    WhaleOrder.filled_size > ZERO,
-                                )
-                            )
-                        ).all()
-                    )
-                    latest_sell_ids = {
-                        asset_id: order_id
-                        for asset_id, order_id in (
-                            await session.execute(
-                                select(WhaleOrder.asset_id, func.max(WhaleOrder.id))
-                                .where(
-                                    WhaleOrder.condition_id == market_lock.condition_id,
-                                    WhaleOrder.source == "conflict_exit",
-                                    WhaleOrder.side == "SELL",
-                                )
-                                .group_by(WhaleOrder.asset_id)
-                            )
-                        ).all()
-                    }
-                    for decision in decisions:
-                        decision.status = (
-                            "failed" if lock_row.exit_status == "market_closed" else "exit_pending"
-                        )
-                        decision.latest_sell_order_id = latest_sell_ids.get(
-                            decision.asset_id, decision.latest_sell_order_id
-                        )
-                        decision.reason = f"分歧风控卖出未完成：{message}"
-                        decision.updated_at = utcnow()
-                    await session.commit()
+                    .limit(1)
+                )
+                if pending is not None:
+                    continue
+                buy = (
+                    await session.get(WhaleOrder, decision.buy_order_id)
+                    if decision.buy_order_id
+                    else None
+                )
+                position = (
+                    await session.get(WhaleFollowPosition, buy.position_id)
+                    if buy and buy.position_id
+                    else None
+                )
+                decision.status = (
+                    "bought" if position and position.size > ZERO else "exit_completed"
+                )
+                decision.reason = "已停止分歧自动卖出，已有订单保留对账结果"
+                decision.updated_at = utcnow()
+                lock = await session.get(WhaleAutoMarketLock, decision.condition_id)
+                if lock is not None:
+                    lock.exit_status = "not_required"
+                    lock.updated_at = utcnow()
+            await session.commit()
 
     async def _update_tag_counts(self, *, now: datetime) -> None:
         async with self.database.sessions() as session:
@@ -3863,6 +3670,13 @@ class WhaleFollowExecutor:
                         raise ValueError("该巨鲸账户已加入排除名单，不能继续跟买")
             if quote.entry_id is not None:
                 await self._verify_source_position(quote.entry_id, quote.asset_id)
+            if order_source == "auto_follow":
+                async with self.database.sessions() as session:
+                    reason = await _auto_conflict_reason(
+                        session, quote.condition_id, quote.asset_id, client=self.client
+                    )
+                    if reason is not None:
+                        raise AutoFollowConflictPaused(reason)
             book = await self._buy_order_book(quote.asset_id)
             if book.best_ask is None:
                 raise AutoFollowQuoteRejected("市场当前没有可成交卖盘")
@@ -3946,6 +3760,38 @@ class WhaleFollowExecutor:
                 settings = await session.get(WhaleSettings, 1)
                 if settings is None:
                     raise ValueError("巨鲸模块尚未初始化")
+                if quote.entry_id is not None:
+                    decision = await session.scalar(
+                        select(WhaleAutoFollowDecision).where(
+                            WhaleAutoFollowDecision.entry_id == quote.entry_id
+                        )
+                    )
+                    if (
+                        decision is None
+                        or decision.status != "pending"
+                        or decision.buy_order_id is not None
+                    ):
+                        raise ValueError("自动跟单决策已处理或不存在，不重复买入")
+                    prefix = decision.selected_rule
+                    if prefix not in WHALE_RULES or not getattr(
+                        settings, f"{prefix}_auto_follow_enabled"
+                    ):
+                        raise ValueError("对应自动跟单策略当前关闭")
+                    market = await session.get(WhaleMarket, quote.condition_id)
+                    if (
+                        market is None
+                        or market.closed
+                        or not market.active
+                        or market_price_is_settled(market)
+                    ):
+                        raise ValueError("市场已经关闭或结果已经确定")
+                    category = _whale_statistics_classification(market.tags_json)["category"]
+                    if category not in _json_list(
+                        getattr(settings, f"{prefix}_auto_follow_categories_json")
+                    ):
+                        raise ValueError("市场分类未在自动跟单策略中启用")
+                    if decision.created_at < now - timedelta(hours=max(1, settings.window_hours)):
+                        raise ValueError("自动跟单信号已超过监测窗口，不再买入")
                 count_cap = settings.auto_follow_market_max_purchase_count
                 amount_cap = settings.auto_follow_market_max_amount_usdc
                 if (count_cap is None) != (amount_cap is None):
@@ -4092,6 +3938,55 @@ class WhaleFollowExecutor:
         )
         return match.group(1) if match else None
 
+    @staticmethod
+    async def _retire_unsubmitted_conflict_exits(
+        session: AsyncSession, *, order_id: int | None
+    ) -> None:
+        """Called under the execution lock; never infer non-submission from missing IDs alone."""
+        query = select(WhaleOrder).where(
+            WhaleOrder.source == "conflict_exit",
+            WhaleOrder.side == "SELL",
+            WhaleOrder.status == "planned",
+            WhaleOrder.signed_order_hash.is_(None),
+            WhaleOrder.external_order_id.is_(None),
+            WhaleOrder.external_trade_id.is_(None),
+            WhaleOrder.filled_size == ZERO,
+            WhaleOrder.filled_usdc == ZERO,
+            WhaleOrder.fee_usdc == ZERO,
+            ~WhaleOrder.fills.any(),
+            ~WhaleOrder.ledger_entries.any(),
+        )
+        if order_id is not None:
+            query = query.where(WhaleOrder.id == order_id)
+        orders = list((await session.scalars(query)).all())
+        if not orders:
+            return
+        now = utcnow()
+        for order in orders:
+            # Submission always persists signed identity first. Only this intact
+            # planned state proves that the retired automatic exit was never sent.
+            order.status = "blocked"
+            order.reason = "分歧自动退出已停用；旧订单未签名、未提交，已终止本地任务"
+            order.updated_at = now
+        await session.flush()
+        for position_id in {order.position_id for order in orders if order.position_id is not None}:
+            position = await session.get(WhaleFollowPosition, position_id)
+            if position is None or position.status != "closing" or position.size <= ZERO:
+                continue
+            other_sell = await session.scalar(
+                select(WhaleOrder.id)
+                .where(
+                    WhaleOrder.asset_id == position.asset_id,
+                    WhaleOrder.side == "SELL",
+                    WhaleOrder.status.in_(AUTO_FOLLOW_RESERVED_ORDER_STATUSES),
+                )
+                .limit(1)
+            )
+            if other_sell is None:
+                position.status = "open"
+                position.updated_at = now
+        await session.commit()
+
     async def reconcile_pending_orders(self, *, order_id: int | None = None) -> str | None:
         """Poll accepted orders before any automatic retry can submit another order."""
 
@@ -4099,6 +3994,7 @@ class WhaleFollowExecutor:
             return None
         async with self._lock:
             async with self.database.sessions() as session:
+                await self._retire_unsubmitted_conflict_exits(session, order_id=order_id)
                 orders = list(
                     (
                         await session.scalars(
@@ -4328,19 +4224,10 @@ class WhaleFollowExecutor:
                     )
                 )
                 if decision is not None:
-                    market_lock = await session.get(WhaleAutoMarketLock, decision.condition_id)
-                    requires_exit = _decision_requires_conflict_exit(decision, market_lock)
-                    decision.status = "exit_pending" if requires_exit else "bought"
-                    decision.reason = (
-                        "买入成交后市场出现分歧，等待风控卖出"
-                        if requires_exit
-                        else "自动跟单买入已执行"
-                    )
+                    decision.status = "bought"
+                    decision.reason = "自动跟单买入已执行"
                     decision.processed_at = now
                     decision.updated_at = now
-                    if requires_exit and market_lock is not None:
-                        market_lock.exit_status = "pending"
-                        market_lock.updated_at = now
 
             new_size = sum((fill.size for fill in new_fills), ZERO)
             new_amount = sum((fill.amount for fill in new_fills), ZERO)

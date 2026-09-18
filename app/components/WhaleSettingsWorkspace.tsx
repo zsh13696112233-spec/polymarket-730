@@ -787,13 +787,13 @@ export function WhaleAutoSettingsPanel({
             </section>
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
-                <div><h3>分歧退出优先级</h3></div>
+                <div><h3>分歧买入优先级</h3></div>
                 <label className="whaleAutoToggle">
                   <input type="checkbox" aria-label="启用全量超大额优先规则" checked={resolvedLargeConflictPriorityEnabled} disabled={!settings || busy} onChange={(event) => setLargeConflictPriorityEnabled(event.target.checked)} />
-                  <b>{resolvedLargeConflictPriorityEnabled ? "全量优先" : "旧版规则"}</b>
+                  <b>{resolvedLargeConflictPriorityEnabled ? "全量优先" : "同级处理"}</b>
                 </label>
               </header>
-              <p className="pcFormHint">开启时全量仓位不会被反向新号退出；关闭后恢复任意有效反向信号都会锁定并退出原仓位。切换不会解除已经生成的永久分歧锁。</p>
+              <p className="pcFormHint">同方向至少 2 个有效钱包时直接放行，两边都满足则都可买入。不足 2 人时，开启则全量超大额优先，关闭则有反向信号就暂停。分歧不再自动卖出；历史锁按当前信号重新判断。</p>
             </section>
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>

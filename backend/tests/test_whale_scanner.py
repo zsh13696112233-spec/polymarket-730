@@ -2289,14 +2289,13 @@ async def test_same_scan_cross_rule_signals_respect_priority_toggle(
         assert pending == [decisions["asset-no"].id]
         assert decisions["asset-no"].selected_rule == "large_amount"
         assert decisions["asset-no"].status == "pending"
-        assert decisions["asset-yes"].status == "skipped"
-        assert "全量超大额信号优先" in str(decisions["asset-yes"].reason)
+        assert decisions["asset-yes"].status == "conflict_locked"
+        assert "全量超大额优先" in str(decisions["asset-yes"].reason)
         assert market_lock is None
     else:
         assert pending == []
         assert {decision.status for decision in decisions.values()} == {"conflict_locked"}
-        assert market_lock is not None
-        assert market_lock.exit_status == "not_required"
+        assert market_lock is None
 
 
 @pytest.mark.parametrize(
@@ -2373,7 +2372,7 @@ async def test_existing_position_respects_large_signal_priority(
         [opposite],
         rule_matches={(opposite_wallet, "asset-no"): {opposite_rule}},
         positions_by_wallet={
-            # 优先级模式下，原触发钱包退出也不能改变已成交仓位的策略等级。
+            # 优先级模式下模拟原来源钱包退出；历史已成交仓位不再计票。
             held_wallet: (
                 {}
                 if priority_enabled
@@ -2407,13 +2406,11 @@ async def test_existing_position_respects_large_signal_priority(
             for decision in await session.scalars(select(WhaleAutoFollowDecision))
         }
         market_lock = await session.get(WhaleAutoMarketLock, condition_id)
-    assert pending == []
-    assert decisions["asset-yes"].status == ("exit_pending" if should_exit else "bought")
-    assert decisions["asset-no"].status == ("conflict_locked" if should_exit else "skipped")
-    assert (market_lock is not None) is should_exit
-    if market_lock is not None:
-        assert market_lock.exit_status == "pending"
-        assert market_lock.trigger_asset_id == "asset-no"
+    # Only current source wallets count. An exited source no longer blocks the other side.
+    assert pending == ([decisions["asset-no"].id] if priority_enabled else [])
+    assert decisions["asset-yes"].status == "bought"
+    assert decisions["asset-no"].status == ("pending" if priority_enabled else "conflict_locked")
+    assert market_lock is None
 
 
 async def test_mixed_position_uses_large_priority_and_rechecks_rule_upgrade(database):
@@ -2523,7 +2520,7 @@ async def test_mixed_position_uses_large_priority_and_rechecks_rule_upgrade(data
     }
     assert (
         next(decision for decision in first_pass if decision.asset_id == "asset-no").status
-        == "skipped"
+        == "conflict_locked"
     )
 
     await scanner._persist_entries(
@@ -2539,14 +2536,12 @@ async def test_mixed_position_uses_large_priority_and_rechecks_rule_upgrade(data
         upgraded = list(await session.scalars(select(WhaleAutoFollowDecision)))
         market_lock = await session.get(WhaleAutoMarketLock, condition_id)
     assert {decision.status for decision in upgraded if decision.asset_id == "asset-yes"} == {
-        "exit_pending"
+        "bought"
     }
     opposite_decision = next(decision for decision in upgraded if decision.asset_id == "asset-no")
     assert opposite_decision.status == "conflict_locked"
     assert json.loads(opposite_decision.matched_rules_json) == ["large_amount", "new_account"]
-    assert market_lock is not None
-    assert market_lock.trigger_asset_id == "asset-no"
-    assert market_lock.exit_status == "pending"
+    assert market_lock is None
 
 
 async def test_same_scan_opposite_auto_signals_lock_both_sides_before_buy(database):
@@ -2606,12 +2601,10 @@ async def test_same_scan_opposite_auto_signals_lock_both_sides_before_buy(databa
         market_lock = await session.get(WhaleAutoMarketLock, condition_id)
     assert pending == []
     assert {decision.status for decision in decisions} == {"conflict_locked"}
-    assert market_lock is not None
-    assert market_lock.exit_status == "not_required"
-    assert market_lock.trigger_amount_usdc == Decimal("600000")
+    assert market_lock is None
 
 
-async def test_conflict_exit_sells_entire_mixed_position(database):
+async def test_legacy_conflict_exit_keeps_mixed_position_without_selling(database):
     condition_id = "0x" + "4" * 64
     wallet = "0x4444444444444444444444444444444444444444"
     await _seed_auto_market(database, condition_id)
@@ -2757,15 +2750,14 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
     scanner.executor = ConflictExecutor()  # type: ignore[assignment]
     await scanner._process_conflict_exits()
 
-    assert calls[0] == ("dust_check", position_id)
-    assert calls[1] == ("quote", (position_id, None, True))
-    assert calls[2][0] == "execute"
-    assert calls[2][1][1] == "conflict_exit"
+    assert calls == []
     async with database.sessions() as session:
         decision = await session.get(WhaleAutoFollowDecision, pending[0])
         market_lock = await session.get(WhaleAutoMarketLock, condition_id)
-    assert decision is not None and decision.status == "exit_completed"
-    assert market_lock is not None and market_lock.exit_status == "completed"
+        position = await session.get(WhaleFollowPosition, position_id)
+    assert decision is not None and decision.status == "bought"
+    assert market_lock is not None and market_lock.exit_status == "not_required"
+    assert position.size == Decimal("15")
 
 
 @pytest.mark.parametrize(
@@ -3722,7 +3714,11 @@ async def test_buy_position_read_retries_before_proceeding(
         assert ("ConnectError" if error_kind == "connection" else "请求过于频繁") in str(
             raised.value
         )
-    assert calls == (1 if result == "cancelled" else 4)
+    # Auto execution rechecks direction supporters after the source-position retry succeeds.
+    expected_calls = 1 if result == "cancelled" else 4
+    if phase == "execute" and result == "recovered":
+        expected_calls += 1
+    assert calls == expected_calls
     expected_delays = [15, 20, 40] if error_kind == "rate_limit" else [5, 5, 5]
     assert delays == (expected_delays[:1] if result == "cancelled" else expected_delays)
     async with database.sessions() as session:
@@ -3948,3 +3944,512 @@ async def test_source_amount_tiers_snapshot_and_no_top_up(
     if threshold or dual:
         assert quoted["low_price_max_price"] is None
         assert quoted["low_price_amount_usdc"] is None
+
+
+@pytest.fixture
+async def conflict_case(database):
+    """A real persisted market with distinct source wallets and mutable position snapshots."""
+    condition_id = "0x" + "f" * 64
+    await _seed_auto_market(database, condition_id)
+    config = await _auto_follow_config(
+        database,
+        new_account_auto_follow_enabled=True,
+        large_amount_auto_follow_enabled=True,
+        large_amount_conflict_priority_enabled=False,
+    )
+    scanner = build_scanner(database)
+    aggregates = [
+        _auto_aggregate(
+            wallet="0x" + str(i + 1) * 40,
+            asset_id="asset-yes" if i % 2 == 0 else "asset-no",
+            condition_id=condition_id,
+            outcome="Yes" if i % 2 == 0 else "No",
+            outcome_index=i % 2,
+        )
+        for i in range(4)
+    ]
+    positions = {
+        a.proxy_wallet: {
+            a.asset_id: SimpleNamespace(
+                size=a.gross_buy_size,
+                avg_price=a.avg_buy_price,
+                condition_id=a.condition_id,
+                asset_id=a.asset_id,
+            )
+        }
+        for a in aggregates
+    }
+    rules = {(a.proxy_wallet, a.asset_id): {"large_amount"} for a in aggregates}
+
+    async def persist(indices, *, now=None, failed=None, blocked=None):
+        now = now or utcnow()
+        return await scanner._persist_entries(
+            [aggregates[i] for i in indices],
+            rule_matches={
+                (aggregates[i].proxy_wallet, aggregates[i].asset_id): rules[
+                    (aggregates[i].proxy_wallet, aggregates[i].asset_id)
+                ]
+                for i in indices
+            },
+            positions_by_wallet=positions,
+            failed_wallets=failed or set(),
+            config=config,
+            now=now,
+            window_start=now - timedelta(hours=config["window_hours"]),
+            auto_follow_block_reason=blocked,
+        )
+
+    async def decisions():
+        async with database.sessions() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(WhaleAutoFollowDecision).order_by(WhaleAutoFollowDecision.id)
+                    )
+                ).all()
+            )
+
+    return SimpleNamespace(
+        condition_id=condition_id,
+        scanner=scanner,
+        config=config,
+        aggregates=aggregates,
+        positions=positions,
+        rules=rules,
+        persist=persist,
+        decisions=decisions,
+    )
+
+
+@pytest.mark.parametrize("priority", [True, False])
+async def test_two_wallets_release_old_signal_and_allow_both_sides(
+    database, conflict_case, priority
+):
+    case = conflict_case
+    case.config["large_amount_conflict_priority_enabled"] = priority
+    async with database.sessions() as session:
+        (await session.get(WhaleSettings, 1)).large_amount_conflict_priority_enabled = priority
+        await session.commit()
+    assert await case.persist([0, 1]) == []
+    original = await case.decisions()
+    assert {d.status for d in original} == {"conflict_locked"}
+    # An old permanent lock must not override the two-wallet exemption.
+    async with database.sessions() as session:
+        session.add(
+            WhaleAutoMarketLock(
+                condition_id=case.condition_id,
+                reason="历史永久分歧锁",
+                exit_status="not_required",
+                created_at=utcnow(),
+                updated_at=utcnow(),
+            )
+        )
+        await session.commit()
+    pending = await case.persist([2])
+    rows = await case.decisions()
+    assert pending == [original[0].id, rows[2].id]
+    assert rows[0].created_at == original[0].created_at
+    position_id = None
+    for decision_id in pending:
+        position_id = await _fill_auto_decision(database, decision_id, position_id=position_id)
+    pending = await case.persist([3])
+    rows = await case.decisions()
+    assert pending == [original[1].id, rows[3].id]
+    assert [row.status for row in rows] == ["bought", "pending", "bought", "pending"]
+    # Neither repeat scans nor rule upgrades replay an already admitted decision.
+    assert await case.persist([0, 1, 2, 3]) == []
+    assert len(await case.decisions()) == 4
+
+
+async def test_support_drop_and_opposite_exit_use_current_signals(conflict_case):
+    case = conflict_case
+    assert await case.persist([0, 1]) == []
+    assert len(await case.persist([2])) == 2
+    supporter = case.aggregates[2]
+    case.positions[supporter.proxy_wallet][supporter.asset_id].size = Decimal("799999")
+    await case.persist([])
+    from backend.whale import _auto_conflict_reason
+
+    async with case.scanner.database.sessions() as session:
+        assert "本方向 1 人" in await _auto_conflict_reason(session, case.condition_id, "asset-yes")
+    case.positions[case.aggregates[1].proxy_wallet] = {}
+    await case.persist([])
+    async with case.scanner.database.sessions() as session:
+        assert await _auto_conflict_reason(session, case.condition_id, "asset-yes") is None
+
+
+@pytest.mark.parametrize(
+    "invalid", ["hedged", "reduced", "excluded", "history", "positions", "failed"]
+)
+async def test_invalid_supporter_cannot_release_a_direction(database, conflict_case, invalid):
+    case = conflict_case
+    assert await case.persist([0, 1]) == []
+    a = case.aggregates[2]
+    failed = set()
+    if invalid == "hedged":
+        case.positions[a.proxy_wallet]["asset-no"] = SimpleNamespace(
+            size=Decimal("1"),
+            asset_id="asset-no",
+            condition_id=case.condition_id,
+            avg_price=Decimal("0.4"),
+        )
+    elif invalid == "reduced":
+        case.positions[a.proxy_wallet][a.asset_id].size = Decimal("799999")
+    elif invalid == "excluded":
+        async with database.sessions() as session:
+            session.add(WhaleExclusion(proxy_wallet=a.proxy_wallet, created_at=utcnow()))
+            await session.commit()
+    elif invalid == "history":
+        async with database.sessions() as session:
+            session.add(
+                WhaleBackfillSignalState(
+                    proxy_wallet=a.proxy_wallet,
+                    asset_id=a.asset_id,
+                    condition_id=a.condition_id,
+                    auto_follow_after=utcnow(),
+                    awaiting_new_buy=True,
+                )
+            )
+            await session.commit()
+    elif invalid == "positions":
+        case.aggregates[2] = replace(a, source="positions", trade_count=0)
+    elif invalid == "failed":
+        failed.add(a.proxy_wallet)
+    assert await case.persist([2], failed=failed) == []
+    rows = await case.decisions()
+    assert rows[0].status == "conflict_locked"
+    if invalid in {"history", "positions"}:
+        assert len(rows) == 2
+
+
+async def test_mixed_rules_count_wallet_once_and_two_wallets_override_priority(
+    database, conflict_case
+):
+    case = conflict_case
+    case.config["large_amount_conflict_priority_enabled"] = True
+    a, _, c, _ = case.aggregates
+    case.rules[(a.proxy_wallet, a.asset_id)] = {"new_account"}
+    case.rules[(c.proxy_wallet, c.asset_id)] = {"new_account"}
+    assert len(await case.persist([0, 1])) == 1  # Opposite large signal has priority.
+    assert len(await case.persist([2])) == 2  # Two new wallets override the priority switch.
+    # A wallet matching both rules is still only one person.
+    from backend.whale import _auto_conflict_reason
+
+    case.positions[c.proxy_wallet] = {}
+    case.rules[(a.proxy_wallet, a.asset_id)] = {"new_account", "large_amount"}
+    await case.persist([0])
+    async with database.sessions() as session:
+        reason = await _auto_conflict_reason(session, case.condition_id, "asset-yes")
+    assert "本方向 1 人" in reason
+
+
+@pytest.mark.parametrize(
+    "mode", ["expired", "ordered", "restart_order", "coverage", "disabled", "category"]
+)
+async def test_paused_signal_recovery_keeps_execution_boundaries(database, conflict_case, mode):
+    case = conflict_case
+    await case.persist([0, 1])
+    original = (await case.decisions())[0]
+    if mode == "expired":
+        async with database.sessions() as session:
+            row = await session.get(WhaleAutoFollowDecision, original.id)
+            row.created_at = utcnow() - timedelta(hours=25)
+            await session.commit()
+    elif mode in {"ordered", "restart_order"}:
+        await _fill_auto_decision(database, original.id)
+        async with database.sessions() as session:
+            row = await session.get(WhaleAutoFollowDecision, original.id)
+            row.status = "conflict_locked"
+            order = await session.get(WhaleOrder, row.buy_order_id)
+            order.idempotency_key = f"whale:auto:{row.id}"
+            order.filled_size = Decimal("0")
+            order.status = "reconciliation_pending"
+            if mode == "restart_order":
+                row.buy_order_id = None
+            await session.commit()
+    elif mode == "disabled":
+        case.config["large_amount_auto_follow_enabled"] = False
+    elif mode == "category":
+        case.config["large_amount_auto_follow_categories_json"] = '["politics"]'
+    pending = await case.persist([2], blocked="coverage incomplete" if mode == "coverage" else None)
+    assert original.id not in pending
+    if mode == "expired":
+        row = (await case.decisions())[0]
+        assert row.status == "skipped"
+        assert "超过监测窗口" in row.reason
+    if mode == "restart_order":
+        assert (await case.decisions())[0].buy_order_id is not None
+
+
+@pytest.mark.parametrize("change", ["reduced", "failed", "hedged"])
+async def test_fresh_conflict_check_rejects_changed_supporter(database, conflict_case, change):
+    from backend.whale import _auto_conflict_reason
+
+    case = conflict_case
+    await case.persist([0, 1, 2])
+    supporter = case.aggregates[2]
+
+    class Client:
+        async def fetch_active_positions(self, wallet, *, condition_ids):
+            assert condition_ids == [case.condition_id]
+            positions = list(case.positions[wallet].values())
+            if wallet == supporter.proxy_wallet:
+                if change == "failed":
+                    raise RuntimeError("upstream unavailable")
+                if change == "reduced":
+                    return [
+                        SimpleNamespace(
+                            asset_id=supporter.asset_id,
+                            condition_id=case.condition_id,
+                            size=Decimal("1"),
+                            avg_price=Decimal("0.6"),
+                        )
+                    ]
+                return positions + [
+                    SimpleNamespace(
+                        asset_id="asset-no",
+                        condition_id=case.condition_id,
+                        size=Decimal("1"),
+                        avg_price=Decimal("0.4"),
+                    )
+                ]
+            return positions
+
+    async with database.sessions() as session:
+        assert await _auto_conflict_reason(session, case.condition_id, "asset-yes") is None
+        assert (
+            await _auto_conflict_reason(session, case.condition_id, "asset-yes", client=Client())
+            is not None
+        )
+
+
+async def test_pending_legacy_exit_blocks_market_until_reconciled(database, conflict_case):
+    from backend.whale import _auto_conflict_reason
+
+    case = conflict_case
+    pending = await case.persist([0])
+    await _fill_auto_decision(database, pending[0])
+    async with database.sessions() as session:
+        row = await session.get(WhaleAutoFollowDecision, pending[0])
+        order = await session.get(WhaleOrder, row.buy_order_id)
+        order.source = "conflict_exit"
+        order.side = "SELL"
+        order.status = "reconciliation_pending"
+        row.status = "exit_pending"
+        await session.commit()
+    await case.scanner._process_conflict_exits()
+    assert (await case.decisions())[0].status == "exit_pending"
+    async with database.sessions() as session:
+        assert "尚待对账" in await _auto_conflict_reason(session, case.condition_id, "asset-yes")
+        order = await session.scalar(select(WhaleOrder))
+        order.status = "filled"
+        await session.commit()
+    await case.scanner._process_conflict_exits()
+    assert (await case.decisions())[0].status == "bought"
+
+
+async def test_supporter_changes_during_quote_pause_before_order_and_remain_retryable(
+    database, conflict_case, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from backend.whale import WhaleFollowExecutor
+
+    case = conflict_case
+    pending = await case.persist([0, 1, 2])
+    first = (await case.decisions())[0]
+    supporter = case.aggregates[2]
+
+    class Client:
+        async def fetch_active_positions(self, wallet, *, condition_ids):
+            return list(case.positions[wallet].values())
+
+    executor = WhaleFollowExecutor(
+        database=database,
+        client=Client(),
+        settings=Settings(trading_enabled=True, start_monitor=False),
+        keychain=SimpleNamespace(),
+    )
+    monkeypatch.setattr(executor.take_profit, "wallet", AsyncMock(return_value=None))
+    quote = SimpleNamespace(
+        entry_id=first.entry_id,
+        asset_id=first.asset_id,
+        source_wallet=first.proxy_wallet,
+        condition_id=case.condition_id,
+        best_ask=Decimal("0.6"),
+        amount_usdc=Decimal("20"),
+    )
+
+    async def quote_follow(**kwargs):
+        case.positions[supporter.proxy_wallet][supporter.asset_id].size = Decimal("1")
+        return quote
+
+    monkeypatch.setattr(executor, "quote_follow", quote_follow)
+    create_order = AsyncMock()
+    monkeypatch.setattr(executor, "_create_order", create_order)
+    book = AsyncMock()
+    monkeypatch.setattr(executor, "_buy_order_book", book)
+    case.scanner.executor = executor
+    await case.scanner._process_auto_decisions([pending[0]])
+    assert (await case.decisions())[0].status == "conflict_locked"
+    create_order.assert_not_awaited()
+    book.assert_not_awaited()
+    async with database.sessions() as session:
+        assert list(await session.scalars(select(WhaleOrder))) == []
+    case.positions[supporter.proxy_wallet][supporter.asset_id].size = Decimal("1000000")
+    assert first.id in await case.persist([])
+
+
+async def test_mixed_rule_supporters_and_saved_holding_threshold(database, conflict_case):
+    case = conflict_case
+    a, _, supporter, _ = case.aggregates
+    case.rules[(a.proxy_wallet, a.asset_id)] = {"new_account"}
+    case.rules[(supporter.proxy_wallet, supporter.asset_id)] = {"large_amount"}
+    case.config["holding_ratio_threshold"] = Decimal("90")
+    async with database.sessions() as session:
+        (await session.get(WhaleSettings, 1)).holding_ratio_threshold = Decimal("90")
+        await session.commit()
+    await case.persist([0, 1])
+    case.positions[supporter.proxy_wallet][supporter.asset_id].size = Decimal("900000")
+    assert len(await case.persist([2])) == 2
+    case.positions[supporter.proxy_wallet][supporter.asset_id].size = Decimal("899999")
+    await case.persist([])
+    from backend.whale import _auto_conflict_reason
+
+    async with database.sessions() as session:
+        assert "本方向 1 人" in await _auto_conflict_reason(session, case.condition_id, "asset-yes")
+
+
+async def test_legacy_priority_skip_retries_using_current_amount(database, conflict_case):
+    case = conflict_case
+    await case.persist([0, 1])
+    first = (await case.decisions())[0]
+    async with database.sessions() as session:
+        row = await session.get(WhaleAutoFollowDecision, first.id)
+        row.status = "skipped"
+        row.reason = "反向全量超大额信号优先，本次新号信号不买入"
+        row.configured_amount_usdc = Decimal("1")
+        await session.commit()
+    case.config["large_amount_auto_follow_amount_usdc"] = Decimal("12")
+    pending = await case.persist([2])
+    assert pending[0] == first.id
+    assert (await case.decisions())[0].configured_amount_usdc == Decimal("12")
+
+
+@pytest.mark.parametrize("change", ["disabled", "category", "expired", "processed"])
+async def test_recovered_signal_rechecks_policy_before_order_creation(
+    database, conflict_case, change
+):
+    from backend.tests.test_whale_execution import follow_quote
+    from backend.whale import WhaleFollowExecutor
+
+    case = conflict_case
+    await case.persist([0, 1])
+    pending = await case.persist([2])
+    row = (await case.decisions())[0]
+    assert pending[0] == row.id
+    quote = replace(
+        follow_quote(),
+        entry_id=row.entry_id,
+        source_wallet=row.proxy_wallet,
+        asset_id=row.asset_id,
+        condition_id=case.condition_id,
+    )
+    async with database.sessions() as session:
+        settings = await session.get(WhaleSettings, 1)
+        decision = await session.get(WhaleAutoFollowDecision, row.id)
+        if change == "disabled":
+            settings.large_amount_auto_follow_enabled = False
+        elif change == "category":
+            settings.large_amount_auto_follow_categories_json = '["politics"]'
+        elif change == "expired":
+            decision.created_at = utcnow() - timedelta(hours=25)
+        else:
+            decision.status = "failed"
+        await session.commit()
+    executor = WhaleFollowExecutor(
+        database=database,
+        client=SimpleNamespace(),
+        settings=database.settings,
+        keychain=SimpleNamespace(),
+    )
+    with pytest.raises(ValueError):
+        await executor._create_order(
+            quote=quote,
+            confirmation_id=f"auto:{row.id}",
+            side="BUY",
+            order_source="auto_follow",
+        )
+    async with database.sessions() as session:
+        assert list(await session.scalars(select(WhaleOrder))) == []
+
+
+@pytest.mark.parametrize("unavailable", ["disabled", "category"])
+async def test_unavailable_strategy_signal_is_not_saved_for_conflict_replay(
+    database, conflict_case, unavailable
+):
+    case = conflict_case
+    if unavailable == "disabled":
+        case.config["large_amount_auto_follow_enabled"] = False
+    else:
+        case.config["large_amount_auto_follow_categories_json"] = '["politics"]'
+    assert await case.persist([0, 1]) == []
+    original = await case.decisions()
+    assert {row.status for row in original} == {"skipped"}
+    expected = "策略当前关闭" if unavailable == "disabled" else "分类未在"
+    assert all(expected in row.reason for row in original)
+
+    case.config["large_amount_auto_follow_enabled"] = True
+    case.config["large_amount_auto_follow_categories_json"] = '["sports"]'
+    pending = await case.persist([2])
+    rows = await case.decisions()
+    assert pending == [rows[2].id]
+    assert [row.status for row in rows[:2]] == ["skipped", "skipped"]
+    assert len(rows) == 3
+
+
+@pytest.mark.parametrize("old_quality", ["reduced", "hedged"])
+@pytest.mark.parametrize("read_fails", [False, True])
+async def test_fresh_direction_check_includes_previously_invalid_opposite(
+    database, conflict_case, old_quality, read_fails
+):
+    from backend.whale import _auto_conflict_reason
+
+    case = conflict_case
+    opposite = case.aggregates[1]
+    if old_quality == "reduced":
+        case.positions[opposite.proxy_wallet][opposite.asset_id].size = Decimal("100")
+    else:
+        case.positions[opposite.proxy_wallet]["asset-yes"] = SimpleNamespace(
+            size=Decimal("1"),
+            asset_id="asset-yes",
+            condition_id=case.condition_id,
+            avg_price=Decimal("0.6"),
+        )
+    assert len(await case.persist([0, 1])) == 1
+    # The opposite wallet becomes valid after the scan but before submission.
+    case.positions[opposite.proxy_wallet] = {
+        opposite.asset_id: SimpleNamespace(
+            size=Decimal("1000000"),
+            asset_id=opposite.asset_id,
+            condition_id=case.condition_id,
+            avg_price=Decimal("0.4"),
+        )
+    }
+    calls = []
+
+    class Client:
+        async def fetch_active_positions(self, wallet, *, condition_ids):
+            calls.append(wallet)
+            if read_fails and wallet == opposite.proxy_wallet:
+                raise RuntimeError("unavailable")
+            return list(case.positions[wallet].values())
+
+    async with database.sessions() as session:
+        assert await _auto_conflict_reason(session, case.condition_id, "asset-yes") is None
+        reason = await _auto_conflict_reason(
+            session, case.condition_id, "asset-yes", client=Client()
+        )
+    assert opposite.proxy_wallet in calls
+    assert reason is not None
+    assert ("核验失败" if read_fails else "本方向 1 人，反方向 1 人") in reason

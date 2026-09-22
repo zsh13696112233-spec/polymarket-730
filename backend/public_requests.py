@@ -22,8 +22,8 @@ class PublicRequestScheduler:
     def __init__(
         self,
         *,
-        interval: float = 0.2,
-        trades_interval: float = 0.5,
+        interval: float = 0.8,
+        trades_interval: float = 1.6,
         clock: Callable[[], float] = monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         jitter: Callable[[], float] = random.random,

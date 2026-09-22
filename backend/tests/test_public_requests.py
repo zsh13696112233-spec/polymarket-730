@@ -42,7 +42,7 @@ async def test_host_and_trade_spacing_are_shared_and_other_hosts_are_independent
     ]:
         async with limiter.slot(host, path, semaphore):
             times.append(clock())
-    assert times == pytest.approx([100, 100, 100.2, 100.5])
+    assert times == pytest.approx([100, 100, 100.8, 101.6])
 
 
 async def test_cooldown_merges_inflight_errors_and_backs_off_then_resets():
@@ -128,7 +128,7 @@ async def test_concurrent_waiters_resume_smoothly():
             await asyncio.sleep(0)
 
     await asyncio.gather(*(send() for _ in range(5)))
-    assert starts == pytest.approx([105, 105.2, 105.4, 105.6, 105.8])
+    assert starts == pytest.approx([105, 105.8, 106.6, 107.4, 108.2])
 
 
 async def test_http_429_cools_other_reads_without_automatic_retry_and_survives_pool_reset():

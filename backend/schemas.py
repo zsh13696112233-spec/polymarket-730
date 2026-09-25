@@ -48,11 +48,6 @@ class ExecutionAccountRead(APIModel):
     signature_type: int
     credentials_configured: bool = False
     status: str
-    budget_usdc: DecimalNumber
-    cash_reserve_usdc: DecimalNumber
-    max_total_exposure_usdc: DecimalNumber
-    daily_buy_limit_usdc: DecimalNumber
-    daily_loss_limit_usdc: DecimalNumber
     auto_redeem: bool
     collateral_balance: DecimalNumber | None
     last_balance_at: datetime | None
@@ -64,14 +59,11 @@ class ExecutionAccountRead(APIModel):
 
 
 class ExecutionAccountUpdate(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
     signer_address: str = Field(min_length=42, max_length=42)
     funder_address: str = Field(min_length=42, max_length=42)
     signature_type: Literal[3] = 3
-    budget_usdc: Decimal = Field(default=Decimal("400"), ge=0)
-    cash_reserve_usdc: Decimal = Field(default=Decimal("240"), ge=0)
-    max_total_exposure_usdc: Decimal = Field(default=Decimal("160"), ge=0)
-    daily_buy_limit_usdc: Decimal = Field(default=Decimal("80"), ge=0)
-    daily_loss_limit_usdc: Decimal = Field(default=Decimal("40"), ge=0)
     auto_redeem: bool = False
 
 
@@ -126,7 +118,6 @@ class WhaleSettingsRead(APIModel):
     scan_interval_seconds: int
     profile_cache_hours: int
     trade_retention_hours: int
-    max_follow_amount_usdc: DecimalNumber
     default_follow_amount_usdc: DecimalNumber
     follow_slippage_cents: DecimalNumber
     sell_slippage_cents: DecimalNumber
@@ -198,8 +189,6 @@ class WhaleSettingsUpdate(APIModel):
     scan_interval_seconds: int | None = Field(default=None, gt=0)
     profile_cache_hours: int | None = Field(default=None, gt=0)
     trade_retention_hours: int | None = Field(default=None, gt=0)
-    max_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
-    default_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     follow_slippage_cents: Decimal | None = Field(default=None, ge=0, le=50)
     sell_slippage_cents: Decimal | None = Field(default=None, ge=0, le=50)
     auto_redeem: bool | None = None
@@ -607,8 +596,6 @@ class HomeWalletRead(APIModel):
     total_assets_usdc: DecimalNumber | None
     unrealized_pnl_usdc: DecimalNumber | None
     winning_pnl_usdc: DecimalNumber
-    cash_reserve_usdc: DecimalNumber
-    available_cash_usdc: DecimalNumber | None
     open_position_count: int
     last_balance_at: datetime | None
     balance_stale: bool
@@ -1074,7 +1061,6 @@ class WhaleFollowPreviewRead(APIModel):
     profit_ratio_gap_percent: DecimalNumber | None = None
     price_delta_cents: DecimalNumber | None = None
     price_delta_warning: bool = False
-    reserve_warning: bool = False
     available_balance_usdc: DecimalNumber
 
     @field_serializer("expires_at", when_used="json")

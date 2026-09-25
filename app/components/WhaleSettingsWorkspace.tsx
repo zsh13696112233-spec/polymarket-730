@@ -564,9 +564,8 @@ export function WhaleAutoSettingsPanel({
         || draft.tiers.some((tier) => !Number.isFinite(Number(tier.min_source_amount_usdc))
           || Number(tier.min_source_amount_usdc) <= 0
           || !Number.isFinite(Number(tier.follow_amount_usdc))
-          || Number(tier.follow_amount_usdc) <= 0
-          || Number(tier.follow_amount_usdc) > Number(settings?.max_follow_amount_usdc))) {
-        setError("来源金额档位需填写正数、门槛不可重复，跟单金额不能超过单笔上限；启用时至少配置一档。");
+          || Number(tier.follow_amount_usdc) <= 0)) {
+        setError("来源金额档位需填写正数、门槛不可重复；启用时至少配置一档。");
         return;
       }
     }
@@ -586,8 +585,8 @@ export function WhaleAutoSettingsPanel({
       ["新号大额", newAutoAmountValue, newAutoMinValue, newAutoMaxValue, resolvedNewAutoCategories, resolvedNewLowPriceEnabled, newLowMaxValue, newLowAmountValue],
       ["全量超大额", largeAutoAmountValue, largeAutoMinValue, largeAutoMaxValue, resolvedLargeAutoCategories, resolvedLargeLowPriceEnabled, largeLowMaxValue, largeLowAmountValue],
     ] as const) {
-      if (!Number.isFinite(amount) || amount <= 0 || amount > numeric(settings?.max_follow_amount_usdc ?? 200)) {
-        setError(`${label}自动跟单金额必须大于 0，且不能超过单笔买入上限。`);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setError(`${label}自动跟单金额必须大于 0。`);
         return;
       }
       if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice) || minPrice <= 0 || maxPrice >= 1 || minPrice > maxPrice) {

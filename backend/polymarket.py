@@ -1154,25 +1154,47 @@ class PolymarketClient:
             markets = payload.get("markets")
             if not isinstance(markets, list):
                 raise PolymarketAPIError("市场链接查询缺少市场列表")
+            event_markets = [(market, event_slug) for market in markets]
+            game_id = payload.get("gameId") if is_sports_event else None
+            if game_id:
+                related_events = await self._get_json(
+                    f"{self.gamma_api_url}/events",
+                    params={"game_id": game_id, "limit": 100},
+                )
+                if not isinstance(related_events, list):
+                    raise PolymarketAPIError("体育赛事关联盘口查询返回格式无效")
+                for related_event in related_events:
+                    if not isinstance(related_event, dict) or str(
+                        related_event.get("gameId")
+                    ) != str(game_id):
+                        continue
+                    related_markets = related_event.get("markets")
+                    if not isinstance(related_markets, list):
+                        continue
+                    related_slug = self._optional_text(related_event.get("slug"))
+                    event_markets.extend((market, related_slug) for market in related_markets)
         else:
             event_title = str(payload.get("question") or slug)
             events = self._json_list(payload.get("events"))
             first_event = next((item for item in events if isinstance(item, dict)), {})
             event_title = str(first_event.get("title") or event_title)
             event_slug = self._optional_text(first_event.get("slug"))
-            markets = [payload]
+            event_markets = [(payload, event_slug)]
         snapshots: list[WhaleMarketSnapshot] = []
-        for market in markets:
+        seen_conditions: set[str] = set()
+        for market, market_event_slug in event_markets:
             if not isinstance(market, dict):
                 raise PolymarketAPIError("市场链接查询包含无效市场")
-            merged = {**market, "eventSlug": market.get("eventSlug") or event_slug}
+            merged = {**market, "eventSlug": market.get("eventSlug") or market_event_slug}
             snapshot = self._parse_whale_market(merged)
             if (
                 snapshot.condition_id
+                and snapshot.condition_id not in seen_conditions
                 and len(snapshot.clob_token_ids) == len(snapshot.outcomes) == 2
                 and all(snapshot.clob_token_ids)
             ):
                 snapshots.append(snapshot)
+                seen_conditions.add(snapshot.condition_id)
         if not snapshots:
             raise PolymarketAPIError("该链接中没有可识别的 CLOB outcome")
         return ResolvedMarketURL(

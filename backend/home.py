@@ -367,7 +367,6 @@ async def home_overview(
     unrealized = market_value - open_cost if market_value is not None else None
 
     cash_balance = account.collateral_balance if account is not None else None
-    cash_reserve = account.cash_reserve_usdc if account is not None else ZERO
     balance_stale = (
         account is None
         or account.last_balance_at is None
@@ -497,10 +496,6 @@ async def home_overview(
             "total_assets_usdc": total_assets,
             "unrealized_pnl_usdc": unrealized,
             "winning_pnl_usdc": sum((item.size for item in open_positions), ZERO) - open_cost,
-            "cash_reserve_usdc": cash_reserve,
-            "available_cash_usdc": (
-                max(ZERO, cash_balance - cash_reserve) if cash_balance is not None else None
-            ),
             "open_position_count": len(open_positions),
             "last_balance_at": account.last_balance_at if account is not None else None,
             "balance_stale": balance_stale,

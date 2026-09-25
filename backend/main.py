@@ -188,15 +188,6 @@ def execution_account_read(account: ExecutionAccount | None) -> ExecutionAccount
     )
 
 
-def execution_account_capacity(account: ExecutionAccount) -> Decimal:
-    balance = account.collateral_balance or Decimal("0")
-    spendable = max(
-        Decimal("0"),
-        min(account.budget_usdc, balance) - account.cash_reserve_usdc,
-    )
-    return min(account.max_total_exposure_usdc, spendable)
-
-
 def create_app(
     *,
     settings: Settings | None = None,
@@ -428,9 +419,7 @@ def create_app(
                 await trader.close()
             account.collateral_balance = balance
             account.last_balance_at = utcnow()
-            account.status = (
-                "ready" if balance > account.cash_reserve_usdc else "insufficient_balance"
-            )
+            account.status = "ready" if balance > 0 else "insufficient_balance"
             account.last_error = None
             account.updated_at = utcnow()
             await session.commit()
@@ -1066,8 +1055,6 @@ def create_app(
                 raise HTTPException(status_code=422, detail="全量超大额门槛不能低于采集金额阈值")
             if merged["exited_ratio_threshold"] >= merged["holding_ratio_threshold"]:
                 raise HTTPException(status_code=422, detail="退出比例阈值必须低于持有比例阈值")
-            if merged["default_follow_amount_usdc"] > merged["max_follow_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="默认买入金额不能超过单笔买入上限")
             for label, prefix in (
                 ("新号大额", "new_account"),
                 ("全量超大额", "large_amount"),
@@ -1080,23 +1067,11 @@ def create_app(
                 thresholds = [Decimal(tier["min_source_amount_usdc"]) for tier in tiers]
                 if len(set(thresholds)) != len(thresholds):
                     raise HTTPException(status_code=422, detail=f"{label}来源金额档位门槛不能重复")
-                if any(
-                    Decimal(tier["follow_amount_usdc"]) > merged["max_follow_amount_usdc"]
-                    for tier in tiers
-                ):
-                    raise HTTPException(
-                        status_code=422, detail=f"{label}档位跟单金额不能超过单笔买入上限"
-                    )
                 amount = merged[f"{prefix}_auto_follow_amount_usdc"]
                 minimum = merged[f"{prefix}_auto_follow_min_price"]
                 maximum = merged[f"{prefix}_auto_follow_max_price"]
                 low_maximum = merged[f"{prefix}_auto_follow_low_price_max_price"]
                 low_amount = merged[f"{prefix}_auto_follow_low_price_amount_usdc"]
-                if amount > merged["max_follow_amount_usdc"]:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"{label}自动跟单金额不能超过单笔买入上限",
-                    )
                 if minimum > maximum:
                     raise HTTPException(
                         status_code=422,
@@ -1118,14 +1093,7 @@ def create_app(
                             status_code=422,
                             detail=f"{label}低价金额必须小于基础单笔金额",
                         )
-                    if low_amount > merged["max_follow_amount_usdc"]:
-                        raise HTTPException(
-                            status_code=422,
-                            detail=f"{label}低价金额不能超过单笔买入上限",
-                        )
             dual_amount = merged["dual_match_auto_follow_amount_usdc"]
-            if dual_amount is not None and dual_amount > merged["max_follow_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="双重命中金额不能超过单笔买入上限")
             market_count_cap = merged["auto_follow_market_max_purchase_count"]
             market_amount_cap = merged["auto_follow_market_max_amount_usdc"]
             if (market_count_cap is None) != (market_amount_cap is None):

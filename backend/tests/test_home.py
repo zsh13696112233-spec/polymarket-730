@@ -582,7 +582,9 @@ async def test_home_overview_uses_beijing_days_and_all_whale_follow_sources(
     assert payload["wallet"]["unrealized_pnl_usdc"] == Decimal("2.5")
     assert payload["wallet"]["winning_pnl_usdc"] == Decimal("5")
     assert payload["wallet"]["total_assets_usdc"] == Decimal("122.5")
-    assert payload["wallet"]["available_cash_usdc"] == Decimal("40")
+    assert payload["wallet"]["cash_balance_usdc"] == Decimal("100")
+    assert "cash_reserve_usdc" not in payload["wallet"]
+    assert "available_cash_usdc" not in payload["wallet"]
 
 
 @pytest.mark.asyncio

@@ -639,20 +639,10 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     )
     assert invalid_registration.status_code == 422
 
-    amounts = client.put(
-        "/api/whales/settings",
-        json={"default_follow_amount_usdc": 50, "max_follow_amount_usdc": 300},
+    assert "max_follow_amount_usdc" not in client.get("/api/whales/settings").json()
+    assert (
+        client.put("/api/whales/settings", json={"max_follow_amount_usdc": 300}).status_code == 422
     )
-    assert amounts.status_code == 200, amounts.text
-    assert amounts.json()["default_follow_amount_usdc"] == 50.0
-    assert amounts.json()["max_follow_amount_usdc"] == 300.0
-
-    invalid_amounts = client.put(
-        "/api/whales/settings",
-        json={"default_follow_amount_usdc": 301, "max_follow_amount_usdc": 300},
-    )
-    assert invalid_amounts.status_code == 422
-    assert "默认买入金额" in invalid_amounts.text
 
     auto_settings = client.put(
         "/api/whales/settings",
@@ -726,12 +716,18 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     assert invalid_auto_price.status_code == 422
     assert "最低买价" in invalid_auto_price.text
 
-    invalid_auto_amount = client.put(
+    larger_auto_amount = client.put(
         "/api/whales/settings",
         json={"large_amount_auto_follow_amount_usdc": 301},
     )
-    assert invalid_auto_amount.status_code == 422
-    assert "单笔买入上限" in invalid_auto_amount.text
+    assert larger_auto_amount.status_code == 200, larger_auto_amount.text
+    assert larger_auto_amount.json()["large_amount_auto_follow_amount_usdc"] == 301.0
+    assert (
+        client.put(
+            "/api/whales/settings", json={"large_amount_auto_follow_amount_usdc": 0}
+        ).status_code
+        == 422
+    )
 
     invalid_auto_category = client.put(
         "/api/whales/settings",
@@ -1039,7 +1035,6 @@ def test_chain_test_resolves_outcomes_and_uses_single_use_buy_sell_confirmations
         profit_ratio_gap_percent=None,
         price_delta_cents=None,
         price_delta_warning=False,
-        reserve_warning=False,
         available_balance_usdc=Decimal("300"),
     )
 
@@ -1467,7 +1462,7 @@ def test_dual_match_amount_settings_validation_and_clear(app_client_factory):
     endpoint = "/api/whales/settings"
     key = "dual_match_auto_follow_amount_usdc"
     assert client.get(endpoint).json()[key] is None
-    for amount in (0, -1, 201):
+    for amount in (0, -1):
         assert client.put(endpoint, json={key: amount}).status_code == 422
     response = client.put(endpoint, json={key: 25})
     assert response.status_code == 200, response.text
@@ -1614,12 +1609,11 @@ def test_source_tiers_settings_round_trip_and_validation(app_client_factory, pre
     for tiers in (
         [{"min_source_amount_usdc": 0, "follow_amount_usdc": 20}],
         [{"min_source_amount_usdc": 1000000, "follow_amount_usdc": -1}],
-        [{"min_source_amount_usdc": 1000000, "follow_amount_usdc": 201}],
         [{"min_source_amount_usdc": 1000000, "follow_amount_usdc": 20}] * 2,
     ):
         assert client.put(endpoint, json={key: tiers}).status_code == 422
     tiers = [
-        {"min_source_amount_usdc": 2000000, "follow_amount_usdc": 40},
+        {"min_source_amount_usdc": 2000000, "follow_amount_usdc": 201},
         {"min_source_amount_usdc": 1000000, "follow_amount_usdc": 20},
     ]
     response = client.put(endpoint, json={enabled: True, key: tiers})
@@ -1632,3 +1626,34 @@ def test_source_tiers_settings_round_trip_and_validation(app_client_factory, pre
     assert response.json()[f"{other}_auto_follow_source_tiers"] == []
     assert client.put(endpoint, json={enabled: False}).json()[key] == tiers[::-1]
     assert client.put(endpoint, json={key: []}).json()[key] == []
+
+
+@pytest.mark.parametrize("hidden_reason", ["exited", "zero_size", "settled_market"])
+def test_current_rule_counts_exclude_holdings_hidden_from_list(app_client_factory, hidden_reason):
+    client, _ = app_client_factory([[]])
+    database = client.app.state.database
+    client.portal.call(seed_two_sided_whale_market, database)
+    before = client.get("/api/whales/settings").json()
+    for rule in ("new_account", "large_amount"):
+        assert before[f"{rule}_active_count"] > 0
+
+    async def hide_holdings():
+        async with database.sessions() as session:
+            if hidden_reason == "settled_market":
+                market = await session.get(WhaleMarket, CONDITION_ID)
+                market.outcome_prices_json = json.dumps(["1", "0"])
+                market.closed = True
+            else:
+                for entry in (await session.scalars(select(WhaleEntry))).all():
+                    if hidden_reason == "exited":
+                        entry.status = "exited"
+                    else:
+                        entry.net_size = Decimal("0")
+            await session.commit()
+
+    client.portal.call(hide_holdings)
+    current = client.get("/api/whales/settings").json()
+    for rule in ("new_account", "large_amount"):
+        assert client.get(f"/api/whales/markets?rule={rule}").json()["items"] == []
+        assert current[f"{rule}_active_count"] == 0
+        assert current[f"{rule}_history_count"] == before[f"{rule}_history_count"]

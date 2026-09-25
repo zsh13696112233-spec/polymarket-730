@@ -110,6 +110,73 @@ async def test_resolve_localized_sports_url_uses_event_slug_and_maps_outcomes(mo
 
 
 @pytest.mark.asyncio
+async def test_resolve_sports_game_includes_btts_from_related_event():
+    game_slug = "unl-nld-ger-2026-09-24"
+    game_id = 90108407
+
+    def market(slug, condition):
+        return {
+            "conditionId": condition,
+            "question": slug,
+            "slug": slug,
+            "outcomes": '["Yes", "No"]',
+            "clobTokenIds": '["asset-yes", "asset-no"]',
+        }
+
+    main_market = market(f"{game_slug}-nld", "main-condition")
+    btts_market = market(f"{game_slug}-btts", "btts-condition")
+
+    def handler(request):
+        if request.url.path == f"/events/slug/{game_slug}":
+            return httpx.Response(
+                200,
+                json={
+                    "slug": game_slug,
+                    "title": "Netherlands vs. Germany",
+                    "gameId": game_id,
+                    "markets": [main_market],
+                },
+            )
+        assert request.url.path == "/events"
+        assert request.url.params["game_id"] == str(game_id)
+        return httpx.Response(
+            200,
+            json=[
+                {"slug": game_slug, "gameId": game_id, "markets": [main_market]},
+                {
+                    "slug": f"{game_slug}-more-markets",
+                    "gameId": game_id,
+                    "markets": [btts_market],
+                },
+                {
+                    "slug": "unrelated",
+                    "gameId": 42,
+                    "markets": [market("wrong", "wrong-condition")],
+                },
+            ],
+        )
+
+    client = PolymarketClient(
+        data_api_url="https://data.test",
+        gamma_api_url="https://gamma.test",
+        timeout=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        resolved = await client.resolve_market_url(
+            f"https://polymarket.com/zh/sports/unl/{game_slug}"
+        )
+    finally:
+        await client.close()
+
+    assert [item.market_slug for item in resolved.markets] == [
+        f"{game_slug}-nld",
+        f"{game_slug}-btts",
+    ]
+    assert resolved.markets[1].event_slug == f"{game_slug}-more-markets"
+
+
+@pytest.mark.asyncio
 async def test_resolve_market_url_rejects_non_polymarket_hosts():
     client = PolymarketClient(
         data_api_url="https://data.test",

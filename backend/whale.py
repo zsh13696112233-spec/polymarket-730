@@ -456,7 +456,6 @@ def _auto_follow_status_display(status: str, reason: str | None) -> str:
         r"实际买价 [0-9.]+ (?:高于策略最高价|低于策略最低价) [0-9.]+",
         r"同一市场自动跟单最多购买 \d+ 次，已经停止继续买入",
         r"同一市场自动跟单累计金额不能超过 [0-9.]+ USDC，已经停止继续买入",
-        r"单笔跟单金额不能超过 [0-9.]+ USDC",
         r"跟单金额不能低于最小下单额 [0-9.]+ USDC",
     )
     if reason in policy_reasons or any(
@@ -3129,7 +3128,6 @@ class WhaleFollowQuote:
     profit_ratio_gap_percent: Decimal | None
     price_delta_cents: Decimal | None
     price_delta_warning: bool
-    reserve_warning: bool
     available_balance_usdc: Decimal
 
 
@@ -3260,78 +3258,7 @@ class WhaleFollowExecutor:
             entry_id=None,
             require_active_signal=False,
         )
-        await self._ensure_chain_test_buy_limits(quote, refresh_balance=False)
         return quote
-
-    async def _ensure_chain_test_buy_limits(
-        self,
-        quote: WhaleFollowQuote,
-        *,
-        refresh_balance: bool,
-    ) -> None:
-        account = await self._account()
-        balance = (
-            await self._live_balance(account) if refresh_balance else quote.available_balance_usdc
-        )
-        spendable = max(ZERO, min(account.budget_usdc, balance) - account.cash_reserve_usdc)
-        if quote.total_cost_usdc > spendable:
-            raise ValueError("测试买入会突破执行钱包预算或现金保留额")
-        day_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        async with self.database.sessions() as session:
-            open_exposure = sum(
-                (
-                    position.cost_usdc
-                    for position in (
-                        await session.scalars(
-                            select(WhaleFollowPosition).where(
-                                WhaleFollowPosition.status.in_(["opening", "open", "closing"])
-                            )
-                        )
-                    ).all()
-                ),
-                ZERO,
-            )
-            daily_orders = list(
-                (
-                    await session.scalars(
-                        select(WhaleOrder).where(
-                            WhaleOrder.side == "BUY",
-                            WhaleOrder.created_at >= day_start,
-                            WhaleOrder.status.not_in(
-                                ["blocked", "rejected", "unfilled", "cancelled"]
-                            ),
-                        )
-                    )
-                ).all()
-            )
-            daily_buys = sum(
-                (
-                    order.filled_usdc + order.fee_usdc
-                    if order.filled_size > ZERO
-                    else order.requested_usdc
-                    for order in daily_orders
-                ),
-                ZERO,
-            )
-            daily_loss = -sum(
-                (
-                    min(entry.realized_pnl, ZERO)
-                    for entry in (
-                        await session.scalars(
-                            select(WhaleFollowLedger).where(
-                                WhaleFollowLedger.timestamp >= day_start
-                            )
-                        )
-                    ).all()
-                ),
-                ZERO,
-            )
-        if open_exposure + quote.total_cost_usdc > account.max_total_exposure_usdc:
-            raise ValueError("测试买入会突破执行钱包总敞口限制")
-        if daily_buys + quote.total_cost_usdc > account.daily_buy_limit_usdc:
-            raise ValueError("测试买入会突破执行钱包每日买入限额")
-        if daily_loss >= account.daily_loss_limit_usdc:
-            raise ValueError("执行钱包已达到每日亏损限制，不能继续测试买入")
 
     async def _account(self) -> ExecutionAccount:
         async with self.database.sessions() as session:
@@ -3397,8 +3324,7 @@ class WhaleFollowExecutor:
                 current.last_balance_at = utcnow()
                 current.last_error = None
                 current.updated_at = utcnow()
-                # Deliberately do not mutate status: cash reserve is an order-time
-                # warning and must not overwrite credential verification state.
+                # Balance refresh must not overwrite credential verification state.
                 await session.commit()
         return balance
 
@@ -3484,10 +3410,6 @@ class WhaleFollowExecutor:
                 raise ValueError("巨鲸模块尚未初始化")
             if amount_usdc <= ZERO:
                 raise ValueError("跟单金额必须大于 0")
-            if amount_usdc > whale_settings.max_follow_amount_usdc:
-                raise ValueError(
-                    f"单笔跟单金额不能超过 {whale_settings.max_follow_amount_usdc} USDC"
-                )
             entry = await session.get(WhaleEntry, entry_id) if entry_id is not None else None
             if entry_id is not None:
                 if entry is None or entry.asset_id != asset_id:
@@ -3643,7 +3565,6 @@ class WhaleFollowExecutor:
             ),
             price_delta_cents=delta,
             price_delta_warning=delta is not None and delta > warning_delta,
-            reserve_warning=balance - total_cost < account.cash_reserve_usdc,
             available_balance_usdc=balance,
         )
 
@@ -3662,8 +3583,6 @@ class WhaleFollowExecutor:
                 if wallet:
                     async with self.database.sessions() as session:
                         await ensure_no_take_profit_rebuy(session, wallet, quote.asset_id)
-            if order_source == "chain_test":
-                await self._ensure_chain_test_buy_limits(quote, refresh_balance=True)
             if quote.source_wallet is not None:
                 async with self.database.sessions() as session:
                     if await session.get(WhaleExclusion, quote.source_wallet.lower()) is not None:
@@ -6068,10 +5987,10 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
             values.pop("large_amount_auto_follow_categories_json")
         )
         visible_condition_ids = [
-            condition_id
-            for condition_id, tags_json in (
-                await session.execute(
-                    select(WhaleMarket.condition_id, WhaleMarket.tags_json)
+            market.condition_id
+            for market in (
+                await session.scalars(
+                    select(WhaleMarket)
                     .join(WhaleEntry, WhaleEntry.condition_id == WhaleMarket.condition_id)
                     .join(WhaleEntryRuleState, WhaleEntryRuleState.entry_id == WhaleEntry.id)
                     .where(
@@ -6081,7 +6000,8 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
                     .distinct()
                 )
             )
-            if _whale_statistics_classification(tags_json)["category"]
+            if not market_price_is_settled(market)
+            and _whale_statistics_classification(market.tags_json)["category"]
             in values["monitor_categories"]
         ]
         values.update(
@@ -6118,6 +6038,8 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
                             WhaleEntryRuleState.rule_type == NEW_ACCOUNT_RULE,
                             WhaleEntryRuleState.active.is_(True),
                             WhaleEntry.condition_id.in_(visible_condition_ids),
+                            WhaleEntry.status != "exited",
+                            WhaleEntry.net_size > ZERO,
                             _not_excluded_wallet(WhaleEntry.proxy_wallet),
                         )
                     )
@@ -6143,6 +6065,8 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
                             WhaleEntryRuleState.rule_type == LARGE_AMOUNT_RULE,
                             WhaleEntryRuleState.active.is_(True),
                             WhaleEntry.condition_id.in_(visible_condition_ids),
+                            WhaleEntry.status != "exited",
+                            WhaleEntry.net_size > ZERO,
                             _not_excluded_wallet(WhaleEntry.proxy_wallet),
                         )
                     )

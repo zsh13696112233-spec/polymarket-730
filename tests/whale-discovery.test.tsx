@@ -30,7 +30,6 @@ const settings = {
   min_liquidity_usdc: 5000,
   min_remaining_minutes: 30,
   max_price_delta_cents: 5,
-  max_follow_amount_usdc: 200,
   default_follow_amount_usdc: 20,
   new_account_auto_follow_enabled: false,
   new_account_auto_follow_amount_usdc: 5,
@@ -432,11 +431,6 @@ describe("系统邮件设置", () => {
       signature_type: 3,
       credentials_configured: true,
       status: "ready",
-      budget_usdc: 400,
-      cash_reserve_usdc: 240,
-      max_total_exposure_usdc: 160,
-      daily_buy_limit_usdc: 80,
-      daily_loss_limit_usdc: 40,
       auto_redeem: false,
       collateral_balance: 300,
       last_balance_at: "2026-08-29T16:00:00Z",
@@ -473,10 +467,12 @@ describe("系统邮件设置", () => {
     await user.click(localRedeem);
 
     await user.click(screen.getByRole("button", { name: "保存配置" }));
-    expect(savedAccounts).toContainEqual(expect.objectContaining({
+    expect(savedAccounts).toContainEqual({
+      signer_address: account.signer_address,
+      funder_address: account.funder_address,
       signature_type: 3,
       auto_redeem: true,
-    }));
+    });
 
     await user.click(await screen.findByRole("button", { name: "验证密钥与授权" }));
 
@@ -494,11 +490,6 @@ describe("系统邮件设置", () => {
       signature_type: 3,
       credentials_configured: true,
       status: "ready",
-      budget_usdc: 400,
-      cash_reserve_usdc: 240,
-      max_total_exposure_usdc: 160,
-      daily_buy_limit_usdc: 80,
-      daily_loss_limit_usdc: 40,
       auto_redeem: false,
       collateral_balance: 300,
       last_balance_at: "2026-08-29T16:00:00Z",
@@ -525,6 +516,18 @@ describe("系统邮件设置", () => {
             { asset_id: "asset-yes", label: "Yes", outcome_index: 0, reference_price: 0.51 },
             { asset_id: "asset-no", label: "No", outcome_index: 1, reference_price: 0.49 },
           ],
+        }, {
+          condition_id: `0x${"b".repeat(64)}`,
+          title: "Netherlands vs. Germany: Both Teams to Score",
+          market_slug: "unl-nld-ger-2026-09-24-btts",
+          event_slug: "unl-nld-ger-2026-09-24-more-markets",
+          closed: false,
+          active: true,
+          accepting_orders: true,
+          outcomes: [
+            { asset_id: "btts-yes", label: "Yes", outcome_index: 0, reference_price: 0.51 },
+            { asset_id: "btts-no", label: "No", outcome_index: 1, reference_price: 0.49 },
+          ],
         }],
       });
       if (url.endsWith("/chain-test/buy/preview")) return json({
@@ -543,7 +546,6 @@ describe("系统邮件设置", () => {
         immediate_exit_pnl_usdc: -0.59,
         immediate_exit_unavailable_reason: null,
         available_balance_usdc: 300,
-        reserve_warning: false,
       });
       if (url.endsWith("/chain-test/buy/execute")) return json({
         id: 11,
@@ -601,7 +603,12 @@ describe("系统邮件设置", () => {
     render(<ExecutionSettingsWorkspace />);
     await user.type(await screen.findByRole("textbox", { name: "Polymarket 市场链接" }), "https://polymarket.com/event/test-event");
     await user.click(screen.getByRole("button", { name: "识别 outcome" }));
-    await user.click(await screen.findByRole("radio", { name: /Yes/ }));
+    const marketSearch = await screen.findByRole("searchbox", { name: "搜索链上测试盘口" });
+    await user.type(marketSearch, "btts");
+    expect(screen.getByText("Netherlands vs. Germany: Both Teams to Score")).toBeInTheDocument();
+    expect(screen.queryByText("测试市场会通过吗？")).not.toBeInTheDocument();
+    await user.clear(marketSearch);
+    await user.click(within(screen.getByRole("group", { name: "测试市场会通过吗？" })).getByRole("radio", { name: /Yes/ }));
     const amount = screen.getByRole("spinbutton", { name: "链上测试买入金额" });
     await user.clear(amount);
     await user.type(amount, "5");
@@ -1320,7 +1327,6 @@ describe("巨鲸持仓页", () => {
         profit_ratio_gap_percent: -34.6,
         price_delta_cents: 9,
         price_delta_warning: true,
-        reserve_warning: false,
         available_balance_usdc: 300,
       });
       if (url.includes("/api/whales/markets?")) return json({

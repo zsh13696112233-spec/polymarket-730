@@ -50,7 +50,6 @@ export type WhaleSettings = {
   min_liquidity_usdc: Numeric;
   min_remaining_minutes: number;
   max_price_delta_cents: Numeric;
-  max_follow_amount_usdc: Numeric;
   default_follow_amount_usdc: Numeric;
   scan_interval_seconds: number;
   coverage_incomplete_until: string | null;
@@ -350,7 +349,6 @@ export type WhaleFollowPreview = {
   profit_ratio_gap_percent: Numeric | null;
   price_delta_cents: Numeric | null;
   price_delta_warning: boolean;
-  reserve_warning: boolean;
   available_balance_usdc: Numeric;
 };
 

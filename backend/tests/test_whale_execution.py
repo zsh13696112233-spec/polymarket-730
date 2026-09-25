@@ -25,6 +25,7 @@ from backend.models import (
     WhaleSettings,
 )
 from backend.polymarket import PolymarketAPIError, RedemptionSnapshot, TradeSnapshot
+from backend.time_utils import utcnow
 from backend.trading import TradeResult, TradingUnavailable
 from backend.whale import (
     WhaleFollowExecutor,
@@ -126,7 +127,6 @@ def follow_quote(amount: str = "15") -> WhaleFollowQuote:
         profit_ratio_gap_percent=None,
         price_delta_cents=Decimal("5"),
         price_delta_warning=False,
-        reserve_warning=False,
         available_balance_usdc=Decimal("100"),
     )
 
@@ -1338,32 +1338,91 @@ async def test_platform_managed_resolved_loss_is_written_off_without_redemption(
 
 
 @pytest.mark.asyncio
-async def test_chain_test_buy_enforces_cash_reserve_and_total_exposure(database: Database):
+async def test_chain_test_buy_ignores_legacy_wallet_limits_and_manual_cap(
+    database: Database, monkeypatch
+):
     await configure_reconciliation(database)
-    follow_executor = executor(database)
-    quote = SimpleNamespace(
-        total_cost_usdc=Decimal("11"),
-        available_balance_usdc=Decimal("250"),
-    )
-
-    with pytest.raises(ValueError, match="预算或现金保留额"):
-        await follow_executor._ensure_chain_test_buy_limits(  # type: ignore[arg-type]
-            quote,
-            refresh_balance=False,
-        )
-
+    await configure_whale_settings(database)
+    now = utcnow()
     async with database.sessions() as session:
         account = await session.get(ExecutionAccount, 1)
+        settings = await session.get(WhaleSettings, 1)
         assert account is not None
-        account.cash_reserve_usdc = ZERO
-        account.max_total_exposure_usdc = Decimal("10")
+        assert settings is not None
+        account.budget_usdc = Decimal("1")
+        account.cash_reserve_usdc = Decimal("999")
+        account.max_total_exposure_usdc = Decimal("1")
+        account.daily_buy_limit_usdc = Decimal("1")
+        account.daily_loss_limit_usdc = Decimal("1")
+        settings.max_follow_amount_usdc = Decimal("20")
+        market = await session.get(WhaleMarket, CONDITION_ID)
+        assert market is not None
+        market.active = True
+        market.accepting_orders = True
+        session.add(
+            WhaleOrder(
+                idempotency_key="daily-auto-buy",
+                source="auto_follow",
+                asset_id=ASSET_ID,
+                condition_id=CONDITION_ID,
+                title="Whale market",
+                outcome="Yes",
+                neg_risk=False,
+                side="BUY",
+                requested_usdc=Decimal("100"),
+                limit_price=Decimal("0.5"),
+                filled_size=Decimal("1"),
+                filled_usdc=Decimal("82"),
+                fee_usdc=Decimal("0.07"),
+                status="partially_filled",
+                created_at=now,
+                updated_at=now,
+            )
+        )
         await session.commit()
 
-    with pytest.raises(ValueError, match="总敞口限制"):
-        await follow_executor._ensure_chain_test_buy_limits(  # type: ignore[arg-type]
-            quote,
-            refresh_balance=False,
-        )
+    follow_executor = executor(database)
+    follow_executor.settings = Settings(trading_enabled=True, start_monitor=False)
+    monkeypatch.setattr(
+        follow_executor,
+        "_buy_order_book",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                best_ask=Decimal("0.5"),
+                best_bid=None,
+                tick_size=Decimal("0.01"),
+                min_order_size=Decimal("5"),
+            )
+        ),
+    )
+    monkeypatch.setattr(follow_executor, "_live_balance", AsyncMock(return_value=Decimal("500")))
+    quote = await follow_executor.quote_follow(
+        asset_id=ASSET_ID,
+        amount_usdc=Decimal("250"),
+        entry_id=None,
+        require_active_signal=False,
+    )
+    assert quote.amount_usdc == Decimal("250")
+    trader = SimpleNamespace(
+        prepare_market=AsyncMock(
+            return_value=SimpleNamespace(
+                signed_order_hash="test-hash", external_order_id="test-order"
+            )
+        ),
+        submit_prepared_market=AsyncMock(return_value=SimpleNamespace()),
+    )
+    monkeypatch.setattr(follow_executor, "_trader", AsyncMock(return_value=trader))
+    monkeypatch.setattr(follow_executor, "_hydrate_fee", AsyncMock(return_value=SimpleNamespace()))
+    monkeypatch.setattr(follow_executor, "apply_result", AsyncMock())
+    order_id = await follow_executor.execute_follow(
+        quote, "legacy-limits", order_source="chain_test"
+    )
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        assert order is not None
+        assert order.source == "chain_test"
+        assert order.requested_usdc == Decimal("250")
+    trader.submit_prepared_market.assert_awaited_once()
 
 
 @pytest.mark.asyncio

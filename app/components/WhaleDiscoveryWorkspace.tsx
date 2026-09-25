@@ -587,7 +587,6 @@ export default function WhaleDiscoveryWorkspace() {
       {!statisticsVisible && followTarget && (
         <WhaleFollowModal
           {...followTarget}
-          maxAmount={numeric(settings?.max_follow_amount_usdc ?? 200)}
           defaultAmount={numeric(settings?.default_follow_amount_usdc ?? 20)}
           onClose={() => setFollowTarget(null)}
           onCompleted={() => void loadMarkets()}
@@ -1014,7 +1013,6 @@ function WhaleFollowModal({
   market,
   side,
   entry,
-  maxAmount,
   defaultAmount,
   onClose,
   onCompleted,
@@ -1022,12 +1020,11 @@ function WhaleFollowModal({
   market: WhaleMarket;
   side: WhaleMarketSide;
   entry: WhaleEntry;
-  maxAmount: number;
   defaultAmount: number;
   onClose: () => void;
   onCompleted: () => void;
 }) {
-  const initialAmount = Math.min(Math.max(defaultAmount, 0.01), maxAmount);
+  const initialAmount = Math.max(defaultAmount, 0.01);
   const [amount, setAmount] = useState(String(initialAmount));
   const [preview, setPreview] = useState<WhaleFollowPreview | null>(null);
   const [previewing, setPreviewing] = useState(true);
@@ -1043,12 +1040,6 @@ function WhaleFollowModal({
       setPreview(null);
       setPreviewing(false);
       setError("请输入大于 0 的跟单金额");
-      return;
-    }
-    if (amountValue > maxAmount) {
-      setPreview(null);
-      setPreviewing(false);
-      setError(`单笔跟单金额不能超过 ${formatUsdc(maxAmount)}`);
       return;
     }
     setPreviewing(true);
@@ -1070,7 +1061,7 @@ function WhaleFollowModal({
     } finally {
       if (requestId === requestSerial.current) setPreviewing(false);
     }
-  }, [amount, entry.entry_id, maxAmount, side.asset_id]);
+  }, [amount, entry.entry_id, side.asset_id]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void requestPreview(), 400);
@@ -1167,13 +1158,12 @@ function WhaleFollowModal({
       ) : (
         <>
           <label className="whaleAmountInput">
-            <span>跟单金额 <small>单笔上限 {formatUsdc(maxAmount)}</small></span>
+            <span>跟单金额</span>
             <div>
               <input
                 aria-label="跟单金额"
                 type="number"
                 min="0"
-                max={maxAmount}
                 step="1"
                 value={amount}
                 onChange={(event) => changeAmount(event.target.value)}
@@ -1182,7 +1172,7 @@ function WhaleFollowModal({
             </div>
           </label>
           <div className="whaleQuickAmounts" aria-label="快捷金额">
-            {[20, 50, 100].filter((value) => value <= maxAmount).map((value) => (
+            {[20, 50, 100].map((value) => (
               <button type="button" key={value} onClick={() => changeAmount(String(value))}>{value} USDC</button>
             ))}
           </div>
@@ -1235,9 +1225,6 @@ function WhaleFollowModal({
                 <div className="whalePreviewWarning">
                   当前价已比巨鲸买入价高 {formatSigned(preview.price_delta_cents, " 美分")}，跟进成本明显上升。
                 </div>
-              )}
-              {preview.reserve_warning && (
-                <div className="whaleReserveWarning">本次买入会使执行钱包余额低于现金保留额。</div>
               )}
               <p className="whaleEstimateDisclaimer">以上包含预估手续费，实际成交和收益以最终订单及市场结算为准。</p>
             </div>

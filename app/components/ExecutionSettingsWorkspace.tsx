@@ -12,11 +12,6 @@ type Account = {
   signature_type: 1 | 3;
   credentials_configured: boolean;
   status: string;
-  budget_usdc: number;
-  cash_reserve_usdc: number;
-  max_total_exposure_usdc: number;
-  daily_buy_limit_usdc: number;
-  daily_loss_limit_usdc: number;
   auto_redeem: boolean;
   collateral_balance: number | null;
   last_balance_at: string | null;
@@ -70,7 +65,6 @@ type ChainTestBuyPreview = {
   immediate_exit_pnl_usdc: number | null;
   immediate_exit_unavailable_reason: string | null;
   available_balance_usdc: number;
-  reserve_warning: boolean;
 };
 
 type ChainTestSellPreview = {
@@ -122,12 +116,12 @@ export default function ExecutionSettingsWorkspace() {
   const [account, setAccount] = useState<Account | null>(null);
   const [signer, setSigner] = useState("");
   const [funder, setFunder] = useState("");
-  const [cashReserve, setCashReserve] = useState("240");
   const [localAutoRedeem, setLocalAutoRedeem] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [chainUrl, setChainUrl] = useState("");
   const [chainResolution, setChainResolution] = useState<ChainTestResolution | null>(null);
+  const [chainMarketSearch, setChainMarketSearch] = useState("");
   const [chainAsset, setChainAsset] = useState("");
   const [chainAmount, setChainAmount] = useState("5");
   const [chainBuyPreview, setChainBuyPreview] = useState<ChainTestBuyPreview | null>(null);
@@ -144,7 +138,6 @@ export default function ExecutionSettingsWorkspace() {
       if (next) {
         setSigner(next.signer_address ?? "");
         setFunder(next.funder_address ?? "");
-        setCashReserve(String(next.cash_reserve_usdc));
         setLocalAutoRedeem(next.auto_redeem);
       }
     } catch (error) {
@@ -164,18 +157,12 @@ export default function ExecutionSettingsWorkspace() {
     event.preventDefault();
     setBusy(true); setNotice(null);
     try {
-      const reserve = Number(cashReserve);
       await request<Account>("/api/execution-account", {
         method: "PUT",
         body: JSON.stringify({
           signer_address: signer,
           funder_address: funder,
           signature_type: 3,
-          budget_usdc: Math.max(400, reserve),
-          cash_reserve_usdc: reserve,
-          max_total_exposure_usdc: 160,
-          daily_buy_limit_usdc: 80,
-          daily_loss_limit_usdc: 40,
           auto_redeem: localAutoRedeem,
         }),
       });
@@ -219,6 +206,7 @@ export default function ExecutionSettingsWorkspace() {
       });
       setChainResolution(next);
       setChainAsset("");
+      setChainMarketSearch("");
       setChainNotice({ kind: "success", text: `已识别 ${next.markets.length} 个市场，请选择要测试的 outcome。` });
     } catch (error) {
       setChainResolution(null); setChainAsset("");
@@ -305,6 +293,14 @@ export default function ExecutionSettingsWorkspace() {
     } finally { setChainBusy(false); }
   }
 
+  const chainMarketQuery = chainMarketSearch.trim().toLowerCase();
+  const visibleChainMarkets = chainResolution?.markets.filter((market) =>
+    !chainMarketQuery
+    || market.title.toLowerCase().includes(chainMarketQuery)
+    || market.market_slug?.toLowerCase().includes(chainMarketQuery)
+    || market.outcomes.some((outcome) => outcome.asset_id === chainAsset)
+  ) ?? [];
+
   return (
     <PolyCopyShell active="settings" title="系统设置">
       <section className="pcPanel pcExecutionAccountPanel">
@@ -336,7 +332,6 @@ export default function ExecutionSettingsWorkspace() {
           </label>
           {signer && !account?.credentials_configured && <div className="pcCommandHint"><span>导入执行密钥</span><code>uv run python -m backend.trading_cli set-key --account {signer}</code></div>}
           <div className="pcExecutionFormFooter">
-            <label className="pcField"><span>现金保留额</span><div className="pcUnitInput"><input type="number" min="0" step="0.01" value={cashReserve} onChange={(event) => setCashReserve(event.target.value)} /><b>USDC</b></div><small>下单后余额低于该值时显示风险警告。</small></label>
             <div className="pcSettingsActions"><button className="pcButton primary" type="submit" disabled={busy}>保存配置</button><button className="pcButton ghost" type="button" disabled={busy || !account} onClick={() => void action("/api/execution-account/verify", "执行钱包验证完成。")}>验证密钥与授权</button><button className="pcButton ghost" type="button" disabled={busy || !account} onClick={() => void action("/api/execution-account/balance/refresh", "余额已刷新。")}>刷新余额</button></div>
           </div>
           {notice && <p className={notice.kind === "success" ? "pcFormSuccess" : "pcFormError"}>{notice.text}</p>}
@@ -349,13 +344,15 @@ export default function ExecutionSettingsWorkspace() {
         </header>
         <div className="pcChainTestWarning">本工具会产生真实成交、手续费和买卖价差。请使用可承受损失的小额资金。</div>
         <div className="pcChainTestUrlRow">
-          <label className="pcField"><span>Polymarket 市场链接</span><input aria-label="Polymarket 市场链接" type="url" value={chainUrl} onChange={(event) => { setChainUrl(event.target.value); setChainResolution(null); setChainAsset(""); resetChainTrade(); }} placeholder="https://polymarket.com/event/…" /></label>
+          <label className="pcField"><span>Polymarket 市场链接</span><input aria-label="Polymarket 市场链接" type="url" value={chainUrl} onChange={(event) => { setChainUrl(event.target.value); setChainResolution(null); setChainMarketSearch(""); setChainAsset(""); resetChainTrade(); }} placeholder="https://polymarket.com/event/…" /></label>
           <button className="pcButton ghost" type="button" disabled={chainBusy || !chainUrl.trim()} onClick={() => void resolveChainMarket()}>{chainBusy ? "处理中" : "识别 outcome"}</button>
         </div>
         {chainResolution && (
           <div className="pcChainTestMarkets">
             <strong>{chainResolution.event_title}</strong>
-            {chainResolution.markets.map((market) => {
+            <label className="pcField"><span>搜索链上测试盘口</span><input aria-label="搜索链上测试盘口" type="search" value={chainMarketSearch} onChange={(event) => setChainMarketSearch(event.target.value)} placeholder="盘口名称或 slug，例如 btts" /></label>
+            <small>显示 {visibleChainMarkets.length} / {chainResolution.markets.length} 个市场</small>
+            {visibleChainMarkets.map((market) => {
               const tradable = market.active && !market.closed && market.accepting_orders;
               return (
                 <fieldset key={market.condition_id} disabled={!tradable || chainBusy}>
@@ -385,7 +382,6 @@ export default function ExecutionSettingsWorkspace() {
             <h3>买入预览 · {chainBuyPreview.outcome}</h3>
             <dl><div><dt>当前卖价</dt><dd>{price(chainBuyPreview.best_ask)}</dd></div><div><dt>最高成交价</dt><dd>{price(chainBuyPreview.worst_price)}</dd></div><div><dt>预计份额</dt><dd>{chainBuyPreview.estimated_shares.toFixed(4)}</dd></div><div><dt>预计总成本</dt><dd>{money(chainBuyPreview.total_cost_usdc)}</dd></div><div><dt>预计手续费</dt><dd>{money(chainBuyPreview.estimated_fee_usdc)}</dd></div><div><dt>可用余额</dt><dd>{money(chainBuyPreview.available_balance_usdc)}</dd></div></dl>
             {chainBuyPreview.immediate_exit_pnl_usdc !== null ? <p>按当前盘口立即卖出预计损益：{money(chainBuyPreview.immediate_exit_pnl_usdc)}</p> : <p>{chainBuyPreview.immediate_exit_unavailable_reason}</p>}
-            {chainBuyPreview.reserve_warning && <p className="pcFormError">本次买入会使余额低于现金保留额。</p>}
             <button className="pcButton danger" type="button" disabled={chainBusy} onClick={() => void executeChainBuy()}>确认真实买入 {money(chainBuyPreview.amount_usdc)}</button>
           </div>
         )}

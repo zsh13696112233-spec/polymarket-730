@@ -88,8 +88,6 @@ type HomeOverview = {
     total_assets_usdc: Numeric | null;
     unrealized_pnl_usdc: Numeric | null;
     winning_pnl_usdc: Numeric;
-    cash_reserve_usdc: Numeric;
-    available_cash_usdc: Numeric | null;
     open_position_count: number;
     last_balance_at: string | null;
     balance_stale: boolean;
@@ -437,8 +435,6 @@ export default function HomeWorkspace() {
               <div><dt>pUSD / USDC 现金</dt><dd>{formatUsdc(overview.wallet.cash_balance_usdc)}</dd></div>
               <div><dt>持仓成本</dt><dd>{formatUsdc(overview.wallet.open_cost_usdc)}</dd></div>
               <div><dt>持仓市值</dt><dd>{overview.wallet.valuation_complete ? formatUsdc(overview.wallet.market_value_usdc) : "估值不完整"}</dd></div>
-              <div><dt>现金保留线</dt><dd>{formatUsdc(overview.wallet.cash_reserve_usdc)}</dd></div>
-              <div><dt>保留线以上可用现金</dt><dd>{formatUsdc(overview.wallet.available_cash_usdc)}</dd></div>
               <div><dt>开放仓位</dt><dd>{overview.wallet.open_position_count} 个</dd></div>
             </dl>
             </div>

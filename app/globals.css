@@ -12952,9 +12952,99 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .settingsWorkspace .pcExecutionFormFooter .pcSettingsActions {
   justify-content: flex-end;
 }
+.settingsWorkspace .whaleInlineSettingsPanel {
+  overflow: hidden;
+}
+.settingsWorkspace .whaleInlineSettingsPanel .pcPanelHeader {
+  padding: 18px 22px;
+}
+.settingsWorkspace .whaleInlineSettingsBody {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 22px;
+  padding: 22px;
+}
+.settingsWorkspace .whaleMonitorCategories {
+  display: grid;
+  gap: 12px;
+}
+.settingsWorkspace .whaleAutoCategories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid #e1e6f0;
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+.settingsWorkspace .whaleAutoCategories legend {
+  width: 100%;
+  margin-bottom: 2px;
+  color: #6d7685;
+  font-size: 12px;
+  font-weight: 650;
+}
+.settingsWorkspace .whaleAutoCategories label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #dce2ec;
+  border-radius: 8px;
+  background: #fff;
+  color: #626b7a;
+  font-size: 12px;
+}
+.settingsWorkspace .whaleAutoCategories label:has(input:checked) {
+  border-color: #9bb0f3;
+  background: #f1f5ff;
+  color: #3156c5;
+}
+.settingsWorkspace .whaleInlineSettingsBody > .pcFormGrid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+.settingsWorkspace .whaleInlineSettingsBody .pcField {
+  min-width: 0;
+  gap: 9px;
+}
+.settingsWorkspace .whaleInlineSettingsBody .pcField > small {
+  display: block;
+  min-height: 38px;
+  margin-top: 1px;
+}
+.settingsWorkspace .whaleSettingsStatus {
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #e1e6f0;
+  border-radius: 10px;
+  background: #e1e6f0;
+}
+.settingsWorkspace .whaleSettingsStatus > div {
+  min-height: 68px;
+  padding: 12px 14px;
+  background: #fbfcfe;
+}
+.settingsWorkspace .whaleSettingsStatus span { color: #8a93a2; font-size: 12px; }
+.settingsWorkspace .whaleSettingsStatus strong { color: #3e4652; font-size: 14px; }
+.settingsWorkspace .whaleInlineSettingsBody > .pcFormHint {
+  margin: 0;
+  padding: 10px 12px;
+}
+.settingsWorkspace .whaleInlineSettingsPanel > .pcSettingsForm {
+  padding: 0;
+}
+.settingsWorkspace .whaleInlineSettingsPanel > .pcSettingsForm > .pcSettingsActions {
+  margin: 0;
+  padding: 0 22px 22px;
+}
 @media (max-width: 760px) {
   .settingsWorkspace .pcContent { padding: 18px 14px 32px; }
   .settingsWorkspace .pcSettingsSection { padding: 16px; }
   .settingsWorkspace .pcCollectionStatusGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settingsWorkspace .pcSettingsSectionHeader { display: grid; }
+  .settingsWorkspace .whaleInlineSettingsBody > .pcFormGrid.three { grid-template-columns: 1fr; }
+  .settingsWorkspace .whaleInlineSettingsBody .pcField > small { min-height: 0; }
 }

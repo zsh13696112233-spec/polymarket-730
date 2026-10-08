@@ -20,7 +20,7 @@ FAILURE_LOG_BACKUP_COUNT = 3
 _FAILURE_LOG_LOCK = threading.Lock()
 
 WhaleRequestStatus = Literal["pending", "success", "failed"]
-WhaleRequestSource = Literal["http", "sdk"]
+WhaleRequestSource = Literal["http", "sdk", "collection"]
 
 
 @dataclass(slots=True)
@@ -39,6 +39,7 @@ class WhaleRequestRecord:
     error_type: str | None
     error_message: str | None
     response_excerpt: str | None
+    request_count: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +107,7 @@ class WhaleRequestMonitor:
         self._records_by_id: dict[int, WhaleRequestRecord] = {}
         self._started_monotonic: dict[int, float] = {}
         self._next_id = 1
+        self._status_success_counts: dict[str, int] = {}
         self._subscribers: set[asyncio.Queue[WhaleRequestRecord]] = set()
         self._lock = asyncio.Lock()
 
@@ -170,6 +172,23 @@ class WhaleRequestMonitor:
             record.error_type = error_type
             record.error_message = error_message[:2000] if error_message else None
             record.response_excerpt = response_excerpt[:4096] if response_excerpt else None
+            if (
+                record.source == "collection"
+                and record.url.endswith("/api/collection/v1/status")
+                and status == "success"
+            ):
+                count = self._status_success_counts.get(record.url, 0) + 1
+                self._status_success_counts[record.url] = count
+                record.request_count = count
+                for old in list(self._records):
+                    if (
+                        old.id != record.id
+                        and old.source == "collection"
+                        and old.url == record.url
+                        and old.status == "success"
+                    ):
+                        self._records.remove(old)
+                        self._records_by_id.pop(old.id, None)
             subscribers = tuple(self._subscribers)
             published = replace(record)
         self._publish(published, subscribers)

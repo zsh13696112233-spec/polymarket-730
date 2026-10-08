@@ -26,6 +26,7 @@ from backend.config import Settings
 from backend.db import Database
 from backend.keychain import KeychainReference, MacOSKeychain
 from backend.models import (
+    CollectionSyncState,
     EmailSettings,
     ExecutionAccount,
     RedemptionExecution,
@@ -954,622 +955,20 @@ def market_is_eligible(
     return True
 
 
-class WhaleDiscoveryScanner:
-    """Isolated rolling-window collector and aggregator."""
+class PublicDataCollector:
+    """Public collection only: no wallet executor, notifier or personal configuration."""
 
-    def __init__(
-        self,
-        *,
-        database: Database,
-        client: PolymarketClient,
-        settings: Settings,
-        executor: WhaleFollowExecutor | None = None,
-        request_monitor: WhaleRequestMonitor | None = None,
-        email_notifier: WhaleEmailNotifier | None = None,
-    ) -> None:
+    def __init__(self, *, database: Database, client: PolymarketClient, settings: Settings) -> None:
         self.database = database
         self.client = client
         self.settings = settings
-        self.executor = executor
-        self.request_monitor = request_monitor
-        self.email_notifier = email_notifier
-        self._task: asyncio.Task[None] | None = None
-        self._wake = asyncio.Event()
-        self._lock = asyncio.Lock()
-        self._last_trade_cursor_at: datetime | None = None
-        self._position_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
-        self._position_versions: dict[tuple[str, str], tuple[Any, ...]] = {}
-        self._position_checked_at: dict[tuple[str, str], datetime] = {}
-        self._last_history_refresh_at: datetime | None = None
-        self._running_config_at: datetime | None = None
-        self._auto_pending_recovered = False
-        self._collection_audit: WhaleScanCollectionAudit | None = None
-        self._focus_markets: list[WhaleMarketSnapshot] = []
-        self._focus_config: tuple[Any, ...] | None = None
-        self._focus_refreshed_at: datetime | None = None
-
-    @property
-    def is_running(self) -> bool:
-        return self._task is not None and not self._task.done()
-
-    def start(self) -> None:
-        if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run(), name="whale-discovery")
-
-    def wake(self) -> None:
-        self._wake.set()
-
-    async def stop(self) -> None:
-        task, self._task = self._task, None
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def _run(self) -> None:
-        while True:
-            cycle_started = monotonic()
-            try:
-                await self.tick()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # tick persists its own health state.  This last boundary keeps the
-                # scanner from ever taking down the wallet monitor or copy engine.
-                pass
-            async with self.database.sessions() as session:
-                whale_settings = await session.get(WhaleSettings, 1)
-                configured = (
-                    whale_settings.scan_interval_seconds
-                    if whale_settings is not None
-                    else self.settings.whale_scan_interval_seconds
-                )
-                failures = whale_settings.consecutive_failures if whale_settings else 0
-            delay = min(
-                self.settings.max_backoff_seconds,
-                max(1.0, float(configured)) * (2 ** min(failures, 6)),
-            )
-            delay = max(0.05, delay - (monotonic() - cycle_started))
-            self._wake.clear()
-            try:
-                await asyncio.wait_for(self._wake.wait(), timeout=delay)
-            except TimeoutError:
-                pass
-
-    async def scan_now(self) -> bool:
-        """手动扫描：返回时保证已经有一轮读到最新配置的扫描跑完。
-
-        一轮扫描要几十秒，而后台循环大半时间都在跑，直接跳过会让「立即扫描」看上去
-        毫无反应；无条件排队又会让刚改完设置的用户白等两轮。所以正在跑的那轮只要已经
-        读到当前配置就等它收尾，否则再补一轮。
-        """
-
-        async with self.database.sessions() as session:
-            row = await session.get(WhaleSettings, 1)
-            if row is None or not row.enabled:
-                return False
-            config_at = row.updated_at
-        running_config_at = self._running_config_at
-        if self._lock.locked() and running_config_at is not None and running_config_at >= config_at:
-            async with self._lock:
-                return True
-        return await self.tick(wait=True)
-
-    async def _start_scan_run(self, scan_id: str, started_at: datetime) -> None:
-        async with self.database.sessions() as session:
-            interrupted = list(
-                (
-                    await session.scalars(
-                        select(WhaleScanRun).where(WhaleScanRun.status == "running")
-                    )
-                ).all()
-            )
-            for row in interrupted:
-                row.status = "failed"
-                row.finished_at = started_at
-                row.error = "扫描进程在完成前中断"
-            session.add(
-                WhaleScanRun(
-                    scan_id=scan_id,
-                    status="running",
-                    started_at=started_at,
-                    collected_trade_count=0,
-                    page_limit_hit=False,
-                    coverage_complete=True,
-                )
-            )
-            await session.commit()
-
-    async def _finish_scan_run(
-        self,
-        scan_id: str,
-        *,
-        status: str,
-        error: str | None,
-    ) -> None:
-        finished_at = utcnow()
-        audit = self._collection_audit
-        async with self.database.sessions() as session:
-            row = await session.scalar(select(WhaleScanRun).where(WhaleScanRun.scan_id == scan_id))
-            if row is not None:
-                row.status = status
-                row.finished_at = finished_at
-                row.error = error[:2000] if error else None
-                if audit is not None:
-                    row.requested_start = audit.requested_start
-                    row.requested_end = audit.requested_end
-                    row.oldest_trade_at = audit.oldest_trade_at
-                    row.newest_trade_at = audit.newest_trade_at
-                    row.collected_trade_count = audit.collected_trade_count
-                    row.page_limit_hit = audit.page_limit_hit
-                    row.coverage_complete = not audit.page_limit_hit
-            await session.execute(
-                delete(WhaleScanRun).where(
-                    WhaleScanRun.started_at < finished_at - WHALE_SCAN_HISTORY_RETENTION
-                )
-            )
-            await session.commit()
-
-    async def tick(self, *, wait: bool = False) -> bool:
-        if self._lock.locked() and not wait:
-            return False
-        async with self._lock:
-            async with self.database.sessions() as session:
-                whale_settings = await session.get(WhaleSettings, 1)
-                if whale_settings is None or not whale_settings.enabled:
-                    return False
-                values = {
-                    column.name: getattr(whale_settings, column.name)
-                    for column in WhaleSettings.__table__.columns
-                }
-                self._running_config_at = whale_settings.updated_at
-            scan_id = uuid4().hex
-            self._collection_audit = None
-            await self._start_scan_run(scan_id, utcnow())
-            try:
-                scan_started = monotonic()
-                pending_order_warning: str | None = None
-                if not self._auto_pending_recovered:
-                    await self._recover_interrupted_auto_decisions()
-                    self._auto_pending_recovered = True
-                if self.executor is not None:
-                    await self.executor.reconcile_terminal_sell_remainders()
-                    pending_order_warning = await self.executor.reconcile_pending_orders()
-                with capture_whale_requests(self.request_monitor, scan_id):
-                    scan_warning = await self._scan(values)
-                    warning = (
-                        "；".join(item for item in (pending_order_warning, scan_warning) if item)
-                        or None
-                    )
-                if self.executor is not None:
-                    try:
-                        reconciliation_warning = (
-                            await self.executor.reconcile_external_wallet_activity()
-                        )
-                        warning = (
-                            "；".join(item for item in (warning, reconciliation_warning) if item)
-                            or None
-                        )
-                        await self.executor.process_redeemable_positions()
-                    except Exception as error:
-                        warning = "；".join(
-                            item for item in (warning, f"执行钱包持仓对账失败：{error}") if item
-                        )
-                async with self.database.sessions() as session:
-                    row = await session.get(WhaleSettings, 1)
-                    if row is not None:
-                        row.last_scan_at = utcnow()
-                        row.last_scan_error = warning
-                        row.consecutive_failures = 0
-                        row.updated_at = utcnow()
-                        await session.commit()
-                await self._finish_scan_run(
-                    scan_id,
-                    status="degraded" if warning else "success",
-                    error=warning,
-                )
-                LOGGER.debug(
-                    "Whale scan completed duration_ms=%s warning=%s",
-                    round((monotonic() - scan_started) * 1000),
-                    warning,
-                )
-                if self.email_notifier is not None:
-                    self.email_notifier.wake()
-                return True
-            except asyncio.CancelledError:
-                await self._finish_scan_run(scan_id, status="failed", error="扫描已取消")
-                raise
-            except Exception as error:
-                async with self.database.sessions() as session:
-                    row = await session.get(WhaleSettings, 1)
-                    if row is not None:
-                        row.last_scan_error = str(error)[:2000]
-                        row.consecutive_failures += 1
-                        row.updated_at = utcnow()
-                        await session.commit()
-                await self._finish_scan_run(scan_id, status="failed", error=str(error))
-                return False
-            finally:
-                self._running_config_at = None
-                self._collection_audit = None
-
-    async def _recover_interrupted_auto_decisions(self) -> None:
-        """Finalize decisions left pending by a prior process without replaying the signal."""
-
-        now = utcnow()
-        async with self.database.sessions() as session:
-            decisions = list(
-                (
-                    await session.scalars(
-                        select(WhaleAutoFollowDecision).where(
-                            WhaleAutoFollowDecision.status == "pending"
-                        )
-                    )
-                ).all()
-            )
-            for decision in decisions:
-                order = await session.scalar(
-                    select(WhaleOrder).where(
-                        WhaleOrder.idempotency_key == f"whale:auto:{decision.id}"
-                    )
-                )
-                if order is not None:
-                    decision.buy_order_id = order.id
-                if order is not None and order.filled_size > ZERO:
-                    decision.status = "bought"
-                    decision.reason = "自动跟单买入已执行"
-                else:
-                    decision.status = "failed"
-                    decision.reason = (
-                        f"服务重启前自动买入未完成，订单状态：{order.status}"
-                        if order is not None
-                        else "服务重启前尚未提交自动买入，不补买"
-                    )
-                decision.processed_at = now
-                decision.updated_at = now
-            if decisions:
-                await session.commit()
-
-    async def _scan(self, config: dict[str, Any]) -> str | None:
-        now = utcnow()
-        window_start = now - timedelta(hours=max(1, int(config["window_hours"])))
-        incremental_start = window_start
-        if self._last_trade_cursor_at is None:
-            async with self.database.sessions() as session:
-                settings_row = await session.get(WhaleSettings, 1)
-                self._last_trade_cursor_at = (
-                    settings_row.last_trade_cursor_at if settings_row is not None else None
-                )
-                if self._last_trade_cursor_at is None:
-                    self._last_trade_cursor_at = await session.scalar(
-                        select(func.max(WhaleTrade.timestamp))
-                    )
-        if self._last_trade_cursor_at is not None:
-            incremental_start = min(
-                now,
-                max(
-                    window_start,
-                    self._last_trade_cursor_at - timedelta(seconds=120),
-                ),
-            )
-        trades, hit_page_limit = await self._collect_trades(
-            start=incremental_start,
-            end=now,
-            amount=_decimal(config["collect_filter_amount_usdc"]),
-        )
-        trade_timestamps = [
-            value
-            for trade in trades
-            if isinstance((value := _attribute(trade, "timestamp")), datetime)
-        ]
-        self._collection_audit = WhaleScanCollectionAudit(
-            requested_start=incremental_start,
-            requested_end=now,
-            oldest_trade_at=min(trade_timestamps) if trade_timestamps else None,
-            newest_trade_at=max(trade_timestamps) if trade_timestamps else None,
-            collected_trade_count=len(trades),
-            page_limit_hit=hit_page_limit,
-        )
-        await self._persist_trades(trades)
-        configured_coverage_until = config.get("coverage_incomplete_until")
-        coverage_incomplete_until = (
-            configured_coverage_until
-            if isinstance(configured_coverage_until, datetime) and configured_coverage_until > now
-            else None
-        )
-        next_cursor = self._last_trade_cursor_at
-        if hit_page_limit:
-            # Escape the public feed's historical offset cap while retaining
-            # the fail-closed coverage flag for the potentially missing window.
-            next_cursor = now
-            next_complete_at = now + timedelta(hours=max(1, int(config["window_hours"])))
-            coverage_incomplete_until = max(
-                coverage_incomplete_until or next_complete_at,
-                next_complete_at,
-            )
-        elif trade_timestamps:
-            # Successful responses can still be stale. Advance only to observed
-            # trades; empty pages and older overlap rows must not move the cursor.
-            newest_trade_at = max(trade_timestamps)
-            next_cursor = max(next_cursor or newest_trade_at, newest_trade_at)
-        async with self.database.sessions() as session:
-            settings_row = await session.get(WhaleSettings, 1)
-            if settings_row is not None:
-                settings_row.last_trade_cursor_at = next_cursor
-                settings_row.coverage_incomplete_until = coverage_incomplete_until
-                await session.commit()
-        self._last_trade_cursor_at = next_cursor
-
-        discovered_positions, discovery_warnings = await self._supplement_discovery(
-            config, now=now, window_start=window_start
-        )
-
-        auto_follow_block_reason = (
-            "成交历史覆盖不完整，自动跟单已暂停" if coverage_incomplete_until is not None else None
-        )
-
-        async with self.database.sessions() as session:
-            window_trades = list(
-                (
-                    await session.scalars(
-                        select(WhaleTrade)
-                        .where(
-                            WhaleTrade.timestamp >= window_start,
-                            WhaleTrade.side == "BUY",
-                            _not_excluded_wallet(WhaleTrade.proxy_wallet),
-                        )
-                        .order_by(WhaleTrade.timestamp.asc(), WhaleTrade.id.asc())
-                    )
-                ).all()
-            )
-        new_threshold = _decimal(config["new_account_threshold_usdc"])
-        large_threshold = _decimal(config["large_amount_threshold_usdc"])
-        collection_threshold = min(new_threshold, large_threshold)
-        aggregates = aggregate_whale_trades(
-            window_trades,
-            single_trade_threshold_usdc=collection_threshold,
-            cumulative_threshold_usdc=collection_threshold,
-            holding_ratio_threshold=_decimal(config["holding_ratio_threshold"]),
-            exited_ratio_threshold=_decimal(config["exited_ratio_threshold"]),
-        )
-        async with self.database.sessions() as session:
-            excluded_wallets = set(await session.scalars(select(WhaleExclusion.proxy_wallet)))
-        discovered_positions = [
-            position
-            for position in discovered_positions
-            if position.proxy_wallet.lower() not in excluded_wallets
-        ]
-        trade_keys = {(item.proxy_wallet, item.asset_id) for item in aggregates}
-        aggregates.extend(
-            item
-            for item in aggregate_whale_positions(
-                discovered_positions,
-                position_threshold_usdc=collection_threshold,
-                observed_at=now,
-            )
-            if (item.proxy_wallet, item.asset_id) not in trade_keys
-        )
-        unresolved_conditions: list[str] = []
-        if (
-            self._last_history_refresh_at is None
-            or self._last_history_refresh_at <= now - WHALE_HISTORY_REFRESH
-        ):
-            async with self.database.sessions() as session:
-                entry_conditions = list(
-                    (
-                        await session.scalars(
-                            select(WhaleEntry.condition_id)
-                            .where(
-                                WhaleEntry.settlement_price.is_(None),
-                                _not_excluded_wallet(WhaleEntry.proxy_wallet),
-                            )
-                            .distinct()
-                        )
-                    ).all()
-                )
-                position_conditions = list(
-                    (
-                        await session.scalars(
-                            select(WhaleFollowPosition.condition_id)
-                            .where(
-                                WhaleFollowPosition.size > ZERO,
-                                WhaleFollowPosition.status.in_(
-                                    ["opening", "open", "closing", "redeeming"]
-                                ),
-                            )
-                            .distinct()
-                        )
-                    ).all()
-                )
-                unresolved_conditions = list(dict.fromkeys(entry_conditions + position_conditions))
-            self._last_history_refresh_at = now
-        await self._refresh_markets(
-            list(
-                dict.fromkeys(
-                    [item.condition_id for item in aggregates if item.condition_id]
-                    + unresolved_conditions
-                )
-            ),
-            now=now,
-        )
-        registration_days = int(config["registration_window_days"])
-        registration_cutoff = now - timedelta(days=registration_days)
-        async with self.database.sessions() as session:
-            market_categories = {
-                row.condition_id: _whale_statistics_classification(row.tags_json)["category"]
-                for row in (
-                    await session.scalars(
-                        select(WhaleMarket).where(
-                            WhaleMarket.condition_id.in_(
-                                list({item.condition_id for item in aggregates})
-                            )
-                        )
-                    )
-                ).all()
-            }
-        monitor_categories = set(_json_list(config["monitor_categories_json"]))
-        aggregates = [
-            item
-            for item in aggregates
-            if market_categories.get(item.condition_id, "other") in monitor_categories
-        ]
-        await self._refresh_wallets(
-            list(dict.fromkeys(item.proxy_wallet for item in aggregates)),
-            now=now,
-            cache_hours=int(config["profile_cache_hours"]),
-        )
-        async with self.database.sessions() as session:
-            profiles = {
-                row.proxy_wallet: row
-                for row in (
-                    await session.scalars(
-                        select(WhaleWallet).where(
-                            WhaleWallet.proxy_wallet.in_(
-                                list(dict.fromkeys(item.proxy_wallet for item in aggregates))
-                            )
-                        )
-                    )
-                ).all()
-            }
-        rule_matches: dict[tuple[str, str], set[str]] = {}
-        qualified: list[WhaleAggregate] = []
-        for aggregate in aggregates:
-            if market_categories.get(aggregate.condition_id, "other") not in monitor_categories:
-                continue
-            matches: set[str] = set()
-            profile = profiles.get(aggregate.proxy_wallet)
-            if (
-                aggregate.gross_buy_usdc >= new_threshold
-                and profile is not None
-                and profile.profile_created_at is not None
-                and registration_cutoff <= profile.profile_created_at <= now
-            ):
-                matches.add(NEW_ACCOUNT_RULE)
-            if aggregate.gross_buy_usdc >= large_threshold:
-                matches.add(LARGE_AMOUNT_RULE)
-            if matches:
-                key = (aggregate.proxy_wallet, aggregate.asset_id)
-                rule_matches[key] = matches
-                qualified.append(aggregate)
-        async with self.database.sessions() as session:
-            active_rows = list(
-                (
-                    await session.execute(
-                        select(WhaleEntry.proxy_wallet, WhaleEntry.condition_id)
-                        .join(
-                            WhaleEntryRuleState,
-                            WhaleEntryRuleState.entry_id == WhaleEntry.id,
-                        )
-                        .where(WhaleEntryRuleState.active.is_(True))
-                        .where(_not_excluded_wallet(WhaleEntry.proxy_wallet))
-                        .distinct()
-                    )
-                ).all()
-            )
-        active_targets: dict[str, set[str]] = defaultdict(set)
-        for wallet, condition_id in active_rows:
-            if condition_id:
-                active_targets[wallet].add(condition_id)
-        positions_by_wallet, failed_wallets = await self._fetch_current_positions(
-            qualified,
-            additional_targets=active_targets,
-        )
-        auto_decision_ids = await self._persist_entries(
-            qualified,
-            rule_matches=rule_matches,
-            positions_by_wallet=positions_by_wallet,
-            failed_wallets=failed_wallets,
-            config=config,
-            now=now,
-            window_start=window_start,
-            auto_follow_block_reason=auto_follow_block_reason,
-        )
-        if self.executor is not None and auto_follow_block_reason is None:
-            await self._process_auto_decisions(auto_decision_ids)
-            await self._process_conflict_exits()
-        await self._update_entry_settlements(now=now)
-        async with self.database.sessions() as session:
-            await session.execute(
-                delete(WhaleTrade).where(
-                    WhaleTrade.timestamp
-                    < now - timedelta(hours=int(config["trade_retention_hours"]))
-                )
-            )
-            await session.commit()
-        warnings: list[str] = list(discovery_warnings)
-        if coverage_incomplete_until is not None:
-            warnings.append(
-                "成交回溯达到官方分页上限，历史覆盖不完整；自动跟单暂停至 "
-                f"{coverage_incomplete_until.isoformat(timespec='seconds')} UTC"
-                if hit_page_limit
-                else "成交历史覆盖仍不完整；自动跟单暂停至 "
-                f"{coverage_incomplete_until.isoformat(timespec='seconds')} UTC"
-            )
-        if failed_wallets:
-            warnings.append(f"{len(failed_wallets)} 个候选钱包的当前持仓核验失败，已保留上次状态")
-        return "；".join(warnings) or None
-
-    async def _update_entry_settlements(self, *, now: datetime) -> None:
-        async with self.database.sessions() as session:
-            entries = list(
-                (
-                    await session.scalars(
-                        select(WhaleEntry).where(
-                            WhaleEntry.settlement_price.is_(None),
-                            _not_excluded_wallet(WhaleEntry.proxy_wallet),
-                        )
-                    )
-                ).all()
-            )
-            if not entries:
-                return
-            market_ids = list(dict.fromkeys(row.condition_id for row in entries))
-            markets = {
-                row.condition_id: row
-                for row in (
-                    await session.scalars(
-                        select(WhaleMarket).where(WhaleMarket.condition_id.in_(market_ids))
-                    )
-                ).all()
-            }
-            entry_ids: list[int] = []
-            for row in entries:
-                market = markets.get(row.condition_id)
-                if market is None or not market_price_is_settled(market):
-                    continue
-                prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
-                outcome_index = _market_outcome_index(
-                    market,
-                    asset_id=row.asset_id,
-                    fallback=row.outcome_index,
-                )
-                if outcome_index is None or not (0 <= outcome_index < len(prices)):
-                    continue
-                row.outcome_index = outcome_index
-                row.settlement_price = prices[outcome_index]
-                row.settled_at = now
-                row.status = "exited"
-                row.follow_eligible = False
-                row.follow_ineligible_reason = "market_closed"
-                entry_ids.append(row.id)
-            if entry_ids:
-                states = list(
-                    (
-                        await session.scalars(
-                            select(WhaleEntryRuleState).where(
-                                WhaleEntryRuleState.entry_id.in_(entry_ids),
-                                WhaleEntryRuleState.active.is_(True),
-                            )
-                        )
-                    ).all()
-                )
-                for state in states:
-                    state.active = False
-                    state.inactive_at = now
-                    state.inactive_reason = "market_closed"
-            await session.commit()
+        self._collection_audit = None
+        self._focus_markets = []
+        self._focus_config = None
+        self._focus_refreshed_at = None
+        self._position_cache = {}
+        self._position_versions = {}
+        self._position_checked_at = {}
 
     async def _supplement_discovery(
         self,
@@ -1583,6 +982,7 @@ class WhaleDiscoveryScanner:
         Only complete per-market trade windows are merged into the signal feed.
         Position-only discoveries never masquerade as recent buys.
         """
+        self._discovery_position_results = {}
         categories = set(_json_list(config["monitor_categories_json"]))
         focus_config = (tuple(sorted(categories)), _decimal(config["min_liquidity_usdc"]))
         warnings: list[str] = []
@@ -1657,6 +1057,7 @@ class WhaleDiscoveryScanner:
                 market_positions = await self._retry(
                     self.client.fetch_market_positions, condition_id=market.condition_id, limit=20
                 )
+                self._discovery_position_results[market.condition_id] = market_positions
                 positions.extend(market_positions)
             except PolymarketAPIError:
                 warnings.append(f"重点市场 {market_titles[market.condition_id]} 大持仓查询失败")
@@ -2289,6 +1690,638 @@ class WhaleDiscoveryScanner:
                 row.refreshed_at = now
             await session.commit()
 
+
+class WhaleDiscoveryScanner(PublicDataCollector):
+    """Isolated rolling-window collector and aggregator."""
+
+    def __init__(
+        self,
+        *,
+        database: Database,
+        client: PolymarketClient,
+        settings: Settings,
+        executor: WhaleFollowExecutor | None = None,
+        request_monitor: WhaleRequestMonitor | None = None,
+        email_notifier: WhaleEmailNotifier | None = None,
+    ) -> None:
+        self.database = database
+        self.client = client
+        self.settings = settings
+        self.executor = executor
+        self.personal_tasks_with_scan = True
+        self.request_monitor = request_monitor
+        self.email_notifier = email_notifier
+        self._task: asyncio.Task[None] | None = None
+        self._wake = asyncio.Event()
+        self._lock = asyncio.Lock()
+        self._last_trade_cursor_at: datetime | None = None
+        self._position_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        self._position_versions: dict[tuple[str, str], tuple[Any, ...]] = {}
+        self._position_checked_at: dict[tuple[str, str], datetime] = {}
+        self._last_history_refresh_at: datetime | None = None
+        self._running_config_at: datetime | None = None
+        self._auto_pending_recovered = False
+        self._collection_audit: WhaleScanCollectionAudit | None = None
+        self._focus_markets: list[WhaleMarketSnapshot] = []
+        self._focus_config: tuple[Any, ...] | None = None
+        self._focus_refreshed_at: datetime | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run(), name="whale-discovery")
+
+    def wake(self) -> None:
+        self._wake.set()
+
+    async def stop(self) -> None:
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _run(self) -> None:
+        while True:
+            cycle_started = monotonic()
+            try:
+                await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # tick persists its own health state.  This last boundary keeps the
+                # scanner from ever taking down the wallet monitor or copy engine.
+                pass
+            async with self.database.sessions() as session:
+                whale_settings = await session.get(WhaleSettings, 1)
+                configured = (
+                    whale_settings.scan_interval_seconds
+                    if whale_settings is not None
+                    else self.settings.whale_scan_interval_seconds
+                )
+                failures = whale_settings.consecutive_failures if whale_settings else 0
+            delay = min(
+                self.settings.max_backoff_seconds,
+                max(1.0, float(configured)) * (2 ** min(failures, 6)),
+            )
+            delay = max(0.05, delay - (monotonic() - cycle_started))
+            self._wake.clear()
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+
+    async def scan_now(self) -> bool:
+        """手动扫描：返回时保证已经有一轮读到最新配置的扫描跑完。
+
+        一轮扫描要几十秒，而后台循环大半时间都在跑，直接跳过会让「立即扫描」看上去
+        毫无反应；无条件排队又会让刚改完设置的用户白等两轮。所以正在跑的那轮只要已经
+        读到当前配置就等它收尾，否则再补一轮。
+        """
+
+        async with self.database.sessions() as session:
+            row = await session.get(WhaleSettings, 1)
+            if row is None or not row.enabled:
+                return False
+            config_at = row.updated_at
+        running_config_at = self._running_config_at
+        if self._lock.locked() and running_config_at is not None and running_config_at >= config_at:
+            async with self._lock:
+                return True
+        return await self.tick(wait=True)
+
+    async def _start_scan_run(self, scan_id: str, started_at: datetime) -> None:
+        async with self.database.sessions() as session:
+            interrupted = list(
+                (
+                    await session.scalars(
+                        select(WhaleScanRun).where(WhaleScanRun.status == "running")
+                    )
+                ).all()
+            )
+            for row in interrupted:
+                row.status = "failed"
+                row.finished_at = started_at
+                row.error = "扫描进程在完成前中断"
+            session.add(
+                WhaleScanRun(
+                    scan_id=scan_id,
+                    status="running",
+                    started_at=started_at,
+                    collected_trade_count=0,
+                    page_limit_hit=False,
+                    coverage_complete=True,
+                )
+            )
+            await session.commit()
+
+    async def _finish_scan_run(
+        self,
+        scan_id: str,
+        *,
+        status: str,
+        error: str | None,
+    ) -> None:
+        finished_at = utcnow()
+        audit = self._collection_audit
+        async with self.database.sessions() as session:
+            row = await session.scalar(select(WhaleScanRun).where(WhaleScanRun.scan_id == scan_id))
+            if row is not None:
+                row.status = status
+                row.finished_at = finished_at
+                row.error = error[:2000] if error else None
+                if audit is not None:
+                    row.requested_start = audit.requested_start
+                    row.requested_end = audit.requested_end
+                    row.oldest_trade_at = audit.oldest_trade_at
+                    row.newest_trade_at = audit.newest_trade_at
+                    row.collected_trade_count = audit.collected_trade_count
+                    row.page_limit_hit = audit.page_limit_hit
+                    row.coverage_complete = not audit.page_limit_hit
+            await session.execute(
+                delete(WhaleScanRun).where(
+                    WhaleScanRun.started_at < finished_at - WHALE_SCAN_HISTORY_RETENTION
+                )
+            )
+            await session.commit()
+
+    async def tick(self, *, wait: bool = False) -> bool:
+        if self._lock.locked() and not wait:
+            return False
+        async with self._lock:
+            async with self.database.sessions() as session:
+                whale_settings = await session.get(WhaleSettings, 1)
+                if whale_settings is None or not whale_settings.enabled:
+                    return False
+                values = {
+                    column.name: getattr(whale_settings, column.name)
+                    for column in WhaleSettings.__table__.columns
+                }
+                self._running_config_at = whale_settings.updated_at
+            scan_id = uuid4().hex
+            self._collection_audit = None
+            await self._start_scan_run(scan_id, utcnow())
+            try:
+                scan_started = monotonic()
+                pending_order_warning: str | None = None
+                if not self._auto_pending_recovered:
+                    await self._recover_interrupted_auto_decisions()
+                    self._auto_pending_recovered = True
+                if self.executor is not None and self.personal_tasks_with_scan:
+                    await self.executor.reconcile_terminal_sell_remainders()
+                    pending_order_warning = await self.executor.reconcile_pending_orders()
+                with capture_whale_requests(self.request_monitor, scan_id):
+                    scan_warning = await self._scan(values)
+                    warning = (
+                        "；".join(item for item in (pending_order_warning, scan_warning) if item)
+                        or None
+                    )
+                if self.executor is not None and self.personal_tasks_with_scan:
+                    try:
+                        reconciliation_warning = (
+                            await self.executor.reconcile_external_wallet_activity()
+                        )
+                        warning = (
+                            "；".join(item for item in (warning, reconciliation_warning) if item)
+                            or None
+                        )
+                        await self.executor.process_redeemable_positions()
+                    except Exception as error:
+                        warning = "；".join(
+                            item for item in (warning, f"执行钱包持仓对账失败：{error}") if item
+                        )
+                async with self.database.sessions() as session:
+                    row = await session.get(WhaleSettings, 1)
+                    if row is not None:
+                        row.last_scan_at = utcnow()
+                        row.last_scan_error = warning
+                        row.consecutive_failures = 0
+                        row.updated_at = utcnow()
+                        await session.commit()
+                await self._finish_scan_run(
+                    scan_id,
+                    status="degraded" if warning else "success",
+                    error=warning,
+                )
+                LOGGER.debug(
+                    "Whale scan completed duration_ms=%s warning=%s",
+                    round((monotonic() - scan_started) * 1000),
+                    warning,
+                )
+                if self.email_notifier is not None:
+                    self.email_notifier.wake()
+                return True
+            except asyncio.CancelledError:
+                await self._finish_scan_run(scan_id, status="failed", error="扫描已取消")
+                raise
+            except Exception as error:
+                async with self.database.sessions() as session:
+                    row = await session.get(WhaleSettings, 1)
+                    if row is not None:
+                        row.last_scan_error = str(error)[:2000]
+                        row.consecutive_failures += 1
+                        row.updated_at = utcnow()
+                        await session.commit()
+                await self._finish_scan_run(scan_id, status="failed", error=str(error))
+                return False
+            finally:
+                self._running_config_at = None
+                self._collection_audit = None
+
+    async def _recover_interrupted_auto_decisions(self) -> None:
+        """Finalize decisions left pending by a prior process without replaying the signal."""
+
+        now = utcnow()
+        async with self.database.sessions() as session:
+            decisions = list(
+                (
+                    await session.scalars(
+                        select(WhaleAutoFollowDecision).where(
+                            WhaleAutoFollowDecision.status == "pending"
+                        )
+                    )
+                ).all()
+            )
+            for decision in decisions:
+                order = await session.scalar(
+                    select(WhaleOrder).where(
+                        WhaleOrder.idempotency_key == f"whale:auto:{decision.id}"
+                    )
+                )
+                if order is not None:
+                    decision.buy_order_id = order.id
+                if order is not None and order.filled_size > ZERO:
+                    decision.status = "bought"
+                    decision.reason = "自动跟单买入已执行"
+                else:
+                    decision.status = "failed"
+                    decision.reason = (
+                        f"服务重启前自动买入未完成，订单状态：{order.status}"
+                        if order is not None
+                        else "服务重启前尚未提交自动买入，不补买"
+                    )
+                decision.processed_at = now
+                decision.updated_at = now
+            if decisions:
+                await session.commit()
+
+    async def _scan(self, config: dict[str, Any]) -> str | None:
+        now = utcnow()
+        window_start = now - timedelta(hours=max(1, int(config["window_hours"])))
+        incremental_start = window_start
+        if self._last_trade_cursor_at is None:
+            async with self.database.sessions() as session:
+                settings_row = await session.get(WhaleSettings, 1)
+                self._last_trade_cursor_at = (
+                    settings_row.last_trade_cursor_at if settings_row is not None else None
+                )
+                if self._last_trade_cursor_at is None:
+                    self._last_trade_cursor_at = await session.scalar(
+                        select(func.max(WhaleTrade.timestamp))
+                    )
+        if self._last_trade_cursor_at is not None:
+            incremental_start = min(
+                now,
+                max(
+                    window_start,
+                    self._last_trade_cursor_at - timedelta(seconds=120),
+                ),
+            )
+        trades, hit_page_limit = await self._collect_trades(
+            start=incremental_start,
+            end=now,
+            amount=_decimal(config["collect_filter_amount_usdc"]),
+        )
+        trade_timestamps = [
+            value
+            for trade in trades
+            if isinstance((value := _attribute(trade, "timestamp")), datetime)
+        ]
+        self._collection_audit = WhaleScanCollectionAudit(
+            requested_start=incremental_start,
+            requested_end=now,
+            oldest_trade_at=min(trade_timestamps) if trade_timestamps else None,
+            newest_trade_at=max(trade_timestamps) if trade_timestamps else None,
+            collected_trade_count=len(trades),
+            page_limit_hit=hit_page_limit,
+        )
+        await self._persist_trades(trades)
+        configured_coverage_until = config.get("coverage_incomplete_until")
+        coverage_incomplete_until = (
+            configured_coverage_until
+            if isinstance(configured_coverage_until, datetime) and configured_coverage_until > now
+            else None
+        )
+        next_cursor = self._last_trade_cursor_at
+        if hit_page_limit:
+            # Escape the public feed's historical offset cap while retaining
+            # the fail-closed coverage flag for the potentially missing window.
+            next_cursor = now
+            next_complete_at = now + timedelta(hours=max(1, int(config["window_hours"])))
+            coverage_incomplete_until = max(
+                coverage_incomplete_until or next_complete_at,
+                next_complete_at,
+            )
+        elif trade_timestamps:
+            # Successful responses can still be stale. Advance only to observed
+            # trades; empty pages and older overlap rows must not move the cursor.
+            newest_trade_at = max(trade_timestamps)
+            next_cursor = max(next_cursor or newest_trade_at, newest_trade_at)
+        async with self.database.sessions() as session:
+            settings_row = await session.get(WhaleSettings, 1)
+            if settings_row is not None:
+                settings_row.last_trade_cursor_at = next_cursor
+                settings_row.coverage_incomplete_until = coverage_incomplete_until
+                await session.commit()
+        self._last_trade_cursor_at = next_cursor
+
+        discovered_positions, discovery_warnings = await self._supplement_discovery(
+            config, now=now, window_start=window_start
+        )
+
+        auto_follow_block_reason = (
+            "成交历史覆盖不完整，自动跟单暂停" if coverage_incomplete_until is not None else None
+        )
+
+        return await self._evaluate_rules(
+            config,
+            now=now,
+            window_start=window_start,
+            discovered_positions=discovered_positions,
+            discovery_warnings=discovery_warnings,
+            auto_follow_block_reason=auto_follow_block_reason,
+        )
+
+    async def _evaluate_rules(
+        self,
+        config: dict[str, Any],
+        *,
+        now: datetime,
+        window_start: datetime,
+        discovered_positions: list[Any],
+        discovery_warnings: list[str],
+        auto_follow_block_reason: str | None,
+    ) -> str | None:
+        async with self.database.sessions() as session:
+            window_trades = list(
+                (
+                    await session.scalars(
+                        select(WhaleTrade)
+                        .where(
+                            WhaleTrade.timestamp >= window_start,
+                            WhaleTrade.side == "BUY",
+                            _not_excluded_wallet(WhaleTrade.proxy_wallet),
+                        )
+                        .order_by(WhaleTrade.timestamp.asc(), WhaleTrade.id.asc())
+                    )
+                ).all()
+            )
+        new_threshold = _decimal(config["new_account_threshold_usdc"])
+        large_threshold = _decimal(config["large_amount_threshold_usdc"])
+        collection_threshold = min(new_threshold, large_threshold)
+        aggregates = aggregate_whale_trades(
+            window_trades,
+            single_trade_threshold_usdc=collection_threshold,
+            cumulative_threshold_usdc=collection_threshold,
+            holding_ratio_threshold=_decimal(config["holding_ratio_threshold"]),
+            exited_ratio_threshold=_decimal(config["exited_ratio_threshold"]),
+        )
+        async with self.database.sessions() as session:
+            excluded_wallets = set(await session.scalars(select(WhaleExclusion.proxy_wallet)))
+        discovered_positions = [
+            position
+            for position in discovered_positions
+            if position.proxy_wallet.lower() not in excluded_wallets
+        ]
+        trade_keys = {(item.proxy_wallet, item.asset_id) for item in aggregates}
+        aggregates.extend(
+            item
+            for item in aggregate_whale_positions(
+                discovered_positions,
+                position_threshold_usdc=collection_threshold,
+                observed_at=now,
+            )
+            if (item.proxy_wallet, item.asset_id) not in trade_keys
+        )
+        unresolved_conditions: list[str] = []
+        if (
+            self._last_history_refresh_at is None
+            or self._last_history_refresh_at <= now - WHALE_HISTORY_REFRESH
+        ):
+            async with self.database.sessions() as session:
+                entry_conditions = list(
+                    (
+                        await session.scalars(
+                            select(WhaleEntry.condition_id)
+                            .where(
+                                WhaleEntry.settlement_price.is_(None),
+                                _not_excluded_wallet(WhaleEntry.proxy_wallet),
+                            )
+                            .distinct()
+                        )
+                    ).all()
+                )
+                position_conditions = list(
+                    (
+                        await session.scalars(
+                            select(WhaleFollowPosition.condition_id)
+                            .where(
+                                WhaleFollowPosition.size > ZERO,
+                                WhaleFollowPosition.status.in_(
+                                    ["opening", "open", "closing", "redeeming"]
+                                ),
+                            )
+                            .distinct()
+                        )
+                    ).all()
+                )
+                unresolved_conditions = list(dict.fromkeys(entry_conditions + position_conditions))
+            self._last_history_refresh_at = now
+        await self._refresh_markets(
+            list(
+                dict.fromkeys(
+                    [item.condition_id for item in aggregates if item.condition_id]
+                    + unresolved_conditions
+                )
+            ),
+            now=now,
+        )
+        registration_days = int(config["registration_window_days"])
+        registration_cutoff = now - timedelta(days=registration_days)
+        async with self.database.sessions() as session:
+            market_categories = {
+                row.condition_id: _whale_statistics_classification(row.tags_json)["category"]
+                for row in (
+                    await session.scalars(
+                        select(WhaleMarket).where(
+                            WhaleMarket.condition_id.in_(
+                                list({item.condition_id for item in aggregates})
+                            )
+                        )
+                    )
+                ).all()
+            }
+        monitor_categories = set(_json_list(config["monitor_categories_json"]))
+        aggregates = [
+            item
+            for item in aggregates
+            if market_categories.get(item.condition_id, "other") in monitor_categories
+        ]
+        await self._refresh_wallets(
+            list(dict.fromkeys(item.proxy_wallet for item in aggregates)),
+            now=now,
+            cache_hours=int(config["profile_cache_hours"]),
+        )
+        async with self.database.sessions() as session:
+            profiles = {
+                row.proxy_wallet: row
+                for row in (
+                    await session.scalars(
+                        select(WhaleWallet).where(
+                            WhaleWallet.proxy_wallet.in_(
+                                list(dict.fromkeys(item.proxy_wallet for item in aggregates))
+                            )
+                        )
+                    )
+                ).all()
+            }
+        rule_matches: dict[tuple[str, str], set[str]] = {}
+        qualified: list[WhaleAggregate] = []
+        for aggregate in aggregates:
+            if market_categories.get(aggregate.condition_id, "other") not in monitor_categories:
+                continue
+            matches: set[str] = set()
+            profile = profiles.get(aggregate.proxy_wallet)
+            if (
+                aggregate.gross_buy_usdc >= new_threshold
+                and profile is not None
+                and profile.profile_created_at is not None
+                and registration_cutoff <= profile.profile_created_at <= now
+            ):
+                matches.add(NEW_ACCOUNT_RULE)
+            if aggregate.gross_buy_usdc >= large_threshold:
+                matches.add(LARGE_AMOUNT_RULE)
+            if matches:
+                key = (aggregate.proxy_wallet, aggregate.asset_id)
+                rule_matches[key] = matches
+                qualified.append(aggregate)
+        async with self.database.sessions() as session:
+            active_rows = list(
+                (
+                    await session.execute(
+                        select(WhaleEntry.proxy_wallet, WhaleEntry.condition_id)
+                        .join(
+                            WhaleEntryRuleState,
+                            WhaleEntryRuleState.entry_id == WhaleEntry.id,
+                        )
+                        .where(WhaleEntryRuleState.active.is_(True))
+                        .where(_not_excluded_wallet(WhaleEntry.proxy_wallet))
+                        .distinct()
+                    )
+                ).all()
+            )
+        active_targets: dict[str, set[str]] = defaultdict(set)
+        for wallet, condition_id in active_rows:
+            if condition_id:
+                active_targets[wallet].add(condition_id)
+        positions_by_wallet, failed_wallets = await self._fetch_current_positions(
+            qualified,
+            additional_targets=active_targets,
+        )
+        auto_decision_ids = await self._persist_entries(
+            qualified,
+            rule_matches=rule_matches,
+            positions_by_wallet=positions_by_wallet,
+            failed_wallets=failed_wallets,
+            config=config,
+            now=now,
+            window_start=window_start,
+            auto_follow_block_reason=auto_follow_block_reason,
+        )
+        if self.executor is not None and auto_follow_block_reason is None:
+            await self._process_auto_decisions(auto_decision_ids)
+            await self._process_conflict_exits()
+        await self._update_entry_settlements(now=now)
+        async with self.database.sessions() as session:
+            await session.execute(
+                delete(WhaleTrade).where(
+                    WhaleTrade.timestamp
+                    < now - timedelta(hours=int(config["trade_retention_hours"]))
+                )
+            )
+            await session.commit()
+        warnings: list[str] = list(discovery_warnings)
+        if auto_follow_block_reason:
+            warnings.append(auto_follow_block_reason)
+        if failed_wallets:
+            warnings.append(f"{len(failed_wallets)} 个候选钱包的当前持仓核验失败，已保留上次状态")
+        return "；".join(warnings) or None
+
+    async def _update_entry_settlements(self, *, now: datetime) -> None:
+        async with self.database.sessions() as session:
+            entries = list(
+                (
+                    await session.scalars(
+                        select(WhaleEntry).where(
+                            WhaleEntry.settlement_price.is_(None),
+                            _not_excluded_wallet(WhaleEntry.proxy_wallet),
+                        )
+                    )
+                ).all()
+            )
+            if not entries:
+                return
+            market_ids = list(dict.fromkeys(row.condition_id for row in entries))
+            markets = {
+                row.condition_id: row
+                for row in (
+                    await session.scalars(
+                        select(WhaleMarket).where(WhaleMarket.condition_id.in_(market_ids))
+                    )
+                ).all()
+            }
+            entry_ids: list[int] = []
+            for row in entries:
+                market = markets.get(row.condition_id)
+                if market is None or not market_price_is_settled(market):
+                    continue
+                prices = [_decimal(value) for value in _json_list(market.outcome_prices_json)]
+                outcome_index = _market_outcome_index(
+                    market,
+                    asset_id=row.asset_id,
+                    fallback=row.outcome_index,
+                )
+                if outcome_index is None or not (0 <= outcome_index < len(prices)):
+                    continue
+                row.outcome_index = outcome_index
+                row.settlement_price = prices[outcome_index]
+                row.settled_at = now
+                row.status = "exited"
+                row.follow_eligible = False
+                row.follow_ineligible_reason = "market_closed"
+                entry_ids.append(row.id)
+            if entry_ids:
+                states = list(
+                    (
+                        await session.scalars(
+                            select(WhaleEntryRuleState).where(
+                                WhaleEntryRuleState.entry_id.in_(entry_ids),
+                                WhaleEntryRuleState.active.is_(True),
+                            )
+                        )
+                    ).all()
+                )
+                for state in states:
+                    state.active = False
+                    state.inactive_at = now
+                    state.inactive_reason = "market_closed"
+            await session.commit()
+
     @staticmethod
     def _follow_ineligible_reason(
         market: WhaleMarket | None,
@@ -2547,6 +2580,8 @@ class WhaleDiscoveryScanner:
                     and not from_position_snapshot
                     and (not was_position_only or fresh_position_conversion)
                     and not history_only
+                    and (row.proxy_wallet, row.condition_id)
+                    not in config.get("deferred_source_positions", set())
                 ):
                     if gate is not None and auto_follow_block_reason is None:
                         gate.awaiting_new_buy = False
@@ -2640,6 +2675,7 @@ class WhaleDiscoveryScanner:
                 for row in existing.values():
                     row.follow_eligible = False
                     row.follow_ineligible_reason = "coverage_incomplete"
+                await self._commit_rule_progress(session)
                 await session.commit()
                 return []
 
@@ -2688,6 +2724,10 @@ class WhaleDiscoveryScanner:
                 if row.discovery_source != "trades" or (
                     gate is not None
                     and (gate.awaiting_new_buy or row.last_buy_at <= gate.auto_follow_after)
+                ):
+                    continue
+                if (row.proxy_wallet, row.condition_id) in config.get(
+                    "deferred_source_positions", set()
                 ):
                     continue
                 resumable_ids.add(decision.id)
@@ -2927,8 +2967,12 @@ class WhaleDiscoveryScanner:
                     row.follow_eligible = False
                     if row.follow_ineligible_reason is None:
                         row.follow_ineligible_reason = "rule_inactive"
+            await self._commit_rule_progress(session)
             await session.commit()
             return pending_decision_ids
+
+    async def _commit_rule_progress(self, session: AsyncSession) -> None:
+        """Remote consumers commit rule progress alongside decisions."""
 
     async def _process_auto_decisions(self, decision_ids: Iterable[int]) -> None:
         if self.executor is None:
@@ -6018,6 +6062,11 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
                 values.pop(f"{prefix}_auto_follow_source_tiers_json")
             )
         values["monitor_categories"] = _json_list(values.pop("monitor_categories_json"))
+        sync = await session.get(CollectionSyncState, 1)
+        values["collection_supported_categories"] = (
+            json.loads(sync.status_json).get("supported_categories", []) if sync else []
+        )
+
         values["new_account_auto_follow_categories"] = _json_list(
             values.pop("new_account_auto_follow_categories_json")
         )

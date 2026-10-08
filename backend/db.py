@@ -5,7 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -62,6 +62,12 @@ class Database:
         if "watched_wallets" in table_names and "alembic_version" not in table_names:
             await asyncio.to_thread(command.stamp, alembic_config, "0001_initial")
         await asyncio.to_thread(command.upgrade, alembic_config, "head")
+        if "whale_settings" not in table_names:
+            async with self.engine.begin() as connection:
+                await connection.execute(
+                    text("UPDATE whale_settings SET monitor_categories_json = :categories"),
+                    {"categories": '["sports","esports"]'},
+                )
 
     async def close(self) -> None:
         await self.engine.dispose()

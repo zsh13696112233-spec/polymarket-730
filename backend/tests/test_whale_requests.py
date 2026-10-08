@@ -249,6 +249,7 @@ def test_whale_request_log_snapshot_api(app_client_factory):
     assert payload["total"] == 1
     assert payload["items"][0] == {
         "id": record_id,
+        "request_count": 1,
         "scan_id": "scan-api",
         "status": "failed",
         "source": "http",

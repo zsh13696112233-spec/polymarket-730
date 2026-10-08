@@ -78,7 +78,14 @@ async def database() -> Database:
     # 内存库走 create_all 而不是迁移，巨鲸设置的单例行要自己补上。
     now = utcnow()
     async with database.sessions() as session:
-        session.add(WhaleSettings(id=1, created_at=now, updated_at=now))
+        session.add(
+            WhaleSettings(
+                id=1,
+                created_at=now,
+                updated_at=now,
+                monitor_categories_json='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
+            )
+        )
         await session.commit()
     try:
         yield database

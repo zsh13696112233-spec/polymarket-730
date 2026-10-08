@@ -365,7 +365,7 @@ export default function HomeWorkspace() {
   const alerts = useMemo(() => {
     if (!overview) return [];
     const items: Array<{ key: string; title: string; detail: string }> = [];
-    if (overview.system.status === "error") items.push({ key: "scan", title: "链上扫描异常", detail: overview.system.last_scan_error || `已连续失败 ${overview.system.consecutive_failures} 次` });
+    if (overview.system.status === "error") items.push({ key: "scan", title: "链上监测提示", detail: overview.system.last_scan_error || `已连续失败 ${overview.system.consecutive_failures} 次` });
     if (!overview.wallet.available) items.push({ key: "wallet", title: "交易钱包不可用", detail: overview.wallet.last_error || "请先在设置中完成交易账户配置。" });
     if (!overview.wallet.valuation_complete) items.push({ key: "valuation", title: "持仓估值不完整", detail: `${overview.wallet.unpriced_position_count} 个开放仓位缺少有效买一价，已暂停总资产估算。` });
     if (connection === "disconnected") items.push({ key: "stream", title: "请求实时流已断开", detail: "正在自动重连；下方仍保留当前进程的最近请求快照。" });

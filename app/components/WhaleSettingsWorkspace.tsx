@@ -72,7 +72,7 @@ function WhaleExclusionManager({ onReload }: { onReload: () => Promise<void> }) 
       });
       setAddress("");
       setLabel("");
-      setMessage(`${created.display_name} 已加入排除名单，后台扫描正在更新。`);
+      setMessage(`${created.display_name} 已加入排除名单，后台同步正在更新。`);
       await Promise.all([load(), onReload()]);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "加入排除名单失败");
@@ -177,7 +177,7 @@ export function WhaleSettingsPanel({
   onClose?: () => void;
 }) {
   const [monitorCategoriesInput, setMonitorCategoriesInput] = useState<WhaleMarketCategory[] | null>(null);
-  const monitorCategories = monitorCategoriesInput ?? settings?.monitor_categories ?? AUTO_CATEGORIES.map((item) => item.key);
+  const monitorCategories = monitorCategoriesInput ?? settings?.monitor_categories ?? ["sports", "esports"];
   const [registrationDaysInput, setRegistrationDaysInput] = useState<string | null>(null);
   const [newAccountThresholdInput, setNewAccountThresholdInput] = useState<string | null>(null);
   const [largeAmountThresholdInput, setLargeAmountThresholdInput] = useState<string | null>(null);
@@ -234,8 +234,8 @@ export function WhaleSettingsPanel({
       });
       setMessage(
         scan.status === "ok"
-          ? "巨鲸监测条件已保存，数据已重新扫描。"
-          : "巨鲸监测条件已保存，扫描将在后台更新。",
+          ? "巨鲸监测条件已保存，数据已重新同步。"
+          : "巨鲸监测条件已保存，同步将在后台更新。",
       );
       await onReload();
     } catch (submitError) {
@@ -260,12 +260,12 @@ export function WhaleSettingsPanel({
                 <legend>监测市场分类</legend>
                 {AUTO_CATEGORIES.map((item) => (
                   <label key={item.key}>
-                    <input type="checkbox" checked={monitorCategories.includes(item.key)} onChange={() => setMonitorCategoriesInput(
+                    <input type="checkbox" disabled={!monitorCategories.includes(item.key) && !settings?.collection_supported_categories?.includes(item.key)} checked={monitorCategories.includes(item.key)} onChange={() => setMonitorCategoriesInput(
                       monitorCategories.includes(item.key)
                         ? monitorCategories.filter((category) => category !== item.key)
                         : [...monitorCategories, item.key],
                     )} />
-                    <span>{item.label}</span>
+                    <span>{item.label}{!settings?.collection_supported_categories?.includes(item.key) ? "（服务器未支持）" : ""}</span>
                   </label>
                 ))}
               </fieldset>
@@ -322,8 +322,8 @@ export function WhaleSettingsPanel({
                 <small>不限制账号年龄；同一市场方向的买入按 24 小时累计。</small>
               </label>
             </div>
-            <div className="whaleSettingsStatus" aria-label="扫描状态">
-              <div><span>最后扫描</span><strong>{formatBeijing(settings?.last_scan_at, true)}</strong></div>
+            <div className="whaleSettingsStatus" aria-label="同步状态">
+              <div><span>最后同步</span><strong>{formatBeijing(settings?.last_scan_at, true)}</strong></div>
               <div><span>新号 当前 / 历史</span><strong>{settings?.new_account_active_count ?? 0} / {settings?.new_account_history_count ?? 0}</strong></div>
               <div><span>全量 当前 / 历史</span><strong>{settings?.large_amount_active_count ?? 0} / {settings?.large_amount_history_count ?? 0}</strong></div>
               <div><span>成交记录 / 失败</span><strong>{settings?.tracked_trade_count ?? 0} / {settings?.consecutive_failures ?? 0}</strong></div>
@@ -335,7 +335,7 @@ export function WhaleSettingsPanel({
           {settings?.last_scan_error && <p className="pcFormError" role="alert">{settings.last_scan_error}</p>}
           <div className="pcSettingsActions">
             <button className="pcButton primary" type="submit" disabled={!settings || busy}>
-              {busy ? "保存并扫描中…" : "保存监测条件"}
+              {busy ? "保存并同步中…" : "保存监测条件"}
             </button>
           </div>
         </form>
@@ -664,7 +664,7 @@ export function WhaleAutoSettingsPanel({
       onSettingsChange(next);
       resetDraft();
       const scan = await whaleApi<{ status: string }>("/api/whales/scan", { method: "POST" });
-      setMessage(scan.status === "ok" ? "自动跟单策略已保存，数据已重新扫描。" : "自动跟单策略已保存，扫描将在后台更新。");
+      setMessage(scan.status === "ok" ? "自动跟单策略已保存，数据已重新同步。" : "自动跟单策略已保存，同步将在后台更新。");
       setEditing(false);
       await onReload();
     } catch (submitError) {
@@ -819,7 +819,7 @@ export function WhaleAutoSettingsPanel({
             {error && <p className="pcFormError" role="alert">{error}</p>}
             <div className="pcSettingsActions whaleAutoEditorActions">
               <button className="pcButton ghost" type="button" disabled={busy} onClick={() => { resetDraft(); setError(null); setEditing(false); }}>取消</button>
-              <button className="pcButton primary" type="submit" disabled={!settings || busy}>{busy ? "保存并扫描中…" : "保存自动跟单策略"}</button>
+              <button className="pcButton primary" type="submit" disabled={!settings || busy}>{busy ? "保存并同步中…" : "保存自动跟单策略"}</button>
             </div>
           </div>
         )}

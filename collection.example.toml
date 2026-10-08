@@ -1,0 +1,8 @@
+# Copy to collection.toml on the Linux server. This file contains no credentials.
+database_url = "sqlite+aiosqlite:///./data/collection.db"
+categories = ["sports", "esports"]
+interval_seconds = 60
+filter_amount_usdc = "1000"
+window_hours = 24
+retention_hours = 72
+max_scan_pages = 20

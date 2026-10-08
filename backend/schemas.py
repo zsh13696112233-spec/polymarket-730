@@ -111,6 +111,7 @@ class WhaleSourceAmountTier(APIModel):
 
 
 class WhaleSettingsRead(APIModel):
+    collection_supported_categories: list[WhaleMarketCategory] = Field(default_factory=list)
     id: int = 1
     enabled: bool
     window_hours: int
@@ -549,10 +550,11 @@ class WhaleScanRunListRead(APIModel):
 
 
 class WhaleRequestLogRead(APIModel):
+    request_count: int = 1
     id: int
     scan_id: str
     status: Literal["pending", "success", "failed"]
-    source: Literal["http", "sdk"]
+    source: Literal["http", "sdk", "collection"]
     started_at: datetime
     finished_at: datetime | None
     method: str
@@ -1499,3 +1501,31 @@ class WalletCancelExecuteRequest(APIModel):
     model_config = ConfigDict(extra="forbid")
     confirmation_id: str = Field(min_length=1, max_length=200)
     confirmation_text: Literal["确认撤单"]
+
+
+class CollectionConnectionUpdate(APIModel):
+    host: str = Field(max_length=255)
+    port: int = Field(default=8731, ge=1, le=65535)
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        from ipaddress import ip_address
+
+        value = value.strip()
+        if not value:
+            return ""
+        try:
+            return str(ip_address(value))
+        except ValueError as error:
+            raise ValueError("请填写有效的服务器 IPv4 或 IPv6 地址") from error
+
+
+class CollectionConnectionRead(APIModel):
+    host: str
+    port: int
+    subscription_version: int
+    source_id: str | None
+    categories: dict
+    server: dict
+    last_error: str | None

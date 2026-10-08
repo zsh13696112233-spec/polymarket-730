@@ -22,6 +22,7 @@ export type WhaleSettings = {
   new_account_threshold_usdc: Numeric;
   large_amount_threshold_usdc: Numeric;
   monitor_categories: WhaleMarketCategory[];
+  collection_supported_categories?: WhaleMarketCategory[];
   dual_match_auto_follow_amount_usdc: Numeric | null;
   new_account_auto_follow_source_tiers_enabled: boolean;
   new_account_auto_follow_source_tiers: WhaleSourceAmountTier[];
@@ -178,7 +179,8 @@ export type WhaleRequestLog = {
   id: number;
   scan_id: string;
   status: "pending" | "success" | "failed";
-  source: "http" | "sdk";
+  source: "http" | "sdk" | "collection";
+  request_count?: number;
   started_at: string;
   finished_at: string | null;
   method: string;

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.models import (
+    CollectionSyncState,
     WhaleAutoFollowDecision,
     WhaleEntry,
     WhaleEntryRuleState,
@@ -34,7 +35,7 @@ WALLET_HEDGED = "0x1111111111111111111111111111111111111111"
 WALLET_DIRECTIONAL = "0x2222222222222222222222222222222222222222"
 
 
-def test_whale_scan_runs_endpoint_persists_completed_scans(app_client_factory) -> None:
+def test_whale_scan_runs_endpoint_reports_unconfigured_server(app_client_factory) -> None:
     client, _ = app_client_factory([[]])
 
     empty = client.get("/api/whales/scan-runs")
@@ -48,7 +49,8 @@ def test_whale_scan_runs_endpoint_persists_completed_scans(app_client_factory) -
     assert history.status_code == 200
     payload = history.json()
     assert payload["total"] == 1
-    assert payload["items"][0]["status"] == "success"
+    assert payload["items"][0]["status"] == "failed"
+    assert "服务器" in payload["items"][0]["error"]
     assert payload["items"][0]["finished_at"] is not None
     assert payload["items"][0]["coverage_complete"] is True
     assert payload["items"][0]["page_limit_hit"] is False
@@ -1331,10 +1333,8 @@ def test_whale_statistics_signal_filters_sort_and_validate(app_client_factory):
     )
 
 
-def test_monitor_categories_round_trip_and_validation(app_client_factory):
-    client, _ = app_client_factory([[]])
-    initial = client.get("/api/whales/settings").json()
-    assert set(initial["monitor_categories"]) == {
+async def seed_supported_categories(database, legacy=False):
+    categories = [
         "sports",
         "esports",
         "politics",
@@ -1342,7 +1342,23 @@ def test_monitor_categories_round_trip_and_validation(app_client_factory):
         "science_tech",
         "entertainment",
         "other",
-    }
+    ]
+    async with database.sessions() as session:
+        state = await session.get(CollectionSyncState, 1)
+        state.status_json = json.dumps({"supported_categories": categories})
+        if legacy:
+            settings = await session.get(WhaleSettings, 1)
+            settings.monitor_categories_json = json.dumps(categories)
+        await session.commit()
+
+
+def test_monitor_categories_round_trip_and_validation(app_client_factory):
+    client, _ = app_client_factory([[]])
+    initial = client.get("/api/whales/settings").json()
+    assert set(initial["monitor_categories"]) == {"sports", "esports"}
+    unsupported = client.put("/api/whales/settings", json={"monitor_categories": ["politics"]})
+    assert unsupported.status_code == 422
+    client.portal.call(seed_supported_categories, client.app.state.database)
     response = client.put(
         "/api/whales/settings",
         json={"monitor_categories": ["esports", "science_tech", "esports"]},
@@ -1380,6 +1396,7 @@ def test_monitor_categories_hide_existing_opportunities_and_restore_without_scan
 ):
     client, _ = app_client_factory([[]])
     database = client.app.state.database
+    client.portal.call(seed_supported_categories, database, True)
     client.portal.call(seed_two_sided_whale_market, database)
     client.portal.call(move_directional_entry_to_settled_history, database)
 

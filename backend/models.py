@@ -273,8 +273,8 @@ class WhaleSettings(Base):
     monitor_categories_json: Mapped[str] = mapped_column(
         Text,
         nullable=False,
-        default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
-        server_default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
+        default='["sports","esports"]',
+        server_default='["sports","esports"]',
     )
     new_account_auto_follow_source_tiers_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
@@ -943,3 +943,63 @@ class WhaleRedemption(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     position: Mapped[WhaleFollowPosition] = relationship(back_populates="redemption")
+
+
+class CollectionSyncState(Base):
+    __tablename__ = "collection_sync_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    port: Mapped[int] = mapped_column(Integer, nullable=False, default=8731)
+    subscription_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    categories_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    rule_batch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CollectionCache(Base):
+    __tablename__ = "collection_cache"
+
+    condition_id: Mapped[str] = mapped_column(String(66), primary_key=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class PublicBase(DeclarativeBase):
+    """Metadata isolated from the local wallet database."""
+
+
+class CollectionMeta(PublicBase):
+    __tablename__ = "collection_meta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    categories_json: Mapped[str] = mapped_column(Text, nullable=False)
+    cursor_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    incomplete_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CollectionBatch(PublicBase):
+    __tablename__ = "collection_batches"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    scope_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    coverage_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class CollectionEvent(PublicBase):
+    __tablename__ = "collection_events"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    condition_id: Mapped[str] = mapped_column(String(66), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    delta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

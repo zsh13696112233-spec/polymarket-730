@@ -392,6 +392,7 @@ class PolymarketClient:
         clob_api_url: str = "https://clob.polymarket.com",
         timeout: float,
         proxy_url: str | None = None,
+        direct: bool = False,
         transport: httpx.AsyncBaseTransport | None = None,
         data_api_concurrency: int = 10,
         gamma_api_concurrency: int = 6,
@@ -401,10 +402,12 @@ class PolymarketClient:
         self.data_api_url = data_api_url.rstrip("/")
         self.gamma_api_url = gamma_api_url.rstrip("/")
         self.clob_api_url = clob_api_url.rstrip("/")
-        if transport is None and proxy_url is None:
+        if transport is None and proxy_url is None and not direct:
             raise ValueError("Polymarket 客户端必须配置代理")
         if transport is not None and proxy_url is not None:
             raise ValueError("测试传输与 Polymarket 代理不能同时配置")
+        if direct and proxy_url is not None:
+            raise ValueError("直连模式不能同时配置代理")
         self.proxy_url = configure_polymarket_proxy(proxy_url) if proxy_url is not None else None
         self._timeout = httpx.Timeout(timeout)
         self._transport = transport

@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import CollectionSettingsPanel from "./CollectionSettingsPanel";
 import EmailSettingsPanel from "./EmailSettingsPanel";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8730").replace(/\/$/, "");
@@ -402,6 +403,7 @@ export default function ExecutionSettingsWorkspace() {
         {chainSellOrder && <div className="pcChainTestResult"><h3>买卖链路验证完成</h3><p>卖出状态 {chainSellOrder.status} · 成交 {chainSellOrder.filled_size.toFixed(4)} 份 · 回收 {money(chainSellOrder.filled_usdc)}</p>{chainSellOrder.reason && <small>{chainSellOrder.reason}</small>}</div>}
         {chainNotice && <p role={chainNotice.kind === "error" ? "alert" : undefined} className={chainNotice.kind === "success" ? "pcFormSuccess" : "pcFormError"}>{chainNotice.text}</p>}
       </section>
+      <CollectionSettingsPanel />
       <EmailSettingsPanel />
     </PolyCopyShell>
   );

@@ -1,0 +1,18 @@
+[Unit]
+Description=PolyCopy public collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polycopy
+WorkingDirectory=/opt/polycopy
+Environment=PATH=/home/polycopy/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=POLYCOPY_COLLECTION_CONFIG=/opt/polycopy/collection.toml
+ExecStart=/bin/sh /opt/polycopy/scripts/start-collection.sh
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

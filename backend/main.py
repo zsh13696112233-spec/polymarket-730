@@ -17,12 +17,15 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from backend.collection_api import router as collection_router
+from backend.collection_sync import CollectionSyncScanner
 from backend.config import Settings
 from backend.db import Database
 from backend.home import home_overview
 from backend.jev import simulate_jev
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
+    CollectionSyncState,
     EmailRecipient,
     EmailSettings,
     ExecutionAccount,
@@ -104,7 +107,6 @@ from backend.trading import (
 from backend.trading_cli import DEFAULT_SERVICE
 from backend.whale import (
     WALLET_PENDING_STATUSES,
-    WhaleDiscoveryScanner,
     WhaleFollowExecutor,
     list_whale_auto_decisions,
     list_whale_exclusions,
@@ -203,6 +205,9 @@ def create_app(
         database = Database(resolved_settings)
         await database.initialize()
         async with database.sessions() as session:
+            if await session.get(CollectionSyncState, 1) is None:
+                session.add(CollectionSyncState(id=1))
+                await session.commit()
             if await session.get(EmailSettings, 1) is None:
                 now = utcnow()
                 session.add(
@@ -253,7 +258,7 @@ def create_app(
             keychain=keychain,
             weekly_report=enqueue_auto_follow_report,
         )
-        whale_scanner = WhaleDiscoveryScanner(
+        whale_scanner = CollectionSyncScanner(
             database=database,
             client=polymarket_client,
             settings=resolved_settings,
@@ -281,12 +286,19 @@ def create_app(
                 whale_scanner.start()
 
         async def reconcile_wallet_orders() -> None:
+            personal_cycles = 0
             while True:
                 await asyncio.sleep(10)
                 try:
                     # Query all previously authorized orders, including follow orders with
                     # a precomputed ID whose POST response was lost, even with scanning off.
                     await whale_executor.reconcile_pending_orders()
+                    personal_cycles += 1
+                    if resolved_settings.start_monitor and personal_cycles % 6 == 0:
+                        await whale_executor.reconcile_terminal_sell_remainders()
+                        await whale_executor.reconcile_external_wallet_activity()
+                        await whale_executor.process_redeemable_positions()
+                        await whale_scanner.refresh_personal_history()
                 except Exception:
                     # Keep reservations intact; the next page refresh reports upstream errors.
                     continue
@@ -358,6 +370,8 @@ def create_app(
         return schema
 
     application.openapi = active_openapi  # type: ignore[method-assign]
+
+    application.include_router(collection_router)
 
     @application.get("/healthz", response_model=HealthRead)
     async def health(request: Request) -> HealthRead:
@@ -1056,10 +1070,34 @@ def create_app(
         elif "single_trade_threshold_usdc" in values:
             values["new_account_threshold_usdc"] = values["single_trade_threshold_usdc"]
             values["cumulative_threshold_usdc"] = values["single_trade_threshold_usdc"]
-        async with database.sessions() as session:
+        async with (
+            request.app.state.whale_scanner.subscription_lock,
+            database.sessions() as session,
+        ):
             row = await session.get(WhaleSettings, 1)
             if row is None:
                 raise HTTPException(status_code=503, detail="巨鲸模块尚未初始化")
+            if (
+                "monitor_categories_json" in values
+                and values["monitor_categories_json"] != row.monitor_categories_json
+            ):
+                sync = await session.get(CollectionSyncState, 1)
+                supported = set(json.loads(sync.status_json).get("supported_categories", []))
+                previous = set(json.loads(row.monitor_categories_json))
+                added = set(json.loads(values["monitor_categories_json"])) - previous
+                if added - supported:
+                    raise HTTPException(
+                        422, "新增监测分类必须由采集服务器支持，请先测试连接并同步状态"
+                    )
+                sync.subscription_version += 1
+                subscriptions = json.loads(sync.categories_json)
+                sync.categories_json = json.dumps(
+                    {
+                        key: value
+                        for key, value in subscriptions.items()
+                        if key in json.loads(values["monitor_categories_json"])
+                    }
+                )
             merged = {
                 column.name: values.get(column.name, getattr(row, column.name))
                 for column in WhaleSettings.__table__.columns

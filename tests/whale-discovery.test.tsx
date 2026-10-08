@@ -20,6 +20,7 @@ const settings = {
   dual_match_auto_follow_amount_usdc: null,
   enabled: true,
   window_hours: 24,
+  collection_supported_categories: ["sports", "esports", "politics", "crypto", "science_tech", "entertainment", "other"],
   monitor_categories: ["sports", "esports", "politics", "crypto", "science_tech", "entertainment", "other"],
   registration_window_days: 7,
   new_account_threshold_usdc: 100000,
@@ -62,7 +63,7 @@ const settings = {
 };
 
 describe("巨鲸页内设置", () => {
-  it("在巨鲸页面内直接展示设置，保存后立即重新扫描", async () => {
+  it("在巨鲸页面内直接展示设置，保存后立即重新同步", async () => {
     const user = userEvent.setup();
     const bodies: unknown[] = [];
     const requests: string[] = [];
@@ -135,7 +136,7 @@ describe("巨鲸页内设置", () => {
       large_amount_threshold_usdc: 600000,
     });
     expect(bodies[0]).not.toHaveProperty("new_account_auto_follow_enabled");
-    expect(await screen.findByText("巨鲸监测条件已保存，数据已重新扫描。")).toBeInTheDocument();
+    expect(await screen.findByText("巨鲸监测条件已保存，数据已重新同步。")).toBeInTheDocument();
     const saveIndex = requests.findIndex((request) => request.startsWith("PUT "));
     const reloadIndex = requests.findIndex((request, index) => index > saveIndex && request.includes("/api/whales/markets?"));
     const scanIndex = requests.findIndex((request) => request.includes("/api/whales/scan"));

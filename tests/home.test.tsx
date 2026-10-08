@@ -316,7 +316,7 @@ it("将进行中的市场补齐与扫描异常区分显示", async () => {
   }))));
   render(<HomeWorkspace />);
   expect((await screen.findAllByText("重点市场历史补齐中")).length).toBeGreaterThan(0);
-  expect(screen.queryByText("链上扫描异常")).not.toBeInTheDocument();
+  expect(screen.queryByText("链上监测提示")).not.toBeInTheDocument();
   expect(within(screen.getByLabelText("首页告警")).queryByText("重点市场历史补齐中")).not.toBeInTheDocument();
   expect(screen.getByLabelText("首页告警").querySelector(".homeAlertInfo")).not.toBeInTheDocument();
   const runtime = screen.getByLabelText("运行概览");

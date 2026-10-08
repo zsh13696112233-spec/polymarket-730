@@ -419,7 +419,7 @@ export default function WhaleDiscoveryWorkspace() {
           <button className="pcButton ghost" type="button" onClick={() => setSettingsVisible(true)}>打开监测设置</button>
           <button className="pcButton primary" type="button" onClick={scanNow} disabled={refreshing}>
             <span className={refreshing ? "spinning" : ""}>↻</span>
-            {refreshing ? "刷新中" : "刷新数据"}
+            {refreshing ? "同步中" : "立即同步"}
           </button>
         </>
       }

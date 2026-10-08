@@ -32,6 +32,13 @@ function mergeRecentRequests(
 ): WhaleRequestLog[] {
   const records = new Map(current.map((record) => [record.id, record]));
   for (const record of candidates) {
+    if (record.source === "collection" && record.url.endsWith("/api/collection/v1/status") && record.status === "success") {
+      const previous = Array.from(records.values()).filter((old) =>
+        old.source === "collection" && old.url === record.url && old.status === "success");
+      if (previous.some((old) => requestTimestamp(old) > requestTimestamp(record)
+        || (requestTimestamp(old) === requestTimestamp(record) && old.id > record.id))) continue;
+      for (const old of previous) records.delete(old.id);
+    }
     records.set(record.id, record);
   }
   const chronological = Array.from(records.values())
@@ -43,7 +50,7 @@ function mergeRecentRequests(
       recovered.add(key);
       return true;
     }
-    return record.status !== "failed" || !recovered.has(key);
+    return record.source === "collection" || record.status !== "failed" || !recovered.has(key);
   });
   return unresolved
     .sort((left, right) => {
@@ -51,6 +58,14 @@ function mergeRecentRequests(
       return failurePriority || requestTimestamp(right) - requestTimestamp(left) || right.id - left.id;
     })
     .slice(0, MAX_RECENT_REQUESTS);
+}
+
+function collectionLabel(record: WhaleRequestLog): string {
+  const action = record.url.split("/").at(-1);
+  const label = action === "status" ? "状态检查" : action === "snapshot" ? "首次快照" : "增量同步";
+  const categories = String(record.query_params.categories || "").split(",").filter(Boolean)
+    .map((category) => ({ sports: "体育", esports: "电竞" }[category] || category));
+  return `${label}${categories.length ? ` · ${categories.join("、")}` : ""}`;
 }
 
 function consoleTime(value: string): string {
@@ -167,13 +182,13 @@ export function WhaleRequestMonitorPanel({
                   column.records.map((record) => (
                     <div className={`whaleTerminalEntry ${record.status}`} key={record.id}>
                       <div className="whaleTerminalLine">
-                        <time>{consoleTime(record.finished_at || record.started_at)}</time>
+                        <time title="请求开始时间">{consoleTime(record.source === "collection" ? record.started_at : record.finished_at || record.started_at)}</time>
                         <b className={record.status}>{record.status}</b>
                         <code>
                           <span className="whaleRequestSummary">
-                            <strong>{record.source.toUpperCase()} · {record.method}</strong>
+                            <strong>{record.source === "collection" ? collectionLabel(record) : record.source.toUpperCase()} · {record.method}</strong>
                             <span className="whaleRequestUrl">{record.url}</span>
-                            <small>{record.status === "failed" ? `${record.error_message || record.error_type || "请求失败"} · ${record.duration_ms ?? 0}ms` : `HTTP ${record.http_status ?? "—"} · ${record.duration_ms ?? 0}ms`}</small>
+                            <small>HTTP {record.http_status ?? "—"} · {record.duration_ms ?? 0}ms{record.status === "failed" ? ` · ${record.error_message || record.error_type || "请求失败"}` : ""}{record.source === "collection" && record.url.endsWith("/status") && record.status === "success" ? ` · 成功累计 ${record.request_count ?? 1} 次` : ""}</small>
                           </span>
                         </code>
                       </div>

@@ -56,3 +56,6 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+
+# Local public collector configuration
+/collection.toml

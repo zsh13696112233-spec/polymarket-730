@@ -962,3 +962,96 @@ async def test_historical_fak_null_order_recovers_complete_confirmed_trades(fail
         assert result.fee_usdc == Decimal("0.02")
         assert len(result.fills) == 2
     assert not client.posted
+
+
+@pytest.mark.parametrize("after_approval", [False, True])
+@pytest.mark.parametrize("rejection_form", ["http_message", "http_code", "response"])
+async def test_fak_no_match_is_unfilled_without_order_lookup(after_approval, rejection_form):
+    from unittest.mock import AsyncMock
+
+    from polymarket.errors import RequestRejectedError
+    from polymarket.models.clob.order_response import RejectedOrder
+
+    from backend.trading import FAK_NOT_FILLED_MESSAGE
+
+    client = FakeClient()
+    adapter = trader(client)
+    prepared = await adapter.prepare_market(
+        MarketTradeRequest("99", "BUY", Decimal("1"), Decimal("0.55"))
+    )
+    rejection = (
+        RejectedOrder(code="fak_not_filled", message=FAK_NOT_FILLED_MESSAGE)
+        if rejection_form == "response"
+        else RequestRejectedError(
+            FAK_NOT_FILLED_MESSAGE if rejection_form == "http_message" else "No match",
+            status=400,
+            code="fak_not_filled" if rejection_form == "http_code" else None,
+        )
+    )
+    responses = [rejection]
+    if after_approval:
+        responses.insert(0, RejectedOrder(code="not_enough_balance", message="allowance"))
+    client.post_order = AsyncMock(side_effect=responses)
+    client.get_order = AsyncMock(side_effect=AssertionError("rejected order must not be queried"))
+    adapter._repair_missing_order_approval = AsyncMock(return_value=True)
+
+    result = await adapter.submit_prepared_market(prepared)
+
+    assert result.status == "unfilled"
+    assert result.filled_usdc == 0
+    assert result.fills == ()
+    assert result.external_order_id is None
+    assert result.signed_order_hash == prepared.signed_order_hash
+    assert "没有可匹配的对手单" in result.reason
+    assert client.post_order.await_count == (2 if after_approval else 1)
+    client.get_order.assert_not_awaited()
+
+
+@pytest.mark.parametrize("error_kind", ["server", "unknown", "transport", "shape"])
+async def test_fak_ambiguous_submission_must_not_be_marked_unfilled(error_kind):
+    from unittest.mock import AsyncMock
+
+    from polymarket.errors import RequestRejectedError, TransportError, UnexpectedResponseError
+
+    from backend.trading import FAK_NOT_FILLED_MESSAGE
+
+    client = FakeClient()
+    adapter = trader(client)
+    prepared = await adapter.prepare_market(
+        MarketTradeRequest("99", "BUY", Decimal("1"), Decimal("0.55"))
+    )
+    errors = {
+        "server": RequestRejectedError(FAK_NOT_FILLED_MESSAGE, status=503),
+        "unknown": RequestRejectedError("unknown rejection", status=400),
+        "transport": TransportError(FAK_NOT_FILLED_MESSAGE),
+        "shape": UnexpectedResponseError("OrderResponse response did not match expected shape"),
+    }
+    client.post_order = AsyncMock(side_effect=errors[error_kind])
+    with pytest.raises(TradingUnavailable, match="提交结果不明"):
+        await adapter.submit_prepared_market(prepared)
+    client.post_order.assert_awaited_once()
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"id": "order-1", "status": "MATCHED"}])
+async def test_malformed_order_lookup_remains_unknown_with_actionable_message(payload):
+    from polymarket.models.clob.account import OpenOrder
+
+    client = FakeClient()
+
+    async def get_order(**kwargs):
+        return OpenOrder.parse_response(payload)
+
+    client.get_order = get_order
+    with pytest.raises(TradingUnavailable, match="格式异常.*保留待核对"):
+        await trader(client).order_status("order-1")
+
+
+async def test_order_not_found_must_not_be_treated_as_unfilled():
+    from unittest.mock import AsyncMock
+
+    from polymarket.errors import RequestRejectedError
+
+    client = FakeClient()
+    client.get_order = AsyncMock(side_effect=RequestRejectedError("not found", status=404))
+    with pytest.raises(TradingUnavailable, match="不能据此确认未成交"):
+        await trader(client).order_status("order-1")

@@ -12842,3 +12842,14 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   .whaleSourceTiersCard .whaleSourceTierRow { grid-template-columns: minmax(0, 1fr); }
   .whaleSourceTiersCard .whaleSourceTierRow .pcButton { justify-self: start; }
 }
+/* Standalone advisory simulation, independent of wallet state. */
+.jevSimulation { margin-bottom: 20px; }
+.jevSimulation form { display: grid; gap: 12px; }
+.jevSimulation input, .jevSimulation textarea { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #172033; }
+.jevSimulation textarea { resize: vertical; line-height: 1.65; }
+.jevSimulation small { color: #64748b; }
+.jevSimulation p { margin: 12px 0; line-height: 1.7; }
+.jevSimulation pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #f8fafc; border-radius: 8px; }
+.jevSimulation details { margin-top: 16px; }
+.jevSimulation summary { cursor: pointer; }
+.jevActions { display: flex; flex-wrap: wrap; gap: 12px; }

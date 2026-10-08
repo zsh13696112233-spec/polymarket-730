@@ -262,7 +262,8 @@ describe("巨鲸页内设置", () => {
     await user.click(screen.getByRole("checkbox", { name: "启用双重命中独立金额" }));
     await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
     await waitFor(() => expect(saved).toMatchObject({ dual_match_auto_follow_amount_usdc: null }));
-    expect(screen.queryByText(/模拟/)).not.toBeInTheDocument();
+    expect(within(screen.getByRole("main")).queryByText(/模拟/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "AI 止盈模拟" })).toHaveAttribute("href", "/ai-simulation");
     expect(screen.getByRole("link", { name: "自动跟单" })).toHaveClass("active");
 
     const ruleFilter = screen.getByRole("combobox", { name: "命中规则" });

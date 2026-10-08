@@ -825,6 +825,18 @@ def test_whale_auto_decisions_support_rule_and_status_filters(app_client_factory
         ("failed", "实际买价 0.4 低于策略最低价 0.5", "strategy_protected"),
         ("failed", "巨鲸持有双向仓位，不能按单边信号跟买", "strategy_protected"),
         ("skipped", "巨鲸持有双向仓位", "strategy_protected"),
+        (
+            "skipped",
+            "巨鲸持有双向仓位；Yes：1,000 份，持仓成本 600.00 USDC；"
+            "No：10 份，持仓成本 4.00 USDC；核验时间：2026-10-05 09:45:32（UTC+8）",
+            "strategy_protected",
+        ),
+        (
+            "failed",
+            "巨鲸持有双向仓位，不能按单边信号跟买；Yes：1,000 份，持仓成本 600.00 USDC；"
+            "No：10 份，持仓成本 4.00 USDC；核验时间：2026-10-05 09:45:32（UTC+8）",
+            "strategy_protected",
+        ),
         ("failed", "巨鲸已明显减仓，不能继续跟买", "strategy_protected"),
         ("failed", "市场已经关闭或结果已经确定", "strategy_protected"),
         ("failed", "同一市场自动跟单最多购买 2 次，已经停止继续买入", "strategy_protected"),

@@ -28,6 +28,10 @@ CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 COLLATERAL_ADAPTER = "0xAdA100Db00Ca00073811820692005400218FcE1f"
 NEG_RISK_COLLATERAL_ADAPTER = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
+FAK_NOT_FILLED_MESSAGE = (
+    "no orders found to match with FAK order. "
+    "FAK orders are partially filled or killed if no match is found."
+)
 V2_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
 V2_NEG_RISK_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
 
@@ -451,18 +455,29 @@ class UnifiedPolymarketTrader:
         if external_order_id not in response.canceled:
             raise TradingUnavailable("上游未确认撤单，请刷新订单核对是否已成交")
 
-    async def submit_prepared_market(self, prepared: PreparedMarketOrder) -> TradeResult:
-        client = await self._client_async()
+    async def _post_fak_order(self, client: Any, prepared: PreparedMarketOrder) -> Any:
+        from polymarket.errors import RequestRejectedError
+        from polymarket.models.clob.order_response import RejectedOrder
+
         try:
-            response = await client.post_order(prepared.signed_order)
+            return await client.post_order(prepared.signed_order)
+        except RequestRejectedError as error:
+            # HTTP 400 bypasses the SDK's normal RejectedOrder parsing. Only this
+            # explicit no-fill rejection is terminal; unknown outcomes stay pending.
+            if error.status == 400 and (
+                error.code == "fak_not_filled" or str(error).strip() == FAK_NOT_FILLED_MESSAGE
+            ):
+                return RejectedOrder(code="fak_not_filled", message=FAK_NOT_FILLED_MESSAGE)
+            raise TradingUnavailable(f"Polymarket FAK 提交结果不明：{error}") from error
         except Exception as error:
             raise TradingUnavailable(f"Polymarket FAK 提交结果不明：{error}") from error
+
+    async def submit_prepared_market(self, prepared: PreparedMarketOrder) -> TradeResult:
+        client = await self._client_async()
+        response = await self._post_fak_order(client, prepared)
         if not response.ok and response.code == "not_enough_balance":
             if await self._repair_missing_order_approval(prepared.request):
-                try:
-                    response = await client.post_order(prepared.signed_order)
-                except Exception as error:
-                    raise TradingUnavailable(f"补授权后 FAK 提交结果不明：{error}") from error
+                response = await self._post_fak_order(client, prepared)
         if not response.ok:
             return self._rejected_result(response, prepared.signed_order_hash)
         trade_ids = tuple(str(value) for value in response.trade_ids)
@@ -545,11 +560,14 @@ class UnifiedPolymarketTrader:
         code = str(response.code)
         status = "blocked" if code == "not_enough_balance" else "unfilled"
         retryable = code == "market_not_ready"
+        reason = f"可重试：{response.message}" if retryable else str(response.message)
+        if code == "fak_not_filled":
+            reason = "FAK 未成交：限价范围内没有可匹配的对手单，订单已取消"
         return TradeResult(
             status=status,
             external_order_id=None,
             signed_order_hash=fingerprint,
-            reason=(f"可重试：{response.message}" if retryable else str(response.message)),
+            reason=reason,
         )
 
     async def _repair_missing_order_approval(self, request: MarketTradeRequest) -> bool:
@@ -862,8 +880,22 @@ class UnifiedPolymarketTrader:
         )
 
     async def order_status(self, external_order_id: str, *, order_type: str = "FAK") -> TradeResult:
+        from polymarket.errors import RequestRejectedError, UnexpectedResponseError
+
         try:
             order = await (await self._client_async()).get_order(order_id=external_order_id)
+        except UnexpectedResponseError as error:
+            raise TradingUnavailable(
+                "交易所订单查询返回空值或格式异常，暂时无法确认成交；"
+                "保留待核对，请核实交易所成交记录，勿重复下单"
+            ) from error
+        except RequestRejectedError as error:
+            if error.status == 404:
+                raise TradingUnavailable(
+                    "交易所暂未查到该订单，不能据此确认未成交；"
+                    "保留待核对，请核实交易所成交记录，勿重复下单"
+                ) from error
+            raise TradingUnavailable(f"无法同步统一 SDK 订单：{error}") from error
         except Exception as error:
             raise TradingUnavailable(f"无法同步统一 SDK 订单：{error}") from error
         matched = Decimal(order.size_matched)

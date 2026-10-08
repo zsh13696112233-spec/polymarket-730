@@ -1880,3 +1880,49 @@ async def test_legacy_planned_exit_with_execution_records_is_not_retired(databas
     async with database.sessions() as session:
         assert (await session.get(WhaleOrder, order_id)).status == "planned"
         assert (await session.get(WhaleFollowPosition, position_id)).status == "closing"
+
+
+@pytest.mark.parametrize("source", ["follow", "auto_follow"])
+async def test_fak_http_no_match_persists_unfilled_and_skips_reconciliation(
+    database, source, monkeypatch
+):
+    from polymarket.errors import RequestRejectedError
+
+    from backend.trading import FAK_NOT_FILLED_MESSAGE, UnifiedPolymarketTrader
+
+    await configure_reconciliation(database)
+    await configure_whale_settings(database)
+    follow_executor = executor(database)
+    follow_executor.settings = Settings(trading_enabled=True, start_monitor=False)
+    follow_executor.client.fetch_order_book = AsyncMock(
+        return_value=SimpleNamespace(best_ask=Decimal("0.50"), tick_size=Decimal("0.01"))
+    )
+    monkeypatch.setattr("backend.whale._auto_conflict_reason", AsyncMock(return_value=None))
+    client = SimpleNamespace(
+        post_order=AsyncMock(side_effect=RequestRejectedError(FAK_NOT_FILLED_MESSAGE, status=400)),
+        get_order=AsyncMock(side_effect=AssertionError("unfilled order must not be queried")),
+    )
+    # Exercise the actual SDK adapter submission with a simulated HTTP rejection.
+    adapter = object.__new__(UnifiedPolymarketTrader)
+    adapter._client_async = AsyncMock(return_value=client)
+    adapter.prepare_market = AsyncMock(
+        return_value=SimpleNamespace(
+            signed_order_hash="local-fingerprint",
+            external_order_id="precomputed-id",
+            signed_order=object(),
+        )
+    )
+    follow_executor._trader = AsyncMock(return_value=adapter)
+    order_id = await follow_executor.execute_follow(
+        follow_quote(), "fak-no-match", order_source=source
+    )
+    assert await follow_executor.reconcile_pending_orders() is None
+    async with database.sessions() as session:
+        order = await session.get(WhaleOrder, order_id)
+        assert order.status == "unfilled"
+        assert order.filled_usdc == ZERO
+        assert "没有可匹配的对手单" in order.reason
+        assert _auto_follow_market_usage([order]) == (0, ZERO)
+        assert list(await session.scalars(select(WhaleFill))) == []
+    client.post_order.assert_awaited_once()
+    client.get_order.assert_not_awaited()

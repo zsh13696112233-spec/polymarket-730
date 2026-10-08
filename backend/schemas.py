@@ -42,6 +42,39 @@ class APIModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class JevSimulationRequest(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: str = Field(min_length=1, max_length=16000)
+
+
+JevAction = Literal["SELL_ALL", "RECOVER_PRINCIPAL", "HOLD", "ABSTAIN"]
+
+
+class JevChoiceRead(APIModel):
+    type: Literal["choice"]
+    choice: JevAction
+    probabilities: dict[JevAction, Annotated[float, Field(ge=0, le=1)]]
+    confidence: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def check_distribution(self) -> JevChoiceRead:
+        if set(self.probabilities) != {"SELL_ALL", "RECOVER_PRINCIPAL", "HOLD", "ABSTAIN"}:
+            raise ValueError("Incomplete action distribution")
+        if abs(sum(self.probabilities.values()) - 1) > 0.01:
+            raise ValueError("Invalid action distribution")
+        if self.probabilities[self.choice] < max(self.probabilities.values()):
+            raise ValueError("Choice does not match distribution")
+        return self
+
+
+class JevSimulationRead(APIModel):
+    model: str
+    answer: JevChoiceRead
+    elapsed_ms: int
+    raw_response: dict
+
+
 class ExecutionAccountRead(APIModel):
     signer_address: str | None
     funder_address: str | None

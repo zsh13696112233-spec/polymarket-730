@@ -3059,10 +3059,13 @@ async def test_source_position_is_rechecked_before_quote_and_execution(database,
     )
     error = PolymarketAPIError if kind == "failed" else ValueError
     match = {"failed": "持仓查询失败", "reduced": "减仓", "hedged": "双向", "exited": "退出"}[kind]
-    with pytest.raises(error, match=match):
+    with pytest.raises(error, match=match) as quote_error:
         await executor.quote_follow(
             asset_id=client.asset_id, amount_usdc=Decimal("15"), entry_id=entry_id
         )
+    if kind == "hedged":
+        assert str(quote_error.value).count("240,000 份，持仓成本 120,000.00 USDC") == 2
+        assert "核验时间：" in str(quote_error.value)
     quote = replace(
         follow_quote(),
         entry_id=entry_id,
@@ -3070,8 +3073,11 @@ async def test_source_position_is_rechecked_before_quote_and_execution(database,
         condition_id=client.condition_id,
         source_wallet=client.wallet,
     )
-    with pytest.raises(error, match=match):
+    with pytest.raises(error, match=match) as execution_error:
         await executor.execute_follow(quote, "test-confirmation")
+    if kind == "hedged":
+        assert str(execution_error.value).count("240,000 份，持仓成本 120,000.00 USDC") == 2
+        assert "核验时间：" in str(execution_error.value)
     async with database.sessions() as session:
         assert not list(await session.scalars(select(WhaleOrder)))
 
@@ -4453,3 +4459,104 @@ async def test_fresh_direction_check_includes_previously_invalid_opposite(
     assert opposite.proxy_wallet in calls
     assert reason is not None
     assert ("核验失败" if read_fails else "本方向 1 人，反方向 1 人") in reason
+
+
+@pytest.mark.parametrize("late_rejection", [False, True])
+@pytest.mark.parametrize(
+    ("opposite_size", "opposite_text"),
+    [
+        ("0.000001", "No：0.000001 份，持仓成本 0.00 USDC"),
+        ("200000", "No：200,000 份，持仓成本 80,000.00 USDC"),
+    ],
+)
+async def test_auto_hedged_snapshot_survives_position_refresh(
+    database, monkeypatch, late_rejection, opposite_size, opposite_text
+):
+    from backend.whale import WhaleFollowExecutor
+
+    condition_id = "0x" + "2" * 64
+    wallet = "0x2222222222222222222222222222222222222222"
+    await _seed_auto_market(database, condition_id)
+    config = await _auto_follow_config(database, large_amount_auto_follow_enabled=True)
+    aggregate = _auto_aggregate(wallet=wallet, asset_id="asset-yes", condition_id=condition_id)
+    checked_at = datetime(2026, 10, 5, 1, 45, 32)
+    positions = {
+        "asset-yes": SimpleNamespace(
+            asset_id="asset-yes",
+            condition_id=condition_id,
+            outcome="Yes",
+            size=Decimal("1000000"),
+            avg_price=Decimal("0.60"),
+        ),
+        "asset-no": SimpleNamespace(
+            asset_id="asset-no",
+            condition_id=condition_id,
+            outcome="No",
+            size=Decimal(opposite_size),
+            avg_price=Decimal("0.40"),
+        ),
+        "unrelated": SimpleNamespace(
+            asset_id="unrelated",
+            condition_id="other-market",
+            outcome="Unrelated",
+            size=Decimal("123"),
+            avg_price=Decimal("0.50"),
+        ),
+    }
+    scanner = build_scanner(database)
+    scanner._position_checked_at[(wallet, condition_id)] = checked_at
+    kwargs = dict(
+        rule_matches={(wallet, "asset-yes"): {"large_amount"}},
+        positions_by_wallet={
+            wallet: positions
+            if not late_rejection
+            else {
+                "asset-yes": positions["asset-yes"],
+            }
+        },
+        failed_wallets=set(),
+        config=config,
+        now=utcnow(),
+        window_start=utcnow() - timedelta(hours=24),
+    )
+    pending = await scanner._persist_entries([aggregate], **kwargs)
+    if late_rejection:
+        calls = []
+
+        async def fetch_positions(user, *, condition_ids):
+            calls.append((user, condition_ids))
+            return list(positions.values())
+
+        executor = WhaleFollowExecutor(
+            database=database,
+            client=SimpleNamespace(fetch_active_positions=fetch_positions),
+            settings=database.settings,
+            keychain=SimpleNamespace(),
+        )
+
+        async def quote_follow(**kwargs):
+            await executor._verify_source_position(kwargs["entry_id"], kwargs["asset_id"])
+            pytest.fail("双向持仓必须被拒绝")
+
+        monkeypatch.setattr("backend.whale.utcnow", lambda: checked_at)
+        scanner.executor = SimpleNamespace(quote_follow=quote_follow)
+        await scanner._process_auto_decisions(pending)
+        assert calls == [(wallet, [condition_id])]
+    else:
+        assert pending == []
+
+    async with database.sessions() as session:
+        decision = await session.scalar(select(WhaleAutoFollowDecision))
+        saved_reason = decision.reason
+        assert decision.status == ("failed" if late_rejection else "skipped")
+        assert "Yes：1,000,000 份，持仓成本 600,000.00 USDC" in saved_reason
+        assert opposite_text in saved_reason
+        assert "核验时间：2026-10-05 09:45:32（UTC+8）" in saved_reason
+        assert "Unrelated" not in saved_reason
+        assert not list(await session.scalars(select(WhaleOrder)))
+
+    kwargs["positions_by_wallet"] = {wallet: {}}
+    assert await scanner._persist_entries([aggregate], **kwargs) == []
+    async with database.sessions() as session:
+        assert (await session.scalar(select(WhaleEntry))).net_size == 0
+        assert (await session.scalar(select(WhaleAutoFollowDecision))).reason == saved_reason

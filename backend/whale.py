@@ -458,8 +458,10 @@ def _auto_follow_status_display(status: str, reason: str | None) -> str:
         r"同一市场自动跟单累计金额不能超过 [0-9.]+ USDC，已经停止继续买入",
         r"跟单金额不能低于最小下单额 [0-9.]+ USDC",
     )
-    if reason in policy_reasons or any(
-        re.fullmatch(pattern, reason) for pattern in policy_patterns
+    if (
+        reason in policy_reasons
+        or reason.startswith(("巨鲸持有双向仓位；", "巨鲸持有双向仓位，不能按单边信号跟买；"))
+        or any(re.fullmatch(pattern, reason) for pattern in policy_patterns)
     ):
         return "strategy_protected"
     return status
@@ -836,6 +838,29 @@ def _position_quality(
         else None
     )
     return position, ratio, opposite, reason
+
+
+def _hedged_position_reason(
+    reason: str, entry: WhaleEntry, positions: Iterable[Any], checked_at: datetime
+) -> str:
+    """Freeze the positions used by this rejection, not later entry refreshes."""
+    market_positions = sorted(
+        (p for p in positions if p.condition_id == entry.condition_id and p.size > ZERO),
+        key=lambda p: (p.asset_id != entry.asset_id, p.asset_id),
+    )
+    parts = [reason]
+    for position in market_positions:
+        outcome = getattr(position, "outcome", None) or (
+            entry.outcome if position.asset_id == entry.asset_id else position.asset_id
+        )
+        size = format(position.size, ",f")
+        if "." in size:
+            size = size.rstrip("0").rstrip(".")
+        cost = position.size * position.avg_price
+        parts.append(f"{outcome}：{size} 份，持仓成本 {cost:,.2f} USDC")
+    local_time = checked_at.replace(tzinfo=UTC).astimezone(ZoneInfo("Asia/Shanghai"))
+    parts.append(f"核验时间：{local_time:%Y-%m-%d %H:%M:%S}（UTC+8）")
+    return "；".join(parts)
 
 
 def _apply_position_quality(
@@ -2776,6 +2801,13 @@ class WhaleDiscoveryScanner:
                         "position_reduced": "巨鲸已明显减仓",
                         "position_hedged": "巨鲸持有双向仓位",
                     }.get(entry.follow_ineligible_reason, "巨鲸当前不满足跟单条件")
+                    if entry.follow_ineligible_reason == "position_hedged":
+                        decision.reason = _hedged_position_reason(
+                            decision.reason,
+                            entry,
+                            positions_by_wallet.get(entry.proxy_wallet, {}).values(),
+                            entry.position_checked_at or now,
+                        )
                     decision.processed_at = now
                     continue
 
@@ -3376,6 +3408,12 @@ class WhaleFollowExecutor:
                 await asyncio.sleep(max(delay, float(error.retry_after or 0)))
         _, _, _, reason = _position_quality(entry, positions, ratio_threshold)
         if reason is not None:
+            if reason == "position_hedged":
+                raise ValueError(
+                    _hedged_position_reason(
+                        "巨鲸持有双向仓位，不能按单边信号跟买", entry, positions, utcnow()
+                    )
+                )
             raise ValueError(
                 {
                     "position_exited": "巨鲸已退出，不能继续跟买",

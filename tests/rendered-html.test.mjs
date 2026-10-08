@@ -133,3 +133,13 @@ for (const path of ["/", "/whales", "/whales/auto-follow", "/whales/records", "/
     assert.doesNotMatch(html, /当前持仓|跟单汇总|历史流水|卖出订单|每周命中率汇总/);
   });
 }
+
+test("server-renders the standalone AI simulation without credentials", { skip: hidden }, async () => {
+  const response = await render("/ai-simulation");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Jev 决策试验/);
+  assert.match(html, /FICTIONAL SIMULATION/);
+  assert.match(html, /模拟评估/);
+  assert.match(html, /type="password"/);
+});

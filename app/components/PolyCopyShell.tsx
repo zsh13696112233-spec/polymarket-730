@@ -3,7 +3,7 @@
 import { ReactNode, useState } from "react";
 import Link from "next/link";
 
-export type WorkspaceView = "home" | "whales" | "auto-follow" | "positions" | "whale-records" | "email-records" | "ai-simulation" | "settings";
+export type WorkspaceView = "home" | "whales" | "auto-follow" | "positions" | "whale-records" | "email-records" | "settings";
 
 const navigation: Array<{
   id: WorkspaceView;
@@ -14,7 +14,6 @@ const navigation: Array<{
   { id: "whales", href: "/whales", label: "链上监测" },
   { id: "auto-follow", href: "/whales/auto-follow", label: "自动跟单" },
   { id: "positions", href: "/positions", label: "持仓管理" },
-  { id: "ai-simulation", href: "/ai-simulation", label: "AI 止盈模拟" },
   { id: "whale-records", href: "/whales/records", label: "我的跟单" },
   { id: "email-records", href: "/email-records", label: "邮件记录" },
   { id: "settings", href: "/settings", label: "设置" },
@@ -120,7 +119,7 @@ export function PolyCopyShell({
           </span>
         </div>
       </aside>
-      <div className={`pcMain${active === "home" ? " homeWorkspace" : ""}${active === "whales" ? " whaleWorkspace" : ""}${active === "auto-follow" ? " whaleAutoWorkspace" : ""}`}>
+      <div className={`pcMain${active === "home" ? " homeWorkspace" : ""}${active === "whales" ? " whaleWorkspace" : ""}${active === "auto-follow" ? " whaleAutoWorkspace" : ""}${active === "settings" ? " settingsWorkspace" : ""}`}>
         <header className="pcTopbar">
           <div className="pcTitleGroup">
             <button

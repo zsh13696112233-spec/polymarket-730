@@ -10,7 +10,6 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
-import { WhaleSettingsPanel } from "./WhaleSettingsWorkspace";
 import { WhaleStatisticsPanel } from "./WhaleStatisticsPanel";
 import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import {
@@ -252,7 +251,6 @@ const STRATEGY_PRICE_STORAGE_KEY = "whale-filter-strategy-price";
 
 export default function WhaleDiscoveryWorkspace() {
   const [settings, setSettings] = useState<WhaleSettings | null>(null);
-  const [settingsVisible, setSettingsVisible] = useState(false);
   const [markets, setMarkets] = useState<WhaleMarketList | null>(null);
   const [history, setHistory] = useState<WhaleHistoryList | null>(null);
   const [filterStrategyPrice, setFilterStrategyPrice] = useState<boolean | null>(null);
@@ -416,7 +414,7 @@ export default function WhaleDiscoveryWorkspace() {
       actions={
         <>
           <Link className="pcButton ghost" href="/whales/records">我的跟单</Link>
-          <button className="pcButton ghost" type="button" onClick={() => setSettingsVisible(true)}>打开监测设置</button>
+          <Link className="pcButton ghost" href="/settings#whale-monitor-settings">打开监测设置</Link>
           <button className="pcButton primary" type="button" onClick={scanNow} disabled={refreshing}>
             <span className={refreshing ? "spinning" : ""}>↻</span>
             {refreshing ? "同步中" : "立即同步"}
@@ -566,20 +564,6 @@ export default function WhaleDiscoveryWorkspace() {
           <div id="whale-full-history" className="whaleFullHistory">
             <WhaleHistorySection rule={rule} history={history} />
           </div>
-        )}
-
-        {settingsVisible && (
-          <ModalShell
-            className="whaleSettingsModal"
-            title="巨鲸监测设置"
-            onClose={() => setSettingsVisible(false)}
-          >
-            <WhaleSettingsPanel
-              settings={settings}
-              onSettingsChange={setSettings}
-              onReload={reloadWorkspace}
-            />
-          </ModalShell>
         )}
 
       </>}

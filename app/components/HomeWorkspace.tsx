@@ -417,13 +417,13 @@ export default function HomeWorkspace() {
                   <span title="当前执行钱包的策略开关状态；实际执行还受实盘交易和后台监测开关控制">
                     {error !== null || connection === "disconnected" || typeof overview.system.take_profit_enabled !== "boolean" ? "状态待确认" : overview.system.take_profit_enabled ? "已开启" : "已关闭"}
                   </span>
-                  <Link className="homeRuntimeSettings" href="/positions">止盈设置 ↗</Link>
+                  <Link className="homeRuntimeSettings" href="/settings#take-profit-settings">止盈设置 ↗</Link>
                 </div>
               </div>
               {(runtimeStatus === "error" || runtimeStatus === "degraded") && <p className="homeRuntimeReason">{error || (connection === "disconnected" ? "连接中断，正在重连" : overview.system.last_scan_error) || runtimeLabel}</p>}
               <footer className="homeRuntimeFooter">
                 <dl><div><dt>最后扫描</dt><dd>{formatClock(overview.system.last_scan_at)}</dd></div><div><dt>数据更新</dt><dd>{formatClock(overview.as_of)}</dd></div></dl>
-                <Link className="homeRuntimeSettings" href="/whales/settings">监测设置 ↗</Link>
+                  <Link className="homeRuntimeSettings" href="/settings#whale-monitor-settings">监测设置 ↗</Link>
               </footer>
             </div>
           </section>

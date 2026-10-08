@@ -3,7 +3,9 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
 import CollectionSettingsPanel from "./CollectionSettingsPanel";
-import EmailSettingsPanel from "./EmailSettingsPanel";
+import { TakeProfitSettingsPanel } from "./TakeProfitPanels";
+import { WhaleAutoSettingsPanel, WhaleSettingsPanel } from "./WhaleSettingsWorkspace";
+import type { WhaleSettings } from "./WhaleShared";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8730").replace(/\/$/, "");
 
@@ -95,6 +97,18 @@ type ChainTestOrder = {
   reason: string | null;
 };
 
+type SettingsHolding = {
+  asset_id: string;
+  title: string;
+  outcome: string;
+  available_size: string;
+};
+
+type PositionsSnapshot = {
+  wallet: string;
+  positions: SettingsHolding[];
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -115,6 +129,10 @@ function price(value: number | null) {
 
 export default function ExecutionSettingsWorkspace() {
   const [account, setAccount] = useState<Account | null>(null);
+  const [whaleSettings, setWhaleSettings] = useState<WhaleSettings | null>(null);
+  const [whaleLoadError, setWhaleLoadError] = useState<string | null>(null);
+  const [holdings, setHoldings] = useState<SettingsHolding[]>([]);
+  const [holdingWallet, setHoldingWallet] = useState<string | null>(null);
   const [signer, setSigner] = useState("");
   const [funder, setFunder] = useState("");
   const [localAutoRedeem, setLocalAutoRedeem] = useState(false);
@@ -153,6 +171,34 @@ export default function ExecutionSettingsWorkspace() {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  const loadWhaleSettings = useCallback(async () => {
+    try {
+      setWhaleSettings(await request<WhaleSettings>("/api/whales/settings"));
+      setWhaleLoadError(null);
+    } catch (error) {
+      setWhaleLoadError(error instanceof Error ? error.message : "无法读取巨鲸设置");
+    }
+  }, []);
+
+  const loadHoldings = useCallback(async () => {
+    try {
+      const snapshot = await request<PositionsSnapshot>("/api/execution-account/positions");
+      setHoldingWallet(snapshot.wallet);
+      setHoldings(snapshot.positions.filter((position) => Number(position.available_size) > 0));
+    } catch {
+      setHoldingWallet(null);
+      setHoldings([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadWhaleSettings();
+      void loadHoldings();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadHoldings, loadWhaleSettings]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -403,8 +449,16 @@ export default function ExecutionSettingsWorkspace() {
         {chainSellOrder && <div className="pcChainTestResult"><h3>买卖链路验证完成</h3><p>卖出状态 {chainSellOrder.status} · 成交 {chainSellOrder.filled_size.toFixed(4)} 份 · 回收 {money(chainSellOrder.filled_usdc)}</p>{chainSellOrder.reason && <small>{chainSellOrder.reason}</small>}</div>}
         {chainNotice && <p role={chainNotice.kind === "error" ? "alert" : undefined} className={chainNotice.kind === "success" ? "pcFormSuccess" : "pcFormError"}>{chainNotice.text}</p>}
       </section>
+      {whaleLoadError && <div className="pcAlert danger" role="alert"><strong>巨鲸设置读取未完成</strong><p>{whaleLoadError}</p></div>}
+      <section id="whale-monitor-settings" className="pcSettingsGroup" aria-label="巨鲸监测设置">
+        <header className="pcSettingsGroupHeader"><h2>巨鲸监测与自动跟单</h2><p>监测条件和自动跟单策略统一在这里配置；业务页面只保留查看、筛选和执行操作。</p></header>
+        <WhaleSettingsPanel settings={whaleSettings} onSettingsChange={setWhaleSettings} onReload={loadWhaleSettings} />
+        <WhaleAutoSettingsPanel settings={whaleSettings} onSettingsChange={setWhaleSettings} onReload={loadWhaleSettings} />
+      </section>
+      <section id="take-profit-settings" aria-label="自动止盈设置">
+        <TakeProfitSettingsPanel holdings={holdings} wallet={holdingWallet} />
+      </section>
       <CollectionSettingsPanel />
-      <EmailSettingsPanel />
     </PolyCopyShell>
   );
 }

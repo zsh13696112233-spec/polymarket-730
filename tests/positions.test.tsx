@@ -106,8 +106,7 @@ describe("持仓一键卖出", () => {
     expect(fetcher).not.toHaveBeenCalled();
     visibility.mockReturnValue("visible");
     document.dispatchEvent(new Event("visibilitychange"));
-    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
     expect(fetcher.mock.calls.filter(([path]) => String(path).endsWith("/positions"))).toHaveLength(1);
-    expect(fetcher.mock.calls.filter(([path]) => String(path).endsWith("/take-profit"))).toHaveLength(1);
   });
 });

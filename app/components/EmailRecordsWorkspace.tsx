@@ -42,28 +42,6 @@ type EmailDelivery = {
   sent_at: string | null;
 };
 
-type EmailSummarySettings = {
-  notifications_enabled: boolean;
-  weekly_summary_enabled: boolean;
-  weekly_summary_enabled_at: string | null;
-  weekly_summary_last_sent_at: string | null;
-  weekly_summary_next_run_at: string | null;
-};
-
-async function emailApi<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(payload?.detail || `请求失败（${response.status}）`);
-  return payload as T;
-}
-
 const statusLabels: Record<DeliveryStatus, string> = {
   pending: "待发送",
   sending: "发送中",
@@ -103,10 +81,6 @@ export default function EmailRecordsWorkspace() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [summarySettings, setSummarySettings] = useState<EmailSummarySettings | null>(null);
-  const [summarySaving, setSummarySaving] = useState(false);
-  const [summaryMessage, setSummaryMessage] = useState("");
-  const [summaryError, setSummaryError] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -126,32 +100,6 @@ export default function EmailRecordsWorkspace() {
     }
   }, [filter, page]);
 
-  const loadSummarySettings = useCallback(async () => {
-    try {
-      setSummarySettings(await emailApi<EmailSummarySettings>("/api/email-settings"));
-      setSummaryError("");
-    } catch (loadError) {
-      setSummaryError(loadError instanceof Error ? loadError.message : "无法读取每周汇总设置");
-    }
-  }, []);
-
-  async function setWeeklySummaryEnabled(enabled: boolean) {
-    setSummarySaving(true);
-    setSummaryMessage("");
-    setSummaryError("");
-    try {
-      const next = await emailApi<EmailSummarySettings>("/api/email-settings", {
-        method: "PUT",
-        body: JSON.stringify({ weekly_summary_enabled: enabled }),
-      });
-      setSummarySettings(next);
-      setSummaryMessage(enabled ? "每周命中率汇总已启用，将从下一个周一开始发送。" : "每周命中率汇总已关闭。");
-    } catch (saveError) {
-      setSummaryError(saveError instanceof Error ? saveError.message : "保存每周汇总设置失败");
-    } finally {
-      setSummarySaving(false);
-    }
-  }
 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
@@ -163,11 +111,6 @@ export default function EmailRecordsWorkspace() {
     await load();
   }, 30_000);
 
-  useEffect(() => {
-    const initial = window.setTimeout(() => void loadSummarySettings(), 0);
-    return () => window.clearTimeout(initial);
-  }, [loadSummarySettings]);
-
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -175,33 +118,6 @@ export default function EmailRecordsWorkspace() {
       active="email-records"
       title="邮件记录"
     >
-      <section className="pcPanel weeklyEmailSummaryPanel" aria-label="每周邮件命中率汇总">
-        <div className="weeklyEmailSummaryCopy">
-          <h2>每周命中率汇总</h2>
-          <p>每周一 00:00（北京时间）汇总上一周新结算的已发邮件信号，同一信号不会因多个收件人重复计算。</p>
-          {summarySettings?.weekly_summary_enabled && !summarySettings.notifications_enabled && (
-            <small className="weeklyEmailSummaryPaused">系统邮件通知当前关闭，周报设置已保留但发送暂停。</small>
-          )}
-          {summarySettings?.weekly_summary_last_sent_at && (
-            <small>上次发送：{formatTime(summarySettings.weekly_summary_last_sent_at)}</small>
-          )}
-          {summarySettings?.weekly_summary_enabled && summarySettings.weekly_summary_next_run_at && (
-            <small>下次计划：{formatTime(summarySettings.weekly_summary_next_run_at)}</small>
-          )}
-        </div>
-        <label className="weeklyEmailSummaryToggle">
-          <span>{summarySettings?.weekly_summary_enabled ? "已启用" : "未启用"}</span>
-          <input
-            aria-label="启用每周命中率汇总"
-            type="checkbox"
-            checked={summarySettings?.weekly_summary_enabled ?? false}
-            disabled={!summarySettings || summarySaving}
-            onChange={(event) => void setWeeklySummaryEnabled(event.target.checked)}
-          />
-        </label>
-        {summaryError && <p className="pcFormError weeklyEmailSummaryMessage" role="alert">{summaryError}</p>}
-        {summaryMessage && <p className="pcFormSuccess weeklyEmailSummaryMessage">{summaryMessage}</p>}
-      </section>
       <section className="pcPanel emailRecordsPanel" aria-label="邮件发送记录">
         <header className="pcPanelHeader emailDeliveryHeading">
           <div>

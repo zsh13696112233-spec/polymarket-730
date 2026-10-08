@@ -19,7 +19,7 @@ it("测试服务器仅检查连接，保存只提交 IP 与端口，并展示暂
   const user = userEvent.setup();
   render(<CollectionSettingsPanel />);
   await waitFor(() => expect(screen.getByLabelText("服务器 IP")).toHaveValue("192.168.1.20"));
-  expect(screen.getByText("体育：服务器断线")).toBeInTheDocument();
+  expect(screen.getByLabelText("采集状态")).toHaveTextContent("体育服务器断线");
   await user.clear(screen.getByLabelText("服务器 IP"));
   await user.type(screen.getByLabelText("服务器 IP"), "10.0.0.8");
   await user.click(screen.getByRole("button", { name: "测试服务器连接" }));

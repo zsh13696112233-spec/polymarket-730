@@ -62,7 +62,7 @@ const settings = {
   large_amount_history_count: 0,
 };
 
-describe("巨鲸页内设置", () => {
+describe("系统设置中的巨鲸配置", () => {
   it("在巨鲸页面内直接展示设置，保存后立即重新同步", async () => {
     const user = userEvent.setup();
     const bodies: unknown[] = [];
@@ -95,8 +95,7 @@ describe("巨鲸页内设置", () => {
       return json({ detail: "not found" }, 404);
     }));
 
-    render(<WhaleDiscoveryWorkspace />);
-    await user.click(await screen.findByRole("button", { name: "打开监测设置" }));
+    render(<ExecutionSettingsWorkspace />);
     const days = await screen.findByRole("spinbutton", { name: "巨鲸注册窗口天数" });
     const threshold = screen.getByRole("spinbutton", { name: "新号大额买入门槛" });
     const largeThreshold = screen.getByRole("spinbutton", { name: "全量超大额买入门槛" });
@@ -117,7 +116,7 @@ describe("巨鲸页内设置", () => {
       await user.click(categories.getByRole("checkbox", { name: label }));
     }
     await user.click(saveButton);
-    expect(await screen.findByRole("alert")).toHaveTextContent("监测至少需要选择一个市场分类。");
+    expect(await screen.findByText("监测至少需要选择一个市场分类。")).toBeInTheDocument();
     expect(bodies).toHaveLength(0);
     for (const label of ["传统体育", "电竞", "科学与科技"]) {
       await user.click(categories.getByRole("checkbox", { name: label }));
@@ -126,7 +125,7 @@ describe("巨鲸页内设置", () => {
     expect(form).not.toBeNull();
     expect(Array.from(form!.querySelectorAll("input")).filter((input) => !input.checkValidity()).map((input) => input.getAttribute("aria-label"))).toEqual([]);
     await user.click(saveButton);
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("监测至少需要选择一个市场分类。")).not.toBeInTheDocument();
 
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toMatchObject({
@@ -137,11 +136,6 @@ describe("巨鲸页内设置", () => {
     });
     expect(bodies[0]).not.toHaveProperty("new_account_auto_follow_enabled");
     expect(await screen.findByText("巨鲸监测条件已保存，数据已重新同步。")).toBeInTheDocument();
-    const saveIndex = requests.findIndex((request) => request.startsWith("PUT "));
-    const reloadIndex = requests.findIndex((request, index) => index > saveIndex && request.includes("/api/whales/markets?"));
-    const scanIndex = requests.findIndex((request) => request.includes("/api/whales/scan"));
-    expect(reloadIndex).toBeGreaterThan(saveIndex);
-    expect(scanIndex).toBeGreaterThan(reloadIndex);
     expect(categories.getByRole("checkbox", { name: "政治" })).not.toBeChecked();
     expect(categories.getByRole("checkbox", { name: "电竞" })).toBeChecked();
   });
@@ -160,7 +154,7 @@ describe("巨鲸页内设置", () => {
       if (url.endsWith("/api/whales/scan")) return json({ status: "ok" });
       return json({ detail: "not found" }, 404);
     }));
-    render(<WhaleAutoFollowWorkspace />);
+    render(<ExecutionSettingsWorkspace />);
     await user.click(await screen.findByRole("button", { name: "编辑策略" }));
     expect(screen.getByRole("button", { name: "添加档位" })).toHaveClass("pcButton", "primary");
     await user.click(screen.getByLabelText("启用来源金额分档"));
@@ -217,7 +211,7 @@ describe("巨鲸页内设置", () => {
       return json({ detail: "not found" }, 404);
     }));
 
-    render(<WhaleAutoFollowWorkspace />);
+    render(<ExecutionSettingsWorkspace />);
     expect(await screen.findByLabelText("自动跟单策略概览")).toHaveTextContent("5 USDC");
     expect(screen.queryByRole("checkbox", { name: "开启新号大额自动跟单" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "编辑策略" }));
@@ -264,19 +258,7 @@ describe("巨鲸页内设置", () => {
     await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
     await waitFor(() => expect(saved).toMatchObject({ dual_match_auto_follow_amount_usdc: null }));
     expect(within(screen.getByRole("main")).queryByText(/模拟/)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "AI 止盈模拟" })).toHaveAttribute("href", "/ai-simulation");
-    expect(screen.getByRole("link", { name: "自动跟单" })).toHaveClass("active");
-
-    const ruleFilter = screen.getByRole("combobox", { name: "命中规则" });
-    expect(ruleFilter.tagName).toBe("BUTTON");
-    await user.click(ruleFilter);
-    await user.click(screen.getByRole("option", { name: "新号大额" }));
-    expect(ruleFilter).toHaveTextContent("新号大额");
-
-    const statusFilter = screen.getByRole("combobox", { name: "决策状态" });
-    statusFilter.focus();
-    await user.keyboard("{ArrowDown}{Enter}");
-    expect(statusFilter).toHaveTextContent("等待处理");
+    expect(screen.getByRole("link", { name: "设置" })).toHaveClass("active");
   });
 
   it.each([
@@ -392,8 +374,7 @@ describe("巨鲸页内设置", () => {
       return json({ detail: "not found" }, 404);
     }));
 
-    render(<WhaleDiscoveryWorkspace />);
-    await user.click(await screen.findByRole("button", { name: "打开监测设置" }));
+    render(<ExecutionSettingsWorkspace />);
     expect(await screen.findByRole("link", { name: "Djdjdjekekek" })).toHaveAttribute(
       "href",
       `https://polymarket.com/profile/${defaultWallet}`,
@@ -628,131 +609,30 @@ describe("系统邮件设置", () => {
     ]));
   });
 
-  it("在系统设置工作台配置 163 SMTP 并测试连接", async () => {
-    const user = userEvent.setup();
-    const bodies: unknown[] = [];
-    const emailSettings = {
-      notifications_enabled: false,
-      notification_recipients: [],
-      smtp_host: "smtp.163.com",
-      smtp_port: 465,
-      smtp_security: "ssl",
-      smtp_username: null,
-      smtp_from_email: null,
-      smtp_from_name: "PolyCopy",
-      smtp_authorization_code_configured: false,
-      smtp_configured: false,
-    };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/api/execution-account")) return json(null);
-      if (url.endsWith("/api/email-settings") && init?.method === "PUT") {
-        const body = JSON.parse(String(init.body));
-        bodies.push(body);
-        return json({
-          ...emailSettings,
-          ...body,
-          smtp_authorization_code_configured: true,
-          smtp_configured: true,
-        });
-      }
-      if (url.endsWith("/api/email-settings")) return json(emailSettings);
-      if (url.endsWith("/api/email-settings/test")) return json({
-        status: "ok",
-        connection: "ok",
-        tls: "ok",
-        authentication: "ok",
-        message_sent: false,
-        detail: "163 SMTP 连接及认证成功",
-      });
+  it("系统设置工作台不展示发件邮箱配置", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/api/execution-account")) return json(null);
       return json({ detail: "not found" }, 404);
     }));
 
     render(<ExecutionSettingsWorkspace />);
-    const notificationCheckbox = await screen.findByRole("checkbox", { name: "启用系统邮件通知" });
-    await user.click(screen.getByText("启用系统邮件通知"));
-    expect(notificationCheckbox).not.toBeChecked();
-    await user.click(notificationCheckbox);
-    await user.type(screen.getByRole("textbox", { name: "系统通知收件邮箱" }), "alerts@example.com");
-    await user.type(await screen.findByRole("textbox", { name: "163 发件邮箱" }), "sender@163.com");
-    await user.type(screen.getByLabelText("163 客户端授权码"), "authorization-code");
-    await user.click(screen.getByRole("button", { name: "测试连接" }));
 
-    expect(await screen.findByText("163 SMTP 连接及认证成功")).toBeInTheDocument();
-    expect(bodies).toContainEqual(expect.objectContaining({
-      smtp_host: "smtp.163.com",
-      smtp_port: 465,
-      smtp_security: "ssl",
-      smtp_username: "sender@163.com",
-      smtp_authorization_code: "authorization-code",
-      notifications_enabled: true,
-      notification_recipients: ["alerts@example.com"],
-    }));
+    expect(screen.queryByRole("heading", { name: "发件邮箱" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用系统邮件通知" })).not.toBeInTheDocument();
   });
 });
 
 describe("邮件记录工作台", () => {
-  it("在邮件记录页启用每周汇总并展示周报发送记录", async () => {
-    const user = userEvent.setup();
-    const bodies: unknown[] = [];
-    const settings = {
-      notifications_enabled: true,
-      weekly_summary_enabled: false,
-      weekly_summary_enabled_at: null,
-      weekly_summary_last_sent_at: "2026-08-17T16:00:05Z",
-      weekly_summary_next_run_at: null,
-    };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/api/email-settings") && init?.method === "PUT") {
-        const body = JSON.parse(String(init.body));
-        bodies.push(body);
-        return json({
-          ...settings,
-          ...body,
-          weekly_summary_enabled_at: "2026-08-29T02:00:00Z",
-          weekly_summary_next_run_at: "2026-08-30T16:00:00Z",
-        });
-      }
-      if (url.endsWith("/api/email-settings")) return json(settings);
-      if (url.includes("/api/email-notifications?")) return json({
-        total: 1,
-        items: [{
-          id: 20,
-          entry_id: null,
-          notification_kind: "weekly_summary",
-          condition_id: "weekly-summary",
-          entry_ids: [],
-          rules: [],
-          recipient_email: "alerts@example.com",
-          market_title: "每周邮件命中率｜2026-08-17 至 2026-08-23",
-          wallet_label: "命中 6 · 未命中 4 · 待结算 3",
-          market_summaries: [],
-          subject: "[PolyCopy] 每周邮件命中率｜08-17 至 08-23",
-          body_text: "有效样本：10\n命中：6\n未命中：4\n有效命中率：60%",
-          result: "not_applicable",
-          status: "sent",
-          attempt_count: 1,
-          next_attempt_at: null,
-          last_error: null,
-          created_at: "2026-08-23T16:00:00Z",
-          sent_at: "2026-08-23T16:00:05Z",
-        }],
-      });
+  it("系统设置页不展示每周命中率汇总开关", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/api/execution-account")) return json(null);
       return json({ detail: "not found" }, 404);
     }));
 
-    render(<EmailRecordsWorkspace />);
+    render(<ExecutionSettingsWorkspace />);
 
-    const checkbox = await screen.findByRole("checkbox", { name: "启用每周命中率汇总" });
-    expect(checkbox).not.toBeChecked();
-    expect(await screen.findByText("每周汇总")).toBeInTheDocument();
-    expect(screen.getByText("命中 6 · 未命中 4 · 待结算 3")).toBeInTheDocument();
-    expect(screen.queryByText("买入摘要")).not.toBeInTheDocument();
-    await user.click(checkbox);
-    await waitFor(() => expect(bodies).toContainEqual({ weekly_summary_enabled: true }));
-    expect(await screen.findByText("每周命中率汇总已启用，将从下一个周一开始发送。")).toBeInTheDocument();
-    expect(checkbox).toBeChecked();
+    expect(screen.queryByRole("heading", { name: "每周命中率汇总" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用每周命中率汇总" })).not.toBeInTheDocument();
   });
 
   it("展示独立自动跟单周报且不混入买入信号摘要", async () => {
@@ -795,8 +675,6 @@ describe("邮件记录工作台", () => {
 
     render(<EmailRecordsWorkspace />);
 
-    const checkbox = await screen.findByRole("checkbox", { name: "启用每周命中率汇总" });
-    expect(checkbox).not.toBeChecked();
     expect(await screen.findByText("自动跟单周报")).toBeInTheDocument();
     expect(screen.getByText("命中 6 · 未命中 4 · 待结算 3")).toBeInTheDocument();
     expect(screen.queryByText("买入摘要")).not.toBeInTheDocument();

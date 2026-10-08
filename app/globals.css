@@ -12495,6 +12495,11 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   padding: 20px 18px 18px;
 }
 
+.pcSettingsGroup { display: grid; gap: 20px; }
+.pcSettingsGroupHeader { padding: 4px 4px 0; }
+.pcSettingsGroupHeader h2 { margin: 0 0 6px; }
+.pcSettingsGroupHeader p { margin: 0; color: #64748b; line-height: 1.6; }
+
 .pcExecutionAddressGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -12842,14 +12847,79 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   .whaleSourceTiersCard .whaleSourceTierRow { grid-template-columns: minmax(0, 1fr); }
   .whaleSourceTiersCard .whaleSourceTierRow .pcButton { justify-self: start; }
 }
-/* Standalone advisory simulation, independent of wallet state. */
-.jevSimulation { margin-bottom: 20px; }
-.jevSimulation form { display: grid; gap: 12px; }
-.jevSimulation input, .jevSimulation textarea { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #172033; }
-.jevSimulation textarea { resize: vertical; line-height: 1.65; }
-.jevSimulation small { color: #64748b; }
-.jevSimulation p { margin: 12px 0; line-height: 1.7; }
-.jevSimulation pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #f8fafc; border-radius: 8px; }
-.jevSimulation details { margin-top: 16px; }
-.jevSimulation summary { cursor: pointer; }
-.jevActions { display: flex; flex-wrap: wrap; gap: 12px; }
+/* System settings workspace: one readable visual system for all configuration cards. */
+.settingsWorkspace {
+  --settings-bg: #f5f7fb;
+  --settings-surface: #ffffff;
+  --settings-line: #e2e6ee;
+  --settings-text: #20242c;
+  --settings-muted: #727b8b;
+  background: var(--settings-bg);
+  color: var(--settings-text);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+}
+.settingsWorkspace .pcContent { width: min(100%, 1220px); gap: 24px; padding: 28px 34px 48px; }
+.settingsWorkspace .pcPanel,
+.settingsWorkspace .pcSettingsSection {
+  border: 1px solid var(--settings-line);
+  border-radius: 14px;
+  background: var(--settings-surface);
+  box-shadow: 0 4px 18px rgba(31, 45, 74, .04);
+}
+.settingsWorkspace .pcPanelHeader {
+  min-height: 64px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--settings-line);
+  border-radius: 14px 14px 0 0;
+  background: #fbfcfe;
+}
+.settingsWorkspace .pcPanelHeader h2,
+.settingsWorkspace .pcSettingsGroupHeader h2,
+.settingsWorkspace .pcSettingsSectionHeader h2 { margin: 0; color: var(--settings-text); font-size: 18px; font-weight: 720; letter-spacing: -.02em; }
+.settingsWorkspace .pcPanelHeader p,
+.settingsWorkspace .pcSettingsGroupHeader p,
+.settingsWorkspace .pcSettingsSectionHeader p,
+.settingsWorkspace .pcSettingsDescription { color: var(--settings-muted); font-size: 13px; line-height: 1.65; }
+.settingsWorkspace .pcSettingsGroup { gap: 16px; padding: 22px; border: 1px solid var(--settings-line); border-radius: 14px; background: #f9fafc; }
+.settingsWorkspace .pcSettingsGroupHeader { padding: 0 2px 4px; }
+.settingsWorkspace .pcSettingsGroupHeader p { margin: 7px 0 0; }
+.settingsWorkspace .pcSettingsSection { padding: 22px; }
+.settingsWorkspace .pcSettingsSectionHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.settingsWorkspace .pcSettingsSectionHeader p { margin: 7px 0 0; }
+.settingsWorkspace .pcSettingsSectionBadge { flex: 0 0 auto; padding: 5px 9px; border: 1px solid #cbd7f5; border-radius: 999px; background: #f1f5ff; color: #3156c5; font-size: 12px; font-weight: 650; }
+.settingsWorkspace .pcSettingsDescription { margin: 14px 0 0; }
+.settingsWorkspace .pcSettingsForm { padding: 20px 0 0; }
+.settingsWorkspace .pcFormGrid { gap: 16px; }
+.settingsWorkspace .pcField { gap: 7px; color: #4b5361; font-size: 13px; font-weight: 650; }
+.settingsWorkspace .pcField > small { color: var(--settings-muted); font-size: 12px; line-height: 1.55; }
+.settingsWorkspace .pcField input,
+.settingsWorkspace .pcField select,
+.settingsWorkspace .pcField textarea { min-height: 42px; border: 1px solid #d5dbe6; border-radius: 8px; background: #fff; color: var(--settings-text); font-size: 14px; }
+.settingsWorkspace .pcField input:focus,
+.settingsWorkspace .pcField select:focus,
+.settingsWorkspace .pcField textarea:focus { border-color: #5576dc; box-shadow: 0 0 0 3px rgba(85, 118, 220, .14); outline: none; }
+.settingsWorkspace .pcFormHint { border: 1px solid #e1e6f0; border-radius: 8px; background: #f7f9fc; color: var(--settings-muted); font-size: 13px; line-height: 1.65; }
+.settingsWorkspace .pcSettingsActions { gap: 10px; margin-top: 18px; }
+.settingsWorkspace .pcButton { min-height: 40px; border-radius: 8px; font-size: 13px; font-weight: 650; letter-spacing: 0; }
+.settingsWorkspace .pcButton.ghost { border-color: #d5dbe6; background: #fff; color: #475160; box-shadow: 0 1px 2px rgba(31, 45, 74, .04); }
+.settingsWorkspace .pcButton.primary { border-color: #3156d3; background: #3156d3; color: #fff; box-shadow: 0 3px 8px rgba(49, 86, 211, .2); }
+.settingsWorkspace .pcCollectionStatusGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.settingsWorkspace .pcCollectionStatusGrid > div { display: grid; gap: 6px; min-height: 68px; padding: 12px 14px; border: 1px solid #e4e8ef; border-radius: 9px; background: #fbfcfe; }
+.settingsWorkspace .pcCollectionStatusGrid span { color: #8a93a2; font-size: 12px; }
+.settingsWorkspace .pcCollectionStatusGrid strong { color: #3e4652; font-size: 13px; font-weight: 650; line-height: 1.45; }
+.settingsWorkspace .pcCollectionStatusGrid strong.ready { color: #23815f; }
+.settingsWorkspace .pcCollectionStatusGrid strong.pending { color: #a16c18; }
+.settingsWorkspace .takeProfitPanel { margin: 0; padding: 0 22px 22px; }
+.settingsWorkspace .takeProfitPanel p { color: var(--settings-muted); font-size: 13px; line-height: 1.7; }
+.settingsWorkspace .takeProfitPanel .pcPanelHeader { margin: 0 -22px 0; }
+.settingsWorkspace .pcAccountSummary { border-color: var(--settings-line); background: #fbfcfe; }
+.settingsWorkspace .pcExecutionRedemptionToggle { border-color: #e0e6f0; background: #f8faff; }
+.settingsWorkspace .pcChainTestPanel { padding-bottom: 22px; }
+.settingsWorkspace .pcChainTestPanel > :not(.pcPanelHeader) { margin-right: 22px; margin-left: 22px; }
+@media (max-width: 760px) {
+  .settingsWorkspace .pcContent { padding: 18px 14px 32px; }
+  .settingsWorkspace .pcSettingsGroup,
+  .settingsWorkspace .pcSettingsSection { padding: 16px; }
+  .settingsWorkspace .pcCollectionStatusGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settingsWorkspace .pcSettingsSectionHeader { display: grid; }
+}

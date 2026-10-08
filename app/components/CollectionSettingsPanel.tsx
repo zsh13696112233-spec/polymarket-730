@@ -46,17 +46,19 @@ export default function CollectionSettingsPanel() {
   }
   function submit(event: FormEvent) { event.preventDefault(); void act(false); }
 
-  return <section className="pcSettingsSection">
-    <h2>公共采集服务器</h2>
-    <p className="pcFormHint">本地每 5 秒检查增量，监测分类在监测设置中选择。恢复连接后先追平，不追买离线期间的信号。</p>
+  return <section className="pcSettingsSection" aria-label="公共采集服务器设置">
+    <header className="pcSettingsSectionHeader"><div><h2>公共采集服务器</h2><p>本地每 5 秒检查增量，监测分类在巨鲸监测设置中选择。</p></div><span className="pcSettingsSectionBadge">数据同步</span></header>
+    <p className="pcSettingsDescription">恢复连接后先追平历史基线，不追买离线期间的信号。</p>
     <form className="pcSettingsForm" onSubmit={submit}>
       <div className="pcFormGrid">
         <label className="pcField"><span>服务器 IP</span><input aria-label="服务器 IP" value={payload.host} onChange={(event) => setHost(event.target.value)} placeholder="192.168.1.20" /></label>
         <label className="pcField"><span>服务器端口</span><input aria-label="服务器端口" type="number" min="1" max="65535" value={port ?? connection?.port ?? 8731} onChange={(event) => setPort(event.target.value)} /></label>
       </div>
-      <p>支持分类：{connection?.server.supported_categories?.map((key) => labels[key] ?? key).join("、") || "尚未获取"}</p>
-      <p>最后完整采集：{formatBeijing(connection?.server.completed_at ?? null, true)}</p>
-      {Object.entries(connection?.categories ?? {}).map(([category, state]) => <p key={category}>{labels[category] ?? category}：{state.ready ? "已追平" : state.reason || "同步中或覆盖不完整"}</p>)}
+      <div className="pcCollectionStatusGrid" aria-label="采集状态">
+        <div><span>支持分类</span><strong>{connection?.server.supported_categories?.map((key) => labels[key] ?? key).join("、") || "尚未获取"}</strong></div>
+        <div><span>最后完整采集</span><strong>{formatBeijing(connection?.server.completed_at ?? null, true)}</strong></div>
+        {Object.entries(connection?.categories ?? {}).map(([category, state]) => <div key={category}><span>{labels[category] ?? category}</span><strong className={state.ready ? "ready" : "pending"}>{state.ready ? "已追平" : state.reason || "同步中或覆盖不完整"}</strong></div>)}
+      </div>
       {(error || connection?.last_error) && <p className="pcFormError" role="alert">{error || connection?.last_error}</p>}
       {message && <p className="pcFormSuccess" role="status">{message}</p>}
       <div className="pcSettingsActions"><button className="pcButton" type="button" disabled={busy} onClick={() => void act(true)}>测试服务器连接</button><button className="pcButton primary" type="submit" disabled={busy}>保存服务器</button></div>

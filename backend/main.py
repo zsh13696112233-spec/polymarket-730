@@ -22,7 +22,6 @@ from backend.collection_sync import CollectionSyncScanner
 from backend.config import Settings
 from backend.db import Database
 from backend.home import home_overview
-from backend.jev import simulate_jev
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
     CollectionSyncState,
@@ -57,8 +56,6 @@ from backend.schemas import (
     ExecutionAccountUpdate,
     HealthRead,
     HomeOverviewRead,
-    JevSimulationRead,
-    JevSimulationRequest,
     TakeProfitProtectionUpdate,
     TakeProfitRead,
     TakeProfitStatisticsRead,
@@ -777,22 +774,6 @@ def create_app(
         expires_at = now + timedelta(minutes=5)
         previews[confirmation_id] = {"key": key, "quote": quote, "expires_at": expires_at}
         return {**quote, "confirmation_id": confirmation_id, "expires_at": expires_at}
-
-    @application.post("/api/ai/jev/simulate", response_model=JevSimulationRead)
-    async def jev_simulation(
-        payload: JevSimulationRequest, request: Request, response: Response
-    ) -> JevSimulationRead:
-        response.headers["Cache-Control"] = "no-store"
-        api_key = request.headers.get("x-typesafe-api-key", "").strip()
-        if (
-            not api_key
-            or len(api_key) > 512
-            or any(ord(char) < 33 or ord(char) > 126 for char in api_key)
-        ):
-            raise HTTPException(400, "请输入有效的 TypeSafe API Key。")
-        if not payload.state.strip():
-            raise HTTPException(400, "请填写比赛与持仓信息。")
-        return await simulate_jev(payload.state, api_key, proxy=resolved_settings.proxy_url)
 
     @application.get("/api/execution-account/take-profit", response_model=TakeProfitRead)
     async def read_take_profit(request: Request) -> Any:

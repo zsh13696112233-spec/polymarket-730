@@ -161,7 +161,7 @@ describe("首页运行与跟单看板", () => {
     expect(within(runtime).getByLabelText("新号大额")).toHaveTextContent("自动跟单已开启");
     expect(within(runtime).getByLabelText("全量超大额")).toHaveTextContent("自动跟单未开启");
     expect(within(runtime).getByLabelText("自动止盈状态")).toHaveTextContent("已关闭");
-    expect(within(runtime).getByRole("link", { name: "止盈设置 ↗" })).toHaveAttribute("href", "/positions");
+    expect(within(runtime).getByRole("link", { name: "止盈设置 ↗" })).toHaveAttribute("href", "/settings#take-profit-settings");
     const metrics = screen.getByLabelText("今日核心指标");
     expect(metrics.compareDocumentPosition(runtime) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(runtime).getByLabelText("系统状态")).toBeInTheDocument();

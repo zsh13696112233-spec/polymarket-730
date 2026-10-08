@@ -12916,9 +12916,44 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .settingsWorkspace .pcExecutionRedemptionToggle { border-color: #e0e6f0; background: #f8faff; }
 .settingsWorkspace .pcChainTestPanel { padding-bottom: 22px; }
 .settingsWorkspace .pcChainTestPanel > :not(.pcPanelHeader) { margin-right: 22px; margin-left: 22px; }
+
+/* Settings groups are page sections; their child panels provide the card boundary. */
+.settingsWorkspace .pcSettingsGroup {
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.settingsWorkspace .pcSettingsGroupHeader {
+  padding: 0 2px 13px;
+  border-bottom: 1px solid var(--settings-line);
+}
+.settingsWorkspace .pcExecutionAccountPanel .pcPanelHeader {
+  background: #fff;
+}
+.settingsWorkspace .pcExecutionWalletMode {
+  min-width: 0;
+  padding: 6px 11px;
+  border-color: #d7e0fb;
+  border-radius: 999px;
+  background: #f5f7ff;
+}
+.settingsWorkspace .pcExecutionWalletMode > span { font-size: 11px; }
+.settingsWorkspace .pcExecutionWalletMode > strong { font-size: 13px; }
+.settingsWorkspace .pcExecutionAccountPanel .pcAccountSummary {
+  background: #f8faff;
+}
+.settingsWorkspace .pcExecutionFormFooter {
+  margin-top: 22px;
+  padding-top: 16px;
+}
+.settingsWorkspace .pcExecutionFormFooter .pcSettingsActions {
+  justify-content: flex-end;
+}
 @media (max-width: 760px) {
   .settingsWorkspace .pcContent { padding: 18px 14px 32px; }
-  .settingsWorkspace .pcSettingsGroup,
   .settingsWorkspace .pcSettingsSection { padding: 16px; }
   .settingsWorkspace .pcCollectionStatusGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settingsWorkspace .pcSettingsSectionHeader { display: grid; }

@@ -210,7 +210,7 @@ describe("统一设置", () => {
     expect(screen.queryByRole("combobox", { name: "命中规则" })).not.toBeInTheDocument();
     unmount();
     render(<WhaleAutoFollowWorkspace />);
-    expect(screen.getByRole("link", { name: "自动跟单" })).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "跟单决策" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "跟单设置" })).toHaveAttribute("href", "/settings#auto-follow-settings");
     expect(screen.queryByRole("button", { name: "编辑策略" })).not.toBeInTheDocument();
 
@@ -1175,7 +1175,7 @@ describe("巨鲸命中率统计", () => {
   });
 });
 
-describe("巨鲸跟单记录页", () => {
+describe("成交记录页", () => {
   it.each([["wallet_manual", "钱包手动卖出"], ["auto_take_profit", "自动止盈"]])("展示 %s 历史流水并保留汇总和筛选", async (source, label) => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

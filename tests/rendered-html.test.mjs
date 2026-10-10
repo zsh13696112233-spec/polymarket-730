@@ -37,9 +37,10 @@ test("server-renders the home workspace and product metadata", async () => {
   );
   assert.match(html, /PolyCopy/);
   assert.match(html, /链上监测/);
-  assert.match(html, /我的跟单/);
+  assert.match(html, /成交记录/);
+  assert.doesNotMatch(html, /我的跟单/);
   assert.doesNotMatch(html, /持仓管理|href="\/positions"/);
-  assert.match(html, /自动跟单/);
+  assert.match(html, /跟单决策/);
   assert.doesNotMatch(html, /添加目标/);
   assert.doesNotMatch(html, /最近记录/);
   assert.doesNotMatch(html, />策略</);
@@ -98,6 +99,7 @@ test("server-renders follow records without duplicate position management", asyn
   const response = await render("/whales/records");
   assert.equal(response.status, 200);
   const html = await response.text();
+  assert.match(html, /<h1>成交记录<\/h1>/);
   assert.match(html, /跟单汇总/);
   assert.match(html, /历史流水/);
   assert.doesNotMatch(html, /持仓管理|href="\/positions"/);
@@ -127,6 +129,8 @@ test("settings centralize all configuration sections and business pages link to 
   assert.doesNotMatch(monitorHtml, /保存监测条件|打开监测设置/);
   const autoHtml = await (await render("/whales/auto-follow")).text();
   assert.match(autoHtml, /href="\/settings#auto-follow-settings"/);
+  assert.match(autoHtml, /<h1>跟单决策<\/h1>/);
+  assert.match(autoHtml, /查看成交记录/);
   assert.match(autoHtml, /自动跟单决策/);
   assert.doesNotMatch(autoHtml, /编辑策略|保存自动跟单策略/);
   const legacy = await render("/whales/settings");

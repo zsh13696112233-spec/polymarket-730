@@ -407,7 +407,7 @@ export default function WhaleDiscoveryWorkspace() {
       title="链上大额资金监测"
       actions={
         <>
-          <Link className="pcButton ghost" href="/whales/records">我的跟单</Link>
+          <Link className="pcButton ghost" href="/whales/records">成交记录</Link>
           <Link className="pcButton ghost" href="/settings#whale-monitor-settings">监测设置</Link>
           <button className="pcButton primary" type="button" onClick={scanNow} disabled={refreshing}>
             <span className={refreshing ? "spinning" : ""}>↻</span>
@@ -1133,7 +1133,7 @@ function WhaleFollowModal({
             <div><dt>手续费</dt><dd>{formatUsdc(order.fee_usdc)}</dd></div>
           </dl>
           {order.reason && <p>{order.reason}</p>}
-          <Link href="/whales/records" className="pcTextLink">查看我的跟单 →</Link>
+          <Link href="/whales/records" className="pcTextLink">查看成交记录 →</Link>
         </div>
       ) : (
         <>

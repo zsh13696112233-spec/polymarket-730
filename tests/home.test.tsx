@@ -133,7 +133,7 @@ describe("首页运行与跟单看板", () => {
     expect(within(trendSummary).getByText("50.0%")).toBeInTheDocument();
     expect(screen.queryByLabelText("最近自动跟单")).not.toBeInTheDocument();
     expect(screen.queryByText("冠军归属市场")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "自动跟单" })).toHaveAttribute("href", "/whales/auto-follow");
+    expect(screen.getByRole("link", { name: "跟单决策" })).toHaveAttribute("href", "/whales/auto-follow");
     expect(container.querySelector(".homeTrendDetails")).toHaveAttribute("data-point-count", "7");
     expect(screen.getByText("亏损向左")).toBeInTheDocument();
     expect(screen.getByText("盈利向右")).toBeInTheDocument();

@@ -100,7 +100,7 @@ export default function WhaleRecordsWorkspace() {
       setRecords(recordResponse.items || []);
       setSummary({ ...EMPTY_SUMMARY, ...(recordResponse.summary || {}) });
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "巨鲸跟单记录加载失败");
+      setError(requestError instanceof Error ? requestError.message : "成交记录加载失败");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -128,7 +128,7 @@ export default function WhaleRecordsWorkspace() {
   return (
     <PolyCopyShell
       active="whale-records"
-      title="巨鲸跟单记录"
+      title="成交记录"
       actions={
         <>
           <Link className="pcButton ghost" href="/whales">返回巨鲸发现</Link>

@@ -201,7 +201,7 @@ export default function WhaleAutoFollowWorkspace() {
       setDecisions(decisionResponse.items || []);
       setTotal(decisionResponse.total || 0);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "自动跟单工作台加载失败");
+      setError(loadError instanceof Error ? loadError.message : "跟单决策加载失败");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -220,10 +220,10 @@ export default function WhaleAutoFollowWorkspace() {
   return (
     <PolyCopyShell
       active="auto-follow"
-      title="自动跟单"
+      title="跟单决策"
       actions={
         <>
-          <Link className="pcButton ghost" href="/whales/records">查看持仓与流水</Link>
+          <Link className="pcButton ghost" href="/whales/records">查看成交记录</Link>
           <Link className="pcButton ghost" href="/settings#auto-follow-settings">跟单设置</Link>
           <button className="pcButton primary" type="button" onClick={() => void load()} disabled={loading}>
             <span className={loading ? "spinning" : ""}>↻</span> 刷新
@@ -233,7 +233,7 @@ export default function WhaleAutoFollowWorkspace() {
     >
       {error && (
         <div className="pcAlert danger whalePageError" role="alert">
-          <strong>自动跟单数据读取未完成</strong><p>{error}</p><button type="button" onClick={() => void load()}>重试</button>
+          <strong>跟单决策读取未完成</strong><p>{error}</p><button type="button" onClick={() => void load()}>重试</button>
         </div>
       )}
 

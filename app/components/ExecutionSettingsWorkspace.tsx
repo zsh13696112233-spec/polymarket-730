@@ -297,7 +297,7 @@ export default function ExecutionSettingsWorkspace() {
       setChainSellOrder(order); setChainSellPreview(null);
       setChainNotice({
         kind: order.filled_size > 0 ? "success" : "error",
-        text: order.filled_size > 0 ? "测试卖出已成交，买卖链路验证完成。" : "卖出没有立即成交，请到跟单记录核对。",
+        text: order.filled_size > 0 ? "测试卖出已成交，买卖链路验证完成。" : "卖出没有立即成交，请到成交记录核对。",
       });
       await load();
     } catch (error) {

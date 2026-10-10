@@ -12,8 +12,8 @@ const navigation: Array<{
 }> = [
   { id: "home", href: "/", label: "首页" },
   { id: "whales", href: "/whales", label: "链上监测" },
-  { id: "auto-follow", href: "/whales/auto-follow", label: "自动跟单" },
-  { id: "whale-records", href: "/whales/records", label: "我的跟单" },
+  { id: "auto-follow", href: "/whales/auto-follow", label: "跟单决策" },
+  { id: "whale-records", href: "/whales/records", label: "成交记录" },
   { id: "settings", href: "/settings", label: "设置" },
 ];
 

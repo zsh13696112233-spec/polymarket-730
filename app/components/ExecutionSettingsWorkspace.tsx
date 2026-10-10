@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
+import ConfigBackupPanel from "./ConfigBackupPanel";
 import WhaleSettingsWorkspace from "./WhaleSettingsWorkspace";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8730").replace(/\/$/, "");
@@ -119,6 +120,7 @@ function price(value: number | null) {
 }
 
 export default function ExecutionSettingsWorkspace() {
+  const [configRevision, setConfigRevision] = useState(0);
   const [account, setAccount] = useState<Account | null>(null);
   const [signer, setSigner] = useState("");
   const [funder, setFunder] = useState("");
@@ -307,6 +309,7 @@ export default function ExecutionSettingsWorkspace() {
 
   return (
     <PolyCopyShell active="settings" title="系统设置">
+      <ConfigBackupPanel onImported={() => setConfigRevision((current) => current + 1)} />
       <div className="pcSettingsWorkspace">
         <nav className="pcSettingsNavigation" aria-label="设置分区">
           <a href="#execution-wallet"><strong>执行钱包</strong><span>钱包地址与赎回</span></a>
@@ -350,7 +353,7 @@ export default function ExecutionSettingsWorkspace() {
               {notice && <p className={notice.kind === "success" ? "pcFormSuccess" : "pcFormError"}>{notice.text}</p>}
             </form>
           </section>
-          <WhaleSettingsWorkspace />
+          <WhaleSettingsWorkspace key={configRevision} />
           <section id="chain-test" className="pcPanel pcChainTestPanel">
             <header className="pcPanelHeader">
               <div><h2>链上环境测试工具</h2></div>

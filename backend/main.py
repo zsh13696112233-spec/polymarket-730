@@ -12,7 +12,7 @@ from typing import Annotated, Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -22,8 +22,6 @@ from backend.home import home_overview
 from backend.keychain import KeychainError, KeychainReference, MacOSKeychain
 from backend.models import (
     ExecutionAccount,
-    WhaleEntry,
-    WhaleEntryRuleState,
     WhaleExclusion,
     WhaleOrder,
     WhaleSettings,
@@ -45,6 +43,8 @@ from backend.schemas import (
     HealthRead,
     HomeOverviewRead,
     WhaleAutoDecisionListRead,
+    WhaleConfigBackup,
+    WhaleConfigImportRead,
     WhaleExclusionCreate,
     WhaleExclusionListRead,
     WhaleExclusionRead,
@@ -96,6 +96,13 @@ from backend.whale import (
     whale_position_detail,
     whale_settings_read,
     whale_statistics,
+)
+from backend.whale_config import (
+    apply_settings,
+    deactivate_excluded_entries,
+    export_config,
+    import_config,
+    settings_values,
 )
 from backend.whale_requests import WhaleRequestMonitor
 
@@ -696,28 +703,7 @@ def create_app(
             if await session.get(WhaleExclusion, address) is not None:
                 raise HTTPException(status_code=409, detail="该账户已在巨鲸排除名单中")
             session.add(WhaleExclusion(proxy_wallet=address, label=label, created_at=now))
-            entries = list(
-                (
-                    await session.scalars(
-                        select(WhaleEntry).where(func.lower(WhaleEntry.proxy_wallet) == address)
-                    )
-                ).all()
-            )
-            if entries:
-                states = list(
-                    (
-                        await session.scalars(
-                            select(WhaleEntryRuleState).where(
-                                WhaleEntryRuleState.entry_id.in_([entry.id for entry in entries]),
-                                WhaleEntryRuleState.active.is_(True),
-                            )
-                        )
-                    ).all()
-                )
-                for state_row in states:
-                    state_row.active = False
-                    state_row.inactive_at = now
-                    state_row.inactive_reason = "account_excluded"
+            await deactivate_excluded_entries(session, [address])
             try:
                 await session.commit()
             except IntegrityError as error:
@@ -751,6 +737,38 @@ def create_app(
         request.app.state.whale_scanner.wake()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+    @application.get("/api/whales/config/export", response_model=WhaleConfigBackup)
+    async def export_whale_config(request: Request) -> JSONResponse:
+        require_whale_module(request)
+        try:
+            backup = await export_config(request.app.state.database)
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        filename = f"polycopy-config-{utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+        return JSONResponse(
+            backup.model_dump(mode="json"),
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @application.post("/api/whales/config/import", response_model=WhaleConfigImportRead)
+    async def import_whale_config(
+        payload: WhaleConfigBackup, request: Request
+    ) -> WhaleConfigImportRead:
+        require_whale_module(request)
+        try:
+            # Finish the current scan before applying a new snapshot or exclusion list.
+            async with request.app.state.whale_scanner.configuration_lock:
+                return await import_config(request.app.state.database, payload)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except IntegrityError as error:
+            raise HTTPException(
+                status_code=409, detail="配置发生并发修改，未导入任何内容，请重试"
+            ) from error
+
     @application.put("/api/whales/settings", response_model=WhaleSettingsRead)
     async def update_whale_settings(
         payload: WhaleSettingsUpdate,
@@ -758,132 +776,15 @@ def create_app(
     ) -> WhaleSettingsRead:
         require_whale_module(request)
         database: Database = request.app.state.database
-        values = payload.model_dump(exclude_none=True)
-        for nullable_key in (
-            "dual_match_auto_follow_amount_usdc",
-            "new_account_auto_follow_low_price_max_price",
-            "new_account_auto_follow_low_price_amount_usdc",
-            "large_amount_auto_follow_low_price_max_price",
-            "large_amount_auto_follow_low_price_amount_usdc",
-            "auto_follow_market_max_purchase_count",
-            "auto_follow_market_max_amount_usdc",
-        ):
-            if nullable_key in payload.model_fields_set and getattr(payload, nullable_key) is None:
-                values[nullable_key] = None
-        for public_key, storage_key in (
-            ("monitor_categories", "monitor_categories_json"),
-            (
-                "new_account_auto_follow_categories",
-                "new_account_auto_follow_categories_json",
-            ),
-            (
-                "large_amount_auto_follow_categories",
-                "large_amount_auto_follow_categories_json",
-            ),
-        ):
-            categories = values.pop(public_key, None)
-            if categories is not None:
-                values[storage_key] = json.dumps(categories, separators=(",", ":"))
-        # The page exposes one “重仓阈值”.  Keep single and cumulative gates in
-        # lockstep when only the cumulative value is supplied, otherwise raising
-        # the visible threshold would not necessarily narrow results.
-        if "cumulative_threshold_usdc" in values and "single_trade_threshold_usdc" not in values:
-            values["single_trade_threshold_usdc"] = values["cumulative_threshold_usdc"]
-        if "new_account_threshold_usdc" in values:
-            values["single_trade_threshold_usdc"] = values["new_account_threshold_usdc"]
-            values["cumulative_threshold_usdc"] = values["new_account_threshold_usdc"]
-        elif "cumulative_threshold_usdc" in values:
-            values["new_account_threshold_usdc"] = values["cumulative_threshold_usdc"]
-            values["single_trade_threshold_usdc"] = values["cumulative_threshold_usdc"]
-        elif "single_trade_threshold_usdc" in values:
-            values["new_account_threshold_usdc"] = values["single_trade_threshold_usdc"]
-            values["cumulative_threshold_usdc"] = values["single_trade_threshold_usdc"]
+        values = settings_values(payload)
         async with database.sessions() as session:
             row = await session.get(WhaleSettings, 1)
             if row is None:
                 raise HTTPException(status_code=503, detail="巨鲸模块尚未初始化")
-            merged = {
-                column.name: values.get(column.name, getattr(row, column.name))
-                for column in WhaleSettings.__table__.columns
-            }
-            if merged["single_trade_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="单笔重仓阈值不能低于采集金额阈值")
-            if merged["cumulative_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="累计重仓阈值不能低于采集金额阈值")
-            if merged["new_account_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="新号大额门槛不能低于采集金额阈值")
-            if merged["large_amount_threshold_usdc"] < merged["collect_filter_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="全量超大额门槛不能低于采集金额阈值")
-            if merged["exited_ratio_threshold"] >= merged["holding_ratio_threshold"]:
-                raise HTTPException(status_code=422, detail="退出比例阈值必须低于持有比例阈值")
-            if merged["default_follow_amount_usdc"] > merged["max_follow_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="默认买入金额不能超过单笔买入上限")
-            for label, prefix in (
-                ("新号大额", "new_account"),
-                ("全量超大额", "large_amount"),
-            ):
-                amount = merged[f"{prefix}_auto_follow_amount_usdc"]
-                minimum = merged[f"{prefix}_auto_follow_min_price"]
-                maximum = merged[f"{prefix}_auto_follow_max_price"]
-                low_maximum = merged[f"{prefix}_auto_follow_low_price_max_price"]
-                low_amount = merged[f"{prefix}_auto_follow_low_price_amount_usdc"]
-                if amount > merged["max_follow_amount_usdc"]:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"{label}自动跟单金额不能超过单笔买入上限",
-                    )
-                if minimum > maximum:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"{label}自动跟单最低买价不能高于最高买价",
-                    )
-                if (low_maximum is None) != (low_amount is None):
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"{label}低价分界与低价金额必须同时设置或同时清除",
-                    )
-                if low_maximum is not None and low_amount is not None:
-                    if not minimum < low_maximum < maximum:
-                        raise HTTPException(
-                            status_code=422,
-                            detail=f"{label}低价分界必须严格位于实际买价区间内",
-                        )
-                    if low_amount >= amount:
-                        raise HTTPException(
-                            status_code=422,
-                            detail=f"{label}低价金额必须小于基础单笔金额",
-                        )
-                    if low_amount > merged["max_follow_amount_usdc"]:
-                        raise HTTPException(
-                            status_code=422,
-                            detail=f"{label}低价金额不能超过单笔买入上限",
-                        )
-            dual_amount = merged["dual_match_auto_follow_amount_usdc"]
-            if dual_amount is not None and dual_amount > merged["max_follow_amount_usdc"]:
-                raise HTTPException(status_code=422, detail="双重命中金额不能超过单笔买入上限")
-            market_count_cap = merged["auto_follow_market_max_purchase_count"]
-            market_amount_cap = merged["auto_follow_market_max_amount_usdc"]
-            if (market_count_cap is None) != (market_amount_cap is None):
-                raise HTTPException(
-                    status_code=422,
-                    detail="单市场最大购买次数与累计金额必须同时设置或同时清除",
-                )
-            if market_count_cap is not None and market_amount_cap is not None:
-                enabled_amounts = []
-                for prefix in ("new_account", "large_amount"):
-                    if not merged[f"{prefix}_auto_follow_enabled"]:
-                        continue
-                    enabled_amounts.append(merged[f"{prefix}_auto_follow_amount_usdc"])
-                if enabled_amounts and dual_amount is not None:
-                    enabled_amounts.append(dual_amount)
-                if enabled_amounts and market_amount_cap < max(enabled_amounts):
-                    raise HTTPException(
-                        status_code=422,
-                        detail="单市场累计金额不能低于已开启策略的基础单笔金额",
-                    )
-            for key, value in values.items():
-                setattr(row, key, value)
-            row.updated_at = utcnow()
+            try:
+                apply_settings(row, values)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
             await session.commit()
         request.app.state.whale_scanner.wake()
         response = await whale_settings_read(database)

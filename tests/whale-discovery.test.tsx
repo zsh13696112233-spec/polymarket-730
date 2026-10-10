@@ -61,6 +61,33 @@ const settings = {
 };
 
 describe("统一设置", () => {
+
+  it("导入后刷新监测、策略和黑名单，保留钱包草稿", async () => {
+    let imported = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/execution-account")) return json(null);
+      if (url.endsWith("/api/whales/config/import")) {
+        imported = true;
+        return json({ added: 1, updated: 0, retained: 0, message: "配置已导入" });
+      }
+      if (url.endsWith("/api/whales/settings")) return json({ ...settings, registration_window_days: imported ? 12 : 7 });
+      if (url.endsWith("/api/whales/exclusions")) return json({ total: imported ? 1 : 0, items: imported ? [{ proxy_wallet: "0x" + "a".repeat(40), display_name: "导入的账户", profile_url: "https://polymarket.com/profile/test", hidden_entry_count: 0, created_at: "2026-10-11T00:00:00Z" }] : [] });
+      return json({ detail: "not found" }, 404);
+    }));
+    const user = userEvent.setup();
+    render(<ExecutionSettingsWorkspace />);
+    const days = await screen.findByRole("spinbutton", { name: "巨鲸注册窗口天数" });
+    await waitFor(() => expect(days).toBeEnabled());
+    await user.clear(days);
+    await user.type(days, "9");
+    await user.type(screen.getByRole("textbox", { name: "签名钱包地址" }), "钱包草稿");
+    await user.upload(screen.getByLabelText("选择配置文件"), new File(["{}"], "config.json", { type: "application/json" }));
+    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "巨鲸注册窗口天数" })).toHaveValue(12));
+    expect(await screen.findByRole("link", { name: "导入的账户" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "签名钱包地址" })).toHaveValue("钱包草稿");
+  });
+
   it("在设置页集中展示监测条件，保存后立即重新扫描", async () => {
     const user = userEvent.setup();
     const bodies: unknown[] = [];

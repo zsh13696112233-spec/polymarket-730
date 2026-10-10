@@ -12685,3 +12685,23 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   .pcSettingsSections .whaleSettingsStatus { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pcSettingsSections .pcChainTestPanel > :not(.pcPanelHeader) { margin-inline: 16px; }
 }
+
+.pcConfigBackupPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px 24px;
+  width: 100%;
+  max-width: 1480px;
+  margin-inline: auto;
+  padding: 20px 24px;
+}
+.pcConfigBackupPanel h2 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
+.pcConfigBackupPanel p { margin: 4px 0 0; color: #737887; font-size: 12px; line-height: 1.7; }
+.pcConfigBackupPanel .pcSettingsActions { margin: 0; flex-wrap: wrap; gap: 10px; }
+.pcConfigBackupPanel > p { grid-column: 1 / -1; }
+.pcConfigBackupPanel > .pcFormError { color: #b42318; }
+.pcConfigBackupPanel > .pcFormSuccess { color: #16734b; }
+@media (max-width: 760px) {
+  .pcConfigBackupPanel { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+}

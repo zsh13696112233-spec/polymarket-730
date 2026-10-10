@@ -119,6 +119,9 @@ test("email page is retired and settings contain no email controls", async () =>
 test("settings centralize all configuration sections and business pages link to them", async () => {
   const settingsHtml = await (await render("/settings")).text();
   assert.match(settingsHtml, /aria-label="设置分区"/);
+  assert.match(settingsHtml, /配置备份/);
+  assert.match(settingsHtml, /导出配置/);
+  assert.match(settingsHtml, /导入配置/);
   for (const id of ["execution-wallet", "whale-monitor-settings", "auto-follow-settings", "chain-test"]) {
     assert.match(settingsHtml, new RegExp(`id="${id}"`));
     assert.match(settingsHtml, new RegExp(`href="#${id}"`));

@@ -255,6 +255,100 @@ class WhaleSettingsUpdate(APIModel):
         return self
 
 
+class WhaleConfigSettings(WhaleSettingsUpdate):
+    """Complete v1 snapshot: missing settings must never silently use defaults."""
+
+    enabled: bool
+    window_hours: int = Field(gt=0)
+    registration_window_days: int = Field(ge=1, le=30)
+    new_account_threshold_usdc: Decimal = Field(gt=0)
+    large_amount_threshold_usdc: Decimal = Field(gt=0)
+    monitor_categories: list[WhaleMarketCategory] = Field(min_length=1)
+    dual_match_auto_follow_amount_usdc: Decimal | None = Field(gt=0)
+    new_account_auto_follow_enabled: bool
+    new_account_auto_follow_amount_usdc: Decimal = Field(gt=0)
+    new_account_auto_follow_min_price: Decimal = Field(gt=0, lt=1)
+    new_account_auto_follow_max_price: Decimal = Field(gt=0, lt=1)
+    new_account_auto_follow_categories: list[WhaleMarketCategory]
+    new_account_auto_follow_low_price_max_price: Decimal | None = Field(gt=0, lt=1)
+    new_account_auto_follow_low_price_amount_usdc: Decimal | None = Field(gt=0)
+    large_amount_auto_follow_enabled: bool
+    large_amount_auto_follow_amount_usdc: Decimal = Field(gt=0)
+    large_amount_auto_follow_min_price: Decimal = Field(gt=0, lt=1)
+    large_amount_auto_follow_max_price: Decimal = Field(gt=0, lt=1)
+    large_amount_auto_follow_categories: list[WhaleMarketCategory]
+    large_amount_auto_follow_low_price_max_price: Decimal | None = Field(gt=0, lt=1)
+    large_amount_auto_follow_low_price_amount_usdc: Decimal | None = Field(gt=0)
+    large_amount_conflict_priority_enabled: bool
+    auto_follow_market_max_purchase_count: int | None = Field(gt=0)
+    auto_follow_market_max_amount_usdc: Decimal | None = Field(gt=0)
+    collect_filter_amount_usdc: Decimal = Field(gt=0)
+    single_trade_threshold_usdc: Decimal = Field(gt=0)
+    cumulative_threshold_usdc: Decimal = Field(gt=0)
+    min_liquidity_usdc: Decimal = Field(ge=0)
+    min_remaining_minutes: int = Field(ge=0)
+    max_price_delta_cents: Decimal = Field(ge=0)
+    holding_ratio_threshold: Decimal = Field(gt=0, le=100)
+    exited_ratio_threshold: Decimal = Field(ge=0, lt=100)
+    scan_interval_seconds: int = Field(gt=0)
+    profile_cache_hours: int = Field(gt=0)
+    trade_retention_hours: int = Field(gt=0)
+    max_follow_amount_usdc: Decimal = Field(gt=0)
+    default_follow_amount_usdc: Decimal = Field(gt=0)
+    follow_slippage_cents: Decimal = Field(ge=0, le=50)
+    sell_slippage_cents: Decimal = Field(ge=0, le=50)
+    auto_redeem: bool
+
+
+class WhaleConfigExclusion(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proxy_wallet: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    label: str | None = Field(max_length=200)
+
+    @field_validator("proxy_wallet")
+    @classmethod
+    def normalize_wallet(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: str | None) -> str | None:
+        return (value.strip() or None) if value else None
+
+
+class WhaleConfigBackup(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product: Literal["PolyCopy"]
+    version: Literal[1]
+    exported_at: datetime
+    settings: WhaleConfigSettings
+    exclusions: list[WhaleConfigExclusion]
+
+    @model_validator(mode="after")
+    def deduplicate_exclusions(self) -> WhaleConfigBackup:
+        unique: dict[str, WhaleConfigExclusion] = {}
+        for item in self.exclusions:
+            previous = unique.get(item.proxy_wallet)
+            if previous is not None and previous.label != item.label:
+                raise ValueError("黑名单中同一钱包存在不同备注，请统一后重新导入")
+            unique[item.proxy_wallet] = item
+        self.exclusions = list(unique.values())
+        return self
+
+    @field_serializer("exported_at", when_used="json")
+    def serialize_exported_at(self, value: datetime) -> str:
+        return _as_utc_iso(value) or ""
+
+
+class WhaleConfigImportRead(APIModel):
+    added: int
+    updated: int
+    retained: int
+    message: str
+
+
 class WhaleAutoDecisionRead(APIModel):
     id: int
     entry_id: int

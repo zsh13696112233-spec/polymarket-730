@@ -858,6 +858,11 @@ class WhaleDiscoveryScanner:
         self._focus_refreshed_at: datetime | None = None
 
     @property
+    def configuration_lock(self) -> asyncio.Lock:
+        """Serialize bulk configuration replacement with active scans."""
+        return self._lock
+
+    @property
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
 

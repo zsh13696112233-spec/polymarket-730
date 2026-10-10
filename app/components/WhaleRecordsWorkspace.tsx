@@ -60,8 +60,9 @@ function recordSourceLabel(source: string) {
   const labels: Record<string, string> = {
     follow: "跟单成交",
     manual: "手动交易",
-    wallet_manual: "持仓管理卖出",
+    wallet_manual: "钱包手动卖出",
     auto_follow: "自动跟单",
+    auto_take_profit: "自动止盈",
     conflict_exit: "分歧风控",
     chain_test: "链路测试",
     auto_redeem: "自动结算",
@@ -130,7 +131,6 @@ export default function WhaleRecordsWorkspace() {
       title="巨鲸跟单记录"
       actions={
         <>
-          <Link className="pcButton ghost" href="/positions">查看持仓管理</Link>
           <Link className="pcButton ghost" href="/whales">返回巨鲸发现</Link>
           <button className="pcButton primary" type="button" onClick={() => void loadData()} disabled={loading}>
             <span className={loading ? "spinning" : ""}>↻</span> 刷新记录

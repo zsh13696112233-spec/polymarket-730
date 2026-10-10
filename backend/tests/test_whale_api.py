@@ -475,7 +475,7 @@ def test_whale_exclusion_hides_all_monitoring_views_and_blocks_follow(
     assert restored["large_amount"]["settled_count"] == 1
 
 
-def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_factory, monkeypatch):
+def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_factory):
     client, _ = app_client_factory([[]])
 
     initial = client.get("/api/whales/settings")
@@ -504,106 +504,6 @@ def test_whale_settings_read_update_syncs_thresholds_and_validates(app_client_fa
     assert initial.json()["auto_follow_market_max_amount_usdc"] is None
     assert initial.json()["coverage_incomplete_until"] is None
     assert "smtp_configured" not in initial.json()
-    global_email_settings = client.get("/api/email-settings").json()
-    assert global_email_settings["smtp_configured"] is False
-    assert global_email_settings["notifications_enabled"] is False
-    assert global_email_settings["weekly_summary_enabled"] is False
-    assert global_email_settings["weekly_summary_enabled_at"] is None
-    assert global_email_settings["weekly_summary_last_sent_at"] is None
-    assert global_email_settings["weekly_summary_next_run_at"] is None
-    assert global_email_settings["notification_recipients"] == []
-
-    saved_secrets: list[tuple[str, str, str]] = []
-
-    class FakeKeychain:
-        def set_secret(self, reference, secret):
-            saved_secrets.append((reference.service, reference.account, secret))
-
-        def get_secret(self, reference):
-            assert reference.account == "sender@163.com"
-            return "test-authorization-code"
-
-    fake_keychain = FakeKeychain()
-    client.app.state.keychain = fake_keychain
-    client.app.state.whale_email_notifier.keychain = fake_keychain
-    smtp_settings = client.put(
-        "/api/email-settings",
-        json={
-            "smtp_host": "smtp.163.com",
-            "smtp_port": 465,
-            "smtp_security": "ssl",
-            "smtp_username": "sender@163.com",
-            "smtp_from_name": "PolyCopy",
-            "smtp_authorization_code": "test-authorization-code",
-        },
-    )
-    assert smtp_settings.status_code == 200, smtp_settings.text
-    assert smtp_settings.json()["smtp_configured"] is True
-    assert smtp_settings.json()["smtp_authorization_code_configured"] is True
-    assert "smtp_authorization_code" not in smtp_settings.json()
-    assert saved_secrets == [("com.polycopy.smtp", "sender@163.com", "test-authorization-code")]
-
-    async def successful_test(*, recipient_email=None):
-        return {
-            "status": "ok",
-            "connection": "ok",
-            "tls": "ok",
-            "authentication": "ok",
-            "message_sent": recipient_email is not None,
-            "detail": "测试邮件已提交给 163 SMTP",
-        }
-
-    monkeypatch.setattr(
-        client.app.state.whale_email_notifier,
-        "test_connection",
-        successful_test,
-    )
-    test_email = client.post(
-        "/api/email-settings/test",
-        json={"send_email": True, "recipient_email": "receiver@example.com"},
-    )
-    assert test_email.status_code == 200, test_email.text
-    assert test_email.json()["message_sent"] is True
-
-    email_settings = client.put(
-        "/api/email-settings",
-        json={
-            "notifications_enabled": True,
-            "weekly_summary_enabled": True,
-            "notification_recipients": [
-                " Alerts@Example.com ",
-                "alerts@example.com",
-                "ops@example.com",
-            ],
-        },
-    )
-    assert email_settings.status_code == 200, email_settings.text
-    assert email_settings.json()["notifications_enabled"] is True
-    assert email_settings.json()["weekly_summary_enabled"] is True
-    assert email_settings.json()["weekly_summary_enabled_at"] is not None
-    assert email_settings.json()["weekly_summary_next_run_at"] is not None
-    assert email_settings.json()["notification_recipients"] == [
-        "alerts@example.com",
-        "ops@example.com",
-    ]
-    disabled_summary = client.put(
-        "/api/email-settings",
-        json={"weekly_summary_enabled": False},
-    )
-    assert disabled_summary.status_code == 200, disabled_summary.text
-    assert disabled_summary.json()["weekly_summary_enabled"] is False
-    assert disabled_summary.json()["weekly_summary_enabled_at"] is None
-    assert (
-        client.put(
-            "/api/email-settings",
-            json={"notification_recipients": ["not-an-email"]},
-        ).status_code
-        == 422
-    )
-    delivery_log = client.get("/api/email-notifications?status=failed")
-    assert delivery_log.status_code == 200
-    assert delivery_log.json() == {"total": 0, "items": []}
-
     updated = client.put(
         "/api/whales/settings",
         json={"new_account_threshold_usdc": 150000},
@@ -1596,3 +1496,22 @@ def test_history_price_filter_applies_before_pagination(
     )
     assert client.get(f"{endpoint}?rule=large_amount").json()["total"] == 1
     assert client.get("/api/whales/statistics").json() == statistics
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/api/email-notifications"),
+        ("GET", "/api/email-settings"),
+        ("PUT", "/api/email-settings"),
+        ("POST", "/api/email-settings/test"),
+    ],
+)
+def test_email_feature_is_retired(app_client_factory, method, path):
+    client, _ = app_client_factory([[]])
+    assert client.request(method, path).status_code == 404
+    assert not hasattr(client.app.state, "whale_email_notifier")
+    paths = client.get("/openapi.json").json()["paths"]
+    assert not any("email" in item for item in paths)
+    assert client.get("/api/whales/settings").status_code == 200
+    assert client.get("/api/execution-account").status_code == 200

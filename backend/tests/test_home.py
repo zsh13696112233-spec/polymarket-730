@@ -366,9 +366,10 @@ async def test_home_system_stays_degraded_while_trade_coverage_is_incomplete(
         scanner_running=True,
     )
 
-    assert payload["system"]["status"] == "error"
+    assert payload["system"]["status"] == "degraded"
     assert payload["system"]["coverage_incomplete_until"] == coverage_until
-    assert "自动跟单暂停" in payload["system"]["last_scan_error"]
+    assert "成交历史覆盖不完整" in payload["system"]["last_scan_error"]
+    assert "暂停" not in payload["system"]["last_scan_error"]
 
 
 def position(
@@ -759,6 +760,41 @@ async def test_home_distinguishes_pending_market_backfill_from_failure(database,
                 updated_at=NOW,
                 last_scan_at=NOW,
                 last_scan_error="重点市场 0xabc 历史补齐中，拆单回溯不完整，未用于新增信号",
+            )
+        )
+        await session.commit()
+    payload = await home_overview(database, MarksClient({}), now=NOW, scanner_running=running)
+    assert payload["system"]["status"] == expected
+
+
+@pytest.mark.parametrize(
+    "running,failures,age,extra_error,expected",
+    [
+        (True, 0, 0, "", "degraded"),
+        (False, 0, 0, "", "error"),
+        (True, 1, 0, "", "error"),
+        (True, 0, 181, "", "error"),
+        (True, 0, 0, "；持仓核验失败", "error"),
+    ],
+)
+async def test_home_coverage_warning_does_not_hide_scan_errors(
+    database, running, failures, age, extra_error, expected
+):
+    async with database.sessions() as session:
+        session.add(
+            WhaleSettings(
+                id=1,
+                created_at=NOW,
+                updated_at=NOW,
+                last_scan_at=NOW - timedelta(seconds=age),
+                scan_interval_seconds=60,
+                consecutive_failures=failures,
+                coverage_incomplete_until=NOW + timedelta(hours=24),
+                last_scan_error=(
+                    "重点市场 0xabc 历史补齐中，拆单回溯不完整，未用于新增信号；"
+                    "成交历史覆盖仍不完整；"
+                    "缺失时段预计移出统计窗口时间：2026-10-11T11:28:25 UTC" + extra_error
+                ),
             )
         )
         await session.commit()

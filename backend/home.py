@@ -421,22 +421,25 @@ async def home_overview(
     )
     if coverage_incomplete_until is not None and not scan_error:
         scan_error = (
-            "成交历史覆盖不完整，自动跟单暂停至 "
+            "成交历史覆盖不完整；缺失时段预计移出统计窗口时间："
             f"{coverage_incomplete_until.isoformat(timespec='seconds')} UTC"
         )
     if settings is None:
         system_status = "error"
     elif not settings.enabled:
         system_status = "disabled"
-    elif (
-        coverage_incomplete_until is not None
-        or settings.consecutive_failures
-        or (
-            scan_error
-            and not all(
-                item.startswith("重点市场 ") and "历史补齐中" in item
-                for item in scan_error.split("；")
-            )
+    elif settings.consecutive_failures or (
+        scan_error
+        and not all(
+            (item.startswith("重点市场 ") and "历史补齐中" in item)
+            or item
+            in {
+                "成交回溯达到官方分页上限，历史覆盖不完整",
+                "成交历史覆盖仍不完整",
+                "成交历史覆盖不完整",
+            }
+            or item.startswith("缺失时段预计移出统计窗口时间：")
+            for item in scan_error.split("；")
         )
     ):
         system_status = "error"

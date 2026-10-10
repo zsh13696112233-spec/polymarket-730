@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { PolyCopyShell } from "./PolyCopyShell";
 import {
   WhaleExclusion,
   WhaleExclusionList,
@@ -167,12 +166,10 @@ export function WhaleSettingsPanel({
   settings,
   onSettingsChange,
   onReload,
-  onClose,
 }: {
   settings: WhaleSettings | null;
   onSettingsChange: (settings: WhaleSettings) => void;
   onReload: () => Promise<void>;
-  onClose?: () => void;
 }) {
   const [monitorCategoriesInput, setMonitorCategoriesInput] = useState<WhaleMarketCategory[] | null>(null);
   const monitorCategories = monitorCategoriesInput ?? settings?.monitor_categories ?? AUTO_CATEGORIES.map((item) => item.key);
@@ -244,12 +241,11 @@ export function WhaleSettingsPanel({
   }
 
   return (
-      <section className="pcPanel whaleInlineSettingsPanel" aria-label="巨鲸监测设置">
+      <section id="whale-monitor-settings" className="pcPanel whaleInlineSettingsPanel" aria-label="巨鲸监测设置">
         <header className="pcPanelHeader">
           <div>
             <h2>监测条件</h2>
           </div>
-          {onClose && <button className="whaleSettingsClose" type="button" onClick={onClose}>收起设置</button>}
         </header>
         <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={submit}>
           <div className="whaleInlineSettingsBody">
@@ -647,7 +643,7 @@ export function WhaleAutoSettingsPanel({
   }
 
   return (
-    <section className="pcPanel whaleInlineSettingsPanel" aria-label="巨鲸自动跟单设置">
+    <section id="auto-follow-settings" className="pcPanel whaleInlineSettingsPanel" aria-label="巨鲸自动跟单设置">
       <header className="pcPanelHeader whaleAutoCompactHeader">
         <div>
           <h2>自动跟单策略</h2>
@@ -804,12 +800,10 @@ export default function WhaleSettingsWorkspace() {
   }, [load]);
 
   return (
-    <PolyCopyShell
-      active="whales"
-      title="巨鲸监测"
-    >
+    <>
       {loadError && <div className="pcAlert danger" role="alert">{loadError}</div>}
       <WhaleSettingsPanel settings={settings} onSettingsChange={setSettings} onReload={load} />
-    </PolyCopyShell>
+      <WhaleAutoSettingsPanel settings={settings} onSettingsChange={setSettings} onReload={load} />
+    </>
   );
 }

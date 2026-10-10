@@ -359,7 +359,7 @@ export default function HomeWorkspace() {
       : runtimeStatus === "healthy"
         ? "系统运行正常"
         : runtimeStatus === "degraded"
-          ? "重点市场历史补齐中"
+          ? "历史数据覆盖不完整"
         : runtimeStatus === "disabled"
           ? "链上扫描已停用"
           : "系统存在异常";
@@ -415,7 +415,7 @@ export default function HomeWorkspace() {
               {(runtimeStatus === "error" || runtimeStatus === "degraded") && <p className="homeRuntimeReason">{error || (connection === "disconnected" ? "连接中断，正在重连" : overview.system.last_scan_error) || runtimeLabel}</p>}
               <footer className="homeRuntimeFooter">
                 <dl><div><dt>最后扫描</dt><dd>{formatClock(overview.system.last_scan_at)}</dd></div><div><dt>数据更新</dt><dd>{formatClock(overview.as_of)}</dd></div></dl>
-                <Link className="homeRuntimeSettings" href="/whales/settings">监测设置 ↗</Link>
+                <Link className="homeRuntimeSettings" href="/settings#whale-monitor-settings">监测设置 ↗</Link>
               </footer>
             </div>
           </section>

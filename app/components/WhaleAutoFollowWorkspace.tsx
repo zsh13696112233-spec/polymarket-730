@@ -3,13 +3,11 @@
 import Link from "next/link";
 import { type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { PolyCopyShell } from "./PolyCopyShell";
-import { WhaleAutoSettingsPanel } from "./WhaleSettingsWorkspace";
 import { useVisibleAutoRefresh } from "./useVisibleAutoRefresh";
 import {
   WhaleAutoDecision,
   WhaleAutoDecisionList,
   WhaleRule,
-  WhaleSettings,
   formatBeijing,
   formatPrice,
   formatUsdc,
@@ -185,7 +183,6 @@ function DecisionRow({ decision }: { decision: WhaleAutoDecision }) {
 }
 
 export default function WhaleAutoFollowWorkspace() {
-  const [settings, setSettings] = useState<WhaleSettings | null>(null);
   const [decisions, setDecisions] = useState<WhaleAutoDecision[]>([]);
   const [total, setTotal] = useState(0);
   const [rule, setRule] = useState<WhaleRule | "">("");
@@ -200,11 +197,7 @@ export default function WhaleAutoFollowWorkspace() {
     if (rule) params.set("rule", rule);
     if (status) params.set("status", status);
     try {
-      const [settingsResponse, decisionResponse] = await Promise.all([
-        whaleApi<WhaleSettings>("/api/whales/settings"),
-        whaleApi<WhaleAutoDecisionList>(`/api/whales/auto-decisions?${params.toString()}`),
-      ]);
-      setSettings(settingsResponse);
+      const decisionResponse = await whaleApi<WhaleAutoDecisionList>(`/api/whales/auto-decisions?${params.toString()}`);
       setDecisions(decisionResponse.items || []);
       setTotal(decisionResponse.total || 0);
     } catch (loadError) {
@@ -231,6 +224,7 @@ export default function WhaleAutoFollowWorkspace() {
       actions={
         <>
           <Link className="pcButton ghost" href="/whales/records">查看持仓与流水</Link>
+          <Link className="pcButton ghost" href="/settings#auto-follow-settings">跟单设置</Link>
           <button className="pcButton primary" type="button" onClick={() => void load()} disabled={loading}>
             <span className={loading ? "spinning" : ""}>↻</span> 刷新
           </button>
@@ -242,8 +236,6 @@ export default function WhaleAutoFollowWorkspace() {
           <strong>自动跟单数据读取未完成</strong><p>{error}</p><button type="button" onClick={() => void load()}>重试</button>
         </div>
       )}
-
-      <WhaleAutoSettingsPanel settings={settings} onSettingsChange={setSettings} onReload={load} />
 
       <section className="pcPanel whaleAutoDecisionPanel" aria-label="自动跟单决策记录">
         <header className="pcPanelHeader whaleRecordsHeader">

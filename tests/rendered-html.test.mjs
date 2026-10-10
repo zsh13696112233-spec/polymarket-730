@@ -38,6 +38,7 @@ test("server-renders the home workspace and product metadata", async () => {
   assert.match(html, /PolyCopy/);
   assert.match(html, /链上监测/);
   assert.match(html, /我的跟单/);
+  assert.doesNotMatch(html, /持仓管理|href="\/positions"/);
   assert.match(html, /自动跟单/);
   assert.doesNotMatch(html, /添加目标/);
   assert.doesNotMatch(html, /最近记录/);
@@ -87,13 +88,9 @@ test("keeps home, chain monitoring and execution settings in the client", async 
 });
 
 
-test("server-renders the position-management workspace", async () => {
+test("removed position-management route returns 404", async () => {
   const response = await render("/positions");
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /持仓管理/);
-  assert.match(html, /当前持仓/);
-  assert.match(html, /卖出订单/);
+  assert.equal(response.status, 404);
 });
 
 
@@ -103,6 +100,36 @@ test("server-renders follow records without duplicate position management", asyn
   const html = await response.text();
   assert.match(html, /跟单汇总/);
   assert.match(html, /历史流水/);
-  assert.match(html, /查看持仓管理/);
+  assert.doesNotMatch(html, /持仓管理|href="\/positions"/);
   assert.doesNotMatch(html, /当前持仓|暂无巨鲸跟单持仓|一键卖出|展开完整流水/);
+});
+
+
+test("email page is retired and settings contain no email controls", async () => {
+  assert.equal((await render("/email-records")).status, 404);
+  const response = await render("/settings");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.doesNotMatch(html, /邮件记录|SMTP|收件人|email-records|email-settings/);
+});
+
+
+test("settings centralize all configuration sections and business pages link to them", async () => {
+  const settingsHtml = await (await render("/settings")).text();
+  assert.match(settingsHtml, /aria-label="设置分区"/);
+  for (const id of ["execution-wallet", "whale-monitor-settings", "auto-follow-settings", "chain-test"]) {
+    assert.match(settingsHtml, new RegExp(`id="${id}"`));
+    assert.match(settingsHtml, new RegExp(`href="#${id}"`));
+  }
+  assert.equal((settingsHtml.match(/<main\b/g) ?? []).length, 1);
+  const monitorHtml = await (await render("/whales")).text();
+  assert.match(monitorHtml, /href="\/settings#whale-monitor-settings"/);
+  assert.doesNotMatch(monitorHtml, /保存监测条件|打开监测设置/);
+  const autoHtml = await (await render("/whales/auto-follow")).text();
+  assert.match(autoHtml, /href="\/settings#auto-follow-settings"/);
+  assert.match(autoHtml, /自动跟单决策/);
+  assert.doesNotMatch(autoHtml, /编辑策略|保存自动跟单策略/);
+  const legacy = await render("/whales/settings");
+  assert.equal(legacy.status, 307);
+  assert.equal(new URL(legacy.headers.get("location"), "http://localhost").href, "http://localhost/settings#whale-monitor-settings");
 });

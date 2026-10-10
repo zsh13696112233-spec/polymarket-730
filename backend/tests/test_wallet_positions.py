@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -285,98 +284,34 @@ async def test_trading_disabled_and_settled_positions(wallet_executor):
         await quote(executor)
 
 
-def test_wallet_api_confirmation_and_decimal_contract(app_client_factory):
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/positions"),
+        ("GET", "/orders"),
+        ("POST", "/positions/99/sell/preview"),
+        ("POST", "/positions/99/sell/execute"),
+        ("POST", "/orders/1/cancel/preview"),
+        ("POST", "/orders/1/cancel/execute"),
+    ],
+)
+def test_position_management_routes_removed(app_client_factory, method, path):
     client, _ = app_client_factory([[]])
     executor = client.app.state.whale_executor
-    preview = dict(
-        wallet=WALLET,
-        asset_id="99",
-        title="Market",
-        outcome="Yes",
-        order_type="FAK",
-        size=D("10"),
-        price=D("0.6"),
-        estimated_proceeds=D("6"),
-        estimated_fee=D("0"),
-        estimated_pnl=None,
-    )
-    executor.quote_wallet_sell = AsyncMock(return_value=preview)
-    order = dict(
-        id=1,
-        external_order_id="upstream",
-        asset_id="99",
-        title="Market",
-        outcome="Yes",
-        order_type="FAK",
-        price=D("0.6"),
-        size=D("10"),
-        filled_size=D("0"),
-        status="submitted",
-        can_cancel=True,
-    )
-    executor.execute_wallet_sell = AsyncMock(return_value=order)
-    root = "/api/execution-account/positions/99/sell"
-    response = client.post(root + "/preview", json={"sell_all": True, "order_type": "FAK"})
-    assert response.status_code == 200
-    assert response.json()["price"] == "0.6"
-    token = response.json()["confirmation_id"]
-    assert (
-        client.post(
-            root + "/execute", json={"confirmation_id": token, "confirmation_text": "wrong"}
-        ).status_code
-        == 422
-    )
-    payload = {"confirmation_id": token, "confirmation_text": "确认真实卖出"}
-    assert client.post(root + "/execute", json=payload).status_code == 200
-    assert client.post(root + "/execute", json=payload).status_code == 409
-    executor.execute_wallet_sell.assert_awaited_once()
-    token = client.post(root + "/preview", json={"sell_all": True}).json()["confirmation_id"]
-    client.app.state.wallet_previews[token]["expires_at"] = utcnow() - timedelta(seconds=1)
-    assert (
-        client.post(root + "/execute", json={**payload, "confirmation_id": token}).status_code
-        == 409
-    )
-    assert (
-        client.post(root + "/preview", json={"sell_all": True, "order_type": "GTC"}).status_code
-        == 422
-    )
-
-
-def test_cancel_api_requires_correct_order_and_text(app_client_factory):
-    client, _ = app_client_factory([[]])
-    executor = client.app.state.whale_executor
-    order = dict(
-        id=1,
-        external_order_id="remote",
-        asset_id="99",
-        title="Market",
-        outcome="Yes",
-        order_type="GTC",
-        price=D("0.6"),
-        size=D("10"),
-        filled_size=D("0"),
-        status="live",
-        can_cancel=True,
-    )
-    executor.quote_wallet_cancel = AsyncMock(return_value={"wallet": WALLET, "order": order})
-    executor.execute_wallet_cancel = AsyncMock(return_value={**order, "status": "cancelled"})
-    root = "/api/execution-account/orders/1/cancel"
-    token = client.post(root + "/preview").json()["confirmation_id"]
-    payload = {"confirmation_id": token, "confirmation_text": "确认撤单"}
-    assert (
-        client.post(root + "/execute", json={**payload, "confirmation_text": ""}).status_code == 422
-    )
-    assert client.post(root + "/execute", json=payload).status_code == 200
-    assert client.post(root + "/execute", json=payload).status_code == 409
-    token = client.post(root + "/preview").json()["confirmation_id"]
-    assert (
-        client.post(
-            "/api/execution-account/orders/2/cancel/execute",
-            json={**payload, "confirmation_id": token},
-        ).status_code
-        == 409
-    )
-    executor.execute_wallet_cancel.assert_awaited_once()
+    operations = [
+        "wallet_positions",
+        "quote_wallet_sell",
+        "execute_wallet_sell",
+        "quote_wallet_cancel",
+        "execute_wallet_cancel",
+    ]
+    for name in operations:
+        setattr(executor, name, AsyncMock())
+    response = client.request(method, "/api/execution-account" + path)
+    assert response.status_code == 404
+    assert "/api/execution-account" + path not in client.get("/openapi.json").json()["paths"]
+    for name in operations:
+        getattr(executor, name).assert_not_awaited()
 
 
 async def test_migration_upgrade_preserves_old_order(tmp_path):
@@ -458,26 +393,6 @@ async def test_gtc_follow_ledger_does_not_write_off_live_remainder(wallet_execut
         WhaleLedgerRead.model_validate(ledger[0])
 
 
-def test_wallet_decimal_response_never_uses_exponents():
-    from backend.schemas import WalletPositionRead
-
-    response = WalletPositionRead(
-        asset_id="99",
-        title="Market",
-        outcome="Yes",
-        size=D("1E-8"),
-        reserved_size=D("0E-18"),
-        available_size=D("1E-8"),
-        price=None,
-        market_value=None,
-        cost=None,
-        pnl=None,
-        status="open",
-    ).model_dump(mode="json")
-    assert response["size"] == "0.00000001"
-    assert response["reserved_size"] == "0.000000000000000000"
-
-
 @pytest.mark.parametrize("has_orders", [False, True])
 async def test_wallet_positions_consumes_sdk_items_not_pages(wallet_executor, has_orders):
     from polymarket.pagination import AsyncPaginator, Page
@@ -501,23 +416,6 @@ async def test_wallet_positions_consumes_sdk_items_not_pages(wallet_executor, ha
     assert result["positions"][0]["available_size"] == D("5" if has_orders else "10")
     assert len(result["orders"]) == (2 if has_orders else 0)
     assert cursors == ([None, "next"] if has_orders else [None])
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"sell_all": True, "order_type": "GTC", "price": "0.6"},
-        {"sell_all": False, "size": "5"},
-        {"sell_all": True, "price": "0.6"},
-    ],
-)
-def test_one_click_api_rejects_limit_and_partial_orders(app_client_factory, payload):
-    client, _ = app_client_factory([[]])
-    executor = client.app.state.whale_executor
-    executor.quote_wallet_sell = AsyncMock()
-    response = client.post("/api/execution-account/positions/99/sell/preview", json=payload)
-    assert response.status_code == 422
-    executor.quote_wallet_sell.assert_not_awaited()
 
 
 async def test_index_truncation_does_not_block_verified_arsenal_balance(wallet_executor):

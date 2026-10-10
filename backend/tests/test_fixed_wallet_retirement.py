@@ -34,6 +34,16 @@ RETIRED_TABLES = {
 }
 
 
+# Preserved migration history retains these tables without runtime models.
+PRESERVED_HISTORY_TABLES = {
+    "take_profit_policies",
+    "take_profit_protections",
+    "take_profit_executions",
+    "collection_cache",
+    "collection_sync_state",
+}
+
+
 def test_retired_tables_are_absent_from_runtime_metadata():
     assert RETIRED_TABLES.isdisjoint(Base.metadata.tables)
 
@@ -64,9 +74,9 @@ async def test_pre_migration_database_replays_from_its_actual_revision(tmp_path:
         }
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
-    assert revision == "0047_backfill_signal_eligibility"
+    assert revision == "0052_collection_sync"
     assert RETIRED_TABLES.isdisjoint(tables)
-    assert set(Base.metadata.tables) == tables - {"alembic_version"}
+    assert set(Base.metadata.tables) | PRESERVED_HISTORY_TABLES == tables - {"alembic_version"}
 
 
 def test_fixed_wallet_apis_are_retired_and_chain_runtime_remains(app_client_factory):
@@ -146,4 +156,4 @@ def test_retirement_migration_preserves_execution_account_and_whale_tables(tmp_p
     assert conflict_priority_enabled == 1
     assert "redemption_executions" in tables
     assert RETIRED_TABLES.isdisjoint(tables)
-    assert set(Base.metadata.tables) == tables - {"alembic_version"}
+    assert set(Base.metadata.tables) | PRESERVED_HISTORY_TABLES == tables - {"alembic_version"}

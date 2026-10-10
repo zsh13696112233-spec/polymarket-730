@@ -3,7 +3,7 @@
 import { ReactNode, useState } from "react";
 import Link from "next/link";
 
-export type WorkspaceView = "home" | "whales" | "auto-follow" | "positions" | "whale-records" | "email-records" | "settings";
+export type WorkspaceView = "home" | "whales" | "auto-follow" | "whale-records" | "settings";
 
 const navigation: Array<{
   id: WorkspaceView;
@@ -13,9 +13,7 @@ const navigation: Array<{
   { id: "home", href: "/", label: "首页" },
   { id: "whales", href: "/whales", label: "链上监测" },
   { id: "auto-follow", href: "/whales/auto-follow", label: "自动跟单" },
-  { id: "positions", href: "/positions", label: "持仓管理" },
   { id: "whale-records", href: "/whales/records", label: "我的跟单" },
-  { id: "email-records", href: "/email-records", label: "邮件记录" },
   { id: "settings", href: "/settings", label: "设置" },
 ];
 
@@ -33,9 +31,6 @@ function NavIcon({ id }: { id: WorkspaceView }) {
   if (id === "home") {
     return <svg {...common}><path d="m3.5 10 8.5-7 8.5 7" /><path d="M5.5 8.5V21h13V8.5" /><path d="M9.5 21v-7h5v7" /></svg>;
   }
-  if (id === "positions") {
-    return <svg {...common}><rect x="3.5" y="7" width="17" height="13" rx="2" /><path d="M8 7V5a1.5 1.5 0 0 1 1.5-1.5h5A1.5 1.5 0 0 1 16 5v2" /><path d="M3.5 12a22 22 0 0 0 17 0" /><path d="M10 13h4v3h-4z" /></svg>;
-  }
   if (id === "whale-records") {
     return <svg {...common}><path d="M8.5 6h11" /><path d="M8.5 12h11" /><path d="M8.5 18h11" /><path d="m3.75 6 1 1 1.75-2" /><path d="m3.75 12 1 1 1.75-2" /><path d="m3.75 18 1 1 1.75-2" /></svg>;
   }
@@ -44,9 +39,6 @@ function NavIcon({ id }: { id: WorkspaceView }) {
   }
   if (id === "whales") {
     return <svg {...common}><path d="M3.5 12h3l1.8-4.25 3.1 8.5 2.25-5.25 1.35 3h5.5" /><circle cx="12" cy="12" r="9" /></svg>;
-  }
-  if (id === "email-records") {
-    return <svg {...common}><rect x="3.5" y="5.5" width="17" height="13" rx="1.5" /><path d="m4.5 7 7.5 6 7.5-6" /></svg>;
   }
   return <svg {...common}><path d="M4 7h10" /><circle cx="17" cy="7" r="2" /><path d="M20 17H10" /><circle cx="7" cy="17" r="2" /><path d="M4 12h4" /><circle cx="11" cy="12" r="2" /><path d="M14 12h6" /></svg>;
 }

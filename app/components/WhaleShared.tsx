@@ -372,7 +372,7 @@ export type WhaleRecord = {
   position_id: number;
   order_id: number | null;
   type: "buy" | "sell" | "redeem" | "resolved_loss" | string;
-  source: "follow" | "manual" | "auto_follow" | "conflict_exit" | "auto_redeem" | "reconciliation" | string;
+  source: "follow" | "manual" | "auto_follow" | "auto_take_profit" | "conflict_exit" | "auto_redeem" | "reconciliation" | string;
   title: string;
   outcome: string;
   market_slug?: string | null;

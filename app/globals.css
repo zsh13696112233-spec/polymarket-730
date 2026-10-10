@@ -8510,119 +8510,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
 .whaleAutoRiskHint button { min-width: 66px; flex: 0 0 auto; padding: 5px 9px; border: 1px solid #8f4941; border-radius: 6px; background: rgba(255, 255, 255, .04); color: inherit; cursor: pointer; font: inherit; font-weight: 750; }
 .whaleAutoRiskHint button:hover { border-color: #c67168; background: rgba(255, 255, 255, .08); }
 .whaleExclusionManager { display: grid; gap: 14px; margin: 0 14px 14px; padding: 18px; border: 1px solid #403b1f; background: #090a06; }
-.emailNotificationGrid { display: grid; grid-template-columns: minmax(180px, .4fr) minmax(280px, 1fr); gap: 14px; }
-.emailNotificationToggle { align-content: start; }
-.pcSystemSettingsForm .emailNotificationToggle input[type="checkbox"] {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
-  margin: 0;
-  padding: 0;
-  appearance: none;
-  place-content: center;
-  border: 1px solid #cfd4df;
-  border-radius: 6px;
-  background: #fff;
-  cursor: pointer;
-}
-.pcSystemSettingsForm .emailNotificationToggle input[type="checkbox"]::before {
-  width: 6px;
-  height: 11px;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  content: "";
-  opacity: 0;
-  transform: translateY(-1px) rotate(45deg);
-}
-.pcSystemSettingsForm .emailNotificationToggle input[type="checkbox"]:checked {
-  border-color: #536dfe;
-  background: #536dfe;
-}
-.pcSystemSettingsForm .emailNotificationToggle input[type="checkbox"]:checked::before { opacity: 1; }
-.pcSystemSettingsForm .emailNotificationToggle input[type="checkbox"]:hover:not(:disabled) { border-color: #7889ee; }
-.pcSystemSettingsForm .emailNotificationToggle input[type="checkbox"]:focus-visible {
-  border-color: #536dfe;
-  box-shadow: 0 0 0 3px rgba(83, 109, 254, 0.16);
-}
-.pcSystemSettingsForm .emailNotificationToggle input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .55; }
-.emailNotificationGrid textarea { min-height: 96px; resize: vertical; }
-.emailSettingsPanel { margin-top: 18px; }
-.emailSmtpGrid input, .emailSmtpGrid select { width: 100%; }
-.emailSmtpTestRow { display: grid; grid-template-columns: minmax(240px, 1fr) auto auto; align-items: end; gap: 10px; }
-.emailSmtpTestRow .pcButton { min-height: 40px; }
-.emailSettingsStatus { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #403b1f; background: #090a06; }
-.emailSettingsStatus span, .emailSettingsStatus small { color: #817c5f; }
-.emailSettingsStatus strong { color: #e8e3bd; }
-.weeklyEmailSummaryPanel { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; margin-bottom: 18px; padding: 20px; }
-.weeklyEmailSummaryCopy { display: grid; gap: 5px; }
-.weeklyEmailSummaryCopy h2, .weeklyEmailSummaryCopy p { margin: 0; }
-.weeklyEmailSummaryCopy h2 { color: #e8e3bd; font-size: 18px; }
-.weeklyEmailSummaryCopy p, .weeklyEmailSummaryCopy small { color: #817c5f; }
-.weeklyEmailSummaryCopy small { display: block; font-size: 11px; }
-.weeklyEmailSummaryCopy .weeklyEmailSummaryPaused { color: #d1a955; }
-.weeklyEmailSummaryToggle { display: flex; align-items: center; gap: 10px; color: #b9b493; font-size: 12px; font-weight: 700; }
-.weeklyEmailSummaryToggle input { width: 42px; height: 22px; accent-color: #5367d9; cursor: pointer; }
-.weeklyEmailSummaryToggle input:disabled { cursor: not-allowed; opacity: .55; }
-.weeklyEmailSummaryMessage { grid-column: 1 / -1; margin: 0; }
-.emailDeliveryHeading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.emailDeliveryHeading h2, .emailDeliveryHeading h3 { margin: 0; }
-.emailDeliveryHeading p { margin: 4px 0 0; color: #817c5f; }
-.emailRecordsFilter { display: grid; flex: 0 0 auto; gap: 5px; color: #817c5f; font-size: 11px; }
-.emailRecordsFilter select { min-width: 140px; height: 38px; padding: 0 10px; color: #e8e3bd; border: 1px solid #403b1f; background: #0c0d08; }
-.whaleEmailTableWrap { overflow-x: auto; }
-.emailRecordsPanel { overflow: hidden; }
-.emailRecordList { display: grid; min-height: 160px; padding: 12px; gap: 8px; transition: opacity 140ms ease; }
-.emailRecordList.loading { opacity: .45; }
-.emailRecordCard { overflow: hidden; border: 1px solid #302d1c; border-radius: 10px; background: #0a0b07; }
-.emailRecordCardHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 16px 10px; }
-.emailRecordLead { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 3px 8px; }
-.emailRecordBadges { display: flex; flex-wrap: wrap; grid-row: 1; grid-column: 1; align-items: center; gap: 5px; }
-.emailRecordLead h3 { grid-row: 1; grid-column: 2; margin: 0; color: #e8e3bd; font-size: 15px; line-height: 1.35; }
-.emailRecordLead p { display: flex; flex-wrap: wrap; grid-column: 2; gap: 4px 10px; margin: 0; color: #817c5f; font-size: 11px; }
-.emailRecordLead p strong { color: #b9b493; }
-.emailRecordStatusBlock { display: grid; flex: 0 0 auto; justify-items: end; }
-.emailRecordMarketGrid { display: grid; gap: 7px; padding: 9px 16px 10px; border-top: 1px solid #302d1c; background: #0c0d08; }
-.emailRecordSectionHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.emailRecordSectionHeading strong { color: #d8d3ad; font-size: 12px; }
-.emailRecordSectionHeading span { color: #66634f; font-size: 10px; }
-.emailRecordMarketList { display: grid; gap: 6px; }
-.emailRecordMarketRow { display: grid; grid-template-columns: minmax(140px, .85fr) minmax(140px, 1.15fr) minmax(120px, .8fr) minmax(150px, 1fr); align-items: stretch; overflow: hidden; border: 1px solid #302d1c; border-radius: 8px; background: #090a06; }
-.emailRecordMarketRow > div { display: grid; align-content: center; gap: 2px; min-width: 0; padding: 7px 10px; }
-.emailRecordMarketRow > div + div { border-left: 1px solid #302d1c; }
-.emailRecordMarketRow span { color: #66634f; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
-.emailRecordMarketRow strong { min-width: 0; color: #c9c4a3; font-size: 13px; overflow-wrap: anywhere; }
-.emailRecordOutcome strong { font-size: 14px; }
-.emailRecordOutcome small { color: #817c5f; font-size: 10px; }
-.emailRecordOutcome small b { color: inherit; font-weight: 600; }
-.emailRecordMarketMetric strong { font-variant-numeric: tabular-nums; }
-.emailRecordMarketMetric.total strong { color: #f1df76; font-size: 15px; }
-.emailRecordMarketRow small { color: #817c5f; font-size: 10px; font-weight: 500; }
-.emailRecordMarketEmpty { padding: 9px 12px; border: 1px dashed #403b1f; border-radius: 8px; color: #817c5f; font-size: 12px; text-align: center; }
-.emailRecordMetaGrid { display: grid; grid-template-columns: 1.2fr 1fr .8fr; padding: 7px 16px 8px; border-top: 1px solid #302d1c; background: #080905; }
-.emailRecordMetaGrid > div { display: flex; align-content: start; align-items: baseline; flex-wrap: wrap; gap: 2px 7px; min-width: 0; padding: 3px 10px; }
-.emailRecordMetaGrid > div + div { border-left: 1px solid #302d1c; }
-.emailRecordMetaGrid span { color: #66634f; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
-.emailRecordMetaGrid strong { overflow-wrap: anywhere; color: #c9c4a3; font-size: 12px; }
-.emailRecordMetaGrid small { color: #817c5f; font-size: 10px; }
-.whaleEmailTable { width: 100%; min-width: 1460px; border-collapse: collapse; font-size: 12px; }
-.whaleEmailTable th, .whaleEmailTable td { padding: 9px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid #302d1c; }
-.whaleEmailTable th { color: #817c5f; font-weight: 600; }
-.whaleEmailTable td { color: #d8d3ad; }
-.whaleEmailTable td strong, .whaleEmailTable td small { display: block; }
-.whaleEmailTable td small { max-width: 320px; margin-top: 3px; color: #817c5f; overflow-wrap: anywhere; }
-.whaleEmailTable td.emailDeliveryContent { min-width: 320px; }
-.whaleEmailTable td.emailDeliveryContent small { white-space: pre-line; line-height: 1.55; }
-.emailStatus.sent { color: #3be6a1; }
-.emailStatus.failed { color: #ff7186; }
-.emailStatus.pending, .emailStatus.retrying { color: #ffe052; }
-.emailStatus.sending { color: #78bde7; }
-.whaleEmailTable td .emailDeliveryError { color: #ef8b78; }
-.emailRecordsEmpty { display: grid; min-height: 120px; place-items: center; color: #817c5f !important; text-align: center !important; }
-.emailRecordsMessage { margin: 12px 14px; }
-.emailRecordsPagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-top: 1px solid #302d1c; color: #817c5f; font-size: 12px; }
-.emailRecordsPagination > div { display: flex; gap: 8px; }
-.emailRecordsPagination .pcButton { min-height: 34px; padding: 0 12px; }
 .whaleExclusionHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .whaleExclusionHeading h3 { margin: 4px 0 5px; color: #e8e3bd; font-size: 19px; }
 .whaleExclusionHeading p { margin: 0; color: #8d896a; font-size: 13px; line-height: 1.55; }
@@ -9301,23 +9188,6 @@ a.pcMarketIdentity:hover strong { color: #ffe35d; }
   .whaleStatsTrendRow > small { display: none; }
   .whaleInlineSettingsPanel .pcPanelHeader { align-items: flex-start; }
   .whaleExclusionManager { margin-inline: 8px; padding: 13px; }
-  .emailNotificationGrid { grid-template-columns: 1fr; }
-  .emailSmtpTestRow { grid-template-columns: 1fr; }
-  .emailDeliveryHeading { align-items: flex-start; flex-direction: column; }
-  .emailRecordsFilter, .emailRecordsFilter select { width: 100%; }
-  .emailRecordList { padding: 8px; }
-  .weeklyEmailSummaryPanel { grid-template-columns: 1fr; padding: 16px; }
-  .weeklyEmailSummaryToggle { justify-content: space-between; }
-  .emailRecordCardHeader { gap: 10px; padding: 11px 12px 9px; }
-  .emailRecordMarketGrid { padding: 9px 12px 10px; }
-  .emailRecordMarketRow { grid-template-columns: 1fr 1fr; }
-  .emailRecordMarketRow > div:nth-child(3) { border-left: 0; border-top: 1px solid #302d1c; }
-  .emailRecordMarketRow > div:nth-child(4) { border-top: 1px solid #302d1c; }
-  .emailRecordMetaGrid { grid-template-columns: 1fr; padding: 5px 12px 6px; }
-  .emailRecordMetaGrid > div { grid-template-columns: 68px minmax(0, 1fr); gap: 2px 8px; padding: 5px 0; }
-  .emailRecordMetaGrid > div + div { border-top: 1px solid #302d1c; border-left: 0; }
-  .emailRecordMetaGrid > div > span { grid-row: 1 / span 2; }
-  .emailRecordsPagination { align-items: flex-start; flex-direction: column; }
   .whaleExclusionHeading { flex-direction: column; gap: 10px; }
   .whaleExclusionForm { grid-template-columns: 1fr; }
   .whaleExclusionForm .pcButton { grid-column: auto; width: 100%; }
@@ -11780,41 +11650,6 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   border-radius: 10px;
   background: #fbfbfc;
 }
-.emailSettingsStatus { border-color: var(--pc-line); border-radius: 8px; background: #fbfbfc; }
-.emailSettingsStatus span, .emailSettingsStatus small { color: #8d8e99; }
-.emailSettingsStatus strong { color: #1f2328; }
-.emailDeliveryHeading h2, .emailDeliveryHeading h3 { color: #1f2328; }
-.emailDeliveryHeading p { color: #8d8e99; }
-.emailRecordsFilter { color: #8d8e99; }
-.emailRecordsFilter select { color: #4b4f58; border-color: var(--pc-line); background: #fff; }
-.emailRecordCard { border-color: var(--pc-line); background: #fff; box-shadow: 0 2px 10px rgba(31, 35, 40, .035); }
-.emailRecordLead h3 { color: #24272d; font-weight: 650; }
-.weeklyEmailSummaryCopy h2 { color: #24272d; }
-.weeklyEmailSummaryCopy p, .weeklyEmailSummaryCopy small { color: #8d8e99; }
-.weeklyEmailSummaryCopy .weeklyEmailSummaryPaused { color: #9a6900; }
-.weeklyEmailSummaryToggle { color: #626670; }
-.emailRecordLead p { color: #92959d; }
-.emailRecordLead p strong { color: #626670; }
-.emailRecordMarketGrid { border-color: var(--pc-line); background: #f7f8fa; }
-.emailRecordSectionHeading strong { color: #4b4f58; font-weight: 600; }
-.emailRecordSectionHeading span { color: #9a9da5; }
-.emailRecordMarketRow { border-color: #e1e4ea; background: #fff; box-shadow: 0 1px 2px rgba(31, 35, 40, .025); }
-.emailRecordMarketRow > div + div { border-color: #eceef2; }
-.emailRecordMarketRow span { color: #9a9da5; }
-.emailRecordMarketRow strong { color: #4b4f58; }
-.emailRecordOutcome strong { color: #30343b; font-weight: 600; }
-.emailRecordOutcome small { color: #8d8e99; }
-.emailRecordMarketMetric.total strong { color: #134cff; font-family: var(--pc-data-font); font-weight: 650; }
-.emailRecordMarketRow small, .emailRecordMarketEmpty { color: #8d8e99; }
-.emailRecordMarketEmpty { border-color: #d9dce4; background: #fff; }
-.emailRecordMetaGrid { border-color: var(--pc-line); background: #f7f8fa; }
-.emailRecordMetaGrid > div + div { border-color: #e1e4ea; }
-.emailRecordMetaGrid span { color: #9a9da5; }
-.emailRecordMetaGrid strong { color: #4b4f58; }
-.emailRecordMetaGrid small { color: #8d8e99; }
-.whaleEmailTable th, .whaleEmailTable td { border-bottom-color: var(--pc-line); }
-.whaleEmailTable th, .whaleEmailTable td small { color: #8d8e99; }
-.whaleEmailTable td { color: #4b4f58; }
 .whaleExclusionHeading h3 { color: #1f2328; }
 .whaleExclusionHeading p { color: #8d8e99; }
 .whaleExclusionHeading > strong {
@@ -12764,44 +12599,6 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   }
 }
 
-/* Execution-wallet position management. */
-.walletPositions { display: grid; gap: 20px; }
-.walletPositionPanel { padding: 20px; min-width: 0; }
-.walletPositionPanel > p { color: #6b7280; font-size: 13px; margin: 10px 0 18px; }
-.walletTableScroll { overflow-x: auto; }
-.walletTableScroll table { min-width: 760px; }
-.walletTableScroll small { display: block; margin-top: 6px; color: #6b7280; }
-.walletTableScroll td:first-child { max-width: 350px; }
-.walletTableScroll .pcButton { margin-top: 8px; }
-.walletEmpty { padding: 24px; text-align: center; }
-.walletSellForm { display: grid; gap: 16px; }
-.walletPreview { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--pc-line); border-radius: 12px; }
-
-.walletTableScroll .walletHoldingsTable { min-width: 1040px; table-layout: fixed; font-size: 14px; }
-.walletHoldingsTable th { height: 46px; font-size: 11px; letter-spacing: 0; background: #f8fafc; }
-.walletHoldingsTable th:first-child { width: 29%; }
-.walletHoldingsTable th:nth-child(2) { width: 23%; }
-.walletHoldingsTable th:nth-child(3) { width: 13%; }
-.walletHoldingsTable th:nth-child(4) { width: 15%; }
-.walletHoldingsTable th:nth-child(5) { width: 9%; }
-.walletHoldingsTable th:nth-child(6) { width: 11%; }
-.walletHoldingsTable td { padding-top: 22px; padding-bottom: 22px; vertical-align: middle; }
-.walletHoldingsTable .walletNumeric { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.walletMarketTitle { display: block; line-height: 1.55; font-weight: 600; overflow-wrap: anywhere; }
-.walletMetric { font-weight: 600; color: #172b4d; }
-.walletHoldingsTable small { margin-top: 9px; font-size: 12px; line-height: 1.5; }
-.walletOutcome { display: inline-block; padding: 2px 9px; border-radius: 5px; background: #f1f5f9; color: #526176; font-weight: 500; }
-.walletHoldingsTable .walletStatusColumn { text-align: center; }
-.walletHoldingsTable .walletActionColumn { text-align: right; }
-.walletPositionStatus { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; background: #f1f5f9; color: #64748b; }
-.walletPositionStatus.open { background: #edf8f2; color: #23744c; }
-.walletPositionStatus.open::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.walletPositionStatus.unavailable { background: #fff6e6; color: #936617; }
-.walletHoldingsTable .walletPositionReason { font-size: 11px; overflow-wrap: anywhere; }
-.walletHoldingsTable .walletActionColumn .pcButton { min-height: 38px; margin: 0; padding: 9px 14px; border-radius: 8px; white-space: nowrap; font-size: 13px; font-weight: 600; }
-.walletHoldingsTable .walletLoss { color: #c2414d; }
-.walletHoldingsTable .walletProfit { color: #23835c; }
-
 .whalePriceFilter { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
 .whalePriceFilter input { accent-color: #536dfe; }
 
@@ -12815,3 +12612,76 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
 .homeRuntimeFooter dl > div { display: grid; gap: 4px; }
 .homeRuntimeFooter dt { color: #969ca7; font-size: 9px; }
 .homeRuntimeFooter dd { margin: 0; color: #737b88; font-family: var(--pc-data-font); font-size: 10px; }
+
+/* Unified settings: consistent sections and a compact in-page directory. */
+.pcSettingsWorkspace {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+  width: 100%;
+  max-width: 1480px;
+  margin-inline: auto;
+}
+.pcSettingsNavigation {
+  position: sticky;
+  top: 24px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--pc-line);
+  border-radius: 12px;
+  background: #fff;
+}
+.pcSettingsNavigation a {
+  display: grid;
+  gap: 5px;
+  padding: 14px 12px;
+  border-radius: 8px;
+  color: #343844;
+  text-decoration: none;
+}
+.pcSettingsNavigation a:hover,
+.pcSettingsNavigation a:focus-visible {
+  background: #f1f4ff;
+  color: #3156d3;
+}
+.pcSettingsNavigation strong { font-size: 14px; font-weight: 600; }
+.pcSettingsNavigation span { color: #737887; font-size: 12px; line-height: 1.5; }
+.pcSettingsSections { display: grid; min-width: 0; gap: 24px; }
+.pcSettingsSections > .pcPanel {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--pc-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: none;
+  scroll-margin-top: 24px;
+}
+.pcSettingsSections > .pcPanel:target { border-color: #9aaeea; }
+.pcSettingsSections .pcPanelHeader { min-height: 72px; padding: 18px 24px; gap: 16px; }
+.pcSettingsSections .pcPanelHeader h2 { font-size: 17px; font-weight: 600; }
+.pcSettingsSections .pcSettingsForm { padding: 24px; }
+.pcSettingsSections .whaleInlineSettingsBody { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.pcSettingsSections .whaleSettingsStatus { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.pcSettingsSections .pcSettingsActions { flex-wrap: wrap; gap: 10px; }
+.pcSettingsSections .pcExecutionFormFooter { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.pcSettingsSections .pcField { min-width: 0; }
+.pcSettingsSections .pcField input { min-width: 0; }
+.pcSettingsSections .pcChainTestPanel > :not(.pcPanelHeader) { margin-inline: 24px; }
+@media (max-width: 1100px) {
+  .pcSettingsWorkspace { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .pcSettingsNavigation { position: static; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .pcSettingsNavigation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcSettingsNavigation a { padding: 10px; }
+  .pcSettingsSections { gap: 16px; }
+  .pcSettingsSections .pcPanelHeader,
+  .pcSettingsSections .pcSettingsForm { padding: 16px; }
+  .pcSettingsSections .pcExecutionAddressGrid,
+  .pcSettingsSections .pcFormGrid.three,
+  .pcSettingsSections .whaleAutoOverviewGrid { grid-template-columns: minmax(0, 1fr); }
+  .pcSettingsSections .whaleSettingsStatus { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcSettingsSections .pcChainTestPanel > :not(.pcPanelHeader) { margin-inline: 16px; }
+}

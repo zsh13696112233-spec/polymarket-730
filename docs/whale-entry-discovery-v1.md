@@ -488,7 +488,7 @@ price_delta_percent = (current_price − avg_buy_price) / avg_buy_price × 100
 | `follow_slippage_cents` | DECIMAL | 3 | 跟单买入允许滑点（美分） |
 | `sell_slippage_cents` | DECIMAL | 3 | 卖出允许滑点（美分） |
 | `auto_redeem` | Boolean | true | 结算后自动赎回 |
-| `coverage_incomplete_until` | DateTime | null | 分页触顶后保持降级和暂停自动动作的截止时间 |
+| `coverage_incomplete_until` | DateTime | null | 分页触顶后历史覆盖缺口预计移出滚动统计窗口的时间（仅告警，不暂停自动动作） |
 | `last_scan_at` | DateTime | null | 健康状态 |
 | `last_scan_error` | Text | null | 健康状态 |
 | `consecutive_failures` | Integer | 0 | 健康状态 |
@@ -769,7 +769,7 @@ sequenceDiagram
     S->>DB: 写入 last_scan_at
 ```
 
-第一步的分页终止条件有三个，任一满足即停：本页最小 `timestamp` 早于 `window_start`；返回条数少于 `limit`；`offset` 超过 `max_scan_pages × limit`（默认 20 页即 10000 条）。达到页数上限时，扫描器写入覆盖不完整告警并把游标推进到本轮结束时间，避免以后每轮永久重复同一批数据；同时把 `coverage_incomplete_until` 延长一个完整滚动窗口。在此之前继续采集新成交和记录信号，但暂停自动买入与分歧自动卖出。
+第一步的分页终止条件有三个，任一满足即停：本页最小 `timestamp` 早于 `window_start`；返回条数少于 `limit`；`offset` 超过 `max_scan_pages × limit`（默认 20 页即 10000 条）。达到页数上限时，扫描器写入覆盖不完整告警并把游标推进到本轮结束时间，避免以后每轮永久重复同一批数据；同时把 `coverage_incomplete_until` 延长一个完整滚动窗口。在此之前继续保留覆盖不完整告警，但不因此暂停自动买入与分歧自动卖出；已采集成交达到门槛的信号继续经过现有持仓、分类、价格与金额等校验。历史补齐和持仓补充发现仍不能直接触发自动买入。
 
 ### 8.3 请求量控制
 

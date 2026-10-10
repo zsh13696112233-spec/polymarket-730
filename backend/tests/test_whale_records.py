@@ -95,3 +95,36 @@ async def test_record_win_rate_excludes_conflict_exits_and_flats(database: Datab
     assert validated.summary.excluded_chain_test_count == 1
     assert validated.summary.win_rate_percent == Decimal("50")
     assert validated.summary.realized_pnl == Decimal("-1.5")
+
+
+def test_records_api_accepts_historical_auto_take_profit(app_client_factory) -> None:
+    client, _ = app_client_factory([[]], trading_enabled=False, start_monitor=False)
+
+    async def seed() -> None:
+        async with client.app.state.database.sessions() as session:
+            position = finished_position("historical-take-profit", "2")
+            session.add(position)
+            await session.flush()
+            session.add(
+                WhaleFollowLedger(
+                    position_id=position.id,
+                    type="sell",
+                    source="auto_take_profit",
+                    size=Decimal("10"),
+                    price=Decimal("0.7"),
+                    amount_usdc=Decimal("7"),
+                    fee_usdc=Decimal("0"),
+                    realized_pnl=Decimal("2"),
+                    timestamp=NOW,
+                )
+            )
+            await session.commit()
+
+    client.portal.call(seed)
+    response = client.get("/api/whales/records?limit=200&offset=0")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["source"] == "auto_take_profit"
+    assert payload["summary"]["total_proceeds_usdc"] == 7
+    assert payload["summary"]["realized_pnl"] == 2

@@ -26,7 +26,6 @@ from backend.config import Settings
 from backend.db import Database
 from backend.keychain import KeychainReference, MacOSKeychain
 from backend.models import (
-    EmailSettings,
     ExecutionAccount,
     RedemptionExecution,
     WhaleAutoFollowDecision,
@@ -69,11 +68,6 @@ from backend.trading import (
     market_worst_price,
     normalize_fak_result,
     redeemable_position_payout_rate,
-)
-from backend.whale_email import (
-    WhaleEmailCandidate,
-    WhaleEmailNotifier,
-    enqueue_whale_email_deliveries,
 )
 from backend.whale_requests import (
     WhaleRequestMonitor,
@@ -842,14 +836,12 @@ class WhaleDiscoveryScanner:
         settings: Settings,
         executor: WhaleFollowExecutor | None = None,
         request_monitor: WhaleRequestMonitor | None = None,
-        email_notifier: WhaleEmailNotifier | None = None,
     ) -> None:
         self.database = database
         self.client = client
         self.settings = settings
         self.executor = executor
         self.request_monitor = request_monitor
-        self.email_notifier = email_notifier
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -1052,8 +1044,6 @@ class WhaleDiscoveryScanner:
                     round((monotonic() - scan_started) * 1000),
                     warning,
                 )
-                if self.email_notifier is not None:
-                    self.email_notifier.wake()
                 return True
             except asyncio.CancelledError:
                 await self._finish_scan_run(scan_id, status="failed", error="扫描已取消")
@@ -1168,7 +1158,7 @@ class WhaleDiscoveryScanner:
         next_cursor = self._last_trade_cursor_at
         if hit_page_limit:
             # Escape the public feed's historical offset cap while retaining
-            # the fail-closed coverage flag for the potentially missing window.
+            # the coverage warning for the potentially missing window.
             next_cursor = now
             next_complete_at = now + timedelta(hours=max(1, int(config["window_hours"])))
             coverage_incomplete_until = max(
@@ -1190,10 +1180,6 @@ class WhaleDiscoveryScanner:
 
         discovered_positions, discovery_warnings = await self._supplement_discovery(
             config, now=now, window_start=window_start
-        )
-
-        auto_follow_block_reason = (
-            "成交历史覆盖不完整，自动跟单已暂停" if coverage_incomplete_until is not None else None
         )
 
         async with self.database.sessions() as session:
@@ -1370,9 +1356,8 @@ class WhaleDiscoveryScanner:
             config=config,
             now=now,
             window_start=window_start,
-            auto_follow_block_reason=auto_follow_block_reason,
         )
-        if self.executor is not None and auto_follow_block_reason is None:
+        if self.executor is not None:
             await self._process_auto_decisions(auto_decision_ids)
             await self._process_conflict_exits()
         await self._update_entry_settlements(now=now)
@@ -1387,10 +1372,10 @@ class WhaleDiscoveryScanner:
         warnings: list[str] = list(discovery_warnings)
         if coverage_incomplete_until is not None:
             warnings.append(
-                "成交回溯达到官方分页上限，历史覆盖不完整；自动跟单暂停至 "
+                "成交回溯达到官方分页上限，历史覆盖不完整；缺失时段预计移出统计窗口时间："
                 f"{coverage_incomplete_until.isoformat(timespec='seconds')} UTC"
                 if hit_page_limit
-                else "成交历史覆盖仍不完整；自动跟单暂停至 "
+                else "成交历史覆盖仍不完整；缺失时段预计移出统计窗口时间："
                 f"{coverage_incomplete_until.isoformat(timespec='seconds')} UTC"
             )
         if failed_wallets:
@@ -2201,10 +2186,8 @@ class WhaleDiscoveryScanner:
         config: dict[str, Any],
         now: datetime,
         window_start: datetime,
-        auto_follow_block_reason: str | None = None,
     ) -> list[int]:
         async with self.database.sessions() as session:
-            email_settings = await session.get(EmailSettings, 1)
             backfill_states = {
                 (state.proxy_wallet, state.asset_id): state
                 for state in (await session.scalars(select(WhaleBackfillSignalState))).all()
@@ -2230,7 +2213,6 @@ class WhaleDiscoveryScanner:
                 (row.entry_id, row.rule_type): row
                 for row in (await session.scalars(select(WhaleEntryRuleState))).all()
             }
-            email_candidates: list[WhaleEmailCandidate] = []
             auto_candidates: list[
                 tuple[WhaleEntry, set[str], WhaleMarket | None, bool, bool, bool]
             ] = []
@@ -2421,7 +2403,7 @@ class WhaleDiscoveryScanner:
                 history_only = gate is not None and aggregate.last_buy_at <= gate.auto_follow_after
                 auto_rules = set(new_rules)
                 if gate is not None and gate.awaiting_new_buy and not history_only:
-                    # Discovery/email state may already exist for historical
+                    # Discovery state may already exist for historical
                     # fills. The first subsequent real buy still gets one
                     # opportunity through the unchanged decision guards.
                     auto_rules.update(matches)
@@ -2431,7 +2413,7 @@ class WhaleDiscoveryScanner:
                     and (not was_position_only or fresh_position_conversion)
                     and not history_only
                 ):
-                    if gate is not None and auto_follow_block_reason is None:
+                    if gate is not None:
                         gate.awaiting_new_buy = False
                     auto_candidates.append(
                         (
@@ -2441,21 +2423,6 @@ class WhaleDiscoveryScanner:
                             position_failed,
                             position_present,
                             market_terminal,
-                        )
-                    )
-
-                if (
-                    email_settings is not None
-                    and email_settings.notifications_enabled
-                    and new_rules
-                    and not position_failed
-                    and position_present
-                    and not market_terminal
-                ):
-                    email_candidates.append(
-                        WhaleEmailCandidate(
-                            entry_id=row.id,
-                            new_rules=frozenset(new_rules),
                         )
                     )
 
@@ -2512,19 +2479,6 @@ class WhaleDiscoveryScanner:
                     state.inactive_reason = (
                         "market_closed" if market_terminal else "position_exited"
                     )
-
-            await enqueue_whale_email_deliveries(
-                session,
-                candidates=email_candidates,
-                triggered_at=now,
-            )
-
-            if auto_follow_block_reason is not None:
-                for row in existing.values():
-                    row.follow_eligible = False
-                    row.follow_ineligible_reason = "coverage_incomplete"
-                await session.commit()
-                return []
 
             pending_decision_ids: list[int] = []
             active_rules_by_condition_asset: defaultdict[str, defaultdict[str, set[str]]] = (

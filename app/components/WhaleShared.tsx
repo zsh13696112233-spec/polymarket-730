@@ -9,6 +9,7 @@ export const API_BASE = (
 export type Numeric = number | string;
 export type WhaleRule = "new_account" | "large_amount";
 export type WhaleMarketCategory = "esports" | "sports" | "politics" | "crypto" | "science_tech" | "entertainment" | "other";
+export type WhaleCategorySelection = WhaleMarketCategory | "dota-2" | "counter-strike-2" | "league-of-legends" | "other-esports" | "soccer" | "tennis" | "basketball" | "baseball" | "football" | "hockey" | "mma" | "boxing" | "cricket" | "golf" | "motorsports" | "other-sports";
 
 export type WhaleSettings = {
   enabled: boolean;
@@ -16,20 +17,20 @@ export type WhaleSettings = {
   registration_window_days: number;
   new_account_threshold_usdc: Numeric;
   large_amount_threshold_usdc: Numeric;
-  monitor_categories: WhaleMarketCategory[];
+  monitor_categories: WhaleCategorySelection[];
   dual_match_auto_follow_amount_usdc: Numeric | null;
   new_account_auto_follow_enabled: boolean;
   new_account_auto_follow_amount_usdc: Numeric;
   new_account_auto_follow_min_price: Numeric;
   new_account_auto_follow_max_price: Numeric;
-  new_account_auto_follow_categories: WhaleMarketCategory[];
+  new_account_auto_follow_categories: WhaleCategorySelection[];
   new_account_auto_follow_low_price_max_price: Numeric | null;
   new_account_auto_follow_low_price_amount_usdc: Numeric | null;
   large_amount_auto_follow_enabled: boolean;
   large_amount_auto_follow_amount_usdc: Numeric;
   large_amount_auto_follow_min_price: Numeric;
   large_amount_auto_follow_max_price: Numeric;
-  large_amount_auto_follow_categories: WhaleMarketCategory[];
+  large_amount_auto_follow_categories: WhaleCategorySelection[];
   large_amount_auto_follow_low_price_max_price: Numeric | null;
   large_amount_auto_follow_low_price_amount_usdc: Numeric | null;
   large_amount_conflict_priority_enabled: boolean;

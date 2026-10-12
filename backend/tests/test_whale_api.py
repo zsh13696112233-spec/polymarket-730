@@ -1247,7 +1247,7 @@ def test_monitor_categories_round_trip_and_validation(app_client_factory):
         response.json()["new_account_auto_follow_categories"]
         == initial["new_account_auto_follow_categories"]
     )
-    for invalid in ([], ["football"]):
+    for invalid in ([], ["unknown-sport"]):
         response = client.put("/api/whales/settings", json={"monitor_categories": invalid})
         assert response.status_code == 422
     assert client.get("/api/whales/settings").json()["monitor_categories"] == [
@@ -1263,6 +1263,10 @@ def test_monitor_categories_round_trip_and_validation(app_client_factory):
         (["sports"], ["sports", "esports"], True),
         (["sports", "esports"], ["sports"], False),
         (["sports", "esports"], ["esports"], True),
+        (["sports", "soccer"], ["soccer"], True),
+        (["sports", "baseball"], ["soccer"], False),
+        (["sports", "esports", "counter-strike-2"], ["counter-strike-2"], True),
+        (["esports", "dota-2"], ["counter-strike-2"], False),
     ],
 )
 def test_monitor_categories_hide_existing_opportunities_and_restore_without_scanning(
@@ -1515,3 +1519,26 @@ def test_email_feature_is_retired(app_client_factory, method, path):
     assert not any("email" in item for item in paths)
     assert client.get("/api/whales/settings").status_code == 200
     assert client.get("/api/execution-account").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "monitor_categories",
+        "new_account_auto_follow_categories",
+        "large_amount_auto_follow_categories",
+    ],
+)
+def test_subcategory_settings_round_trip(app_client_factory, field):
+    client, _ = app_client_factory([[]], trading_enabled=False, start_monitor=False)
+    response = client.put(
+        "/api/whales/settings", json={field: ["soccer", "counter-strike-2", "soccer"]}
+    )
+    assert response.status_code == 200
+    assert response.json()[field] == ["soccer", "counter-strike-2"]
+    assert client.get("/api/whales/settings").json()[field] == ["soccer", "counter-strike-2"]
+    response = client.put("/api/whales/settings", json={field: ["soccer", "sports", "dota-2"]})
+    assert response.status_code == 200
+    assert response.json()[field] == ["sports", "dota-2"]
+    for invalid in ([], ["unknown-sport"]):
+        assert client.put("/api/whales/settings", json={field: invalid}).status_code == 422

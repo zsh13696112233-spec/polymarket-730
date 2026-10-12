@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   WhaleExclusion,
   WhaleExclusionList,
-  WhaleMarketCategory,
+  WhaleCategorySelection,
   WhaleSettings,
   formatBeijing,
   formatCompactUsdc,
@@ -12,15 +12,7 @@ import {
   whaleApi,
 } from "./WhaleShared";
 
-const AUTO_CATEGORIES: Array<{ key: WhaleMarketCategory; label: string }> = [
-  { key: "sports", label: "传统体育" },
-  { key: "esports", label: "电竞" },
-  { key: "politics", label: "政治" },
-  { key: "crypto", label: "加密" },
-  { key: "science_tech", label: "科学与科技" },
-  { key: "entertainment", label: "娱乐" },
-  { key: "other", label: "其他" },
-];
+import { AUTO_CATEGORIES, WhaleCategoryPicker, categorySummary } from "./WhaleCategoryPicker";
 
 function shortWallet(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -171,7 +163,7 @@ export function WhaleSettingsPanel({
   onSettingsChange: (settings: WhaleSettings) => void;
   onReload: () => Promise<void>;
 }) {
-  const [monitorCategoriesInput, setMonitorCategoriesInput] = useState<WhaleMarketCategory[] | null>(null);
+  const [monitorCategoriesInput, setMonitorCategoriesInput] = useState<WhaleCategorySelection[] | null>(null);
   const monitorCategories = monitorCategoriesInput ?? settings?.monitor_categories ?? AUTO_CATEGORIES.map((item) => item.key);
   const [registrationDaysInput, setRegistrationDaysInput] = useState<string | null>(null);
   const [newAccountThresholdInput, setNewAccountThresholdInput] = useState<string | null>(null);
@@ -250,20 +242,8 @@ export function WhaleSettingsPanel({
         <form className="pcSettingsForm pcSystemSettingsForm" onSubmit={submit}>
           <div className="whaleInlineSettingsBody">
             <div className="whaleMonitorCategories">
-              <fieldset className="whaleAutoCategories" disabled={!settings || busy}>
-                <legend>监测市场分类</legend>
-                {AUTO_CATEGORIES.map((item) => (
-                  <label key={item.key}>
-                    <input type="checkbox" checked={monitorCategories.includes(item.key)} onChange={() => setMonitorCategoriesInput(
-                      monitorCategories.includes(item.key)
-                        ? monitorCategories.filter((category) => category !== item.key)
-                        : [...monitorCategories, item.key],
-                    )} />
-                    <span>{item.label}</span>
-                  </label>
-                ))}
-              </fieldset>
-              <p className="pcFormHint">两条规则共用分类，控制新机会和当前列表；未选分类的已有机会隐藏，历史数据和已有持仓保留。</p>
+              <WhaleCategoryPicker legend="监测市场分类" value={monitorCategories} onChange={setMonitorCategoriesInput} disabled={!settings || busy} />
+              <p className="pcFormHint">两条规则共用分类，可按具体体育项目或电竞游戏多选，控制新机会和当前列表；未选分类的已有机会隐藏，历史数据和已有持仓保留。</p>
             </div>
             <div className="pcFormGrid three">
               <label className="pcField">
@@ -366,7 +346,7 @@ function AutoStrategyCard({
   lowPriceEnabled: boolean;
   lowPriceMax: string;
   lowPriceAmount: string;
-  categories: WhaleMarketCategory[];
+  categories: WhaleCategorySelection[];
   busy: boolean;
   onEnabled: (value: boolean) => void;
   onAmount: (value: string) => void;
@@ -375,15 +355,8 @@ function AutoStrategyCard({
   onLowPriceEnabled: (value: boolean) => void;
   onLowPriceMax: (value: string) => void;
   onLowPriceAmount: (value: string) => void;
-  onCategories: (value: WhaleMarketCategory[]) => void;
+  onCategories: (value: WhaleCategorySelection[]) => void;
 }) {
-  const toggleCategory = (category: WhaleMarketCategory) => {
-    onCategories(
-      categories.includes(category)
-        ? categories.filter((item) => item !== category)
-        : [...categories, category],
-    );
-  };
   return (
     <section className={`whaleAutoStrategyCard ${enabled ? "enabled" : ""}`}>
       <header>
@@ -422,15 +395,7 @@ function AutoStrategyCard({
           </div>
         )}
       </div>
-      <fieldset className="whaleAutoCategories">
-        <legend>允许的市场分类</legend>
-        {AUTO_CATEGORIES.map((item) => (
-          <label key={item.key}>
-            <input type="checkbox" checked={categories.includes(item.key)} disabled={busy} onChange={() => toggleCategory(item.key)} />
-            <span>{item.label}</span>
-          </label>
-        ))}
-      </fieldset>
+      <WhaleCategoryPicker legend="允许的市场分类" value={categories} onChange={onCategories} disabled={busy} />
     </section>
   );
 }
@@ -448,7 +413,7 @@ export function WhaleAutoSettingsPanel({
   const [newAutoAmount, setNewAutoAmount] = useState<string | null>(null);
   const [newAutoMinPrice, setNewAutoMinPrice] = useState<string | null>(null);
   const [newAutoMaxPrice, setNewAutoMaxPrice] = useState<string | null>(null);
-  const [newAutoCategories, setNewAutoCategories] = useState<WhaleMarketCategory[] | null>(null);
+  const [newAutoCategories, setNewAutoCategories] = useState<WhaleCategorySelection[] | null>(null);
   const [newLowPriceEnabled, setNewLowPriceEnabled] = useState<boolean | null>(null);
   const [newLowPriceMax, setNewLowPriceMax] = useState<string | null>(null);
   const [newLowPriceAmount, setNewLowPriceAmount] = useState<string | null>(null);
@@ -456,7 +421,7 @@ export function WhaleAutoSettingsPanel({
   const [largeAutoAmount, setLargeAutoAmount] = useState<string | null>(null);
   const [largeAutoMinPrice, setLargeAutoMinPrice] = useState<string | null>(null);
   const [largeAutoMaxPrice, setLargeAutoMaxPrice] = useState<string | null>(null);
-  const [largeAutoCategories, setLargeAutoCategories] = useState<WhaleMarketCategory[] | null>(null);
+  const [largeAutoCategories, setLargeAutoCategories] = useState<WhaleCategorySelection[] | null>(null);
   const [largeLowPriceEnabled, setLargeLowPriceEnabled] = useState<boolean | null>(null);
   const [largeLowPriceMax, setLargeLowPriceMax] = useState<string | null>(null);
   const [largeLowPriceAmount, setLargeLowPriceAmount] = useState<string | null>(null);
@@ -534,10 +499,6 @@ export function WhaleAutoSettingsPanel({
     setMarketMaxPurchaseCount(null);
     setMarketMaxAmount(null);
   };
-
-  const categorySummary = (categories: WhaleMarketCategory[]) => categories
-    .map((category) => AUTO_CATEGORIES.find((item) => item.key === category)?.label || category)
-    .join("、");
 
   async function submit(event: FormEvent) {
     event.preventDefault();

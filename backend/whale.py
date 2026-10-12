@@ -69,6 +69,15 @@ from backend.trading import (
     normalize_fak_result,
     redeemable_position_payout_rate,
 )
+from backend.whale_categories import (
+    WHALE_STATISTICS_CATEGORIES,
+    WHALE_STATISTICS_CATEGORY_LABELS,
+    WHALE_STATISTICS_SUBCATEGORIES,
+    matches_categories,
+)
+from backend.whale_categories import (
+    classify_market as _whale_statistics_classification,
+)
 from backend.whale_requests import (
     WhaleRequestMonitor,
     capture_whale_requests,
@@ -128,16 +137,6 @@ WHALE_STATISTICS_AMOUNT_BANDS = (
     ("500k_1m", "50万–100万", Decimal("500000"), Decimal("1000000")),
     ("gte_1m", "≥ 100万", Decimal("1000000"), None),
 )
-WHALE_STATISTICS_CATEGORIES = (
-    ("esports", "电竞"),
-    ("sports", "传统体育"),
-    ("politics", "政治"),
-    ("crypto", "加密"),
-    ("science_tech", "科学与科技"),
-    ("entertainment", "娱乐"),
-    ("other", "其他"),
-)
-WHALE_STATISTICS_CATEGORY_LABELS = dict(WHALE_STATISTICS_CATEGORIES)
 AUTO_FOLLOW_RESERVED_ORDER_STATUSES = {
     "planned",
     "signed",
@@ -180,50 +179,6 @@ class AutoConflictResolution:
     lock_required: bool
 
 
-WHALE_STATISTICS_SCIENCE_TECH_TAGS = frozenset(
-    {
-        "science",
-        "spacex",
-        "space-exploration",
-        "software-updates",
-        "climate",
-        "weather",
-    }
-)
-WHALE_STATISTICS_ENTERTAINMENT_TAGS = frozenset(
-    {
-        "movies",
-        "music",
-        "awards",
-        "box-office",
-        "celebrity-events",
-        "new-releases",
-        "gaming",
-        "video-games",
-    }
-)
-WHALE_STATISTICS_SUBCATEGORIES = {
-    "esports": (
-        ("dota-2", "Dota 2", frozenset({"dota-2"})),
-        ("counter-strike-2", "CS2", frozenset({"counter-strike-2"})),
-        ("league-of-legends", "英雄联盟", frozenset({"league-of-legends"})),
-        ("other-esports", "其他电竞", frozenset()),
-    ),
-    "sports": (
-        ("soccer", "足球", frozenset({"soccer"})),
-        ("tennis", "网球", frozenset({"tennis"})),
-        ("basketball", "篮球", frozenset({"basketball"})),
-        ("baseball", "棒球", frozenset({"baseball"})),
-        ("football", "美式橄榄球", frozenset({"football"})),
-        ("hockey", "冰球", frozenset({"hockey"})),
-        ("mma", "综合格斗", frozenset({"mma"})),
-        ("boxing", "拳击", frozenset({"boxing"})),
-        ("cricket", "板球", frozenset({"cricket"})),
-        ("golf", "高尔夫", frozenset({"golf"})),
-        ("motorsports", "赛车", frozenset({"formula-1", "f1"})),
-        ("other-sports", "其他体育", frozenset()),
-    ),
-}
 BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
 LOGGER = logging.getLogger(__name__)
 AUTO_FOLLOW_PRICE_REASON_PATTERN = re.compile(r"(实际买价|策略最低价|策略最高价) (-?\d+(?:\.\d+)?)")
@@ -1275,7 +1230,7 @@ class WhaleDiscoveryScanner:
         registration_cutoff = now - timedelta(days=registration_days)
         async with self.database.sessions() as session:
             market_categories = {
-                row.condition_id: _whale_statistics_classification(row.tags_json)["category"]
+                row.condition_id: _whale_statistics_classification(row.tags_json)
                 for row in (
                     await session.scalars(
                         select(WhaleMarket).where(
@@ -1290,7 +1245,9 @@ class WhaleDiscoveryScanner:
         aggregates = [
             item
             for item in aggregates
-            if market_categories.get(item.condition_id, "other") in monitor_categories
+            if matches_categories(
+                market_categories.get(item.condition_id, {"category": "other"}), monitor_categories
+            )
         ]
         await self._refresh_wallets(
             list(dict.fromkeys(item.proxy_wallet for item in aggregates)),
@@ -1313,7 +1270,10 @@ class WhaleDiscoveryScanner:
         rule_matches: dict[tuple[str, str], set[str]] = {}
         qualified: list[WhaleAggregate] = []
         for aggregate in aggregates:
-            if market_categories.get(aggregate.condition_id, "other") not in monitor_categories:
+            if not matches_categories(
+                market_categories.get(aggregate.condition_id, {"category": "other"}),
+                monitor_categories,
+            ):
                 continue
             matches: set[str] = set()
             profile = profiles.get(aggregate.proxy_wallet)
@@ -1477,8 +1437,9 @@ class WhaleDiscoveryScanner:
                 (
                     market
                     for market in markets
-                    if _whale_statistics_classification(_market_tags_json(market.tags))["category"]
-                    in categories
+                    if matches_categories(
+                        _whale_statistics_classification(_market_tags_json(market.tags)), categories
+                    )
                     and market_is_eligible(
                         market, now=now, min_liquidity_usdc=focus_config[1], min_remaining_minutes=0
                     )
@@ -2807,7 +2768,9 @@ class WhaleDiscoveryScanner:
                         str(value)
                         for value in _json_list(config[f"{prefix}_auto_follow_categories_json"])
                     }
-                    if bool(config[f"{prefix}_auto_follow_enabled"]) and category in categories:
+                    if bool(config[f"{prefix}_auto_follow_enabled"]) and matches_categories(
+                        classification, categories
+                    ):
                         selected = (
                             rule_type,
                             _decimal(config[f"{prefix}_auto_follow_amount_usdc"]),
@@ -6055,8 +6018,9 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
                     .distinct()
                 )
             )
-            if _whale_statistics_classification(tags_json)["category"]
-            in values["monitor_categories"]
+            if matches_categories(
+                _whale_statistics_classification(tags_json), values["monitor_categories"]
+            )
         ]
         values.update(
             {
@@ -6382,7 +6346,9 @@ async def list_whale_markets(
         market = markets.get(linked_condition_id)
         if market is None or market_price_is_settled(market):
             continue
-        if _whale_statistics_classification(market.tags_json)["category"] not in monitor_categories:
+        if not matches_categories(
+            _whale_statistics_classification(market.tags_json), monitor_categories
+        ):
             continue
         tags = [tag for tag in _json_list(market.tags_json) if isinstance(tag, dict)]
         if tag_slug and not any(str(tag.get("slug")) == tag_slug for tag in tags):
@@ -6753,47 +6719,6 @@ def _whale_statistics_in_amount_band(amount: Decimal, band: str) -> bool:
             continue
         return amount >= lower and (upper is None or amount < upper)
     raise ValueError("巨鲸统计金额分层无效")
-
-
-def _whale_statistics_classification(
-    tags: str | list[Any] | tuple[Any, ...] | None,
-) -> dict[str, str | None]:
-    slugs = {
-        str(tag.get("slug") or "").strip().lower()
-        for tag in _json_list(tags)
-        if isinstance(tag, dict) and tag.get("slug")
-    }
-    if "esports" in slugs:
-        category = "esports"
-    elif "sports" in slugs:
-        category = "sports"
-    elif "politics" in slugs:
-        category = "politics"
-    elif "crypto" in slugs:
-        category = "crypto"
-    elif slugs & WHALE_STATISTICS_SCIENCE_TECH_TAGS:
-        category = "science_tech"
-    elif slugs & WHALE_STATISTICS_ENTERTAINMENT_TAGS:
-        category = "entertainment"
-    else:
-        category = "other"
-
-    subcategory: str | None = None
-    subcategory_label: str | None = None
-    definitions = WHALE_STATISTICS_SUBCATEGORIES.get(category, ())
-    for key, label, matching_slugs in definitions:
-        if matching_slugs and slugs & matching_slugs:
-            subcategory = key
-            subcategory_label = label
-            break
-    if definitions and subcategory is None:
-        subcategory, subcategory_label, _ = definitions[-1]
-    return {
-        "category": category,
-        "category_label": WHALE_STATISTICS_CATEGORY_LABELS[category],
-        "subcategory": subcategory,
-        "subcategory_label": subcategory_label,
-    }
 
 
 def _validate_whale_statistics_category_selection(category: str, subcategory: str) -> None:

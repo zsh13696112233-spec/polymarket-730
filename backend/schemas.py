@@ -14,19 +14,15 @@ from pydantic import (
     model_validator,
 )
 
+from backend.whale_categories import (
+    WhaleCategorySelection,
+    WhaleMarketCategory,
+    normalize_category_selection,
+)
+
 DecimalNumber = Annotated[
     Decimal,
     PlainSerializer(lambda value: float(value), return_type=float, when_used="json"),
-]
-
-WhaleMarketCategory = Literal[
-    "esports",
-    "sports",
-    "politics",
-    "crypto",
-    "science_tech",
-    "entertainment",
-    "other",
 ]
 
 
@@ -87,20 +83,20 @@ class WhaleSettingsRead(APIModel):
     registration_window_days: int
     new_account_threshold_usdc: DecimalNumber
     large_amount_threshold_usdc: DecimalNumber
-    monitor_categories: list[WhaleMarketCategory]
+    monitor_categories: list[WhaleCategorySelection]
     dual_match_auto_follow_amount_usdc: DecimalNumber | None
     new_account_auto_follow_enabled: bool
     new_account_auto_follow_amount_usdc: DecimalNumber
     new_account_auto_follow_min_price: DecimalNumber
     new_account_auto_follow_max_price: DecimalNumber
-    new_account_auto_follow_categories: list[WhaleMarketCategory]
+    new_account_auto_follow_categories: list[WhaleCategorySelection]
     new_account_auto_follow_low_price_max_price: DecimalNumber | None
     new_account_auto_follow_low_price_amount_usdc: DecimalNumber | None
     large_amount_auto_follow_enabled: bool
     large_amount_auto_follow_amount_usdc: DecimalNumber
     large_amount_auto_follow_min_price: DecimalNumber
     large_amount_auto_follow_max_price: DecimalNumber
-    large_amount_auto_follow_categories: list[WhaleMarketCategory]
+    large_amount_auto_follow_categories: list[WhaleCategorySelection]
     large_amount_auto_follow_low_price_max_price: DecimalNumber | None
     large_amount_auto_follow_low_price_amount_usdc: DecimalNumber | None
     large_amount_conflict_priority_enabled: bool
@@ -155,20 +151,20 @@ class WhaleSettingsUpdate(APIModel):
     registration_window_days: int | None = Field(default=None, ge=1, le=30)
     new_account_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_threshold_usdc: Decimal | None = Field(default=None, gt=0)
-    monitor_categories: list[WhaleMarketCategory] | None = Field(default=None, min_length=1)
+    monitor_categories: list[WhaleCategorySelection] | None = Field(default=None, min_length=1)
     dual_match_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     new_account_auto_follow_enabled: bool | None = None
     new_account_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     new_account_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
     new_account_auto_follow_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
-    new_account_auto_follow_categories: list[WhaleMarketCategory] | None = None
+    new_account_auto_follow_categories: list[WhaleCategorySelection] | None = None
     new_account_auto_follow_low_price_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
     new_account_auto_follow_low_price_amount_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_auto_follow_enabled: bool | None = None
     large_amount_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
     large_amount_auto_follow_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
-    large_amount_auto_follow_categories: list[WhaleMarketCategory] | None = None
+    large_amount_auto_follow_categories: list[WhaleCategorySelection] | None = None
     large_amount_auto_follow_low_price_max_price: Decimal | None = Field(default=None, gt=0, lt=1)
     large_amount_auto_follow_low_price_amount_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_conflict_priority_enabled: bool | None = None
@@ -200,9 +196,9 @@ class WhaleSettingsUpdate(APIModel):
     def validate_auto_categories(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        unique = list(dict.fromkeys(value))
+        unique = normalize_category_selection(value)
         if not unique:
-            raise ValueError("自动跟单至少需要选择一个市场分类")
+            raise ValueError("至少需要选择一个市场分类")
         return unique
 
     @model_validator(mode="after")
@@ -263,20 +259,20 @@ class WhaleConfigSettings(WhaleSettingsUpdate):
     registration_window_days: int = Field(ge=1, le=30)
     new_account_threshold_usdc: Decimal = Field(gt=0)
     large_amount_threshold_usdc: Decimal = Field(gt=0)
-    monitor_categories: list[WhaleMarketCategory] = Field(min_length=1)
+    monitor_categories: list[WhaleCategorySelection] = Field(min_length=1)
     dual_match_auto_follow_amount_usdc: Decimal | None = Field(gt=0)
     new_account_auto_follow_enabled: bool
     new_account_auto_follow_amount_usdc: Decimal = Field(gt=0)
     new_account_auto_follow_min_price: Decimal = Field(gt=0, lt=1)
     new_account_auto_follow_max_price: Decimal = Field(gt=0, lt=1)
-    new_account_auto_follow_categories: list[WhaleMarketCategory]
+    new_account_auto_follow_categories: list[WhaleCategorySelection]
     new_account_auto_follow_low_price_max_price: Decimal | None = Field(gt=0, lt=1)
     new_account_auto_follow_low_price_amount_usdc: Decimal | None = Field(gt=0)
     large_amount_auto_follow_enabled: bool
     large_amount_auto_follow_amount_usdc: Decimal = Field(gt=0)
     large_amount_auto_follow_min_price: Decimal = Field(gt=0, lt=1)
     large_amount_auto_follow_max_price: Decimal = Field(gt=0, lt=1)
-    large_amount_auto_follow_categories: list[WhaleMarketCategory]
+    large_amount_auto_follow_categories: list[WhaleCategorySelection]
     large_amount_auto_follow_low_price_max_price: Decimal | None = Field(gt=0, lt=1)
     large_amount_auto_follow_low_price_amount_usdc: Decimal | None = Field(gt=0)
     large_amount_conflict_priority_enabled: bool

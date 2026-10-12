@@ -134,7 +134,8 @@ describe("统一设置", () => {
     await user.clear(largeThreshold);
     await user.type(largeThreshold, "600000");
     const categories = within(screen.getByRole("group", { name: "监测市场分类" }));
-    expect(categories.getAllByRole("checkbox")).toHaveLength(7);
+    expect(categories.getByRole("checkbox", { name: "足球" })).toBeChecked();
+    expect(categories.getByRole("checkbox", { name: "CS2" })).toBeChecked();
     for (const label of ["政治", "加密", "娱乐", "其他"]) {
       await user.click(categories.getByRole("checkbox", { name: label }));
     }
@@ -148,6 +149,10 @@ describe("统一设置", () => {
     for (const label of ["传统体育", "电竞", "科学与科技"]) {
       await user.click(categories.getByRole("checkbox", { name: label }));
     }
+    await user.click(categories.getByRole("checkbox", { name: "传统体育" }));
+    await user.click(categories.getByRole("checkbox", { name: "足球" }));
+    await user.click(categories.getByRole("checkbox", { name: "电竞" }));
+    await user.click(categories.getByRole("checkbox", { name: "CS2" }));
     const form = saveButton.closest("form");
     expect(form).not.toBeNull();
     expect(Array.from(form!.querySelectorAll("input")).filter((input) => !input.checkValidity()).map((input) => input.getAttribute("aria-label"))).toEqual([]);
@@ -156,12 +161,16 @@ describe("统一设置", () => {
 
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toMatchObject({
-      monitor_categories: ["sports", "esports", "science_tech"],
+      monitor_categories: ["science_tech", "soccer", "counter-strike-2"],
       registration_window_days: 7,
       new_account_threshold_usdc: 25000,
       large_amount_threshold_usdc: 600000,
     });
     expect(bodies[0]).not.toHaveProperty("new_account_auto_follow_enabled");
+    expect(categories.getByRole("checkbox", { name: "足球" })).toBeChecked();
+    expect(categories.getByRole("checkbox", { name: "棒球" })).not.toBeChecked();
+    expect(categories.getByRole("checkbox", { name: "CS2" })).toBeChecked();
+
     expect(await screen.findByText("巨鲸监测条件已保存，数据已重新扫描。")).toBeInTheDocument();
     const saveIndex = requests.findIndex((request) => request.startsWith("PUT "));
     const reloadIndex = requests.findIndex((request, index) => index > saveIndex && request.startsWith("GET ") && request.endsWith("/api/whales/settings"));
@@ -169,7 +178,7 @@ describe("统一设置", () => {
     expect(reloadIndex).toBeGreaterThan(saveIndex);
     expect(scanIndex).toBeGreaterThan(reloadIndex);
     expect(categories.getByRole("checkbox", { name: "政治" })).not.toBeChecked();
-    expect(categories.getByRole("checkbox", { name: "电竞" })).toBeChecked();
+    expect(categories.getByRole("checkbox", { name: "电竞" })).toBePartiallyChecked();
   });
 
   it("分别保存两套真实自动跟单策略和分类", async () => {
@@ -203,9 +212,15 @@ describe("统一设置", () => {
     const newStrategy = screen.getByRole("heading", { name: "新号大额自动跟单" }).closest("section");
     expect(newStrategy).not.toBeNull();
     await user.click(within(newStrategy!).getByText("政治"));
+    await user.click(within(newStrategy!).getByRole("checkbox", { name: "传统体育" }));
+    await user.click(within(newStrategy!).getByRole("checkbox", { name: "足球" }));
     await user.click(within(newStrategy!).getByRole("checkbox", { name: "新号大额自动跟单启用低价小额" }));
     await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价分界" }), "0.7");
     await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价金额" }), "3");
+    await user.click(screen.getByRole("tab", { name: "全量超大额" }));
+    const largeStrategy = screen.getByRole("heading", { name: "全量超大额自动跟单" }).closest("section")!;
+    await user.click(within(largeStrategy).getByRole("checkbox", { name: "传统体育" }));
+    await user.click(within(largeStrategy).getByRole("checkbox", { name: "CS2" }));
     await user.click(screen.getByRole("checkbox", { name: "启用双重命中独立金额" }));
     await user.type(screen.getByRole("spinbutton", { name: "双重命中跟单金额" }), "25");
     await user.click(screen.getByRole("checkbox", { name: "启用单市场共享上限" }));
@@ -218,7 +233,8 @@ describe("统一设置", () => {
     expect(saved).toMatchObject({
       new_account_auto_follow_enabled: true,
       dual_match_auto_follow_amount_usdc: 25,
-      new_account_auto_follow_categories: ["sports", "politics"],
+      new_account_auto_follow_categories: ["politics", "soccer"],
+      large_amount_auto_follow_categories: ["counter-strike-2"],
       new_account_auto_follow_low_price_max_price: 0.7,
       new_account_auto_follow_low_price_amount_usdc: 3,
       large_amount_auto_follow_enabled: false,
@@ -227,6 +243,8 @@ describe("统一设置", () => {
       auto_follow_market_max_amount_usdc: 30,
     });
     await waitFor(() => expect(screen.getByText(/双重命中金额：25 USDC/)).toBeInTheDocument());
+    expect(screen.getByLabelText("自动跟单策略概览")).toHaveTextContent("政治、足球");
+    expect(screen.getByLabelText("自动跟单策略概览")).toHaveTextContent("CS2");
     await user.click(screen.getByRole("button", { name: "编辑策略" }));
     expect(screen.getByRole("spinbutton", { name: "双重命中跟单金额" })).toHaveValue(25);
     await user.click(screen.getByRole("checkbox", { name: "启用双重命中独立金额" }));

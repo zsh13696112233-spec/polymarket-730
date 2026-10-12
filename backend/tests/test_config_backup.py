@@ -253,3 +253,21 @@ def test_import_waits_for_running_scan_before_writing(client):
 
     client.portal.call(exercise)
     assert snapshot(client)["settings"]["registration_window_days"] == 13
+
+
+def test_subcategory_config_export_import(client):
+    categories = {
+        "monitor_categories": ["soccer", "baseball", "counter-strike-2"],
+        "new_account_auto_follow_categories": ["soccer"],
+        "large_amount_auto_follow_categories": ["counter-strike-2"],
+    }
+    assert client.put("/api/whales/settings", json=categories).status_code == 200
+    backup = snapshot(client)
+    assert (
+        client.put("/api/whales/settings", json={"monitor_categories": ["sports"]}).status_code
+        == 200
+    )
+    assert client.post(IMPORT, json=backup).status_code == 200
+    restored = snapshot(client)["settings"]
+    for field, expected in categories.items():
+        assert restored[field] == expected

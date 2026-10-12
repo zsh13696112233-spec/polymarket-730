@@ -2171,6 +2171,10 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
         (["sports"], ["sports", "science_tech"], True),
         (["sports", "esports"], ["sports"], False),
         (["sports", "esports"], ["esports"], True),
+        (["sports", "soccer"], ["soccer"], True),
+        (["sports", "baseball"], ["soccer"], False),
+        (["sports", "esports", "counter-strike-2"], ["counter-strike-2"], True),
+        (["esports", "dota-2"], ["counter-strike-2"], False),
         (["science"], ["science_tech"], True),
         (["politics"], ["sports", "science_tech"], False),
         ([], ["other"], True),
@@ -2573,6 +2577,10 @@ async def test_candidate_cache_expiry_refreshes_and_preserves_failed_hedge_state
         (["sports"], ["sports"], True),
         (["sports", "esports"], ["sports"], False),
         (["sports", "esports"], ["esports"], True),
+        (["sports", "soccer"], ["soccer"], True),
+        (["sports", "baseball"], ["soccer"], False),
+        (["sports", "esports", "counter-strike-2"], ["counter-strike-2"], True),
+        (["esports", "dota-2"], ["counter-strike-2"], False),
         (["politics"], ["sports"], False),
     ],
 )
@@ -3123,3 +3131,61 @@ async def test_buy_position_read_retries_before_proceeding(
     assert delays == (expected_delays[:1] if result == "cancelled" else expected_delays)
     async with database.sessions() as session:
         assert not list(await session.scalars(select(WhaleOrder)))
+
+
+@pytest.mark.parametrize(
+    ("new_categories", "large_categories", "expected_rule"),
+    [
+        (["counter-strike-2"], ["dota-2"], "new_account"),
+        (["dota-2"], ["counter-strike-2"], "large_amount"),
+        (["counter-strike-2"], ["counter-strike-2"], "large_amount"),
+        (["dota-2"], ["league-of-legends"], None),
+    ],
+)
+async def test_auto_follow_subcategories_are_independent_and_one_shot(
+    database, new_categories, large_categories, expected_rule
+):
+    condition_id = "0x" + "7" * 64
+    wallet = "0x7777777777777777777777777777777777777777"
+    await _seed_auto_market(database, condition_id)
+    async with database.sessions() as session:
+        market = await session.get(WhaleMarket, condition_id)
+        market.tags_json = '[{"slug":"sports"},{"slug":"esports"},{"slug":"counter-strike-2"}]'
+        await session.commit()
+    config = await _auto_follow_config(
+        database,
+        new_account_auto_follow_enabled=True,
+        large_amount_auto_follow_enabled=True,
+        new_account_auto_follow_categories_json=json.dumps(new_categories),
+        large_amount_auto_follow_categories_json=json.dumps(large_categories),
+    )
+    aggregate = _auto_aggregate(wallet=wallet, asset_id="asset-yes", condition_id=condition_id)
+    scanner = build_scanner(database)
+    kwargs = {
+        "rule_matches": {(wallet, "asset-yes"): {"new_account", "large_amount"}},
+        "positions_by_wallet": {
+            wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            }
+        },
+        "failed_wallets": set(),
+        "config": config,
+        "now": utcnow(),
+        "window_start": utcnow() - timedelta(hours=24),
+    }
+    pending = await scanner._persist_entries([aggregate], **kwargs)
+    assert len(pending) == int(expected_rule is not None)
+    async with database.sessions() as session:
+        decision = await session.scalar(select(WhaleAutoFollowDecision))
+        assert decision.selected_rule == expected_rule
+        assert decision.category == "esports"
+    config["new_account_auto_follow_categories_json"] = '["esports"]'
+    config["large_amount_auto_follow_categories_json"] = '["esports"]'
+    assert await scanner._persist_entries([aggregate], **kwargs) == []
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == 1

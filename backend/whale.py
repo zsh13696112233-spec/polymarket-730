@@ -78,6 +78,7 @@ from backend.whale_categories import (
 from backend.whale_categories import (
     classify_market as _whale_statistics_classification,
 )
+from backend.whale_config import source_amount_tiers
 from backend.whale_requests import (
     WhaleRequestMonitor,
     capture_whale_requests,
@@ -2463,6 +2464,8 @@ class WhaleDiscoveryScanner:
                     and active_entry.discovery_source == "trades"
                     and active_entry.status == "holding"
                     and not active_entry.hedged
+                    and active_entry.follow_eligible
+                    and active_entry.proxy_wallet not in failed_wallets
                 ):
                     active_rules_by_condition_asset[active_entry.condition_id][
                         active_entry.asset_id
@@ -2507,26 +2510,66 @@ class WhaleDiscoveryScanner:
                     decision
                 )
 
+            # Only strategy-qualified signals can lock a market or force a sale.
+            # Fetch a fresh executable ask once per asset, only in opposing markets.
+            for condition_id, rules_by_asset in active_rules_by_condition_asset.items():
+                held_assets = set(held_decisions_by_condition_asset[condition_id])
+                if len(set(rules_by_asset) | held_assets) < 2:
+                    continue
+                market = markets.get(condition_id)
+                classification = _whale_statistics_classification(
+                    market.tags_json if market is not None else None
+                )
+                for asset_id, rules in list(rules_by_asset.items()):
+                    eligible_rules = {
+                        rule
+                        for rule in rules
+                        if config[f"{rule}_auto_follow_enabled"]
+                        and matches_categories(
+                            classification,
+                            set(_json_list(config[f"{rule}_auto_follow_categories_json"])),
+                        )
+                    }
+                    best_ask = None
+                    if eligible_rules:
+                        try:
+                            book = await self.client.fetch_order_book(asset_id)
+                            best_ask = book.best_ask
+                        except Exception:
+                            # Missing quotes must never authorize a forced exit.
+                            pass
+                    qualified_rules = {
+                        rule
+                        for rule in eligible_rules
+                        if best_ask is not None
+                        and best_ask.is_finite()
+                        and _auto_follow_price(config[f"{rule}_auto_follow_min_price"])
+                        <= best_ask
+                        <= _auto_follow_price(config[f"{rule}_auto_follow_max_price"])
+                    }
+                    if qualified_rules:
+                        rules_by_asset[asset_id] = qualified_rules
+                    else:
+                        del rules_by_asset[asset_id]
+
             candidate_entry_ids = {candidate[0].id for candidate in auto_candidates}
             conflict_resolutions: dict[str, AutoConflictResolution] = {}
             large_priority_enabled = bool(config["large_amount_conflict_priority_enabled"])
             priority_condition_ids = set(active_rules_by_condition_asset)
-            if large_priority_enabled:
-                priority_condition_ids.update(held_decisions_by_condition_asset)
+            priority_condition_ids.update(held_decisions_by_condition_asset)
             for condition_id in priority_condition_ids:
                 priority_rules_by_asset = {
                     asset_id: set(rules)
                     for asset_id, rules in active_rules_by_condition_asset[condition_id].items()
                 }
-                if large_priority_enabled:
-                    for asset_id, decisions in held_decisions_by_condition_asset[
-                        condition_id
-                    ].items():
-                        priority_rules_by_asset.setdefault(asset_id, set()).update(
-                            decision.selected_rule
-                            for decision in decisions
-                            if decision.selected_rule is not None
-                        )
+                # Held exposure remains an opposing side even if its original
+                # source exited or its current quote is outside the buy interval.
+                for asset_id, decisions in held_decisions_by_condition_asset[condition_id].items():
+                    priority_rules_by_asset.setdefault(asset_id, set()).update(
+                        decision.selected_rule
+                        for decision in decisions
+                        if decision.selected_rule is not None
+                    )
                 if len(priority_rules_by_asset) < 2:
                     continue
                 strongest_by_asset = {
@@ -2812,15 +2855,25 @@ class WhaleDiscoveryScanner:
                     decision.configured_low_price_max_price,
                     decision.configured_low_price_amount_usdc,
                 ) = selected
-                dual_amount = config.get("dual_match_auto_follow_amount_usdc")
-                if (
-                    dual_amount is not None
-                    and NEW_ACCOUNT_RULE in matched_rules
-                    and LARGE_AMOUNT_RULE in matched_rules
-                ):
-                    decision.configured_amount_usdc = _decimal(dual_amount)
-                    decision.configured_low_price_max_price = None
-                    decision.configured_low_price_amount_usdc = None
+                decision.source_buy_amount_usdc = entry.gross_buy_usdc
+                decision.amount_basis = "strategy"
+                prefix = decision.selected_rule
+                if config[f"{prefix}_auto_follow_source_tiers_enabled"]:
+                    try:
+                        tiers = source_amount_tiers(config, prefix)
+                    except (ValueError, TypeError, KeyError):
+                        decision.status = "skipped"
+                        decision.reason = "来源金额分档配置无效，请在设置中修正后等待新信号"
+                        decision.processed_at = now
+                        continue
+                    for tier in tiers:
+                        if entry.gross_buy_usdc >= tier.min_source_amount_usdc:
+                            decision.configured_amount_usdc = tier.follow_amount_usdc
+                            decision.source_tier_min_usdc = tier.min_source_amount_usdc
+                            decision.amount_basis = "source_tier"
+                    if decision.source_tier_min_usdc is not None:
+                        decision.configured_low_price_max_price = None
+                        decision.configured_low_price_amount_usdc = None
                 pending_decision_ids.append(decision.id)
 
             active_entry_ids = {entry_id for (entry_id, _), state in states.items() if state.active}
@@ -3012,13 +3065,9 @@ class WhaleDiscoveryScanner:
                     if lock_row is None:
                         continue
                     if not positions:
-                        lock_row.exit_status = "completed"
-                        lock_row.last_error = None
-                        lock_row.updated_at = utcnow()
-                        for decision in bought_decisions:
-                            decision.status = "exit_completed"
-                            decision.reason = "分歧市场风控退出已完成"
-                            decision.updated_at = utcnow()
+                        await WhaleFollowExecutor._complete_conflict_exit_if_flat(
+                            session, condition_id=market_lock.condition_id, now=utcnow()
+                        )
                         await session.commit()
                         continue
                     lock_row.exit_status = "exiting"
@@ -3070,20 +3119,20 @@ class WhaleDiscoveryScanner:
                             )
                         ).all()
                     )
-                    lock_row.exit_status = "pending" if pending else "completed"
-                    lock_row.last_error = None
+                    lock_row.exit_status = "pending"
                     lock_row.updated_at = utcnow()
                     for decision in decisions:
-                        decision.status = "exit_pending" if pending else "exit_completed"
-                        decision.reason = (
-                            "分歧市场仍有剩余份额，等待继续退出"
-                            if pending
-                            else "分歧市场风控退出已完成"
-                        )
+                        decision.status = "exit_pending"
+                        if pending:
+                            decision.reason = "分歧市场仍有剩余份额，等待继续退出"
                         decision.latest_sell_order_id = latest_order_by_asset.get(
                             decision.asset_id, decision.latest_sell_order_id
                         )
                         decision.updated_at = utcnow()
+                    if not pending:
+                        await WhaleFollowExecutor._complete_conflict_exit_if_flat(
+                            session, condition_id=market_lock.condition_id, now=utcnow()
+                        )
                     await session.commit()
             except asyncio.CancelledError:
                 raise
@@ -3383,25 +3432,10 @@ class WhaleFollowExecutor:
                 ),
                 ZERO,
             )
-            daily_loss = -sum(
-                (
-                    min(entry.realized_pnl, ZERO)
-                    for entry in (
-                        await session.scalars(
-                            select(WhaleFollowLedger).where(
-                                WhaleFollowLedger.timestamp >= day_start
-                            )
-                        )
-                    ).all()
-                ),
-                ZERO,
-            )
         if open_exposure + quote.total_cost_usdc > account.max_total_exposure_usdc:
             raise ValueError("测试买入会突破执行钱包总敞口限制")
         if daily_buys + quote.total_cost_usdc > account.daily_buy_limit_usdc:
             raise ValueError("测试买入会突破执行钱包每日买入限额")
-        if daily_loss >= account.daily_loss_limit_usdc:
-            raise ValueError("执行钱包已达到每日亏损限制，不能继续测试买入")
 
     async def _account(self) -> ExecutionAccount:
         async with self.database.sessions() as session:
@@ -4432,12 +4466,38 @@ class WhaleFollowExecutor:
         if int(remaining or 0) > 0:
             return
         market_lock.exit_status = "completed"
-        market_lock.last_error = None
         market_lock.updated_at = now
         for decision in decisions:
-            decision.status = "exit_completed"
-            decision.reason = "分歧市场风控退出已完成"
+            buy_order = await session.get(WhaleOrder, decision.buy_order_id)
+            position = (
+                await session.get(WhaleFollowPosition, buy_order.position_id)
+                if buy_order is not None and buy_order.position_id is not None
+                else None
+            )
+            sold = await session.scalar(
+                select(WhaleOrder.id)
+                .where(
+                    WhaleOrder.position_id == (position.id if position is not None else -1),
+                    WhaleOrder.source == "conflict_exit",
+                    WhaleOrder.side == "SELL",
+                    WhaleOrder.filled_size > ZERO,
+                )
+                .limit(1)
+            )
+            if position is not None and position.status == "redeemed":
+                decision.status = "exit_ended"
+                decision.reason = "已赎回，退出任务结束"
+            elif sold is not None:
+                decision.status = "exit_completed"
+                decision.reason = "分歧市场风控退出已完成"
+            else:
+                decision.status = "exit_ended"
+                decision.reason = "仓位已结束，未发生风控卖出"
+            if market_lock.last_error:
+                decision.reason += f"；此前退出失败：{market_lock.last_error}"
             decision.updated_at = now
+        if any(decision.status == "exit_ended" for decision in decisions):
+            market_lock.exit_status = "ended"
 
     @staticmethod
     async def _write_off_terminal_sell_remainder(
@@ -5997,6 +6057,10 @@ async def whale_settings_read(database: Database) -> dict[str, Any]:
             column.name: getattr(settings, column.name)
             for column in WhaleSettings.__table__.columns
         }
+        for prefix in ("new_account", "large_amount"):
+            values[f"{prefix}_auto_follow_source_tiers"] = json.loads(
+                values.pop(f"{prefix}_auto_follow_source_tiers_json")
+            )
         values["monitor_categories"] = _json_list(values.pop("monitor_categories_json"))
         values["new_account_auto_follow_categories"] = _json_list(
             values.pop("new_account_auto_follow_categories_json")
@@ -6178,6 +6242,24 @@ async def list_whale_auto_decisions(
                 )
             ).all()
         }
+        redeemed_decision_ids = set(
+            (
+                await session.scalars(
+                    select(WhaleAutoFollowDecision.id)
+                    .join(WhaleOrder, WhaleOrder.id == WhaleAutoFollowDecision.buy_order_id)
+                    .join(WhaleFollowPosition, WhaleFollowPosition.id == WhaleOrder.position_id)
+                    .where(
+                        WhaleAutoFollowDecision.status == "exit_completed",
+                        WhaleFollowPosition.status == "redeemed",
+                    )
+                )
+            ).all()
+        )
+    # Correct legacy labels in the read model without rewriting historical records.
+    for decision in decisions:
+        if decision.id in redeemed_decision_ids:
+            decision.status = "exit_ended"
+            decision.reason = "已赎回，退出任务结束"
     filtered: list[WhaleAutoFollowDecision] = []
     for decision in decisions:
         matched_rules = [str(value) for value in _json_list(decision.matched_rules_json)]
@@ -6208,6 +6290,9 @@ async def list_whale_auto_decisions(
                 "selected_rule": decision.selected_rule,
                 "category": decision.category,
                 "category_label": WHALE_STATISTICS_CATEGORY_LABELS.get(decision.category, "其他"),
+                "source_buy_amount_usdc": decision.source_buy_amount_usdc,
+                "source_tier_min_usdc": decision.source_tier_min_usdc,
+                "amount_basis": decision.amount_basis,
                 "configured_amount_usdc": decision.configured_amount_usdc,
                 "configured_min_price": decision.configured_min_price,
                 "configured_max_price": decision.configured_max_price,

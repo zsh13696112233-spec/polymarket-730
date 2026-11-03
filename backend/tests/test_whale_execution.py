@@ -23,6 +23,7 @@ from backend.models import (
     WhaleSettings,
 )
 from backend.polymarket import PolymarketAPIError, RedemptionSnapshot, TradeSnapshot
+from backend.time_utils import utcnow
 from backend.trading import TradeResult, TradingUnavailable
 from backend.whale import (
     WhaleFollowExecutor,
@@ -804,7 +805,7 @@ async def test_terminal_sell_remainder_is_written_off_after_restart(database: Da
     assert position.status == "closed"
     assert market_lock is not None
     assert market_lock.exit_status == "completed"
-    assert market_lock.last_error is None
+    assert market_lock.last_error == "市场当前已不再开放交易"
     assert [row.type for row in ledger] == ["dust_writeoff"]
     assert ledger[0].source == "conflict_exit"
     assert_decimal(ledger[0].size, "0.002141")
@@ -1244,6 +1245,41 @@ async def test_chain_test_buy_enforces_cash_reserve_and_total_exposure(database:
             quote,
             refresh_balance=False,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loss", ["40", "50"])
+@pytest.mark.parametrize("refresh_balance", [False, True])
+async def test_chain_test_buy_ignores_daily_loss_limit(
+    database: Database, loss: str, refresh_balance: bool, monkeypatch: pytest.MonkeyPatch
+):
+    await configure_reconciliation(database)
+    position_id = await insert_position(database, size="0", cost="0", status="closed")
+    async with database.sessions() as session:
+        account = await session.get(ExecutionAccount, 1)
+        assert account is not None
+        account.budget_usdc = Decimal("100")
+        account.cash_reserve_usdc = ZERO
+        account.max_total_exposure_usdc = Decimal("100")
+        account.daily_buy_limit_usdc = Decimal("10")
+        account.daily_loss_limit_usdc = Decimal("40")
+        session.add(
+            WhaleFollowLedger(
+                position_id=position_id,
+                type="sell",
+                realized_pnl=-Decimal(loss),
+                timestamp=utcnow(),
+            )
+        )
+        await session.commit()
+
+    follow_executor = executor(database)
+    monkeypatch.setattr(follow_executor, "_live_balance", AsyncMock(return_value=Decimal("250")))
+    quote = SimpleNamespace(total_cost_usdc=Decimal("5"), available_balance_usdc=Decimal("250"))
+    await follow_executor._ensure_chain_test_buy_limits(quote, refresh_balance=refresh_balance)
+    quote.total_cost_usdc = Decimal("11")
+    with pytest.raises(ValueError, match="每日买入限额"):
+        await follow_executor._ensure_chain_test_buy_limits(quote, refresh_balance=refresh_balance)
 
 
 @pytest.mark.asyncio

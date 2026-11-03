@@ -15,7 +15,10 @@ function json(payload: unknown, status = 200) {
 }
 
 const settings = {
-  dual_match_auto_follow_amount_usdc: null,
+  new_account_auto_follow_source_tiers_enabled: false,
+  new_account_auto_follow_source_tiers: [],
+  large_amount_auto_follow_source_tiers_enabled: false,
+  large_amount_auto_follow_source_tiers: [],
   enabled: true,
   window_hours: 24,
   monitor_categories: ["sports", "esports", "politics", "crypto", "science_tech", "entertainment", "other"],
@@ -217,22 +220,37 @@ describe("统一设置", () => {
     await user.click(within(newStrategy!).getByRole("checkbox", { name: "新号大额自动跟单启用低价小额" }));
     await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价分界" }), "0.7");
     await user.type(within(newStrategy!).getByRole("spinbutton", { name: "新号大额自动跟单低价金额" }), "3");
+    await user.click(within(newStrategy!).getByRole("checkbox", { name: "新号大额自动跟单启用来源金额分档" }));
+    for (const [index, threshold, amount] of [[1, "1000000", "35"], [2, "2000000", "40"]] as const) {
+      await user.click(within(newStrategy!).getByRole("button", { name: "添加档位" }));
+      await user.type(screen.getByRole("spinbutton", { name: `新号大额自动跟单第${index}档来源金额` }), threshold);
+      await user.type(screen.getByRole("spinbutton", { name: `新号大额自动跟单第${index}档跟单金额` }), amount);
+    }
     await user.click(screen.getByRole("tab", { name: "全量超大额" }));
     const largeStrategy = screen.getByRole("heading", { name: "全量超大额自动跟单" }).closest("section")!;
     await user.click(within(largeStrategy).getByRole("checkbox", { name: "传统体育" }));
     await user.click(within(largeStrategy).getByRole("checkbox", { name: "CS2" }));
-    await user.click(screen.getByRole("checkbox", { name: "启用双重命中独立金额" }));
-    await user.type(screen.getByRole("spinbutton", { name: "双重命中跟单金额" }), "25");
     await user.click(screen.getByRole("checkbox", { name: "启用单市场共享上限" }));
     await user.type(screen.getByRole("spinbutton", { name: "单市场最大购买次数" }), "2");
     await user.type(screen.getByRole("spinbutton", { name: "单市场累计投入上限" }), "30");
     await user.click(screen.getByRole("checkbox", { name: "启用全量超大额优先规则" }));
     await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
 
+    expect(await screen.findByRole("alert")).toHaveTextContent("单市场累计金额不能低于已开启策略的最大单笔金额");
+    expect(saved).toBeNull();
+    await user.clear(screen.getByRole("spinbutton", { name: "单市场累计投入上限" }));
+    await user.type(screen.getByRole("spinbutton", { name: "单市场累计投入上限" }), "60");
+    await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
     await waitFor(() => expect(saved).not.toBeNull());
+    expect(saved).not.toHaveProperty("dual_match_auto_follow_amount_usdc");
+    expect(screen.queryByText("双重命中跟单金额")).not.toBeInTheDocument();
     expect(saved).toMatchObject({
       new_account_auto_follow_enabled: true,
-      dual_match_auto_follow_amount_usdc: 25,
+      new_account_auto_follow_source_tiers_enabled: true,
+      new_account_auto_follow_source_tiers: [
+        { min_source_amount_usdc: "1000000", follow_amount_usdc: "35" },
+        { min_source_amount_usdc: "2000000", follow_amount_usdc: "40" },
+      ],
       new_account_auto_follow_categories: ["politics", "soccer"],
       large_amount_auto_follow_categories: ["counter-strike-2"],
       new_account_auto_follow_low_price_max_price: 0.7,
@@ -240,16 +258,13 @@ describe("统一设置", () => {
       large_amount_auto_follow_enabled: false,
       large_amount_conflict_priority_enabled: false,
       auto_follow_market_max_purchase_count: 2,
-      auto_follow_market_max_amount_usdc: 30,
+      auto_follow_market_max_amount_usdc: 60,
     });
-    await waitFor(() => expect(screen.getByText(/双重命中金额：25 USDC/)).toBeInTheDocument());
     expect(screen.getByLabelText("自动跟单策略概览")).toHaveTextContent("政治、足球");
     expect(screen.getByLabelText("自动跟单策略概览")).toHaveTextContent("CS2");
     await user.click(screen.getByRole("button", { name: "编辑策略" }));
-    expect(screen.getByRole("spinbutton", { name: "双重命中跟单金额" })).toHaveValue(25);
-    await user.click(screen.getByRole("checkbox", { name: "启用双重命中独立金额" }));
     await user.click(screen.getByRole("button", { name: "保存自动跟单策略" }));
-    await waitFor(() => expect(saved).toMatchObject({ dual_match_auto_follow_amount_usdc: null }));
+    expect(screen.getByLabelText("自动跟单策略概览")).toHaveTextContent("40 USDC");
     expect(screen.queryByText(/模拟/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "设置" })).toHaveClass("active");
     expect(screen.queryByRole("combobox", { name: "命中规则" })).not.toBeInTheDocument();
@@ -275,6 +290,7 @@ describe("统一设置", () => {
     ["strategy_protected", "策略保护", "warning", "实际买价 0.97400000000000000000 高于策略最高价 0.75000000000000000000", "实际买价 0.974 高于策略最高价 0.75"],
     ["strategy_protected", "策略保护", "warning", "巨鲸持有双向仓位", "巨鲸持有双向仓位"],
     ["failed", "执行失败", "danger", "Polymarket 接口请求过于频繁", "Polymarket 接口请求过于频繁"],
+    ["exit_ended", "退出任务结束", "neutral", "已赎回，退出任务结束；此前退出失败：卖出报价失败", "已赎回，退出任务结束；此前退出失败：卖出报价失败"],
   ])("自动决策展示 %s 状态、原因和可打开的市场信息", async (status, label, tone, reason, displayedReason) => {
     const wallet = "0x1111111111111111111111111111111111111111";
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {

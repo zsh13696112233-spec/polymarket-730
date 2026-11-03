@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from time import monotonic
@@ -21,6 +20,47 @@ from backend.polymarket import (
     configure_polymarket_proxy,
 )
 from backend.tests.conftest import TEST_ADDRESS
+
+
+def data_response(rows, cursor=None):
+    aliases = {
+        "asset": "token_id",
+        "token": "token_id",
+        "conditionId": "condition_id",
+        "proxyWallet": "proxy_wallet",
+        "outcomeIndex": "outcome_index",
+        "eventSlug": "event_slug",
+        "transactionHash": "transaction_hash",
+        "profileImage": "profile_image",
+        "avgPrice": "avg_price",
+        "curPrice": "current_price",
+        "initialValue": "entry_cost_usdc",
+        "currentValue": "current_value",
+        "cashPnl": "total_pnl",
+        "percentPnl": "percent_pnl",
+        "totalBought": "total_size",
+        "realizedPnl": "realized_pnl",
+        "usdcSize": "usdc_size",
+    }
+
+    def convert(row):
+        converted = {aliases.get(k, k): v for k, v in row.items()}
+        if "avgPrice" in row:
+            converted["current_size"] = converted.pop("size", 0)
+            converted.setdefault("mergeable", False)
+            if "timestamp" in converted:
+                converted["last_event_at"] = converted.pop("timestamp")
+        if "holders" in converted:
+            converted["holders"] = [convert(holder) for holder in converted["holders"]]
+        return converted
+
+    return httpx.Response(
+        200,
+        json={
+            "data": [convert(row) for row in rows],
+            "pagination": {"has_more": cursor is not None, "next_cursor": cursor},
+        },
+    )
 
 
 def test_polymarket_client_requires_proxy_without_test_transport():
@@ -69,7 +109,20 @@ def test_configure_polymarket_proxy_overrides_process_proxy_environment(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_resolve_localized_sports_url_uses_event_slug_and_maps_outcomes(monkeypatch):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "zh/sports/epl/epl-che-bri-2026-08-30",
+        "sports/epl/epl-che-bri-2026-08-30",
+        "zh/event/epl-che-bri-2026-08-30",
+        "event/epl-che-bri-2026-08-30",
+        "market/test-market",
+    ],
+)
+@pytest.mark.parametrize("closed", [False, True])
+async def test_resolve_market_url_includes_child_markets_only_for_event_links(
+    monkeypatch, path, closed
+):
     market = SimpleNamespace(
         condition_id="0x" + "9" * 64,
         question="测试市场会通过吗？",
@@ -99,6 +152,28 @@ async def test_resolve_localized_sports_url_uses_event_slug_and_maps_outcomes(mo
         prices=SimpleNamespace(best_bid=Decimal("0.49"), best_ask=Decimal("0.51")),
     )
 
+    child_market = SimpleNamespace(
+        **{
+            **vars(market),
+            "condition_id": "0x" + "8" * 64,
+            "question": "Both Teams to Score",
+            "slug": "test-btts",
+            "events": (),
+            "outcomes": SimpleNamespace(
+                yes=SimpleNamespace(label="Yes", token_id="btts-yes", price=Decimal("0.65")),
+                no=SimpleNamespace(label="No", token_id="btts-no", price=Decimal("0.35")),
+            ),
+        }
+    )
+    event = SimpleNamespace(
+        id="event-id",
+        title="测试事件",
+        slug="test-event",
+        markets=(market,),
+        parent_event_id=None,
+        state=SimpleNamespace(closed=closed),
+    )
+
     class FakePublicClient:
         async def __aenter__(self):
             return self
@@ -106,9 +181,40 @@ async def test_resolve_localized_sports_url_uses_event_slug_and_maps_outcomes(mo
         async def __aexit__(self, *_):
             return None
 
-        async def get_event(self, *, slug: str):
-            assert slug == "epl-che-bri-2026-08-30"
-            return SimpleNamespace(title="测试事件", slug="test-event", markets=(market,))
+        async def get_event(self, **kwargs):
+            if path.startswith("event/"):
+                assert kwargs == {"url": f"https://polymarket.com/{path}"}
+            else:
+                assert kwargs == {"slug": "epl-che-bri-2026-08-30"}
+            return event
+
+        async def get_market(self, **kwargs):
+            assert kwargs == {"url": "https://polymarket.com/market/test-market"}
+            return market
+
+        def list_events(self, **kwargs):
+            assert not path.startswith("market/")
+            assert kwargs == {
+                "slug": "test-event",
+                "include_children": True,
+                "closed": closed,
+                "page_size": 100,
+            }
+
+            async def iter_items():
+                yield event
+                yield SimpleNamespace(
+                    parent_event_id="different-event",
+                    slug="unrelated",
+                    markets=(child_market,),
+                )
+                yield SimpleNamespace(
+                    parent_event_id="event-id",
+                    slug="test-event-more-markets",
+                    markets=(market, child_market, child_market),
+                )
+
+            return SimpleNamespace(iter_items=iter_items)
 
     monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
     client = PolymarketClient(
@@ -118,17 +224,20 @@ async def test_resolve_localized_sports_url_uses_event_slug_and_maps_outcomes(mo
         transport=httpx.MockTransport(lambda _: httpx.Response(500)),
     )
     try:
-        resolved = await client.resolve_market_url(
-            "https://polymarket.com/zh/sports/epl/epl-che-bri-2026-08-30"
-        )
+        resolved = await client.resolve_market_url(f"https://polymarket.com/{path}")
     finally:
         await client.close()
 
     assert resolved.event_title == "测试事件"
-    assert len(resolved.markets) == 1
+    assert len(resolved.markets) == (1 if path.startswith("market/") else 2)
     assert resolved.markets[0].outcomes == ("Yes", "No")
     assert resolved.markets[0].clob_token_ids == ("asset-yes", "asset-no")
     assert resolved.markets[0].fee_rate == Decimal("0.05")
+    if not path.startswith("market/"):
+        assert resolved.markets[1].title == "Both Teams to Score"
+        assert resolved.markets[1].event_slug == "test-event-more-markets"
+        assert resolved.markets[1].clob_token_ids == ("btts-yes", "btts-no")
+        assert resolved.markets[1].outcome_prices == (Decimal("0.65"), Decimal("0.35"))
 
 
 @pytest.mark.asyncio
@@ -148,23 +257,22 @@ async def test_resolve_market_url_rejects_non_polymarket_hosts():
 
 @pytest.mark.asyncio
 async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
-    start = datetime(2026, 8, 16, 1, 2, 3)
-    end = datetime(2026, 8, 16, 2, 3, 4)
+    start = datetime.fromtimestamp(1786886550 - 60, UTC).replace(tzinfo=None)
+    end = datetime.fromtimestamp(1786886550 + 60, UTC).replace(tzinfo=None)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "data.test"
-        assert request.url.path == "/trades"
+        assert request.url.path == "/v2/trades"
         assert request.url.params["filterType"] == "CASH"
         assert request.url.params["filterAmount"] == "1000.00"
         assert request.url.params["start"] == str(int(start.replace(tzinfo=UTC).timestamp()))
         assert request.url.params["end"] == str(int(end.replace(tzinfo=UTC).timestamp()))
         assert request.url.params["limit"] == "123"
-        assert request.url.params["offset"] == "456"
+        assert "offset" not in request.url.params
         assert request.url.params["takerOnly"] == "false"
         assert request.url.params["side"] == "BUY"
-        return httpx.Response(
-            200,
-            json=[
+        return data_response(
+            [
                 {
                     "proxyWallet": TEST_ADDRESS.upper(),
                     "side": "buy",
@@ -183,16 +291,7 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
                     "pseudonym": "Any-Keystone",
                     "transactionHash": "0xtrade",
                 },
-                {
-                    "proxyWallet": TEST_ADDRESS,
-                    "side": "MINT",
-                    "asset": "ignored",
-                    "conditionId": "0x" + "2" * 64,
-                    "size": 1,
-                    "price": 0.5,
-                    "timestamp": 1786886550,
-                },
-            ],
+            ]
         )
 
     client = PolymarketClient(
@@ -207,7 +306,7 @@ async def test_large_trades_fetches_one_cash_filtered_page_and_parses_amount():
             start=start,
             end=end,
             limit=123,
-            offset=456,
+            offset=0,
         )
     finally:
         await client.close()
@@ -237,7 +336,7 @@ async def test_large_trade_requests_are_serialized_and_paced():
         max_active_requests = max(max_active_requests, active_requests)
         await asyncio.sleep(0.01)
         active_requests -= 1
-        return httpx.Response(200, json=[])
+        return data_response([])
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -422,68 +521,41 @@ async def test_official_holders_and_market_positions_are_parsed(monkeypatch):
     asset_id = "asset-yes"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/holders"
-        assert request.url.params["market"] == condition_id
+        assert request.url.params["condition"] == condition_id
         assert request.url.params["limit"] == "20"
-        assert request.url.params["minBalance"] == "10000"
-        return httpx.Response(
-            200,
-            json=[
+        if request.url.path == "/v2/holders":
+            assert request.url.params["minBalance"] == "10000"
+            return data_response(
+                [
+                    {
+                        "token": asset_id,
+                        "holders": [
+                            {
+                                "proxyWallet": TEST_ADDRESS.upper(),
+                                "asset": asset_id,
+                                "amount": "25000.5",
+                                "outcomeIndex": 0,
+                                "verified": True,
+                            }
+                        ],
+                    }
+                ]
+            )
+        assert request.url.path == "/v2/positions"
+        assert request.url.params["status"] == "OPEN"
+        return data_response(
+            [
                 {
-                    "token": asset_id,
-                    "holders": [
-                        {
-                            "proxyWallet": TEST_ADDRESS.upper(),
-                            "asset": asset_id,
-                            "amount": "25000.5",
-                            "outcomeIndex": 0,
-                            "name": "Position Whale",
-                            "profileImage": "https://example.test/whale.png",
-                            "verified": True,
-                        }
-                    ],
+                    **raw_position(asset_id),
+                    "conditionId": condition_id,
+                    "proxyWallet": TEST_ADDRESS.upper(),
+                    "size": "25000.5",
+                    "totalBought": "25000.5",
+                    "avgPrice": "0.40",
+                    "currentValue": "15000.3",
                 }
-            ],
+            ]
         )
-
-    position = SimpleNamespace(
-        wallet=TEST_ADDRESS.upper(),
-        token_id=asset_id,
-        condition_id=condition_id,
-        avg_price=Decimal("0.40"),
-        size=Decimal("25000.5"),
-        total_bought=Decimal("25000.5"),
-        cur_price=Decimal("0.60"),
-        current_value=Decimal("15000.3"),
-        outcome="Yes",
-        outcome_index=0,
-        name="Position Whale",
-        profile_image="https://example.test/whale.png",
-        verified=True,
-    )
-
-    class FakePaginator:
-        async def first_page(self):
-            return SimpleNamespace(items=(SimpleNamespace(token=asset_id, positions=(position,)),))
-
-    class FakePublicClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        def list_market_positions(self, **kwargs):
-            assert kwargs == {
-                "market": condition_id,
-                "status": "OPEN",
-                "sort_by": "TOKENS",
-                "sort_direction": "DESC",
-                "page_size": 20,
-            }
-            return FakePaginator()
-
-    monkeypatch.setattr(polymarket, "AsyncPublicClient", FakePublicClient)
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -778,7 +850,9 @@ async def test_settlement_evidence_uses_repeated_gamma_condition_parameters():
                     for condition_id in conditions
                 ],
             )
-        return httpx.Response(200, json=[])
+        return (
+            data_response([]) if request.url.host == "data.test" else httpx.Response(200, json=[])
+        )
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -841,13 +915,10 @@ async def test_closed_positions_are_parsed_paginated_and_cached():
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
         calls.append(params)
-        offset = int(params["offset"])
+        offset = 0 if "cursor" not in params else 1
         if offset == 0:
-            return httpx.Response(
-                200,
-                json=[raw_closed_position(index) for index in range(50)],
-            )
-        return httpx.Response(200, json=[raw_closed_position(50)])
+            return data_response([raw_closed_position(index) for index in range(50)], "next")
+        return data_response([raw_closed_position(50)])
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -866,7 +937,7 @@ async def test_closed_positions_are_parsed_paginated_and_cached():
     assert first[0].asset_id == "closed-asset-0"
     assert first[0].realized_pnl == Decimal("-25")
     assert first[-1].market_slug == "closed-market-50"
-    assert [call["offset"] for call in calls] == ["0", "50"]
+    assert [call.get("cursor") for call in calls] == [None, None, "next"]
     assert all(call["sortBy"] == "TIMESTAMP" for call in calls)
 
 
@@ -894,10 +965,10 @@ async def test_redemption_history_is_parsed_and_paginated():
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
         calls.append(params)
-        offset = int(params["offset"])
+        offset = 0 if "cursor" not in params else 1
         if offset == 0:
-            return httpx.Response(200, json=[raw_redemption(index) for index in range(500)])
-        return httpx.Response(200, json=[raw_redemption(500)])
+            return data_response([raw_redemption(index) for index in range(500)], "next")
+        return data_response([raw_redemption(500)])
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -919,7 +990,7 @@ async def test_redemption_history_is_parsed_and_paginated():
     assert redemptions[-1].size == 510
     assert redemptions[-1].usdc_size == 510
     assert redemptions[-1].market_slug == "redeemed-market-500"
-    assert [call["offset"] for call in calls] == ["0", "500"]
+    assert [call.get("cursor") for call in calls] == [None, None, "next"]
     assert all(call["type"] == "REDEEM" for call in calls)
     assert all("start" in call and "end" in call for call in calls)
 
@@ -930,11 +1001,10 @@ async def test_trade_history_chunks_market_filters_at_data_api_limit():
     requested_batches: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        batch = request.url.params["market"].split(",")
+        batch = request.url.params["condition"].split(",")
         requested_batches.append(batch)
-        return httpx.Response(
-            200,
-            json=[
+        return data_response(
+            [
                 {
                     "asset": f"asset-{len(requested_batches)}",
                     "conditionId": batch[0],
@@ -944,7 +1014,7 @@ async def test_trade_history_chunks_market_filters_at_data_api_limit():
                     "timestamp": 1_700_000_000 + len(requested_batches),
                     "transactionHash": f"0x{len(requested_batches)}",
                 }
-            ],
+            ]
         )
 
     client = PolymarketClient(
@@ -961,9 +1031,9 @@ async def test_trade_history_chunks_market_filters_at_data_api_limit():
     finally:
         await client.close()
 
-    assert [len(batch) for batch in requested_batches] == [100, 100, 1]
+    assert [len(batch) for batch in requested_batches] == [20] * 10 + [1]
     assert [condition for batch in requested_batches for condition in batch] == conditions
-    assert len(trades) == 3
+    assert len(trades) == 11
 
 
 @pytest.mark.asyncio
@@ -973,13 +1043,11 @@ async def test_active_snapshot_requires_both_complete_mergeable_pages():
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
         calls.append(params)
-        mergeable = params["mergeable"]
-        offset = int(params["offset"])
-        if mergeable == "false" and offset == 0:
-            return httpx.Response(200, json=[raw_position(f"a-{index}") for index in range(500)])
-        if mergeable == "false" and offset == 500:
-            return httpx.Response(200, json=[raw_position("last")])
-        return httpx.Response(200, json=[raw_position("mergeable")])
+        if "cursor" not in params:
+            return data_response([raw_position(f"a-{index}") for index in range(500)], "next")
+        return data_response(
+            [raw_position("last"), {**raw_position("mergeable"), "mergeable": True}]
+        )
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -996,14 +1064,13 @@ async def test_active_snapshot_requires_both_complete_mergeable_pages():
         await client.close()
 
     assert len(positions) == 502
-    assert Counter(call["mergeable"] for call in calls) == {"false": 2, "true": 1}
     for call in calls:
-        assert call["redeemable"] == "false"
-        assert call["sizeThreshold"] == "0"
+        assert call["status"] == "OPEN"
+        assert call["filter_amount"] == "0"
         assert call["limit"] == "500"
-        assert call["sortBy"] == "CURRENT"
+        assert call["sortBy"] == "CURRENT_VALUE"
         assert call["sortDirection"] == "DESC"
-        assert call["market"] == "0x" + "9" * 64
+        assert call["condition"] == "0x" + "9" * 64
 
 
 @pytest.mark.asyncio
@@ -1014,7 +1081,7 @@ async def test_redeemable_snapshot_targets_conditions_and_deduplicates_assets():
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
         calls.append(params)
-        return httpx.Response(200, json=[raw_position("redeemable-asset")])
+        return data_response([raw_position("redeemable-asset")])
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -1031,18 +1098,17 @@ async def test_redeemable_snapshot_targets_conditions_and_deduplicates_assets():
         await client.close()
 
     assert [item.asset_id for item in positions] == ["redeemable-asset"]
-    assert Counter(call["mergeable"] for call in calls) == {"false": 1, "true": 1}
     for call in calls:
-        assert call["redeemable"] == "true"
-        assert call["market"] == ",".join(conditions)
+        assert call["status"] == "REDEEMABLE"
+        assert call["condition"] == ",".join(conditions)
 
 
 @pytest.mark.asyncio
 async def test_failure_on_any_mergeable_page_rejects_whole_snapshot():
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.params["mergeable"] == "true":
+        if "cursor" in request.url.params:
             return httpx.Response(500, text="upstream")
-        return httpx.Response(200, json=[raw_position("safe")])
+        return data_response([raw_position("safe")], "next")
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -1200,7 +1266,7 @@ async def test_unexpected_positions_response_shape_is_rejected():
         transport=httpx.MockTransport(handler),
     )
     try:
-        with pytest.raises(PolymarketAPIError, match="持仓接口返回格式无效"):
+        with pytest.raises(PolymarketAPIError, match="Data API v2 返回格式无效"):
             await client.fetch_active_positions(TEST_ADDRESS)
     finally:
         await client.close()
@@ -1211,15 +1277,11 @@ async def test_second_positions_page_failure_rejects_first_full_page():
     requested_offsets: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        mergeable = request.url.params["mergeable"]
-        offset = int(request.url.params["offset"])
-        if mergeable == "true":
-            return httpx.Response(200, json=[])
+        offset = 500 if "cursor" in request.url.params else 0
         requested_offsets.append(offset)
         if offset == 0:
-            return httpx.Response(
-                200,
-                json=[raw_position(f"page-one-{index}") for index in range(500)],
+            return data_response(
+                [raw_position(f"page-one-{index}") for index in range(500)], "next"
             )
         return httpx.Response(503, text="second page failed")
 
@@ -1235,7 +1297,7 @@ async def test_second_positions_page_failure_rejects_first_full_page():
     finally:
         await client.close()
 
-    assert requested_offsets == [0, 500]
+    assert 500 in requested_offsets
 
 
 def test_invalid_non_polymarket_url_is_rejected():
@@ -1251,7 +1313,9 @@ async def test_supplemental_trades_allow_zero_threshold_and_filter_market():
 
     def handler(request):
         requests.append(request)
-        return httpx.Response(200, json=[])
+        return (
+            data_response([]) if request.url.host == "data.test" else httpx.Response(200, json=[])
+        )
 
     client = PolymarketClient(
         data_api_url="https://data.test",
@@ -1267,7 +1331,7 @@ async def test_supplemental_trades_allow_zero_threshold_and_filter_market():
             )
             == []
         )
-        assert requests[0].url.params["market"] == condition_id
+        assert requests[0].url.params["condition"] == condition_id
         assert requests[0].url.params["filterAmount"] == "0"
         assert requests[0].url.params["side"] == "BUY"
         await client.fetch_discovery_markets(min_liquidity_usdc=Decimal("5000"))

@@ -233,8 +233,15 @@ class WhaleSettings(Base):
         default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
         server_default='["sports","esports","politics","crypto","science_tech","entertainment","other"]',
     )
+    # Retired configuration: retained only to preserve historical database values.
     dual_match_auto_follow_amount_usdc: Mapped[Decimal | None] = mapped_column(
         DECIMAL_TYPE, nullable=True
+    )
+    new_account_auto_follow_source_tiers_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    new_account_auto_follow_source_tiers_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
     )
     new_account_auto_follow_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
@@ -256,6 +263,12 @@ class WhaleSettings(Base):
     )
     new_account_auto_follow_low_price_amount_usdc: Mapped[Decimal | None] = mapped_column(
         DECIMAL_TYPE, nullable=True
+    )
+    large_amount_auto_follow_source_tiers_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    large_amount_auto_follow_source_tiers_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
     )
     large_amount_auto_follow_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
@@ -669,6 +682,9 @@ class WhaleAutoFollowDecision(Base):
     matched_rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     selected_rule: Mapped[str | None] = mapped_column(String(30), nullable=True)
     category: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_buy_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    source_tier_min_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
+    amount_basis: Mapped[str | None] = mapped_column(String(30), nullable=True)
     configured_amount_usdc: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     configured_min_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)
     configured_max_price: Mapped[Decimal | None] = mapped_column(DECIMAL_TYPE, nullable=True)

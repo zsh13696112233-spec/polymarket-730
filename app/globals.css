@@ -12430,6 +12430,10 @@ a.pcMarketIdentity:hover strong { color: #5367d9; }
   margin-top: 16px;
 }
 
+.pcChainTestBuyRow .pcUnitInput b {
+  font-size: 14px;
+}
+
 .pcChainTestUrlRow .pcButton,
 .pcChainTestBuyRow .pcButton {
   min-height: 40px;

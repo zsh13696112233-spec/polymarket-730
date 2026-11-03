@@ -6,6 +6,7 @@ import {
   WhaleExclusionList,
   WhaleCategorySelection,
   WhaleSettings,
+  WhaleSourceAmountTier,
   formatBeijing,
   formatCompactUsdc,
   numeric,
@@ -324,6 +325,10 @@ function AutoStrategyCard({
   amount,
   minPrice,
   maxPrice,
+  sourceTiersEnabled,
+  sourceTiers,
+  onSourceTiersEnabled,
+  onSourceTiers,
   lowPriceEnabled,
   lowPriceMax,
   lowPriceAmount,
@@ -343,6 +348,10 @@ function AutoStrategyCard({
   amount: string;
   minPrice: string;
   maxPrice: string;
+  sourceTiersEnabled: boolean;
+  sourceTiers: WhaleSourceAmountTier[];
+  onSourceTiersEnabled: (value: boolean) => void;
+  onSourceTiers: (value: WhaleSourceAmountTier[]) => void;
   lowPriceEnabled: boolean;
   lowPriceMax: string;
   lowPriceAmount: string;
@@ -395,6 +404,21 @@ function AutoStrategyCard({
           </div>
         )}
       </div>
+      <div className="whaleAutoLowPriceSection">
+        <label className="whaleAutoToggle">
+          <input type="checkbox" aria-label={`${title}启用来源金额分档`} checked={sourceTiersEnabled} disabled={busy} onChange={(event) => onSourceTiersEnabled(event.target.checked)} />
+          <b>来源金额分档</b>
+        </label>
+        {sourceTiersEnabled && <>
+          {sourceTiers.map((tier, index) => <div className="whaleAutoFields" key={index}>
+            <label className="pcField"><span>累计买入达到（USDC）</span><input type="number" min="0.01" step="any" aria-label={`${title}第${index + 1}档来源金额`} value={tier.min_source_amount_usdc} disabled={busy} onChange={(event) => onSourceTiers(sourceTiers.map((item, i) => i === index ? { ...item, min_source_amount_usdc: event.target.value } : item))} /></label>
+            <label className="pcField"><span>跟单金额（USDC）</span><input type="number" min="0.01" step="any" aria-label={`${title}第${index + 1}档跟单金额`} value={tier.follow_amount_usdc} disabled={busy} onChange={(event) => onSourceTiers(sourceTiers.map((item, i) => i === index ? { ...item, follow_amount_usdc: event.target.value } : item))} /></label>
+            <button type="button" className="pcButton" disabled={busy} aria-label={`${title}删除第${index + 1}档`} onClick={() => onSourceTiers(sourceTiers.filter((_, i) => i !== index))}>删除档位</button>
+          </div>)}
+          <button type="button" className="pcButton" disabled={busy} onClick={() => onSourceTiers([...sourceTiers, { min_source_amount_usdc: "", follow_amount_usdc: "" }])}>添加档位</button>
+          <p className="pcFormHint">按同一来源钱包、同一市场方向在监测窗口内的累计买入金额，选取达到的最高档位，覆盖基础金额和低价小额。未达到档位沿用原策略；后续跨档不补买。</p>
+        </>}
+      </div>
       <WhaleCategoryPicker legend="允许的市场分类" value={categories} onChange={onCategories} disabled={busy} />
     </section>
   );
@@ -425,8 +449,10 @@ export function WhaleAutoSettingsPanel({
   const [largeLowPriceEnabled, setLargeLowPriceEnabled] = useState<boolean | null>(null);
   const [largeLowPriceMax, setLargeLowPriceMax] = useState<string | null>(null);
   const [largeLowPriceAmount, setLargeLowPriceAmount] = useState<string | null>(null);
-  const [dualEnabled, setDualEnabled] = useState<boolean | null>(null);
-  const [dualAmount, setDualAmount] = useState<string | null>(null);
+  const [newSourceEnabled, setNewSourceEnabled] = useState<boolean | null>(null);
+  const [newSourceTiers, setNewSourceTiers] = useState<WhaleSourceAmountTier[] | null>(null);
+  const [largeSourceEnabled, setLargeSourceEnabled] = useState<boolean | null>(null);
+  const [largeSourceTiers, setLargeSourceTiers] = useState<WhaleSourceAmountTier[] | null>(null);
   const [largeConflictPriorityEnabled, setLargeConflictPriorityEnabled] = useState<boolean | null>(null);
   const [marketCapEnabled, setMarketCapEnabled] = useState<boolean | null>(null);
   const [marketMaxPurchaseCount, setMarketMaxPurchaseCount] = useState<string | null>(null);
@@ -455,8 +481,10 @@ export function WhaleAutoSettingsPanel({
   const resolvedLargeLowPriceEnabled = largeLowPriceEnabled ?? settings?.large_amount_auto_follow_low_price_max_price != null;
   const resolvedLargeLowPriceMax = largeLowPriceMax ?? (settings?.large_amount_auto_follow_low_price_max_price == null ? "" : String(settings.large_amount_auto_follow_low_price_max_price));
   const resolvedLargeLowPriceAmount = largeLowPriceAmount ?? (settings?.large_amount_auto_follow_low_price_amount_usdc == null ? "" : String(settings.large_amount_auto_follow_low_price_amount_usdc));
-  const resolvedDualEnabled = dualEnabled ?? settings?.dual_match_auto_follow_amount_usdc != null;
-  const resolvedDualAmount = dualAmount ?? (settings?.dual_match_auto_follow_amount_usdc == null ? "" : String(settings.dual_match_auto_follow_amount_usdc));
+  const resolvedNewSourceEnabled = newSourceEnabled ?? settings?.new_account_auto_follow_source_tiers_enabled ?? false;
+  const resolvedNewSourceTiers = newSourceTiers ?? settings?.new_account_auto_follow_source_tiers ?? [];
+  const resolvedLargeSourceEnabled = largeSourceEnabled ?? settings?.large_amount_auto_follow_source_tiers_enabled ?? false;
+  const resolvedLargeSourceTiers = largeSourceTiers ?? settings?.large_amount_auto_follow_source_tiers ?? [];
   const resolvedLargeConflictPriorityEnabled = largeConflictPriorityEnabled ?? settings?.large_amount_conflict_priority_enabled ?? true;
   const resolvedMarketCapEnabled = marketCapEnabled ?? settings?.auto_follow_market_max_purchase_count != null;
   const resolvedMarketMaxPurchaseCount = marketMaxPurchaseCount ?? (settings?.auto_follow_market_max_purchase_count == null ? "" : String(settings.auto_follow_market_max_purchase_count));
@@ -492,8 +520,10 @@ export function WhaleAutoSettingsPanel({
     setLargeLowPriceEnabled(null);
     setLargeLowPriceMax(null);
     setLargeLowPriceAmount(null);
-    setDualEnabled(null);
-    setDualAmount(null);
+    setNewSourceEnabled(null);
+    setNewSourceTiers(null);
+    setLargeSourceEnabled(null);
+    setLargeSourceTiers(null);
     setLargeConflictPriorityEnabled(null);
     setMarketCapEnabled(null);
     setMarketMaxPurchaseCount(null);
@@ -539,10 +569,26 @@ export function WhaleAutoSettingsPanel({
         return;
       }
     }
-    const dualAmountValue = Number(resolvedDualAmount);
-    if (resolvedDualEnabled && (!Number.isFinite(dualAmountValue) || dualAmountValue <= 0)) {
-      setError("双重命中跟单金额必须大于 0。");
-      return;
+    for (const [label, enabled, tiers, baseAmount] of [
+      ["新号大额", resolvedNewSourceEnabled, resolvedNewSourceTiers, newAutoAmountValue],
+      ["全量超大额", resolvedLargeSourceEnabled, resolvedLargeSourceTiers, largeAutoAmountValue],
+    ] as const) {
+      if (enabled && tiers.length === 0) {
+        setError(`${label}启用来源金额分档时至少需要一个档位。`);
+        return;
+      }
+      let previousThreshold = 0;
+      let previousAmount = baseAmount;
+      for (const tier of tiers) {
+        const threshold = Number(tier.min_source_amount_usdc);
+        const amount = Number(tier.follow_amount_usdc);
+        if (!Number.isFinite(threshold) || threshold <= previousThreshold || !Number.isFinite(amount) || amount < previousAmount || amount > numeric(settings?.max_follow_amount_usdc ?? 200)) {
+          setError(`${label}来源金额门槛须递增，跟单金额不能低于基础金额或前一档，也不能超过单笔上限。`);
+          return;
+        }
+        previousThreshold = threshold;
+        previousAmount = amount;
+      }
     }
     if (resolvedMarketCapEnabled) {
       if (!Number.isInteger(marketMaxPurchaseCountValue) || marketMaxPurchaseCountValue <= 0) {
@@ -554,12 +600,11 @@ export function WhaleAutoSettingsPanel({
         return;
       }
       const enabledBaseAmounts = [
-        resolvedDualEnabled && (resolvedNewAutoEnabled || resolvedLargeAutoEnabled) ? dualAmountValue : 0,
-        resolvedNewAutoEnabled ? newAutoAmountValue : 0,
-        resolvedLargeAutoEnabled ? largeAutoAmountValue : 0,
+        resolvedNewAutoEnabled ? Math.max(newAutoAmountValue, ...(resolvedNewSourceEnabled ? resolvedNewSourceTiers.map((tier) => Number(tier.follow_amount_usdc)) : [])) : 0,
+        resolvedLargeAutoEnabled ? Math.max(largeAutoAmountValue, ...(resolvedLargeSourceEnabled ? resolvedLargeSourceTiers.map((tier) => Number(tier.follow_amount_usdc)) : [])) : 0,
       ];
       if (marketMaxAmountValue < Math.max(...enabledBaseAmounts)) {
-        setError("单市场累计金额不能低于已开启策略的基础单笔金额。");
+        setError("单市场累计金额不能低于已开启策略的最大单笔金额。");
         return;
       }
     }
@@ -570,6 +615,8 @@ export function WhaleAutoSettingsPanel({
       const next = await whaleApi<WhaleSettings>("/api/whales/settings", {
         method: "PUT",
         body: JSON.stringify({
+          new_account_auto_follow_source_tiers_enabled: resolvedNewSourceEnabled,
+          new_account_auto_follow_source_tiers: resolvedNewSourceTiers,
           new_account_auto_follow_enabled: resolvedNewAutoEnabled,
           new_account_auto_follow_amount_usdc: newAutoAmountValue,
           new_account_auto_follow_min_price: newAutoMinValue,
@@ -577,6 +624,8 @@ export function WhaleAutoSettingsPanel({
           new_account_auto_follow_categories: resolvedNewAutoCategories,
           new_account_auto_follow_low_price_max_price: resolvedNewLowPriceEnabled ? newLowMaxValue : null,
           new_account_auto_follow_low_price_amount_usdc: resolvedNewLowPriceEnabled ? newLowAmountValue : null,
+          large_amount_auto_follow_source_tiers_enabled: resolvedLargeSourceEnabled,
+          large_amount_auto_follow_source_tiers: resolvedLargeSourceTiers,
           large_amount_auto_follow_enabled: resolvedLargeAutoEnabled,
           large_amount_auto_follow_amount_usdc: largeAutoAmountValue,
           large_amount_auto_follow_min_price: largeAutoMinValue,
@@ -584,7 +633,6 @@ export function WhaleAutoSettingsPanel({
           large_amount_auto_follow_categories: resolvedLargeAutoCategories,
           large_amount_auto_follow_low_price_max_price: resolvedLargeLowPriceEnabled ? largeLowMaxValue : null,
           large_amount_auto_follow_low_price_amount_usdc: resolvedLargeLowPriceEnabled ? largeLowAmountValue : null,
-          dual_match_auto_follow_amount_usdc: resolvedDualEnabled ? dualAmountValue : null,
           large_amount_conflict_priority_enabled: resolvedLargeConflictPriorityEnabled,
           auto_follow_market_max_purchase_count: resolvedMarketCapEnabled ? marketMaxPurchaseCountValue : null,
           auto_follow_market_max_amount_usdc: resolvedMarketCapEnabled ? marketMaxAmountValue : null,
@@ -626,15 +674,15 @@ export function WhaleAutoSettingsPanel({
         <div className="whaleAutoOverviewGrid" aria-label="自动跟单策略概览">
           <article className="whaleAutoOverviewCard">
             <header><strong>新号大额</strong><span className={resolvedNewAutoEnabled ? "enabled" : "disabled"}>{resolvedNewAutoEnabled ? "已开启" : "已关闭"}</span></header>
-            <dl><div><dt>单笔</dt><dd>{resolvedNewAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedNewAutoMinPrice}–{resolvedNewAutoMaxPrice}</dd></div><div><dt>低价</dt><dd>{resolvedNewLowPriceEnabled ? `< ${resolvedNewLowPriceMax}：${resolvedNewLowPriceAmount} USDC` : "未启用"}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedNewAutoCategories)}>{categorySummary(resolvedNewAutoCategories)}</dd></div></dl>
+            <dl><div><dt>单笔</dt><dd>{resolvedNewAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedNewAutoMinPrice}–{resolvedNewAutoMaxPrice}</dd></div><div><dt>低价</dt><dd>{resolvedNewLowPriceEnabled ? `< ${resolvedNewLowPriceMax}：${resolvedNewLowPriceAmount} USDC` : "未启用"}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedNewAutoCategories)}>{categorySummary(resolvedNewAutoCategories)}</dd></div><div><dt>来源分档</dt><dd>{resolvedNewSourceEnabled ? resolvedNewSourceTiers.map((tier) => `≥ ${formatCompactUsdc(tier.min_source_amount_usdc)} → ${tier.follow_amount_usdc} USDC`).join("；") : "未启用"}</dd></div></dl>
           </article>
           <article className="whaleAutoOverviewCard">
             <header><strong>全量超大额</strong><span className={resolvedLargeAutoEnabled ? "enabled" : "disabled"}>{resolvedLargeAutoEnabled ? "已开启" : "已关闭"}</span></header>
-            <dl><div><dt>单笔</dt><dd>{resolvedLargeAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedLargeAutoMinPrice}–{resolvedLargeAutoMaxPrice}</dd></div><div><dt>低价</dt><dd>{resolvedLargeLowPriceEnabled ? `< ${resolvedLargeLowPriceMax}：${resolvedLargeLowPriceAmount} USDC` : "未启用"}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedLargeAutoCategories)}>{categorySummary(resolvedLargeAutoCategories)}</dd></div></dl>
+            <dl><div><dt>单笔</dt><dd>{resolvedLargeAutoAmount} USDC</dd></div><div><dt>买价</dt><dd>{resolvedLargeAutoMinPrice}–{resolvedLargeAutoMaxPrice}</dd></div><div><dt>低价</dt><dd>{resolvedLargeLowPriceEnabled ? `< ${resolvedLargeLowPriceMax}：${resolvedLargeLowPriceAmount} USDC` : "未启用"}</dd></div><div><dt>分类</dt><dd title={categorySummary(resolvedLargeAutoCategories)}>{categorySummary(resolvedLargeAutoCategories)}</dd></div><div><dt>来源分档</dt><dd>{resolvedLargeSourceEnabled ? resolvedLargeSourceTiers.map((tier) => `≥ ${formatCompactUsdc(tier.min_source_amount_usdc)} → ${tier.follow_amount_usdc} USDC`).join("；") : "未启用"}</dd></div></dl>
           </article>
         </div>
         <p className="pcFormHint whaleAutoMarketCapSummary">
-          双重命中金额：{resolvedDualEnabled ? `${resolvedDualAmount} USDC` : "沿用原策略"} · 分歧规则：{resolvedLargeConflictPriorityEnabled ? "全量超大额优先" : "任意反向信号退出"} · 单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
+          分歧规则：{resolvedLargeConflictPriorityEnabled ? "全量超大额优先" : "任意反向信号退出"} · 单市场共享上限：{resolvedMarketCapEnabled ? `最多 ${resolvedMarketMaxPurchaseCount} 次 / 累计 ${resolvedMarketMaxAmount} USDC` : "暂不限制"}
         </p>
 
         {editing && (
@@ -659,6 +707,10 @@ export function WhaleAutoSettingsPanel({
                 onAmount={setNewAutoAmount}
                 onMinPrice={setNewAutoMinPrice}
                 onMaxPrice={setNewAutoMaxPrice}
+                sourceTiersEnabled={resolvedNewSourceEnabled}
+                sourceTiers={resolvedNewSourceTiers}
+                onSourceTiersEnabled={setNewSourceEnabled}
+                onSourceTiers={setNewSourceTiers}
                 onLowPriceEnabled={setNewLowPriceEnabled}
                 onLowPriceMax={setNewLowPriceMax}
                 onLowPriceAmount={setNewLowPriceAmount}
@@ -680,23 +732,16 @@ export function WhaleAutoSettingsPanel({
                 onAmount={setLargeAutoAmount}
                 onMinPrice={setLargeAutoMinPrice}
                 onMaxPrice={setLargeAutoMaxPrice}
+                sourceTiersEnabled={resolvedLargeSourceEnabled}
+                sourceTiers={resolvedLargeSourceTiers}
+                onSourceTiersEnabled={setLargeSourceEnabled}
+                onSourceTiers={setLargeSourceTiers}
                 onLowPriceEnabled={setLargeLowPriceEnabled}
                 onLowPriceMax={setLargeLowPriceMax}
                 onLowPriceAmount={setLargeLowPriceAmount}
                 onCategories={setLargeAutoCategories}
               />
             )}
-            <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
-              <header>
-                <div><h3>双重命中跟单金额</h3></div>
-                <label className="whaleAutoToggle">
-                  <input type="checkbox" aria-label="启用双重命中独立金额" checked={resolvedDualEnabled} disabled={!settings || busy} onChange={(event) => setDualEnabled(event.target.checked)} />
-                  <b>{resolvedDualEnabled ? "已启用" : "沿用原策略"}</b>
-                </label>
-              </header>
-              {resolvedDualEnabled && <div className="whaleAutoFields"><label className="pcField"><span>单笔金额（USDC）</span><input type="number" aria-label="双重命中跟单金额" min="0.01" step="any" value={resolvedDualAmount} disabled={!settings || busy} onChange={(event) => setDualAmount(event.target.value)} /></label></div>}
-              <p className="pcFormHint">首次自动决策时同时命中两条规则，使用独立金额覆盖基础档和低价档；沿用所选策略的价格、分类及已有交易限制，只跟一笔。后续新增命中不补买。</p>
-            </section>
             <section className="whaleAutoStrategyCard whaleAutoMarketCapCard">
               <header>
                 <div><h3>分歧退出优先级</h3></div>
@@ -725,7 +770,7 @@ export function WhaleAutoSettingsPanel({
             </section>
             {riskVisible && (
               <div className="pcFormHint whaleAutoRiskHint" role="status">
-                <span>真实资金功能：同一钱包同一资产只判断一次；不同钱包同方向可继续触发，并受上方单市场共享上限约束。符合当前分歧规则的反向信号会卖出原方向全部份额，包括混合人工份额。</span>
+                <span>真实资金功能：同一钱包同一资产只判断一次；不同钱包同方向可继续触发，并受上方单市场共享上限约束。反向信号通过策略启用、分类、持仓资格和实际买价区间检查，且符合当前分歧优先级时，会卖出原方向全部份额，包括混合人工份额。</span>
                 <button type="button" aria-label="关闭真实资金风险提示" onClick={() => setRiskVisible(false)}>知道了</button>
               </div>
             )}

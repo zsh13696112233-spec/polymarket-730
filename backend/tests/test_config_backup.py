@@ -64,6 +64,7 @@ def test_round_trip_merges_exclusions_disables_execution_and_preserves_account(c
         {"proxy_wallet": A, "label": "保留"},
         {"proxy_wallet": B, "label": "旧备注"},
     ]
+    assert "dual_match_auto_follow_amount_usdc" not in backup["settings"]
     assert "last_scan_at" not in backup["settings"]
     assert "keychain_service" not in str(backup)
     assert isinstance(backup["settings"]["new_account_auto_follow_min_price"], str)
@@ -72,7 +73,12 @@ def test_round_trip_merges_exclusions_disables_execution_and_preserves_account(c
         large_amount_auto_follow_enabled=True,
         auto_redeem=True,
         monitor_categories=["politics", "crypto"],
-        dual_match_auto_follow_amount_usdc=None,
+        new_account_auto_follow_source_tiers_enabled=True,
+        new_account_auto_follow_source_tiers=[
+            {"min_source_amount_usdc": "1000000", "follow_amount_usdc": "35"},
+            {"min_source_amount_usdc": "2000000", "follow_amount_usdc": "40"},
+        ],
+        dual_match_auto_follow_amount_usdc="25",
     )
     backup["exclusions"] = [
         {"proxy_wallet": B, "label": None},
@@ -99,6 +105,8 @@ def test_round_trip_merges_exclusions_disables_execution_and_preserves_account(c
     ):
         assert actual["settings"][key] is False
         backup["settings"][key] = False
+    assert "dual_match_auto_follow_amount_usdc" not in actual["settings"]
+    backup["settings"].pop("dual_match_auto_follow_amount_usdc")
     assert actual["settings"] == backup["settings"]
     assert actual["exclusions"] == preserved + [
         {"proxy_wallet": A, "label": "保留"},
@@ -122,7 +130,6 @@ def test_round_trip_merges_exclusions_disables_execution_and_preserves_account(c
         lambda p: p.update(product="Other"),
         lambda p: p.update(private_key="not-allowed"),
         lambda p: p["settings"].pop("enabled"),
-        lambda p: p["settings"].pop("dual_match_auto_follow_amount_usdc"),
         lambda p: p["settings"].update(window_hours=None),
         lambda p: p["settings"].update(unknown_setting=1),
         lambda p: p["settings"].update(monitor_categories=[]),

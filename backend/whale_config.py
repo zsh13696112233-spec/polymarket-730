@@ -14,6 +14,7 @@ from backend.schemas import (
     WhaleConfigImportRead,
     WhaleConfigSettings,
     WhaleSettingsUpdate,
+    WhaleSourceAmountTier,
 )
 from backend.time_utils import utcnow
 
@@ -24,10 +25,37 @@ CATEGORY_FIELDS = {
 }
 
 
+JSON_FIELDS = {
+    **CATEGORY_FIELDS,
+    "new_account_auto_follow_source_tiers": "new_account_auto_follow_source_tiers_json",
+    "large_amount_auto_follow_source_tiers": "large_amount_auto_follow_source_tiers_json",
+}
+
+
+def source_amount_tiers(config: dict[str, Any], prefix: str) -> list[WhaleSourceAmountTier]:
+    tiers = [
+        WhaleSourceAmountTier.model_validate(item)
+        for item in json.loads(config[f"{prefix}_auto_follow_source_tiers_json"])
+    ]
+    if config[f"{prefix}_auto_follow_source_tiers_enabled"] and not tiers:
+        raise ValueError("启用来源金额分档时至少需要一个档位")
+    previous_threshold = 0
+    previous_amount = config[f"{prefix}_auto_follow_amount_usdc"]
+    for tier in tiers:
+        if tier.min_source_amount_usdc <= previous_threshold:
+            raise ValueError("来源金额档位门槛必须递增且不能重复")
+        if tier.follow_amount_usdc < previous_amount:
+            raise ValueError("分档跟单金额不能低于基础金额或前一档金额")
+        if tier.follow_amount_usdc > config["max_follow_amount_usdc"]:
+            raise ValueError("分档跟单金额不能超过单笔买入上限")
+        previous_threshold = tier.min_source_amount_usdc
+        previous_amount = tier.follow_amount_usdc
+    return tiers
+
+
 def settings_values(payload: WhaleSettingsUpdate) -> dict[str, Any]:
     values = payload.model_dump(exclude_none=True)
     for nullable_key in (
-        "dual_match_auto_follow_amount_usdc",
         "new_account_auto_follow_low_price_max_price",
         "new_account_auto_follow_low_price_amount_usdc",
         "large_amount_auto_follow_low_price_max_price",
@@ -37,10 +65,10 @@ def settings_values(payload: WhaleSettingsUpdate) -> dict[str, Any]:
     ):
         if nullable_key in payload.model_fields_set and getattr(payload, nullable_key) is None:
             values[nullable_key] = None
-    for public_key, storage_key in CATEGORY_FIELDS.items():
+    for public_key, storage_key in JSON_FIELDS.items():
         categories = values.pop(public_key, None)
         if categories is not None:
-            values[storage_key] = json.dumps(categories, separators=(",", ":"))
+            values[storage_key] = json.dumps(categories, separators=(",", ":"), default=str)
     # The page exposes one “重仓阈值”.  Keep single and cumulative gates in
     # lockstep when only the cumulative value is supplied, otherwise raising
     # the visible threshold would not necessarily narrow results.
@@ -75,6 +103,7 @@ def validate_settings(merged: dict[str, Any]) -> None:
         ("新号大额", "new_account"),
         ("全量超大额", "large_amount"),
     ):
+        source_amount_tiers(merged, prefix)
         amount = merged[f"{prefix}_auto_follow_amount_usdc"]
         minimum = merged[f"{prefix}_auto_follow_min_price"]
         maximum = merged[f"{prefix}_auto_follow_max_price"]
@@ -93,9 +122,6 @@ def validate_settings(merged: dict[str, Any]) -> None:
                 raise ValueError(f"{label}低价金额必须小于基础单笔金额")
             if low_amount > merged["max_follow_amount_usdc"]:
                 raise ValueError(f"{label}低价金额不能超过单笔买入上限")
-    dual_amount = merged["dual_match_auto_follow_amount_usdc"]
-    if dual_amount is not None and dual_amount > merged["max_follow_amount_usdc"]:
-        raise ValueError("双重命中金额不能超过单笔买入上限")
     market_count_cap = merged["auto_follow_market_max_purchase_count"]
     market_amount_cap = merged["auto_follow_market_max_amount_usdc"]
     if (market_count_cap is None) != (market_amount_cap is None):
@@ -106,10 +132,12 @@ def validate_settings(merged: dict[str, Any]) -> None:
             if not merged[f"{prefix}_auto_follow_enabled"]:
                 continue
             enabled_amounts.append(merged[f"{prefix}_auto_follow_amount_usdc"])
-        if enabled_amounts and dual_amount is not None:
-            enabled_amounts.append(dual_amount)
+            if merged[f"{prefix}_auto_follow_source_tiers_enabled"]:
+                enabled_amounts.extend(
+                    tier.follow_amount_usdc for tier in source_amount_tiers(merged, prefix)
+                )
         if enabled_amounts and market_amount_cap < max(enabled_amounts):
-            raise ValueError("单市场累计金额不能低于已开启策略的基础单笔金额")
+            raise ValueError("单市场累计金额不能低于已开启策略的最大单笔金额")
 
 
 def apply_settings(row: WhaleSettings, values: dict[str, Any]) -> None:
@@ -130,8 +158,8 @@ async def export_config(database: Database) -> WhaleConfigBackup:
             raise ValueError("巨鲸模块尚未初始化，请稍后重试")
         values = {
             field: (
-                json.loads(getattr(row, CATEGORY_FIELDS[field]))
-                if field in CATEGORY_FIELDS
+                json.loads(getattr(row, JSON_FIELDS[field]))
+                if field in JSON_FIELDS
                 else getattr(row, field)
             )
             for field in WhaleConfigSettings.model_fields
@@ -167,8 +195,8 @@ async def deactivate_excluded_entries(session: AsyncSession, addresses: list[str
 async def import_config(database: Database, payload: WhaleConfigBackup) -> WhaleConfigImportRead:
     # Validate the file's original switches as well; disabling execution must not bypass limits.
     values = payload.settings.model_dump()
-    for public_key, storage_key in CATEGORY_FIELDS.items():
-        values[storage_key] = json.dumps(values.pop(public_key), separators=(",", ":"))
+    for public_key, storage_key in JSON_FIELDS.items():
+        values[storage_key] = json.dumps(values.pop(public_key), separators=(",", ":"), default=str)
     validate_settings(values)
     for key in (
         "new_account_auto_follow_enabled",

@@ -29,6 +29,7 @@ const STATUS_OPTIONS = [
   ["conflict_locked", "分歧锁定"],
   ["exit_pending", "风控退出中"],
   ["exit_completed", "风控退出完成"],
+  ["exit_ended", "退出任务结束"],
 ] as const;
 
 function DecisionFilterSelect({
@@ -175,7 +176,7 @@ function DecisionRow({ decision }: { decision: WhaleAutoDecision }) {
       <td><a className="whaleAutoDecisionLink" href={profileUrl(decision.proxy_wallet)} target="_blank" rel="noreferrer"><strong>{shortAddress(decision.proxy_wallet)} ↗</strong><small>{rules || "—"}{decision.selected_rule ? ` · 采用${decision.selected_rule === "large_amount" ? "全量" : "新号"}` : ""}</small></a></td>
       <td><a className="whaleAutoDecisionLink" href={marketUrl(decision.event_slug || decision.market_slug)} target="_blank" rel="noreferrer"><strong>{decision.title} ↗</strong><small>{decision.outcome} · 同向已跟 {decision.followed_wallet_count} 个钱包</small></a></td>
       <td><span className="pcBadge neutral">{decision.category_label}</span></td>
-      <td className="numeric"><strong>{selectedAmount == null ? "—" : formatUsdc(selectedAmount)}</strong><small>{usedLowPriceAmount ? "低价小额" : ""}</small></td>
+      <td className="numeric"><strong>{selectedAmount == null ? "—" : formatUsdc(selectedAmount)}</strong><small>{decision.amount_basis === "source_tier" && decision.source_tier_min_usdc != null ? `来源 ≥ ${formatUsdc(decision.source_tier_min_usdc)} 档` : usedLowPriceAmount ? "低价小额" : ""}</small></td>
       <td className="numeric"><strong>{decision.configured_min_price == null ? "—" : `${formatPrice(decision.configured_min_price)}–${formatPrice(decision.configured_max_price)}`}</strong><small>盘口 {formatPrice(decision.observed_best_ask)}</small></td>
       <td><strong>{decisionReason(decision.reason)}</strong><small>{decision.buy_order_id ? `买单 #${decision.buy_order_id}` : ""}{decision.latest_sell_order_id ? ` · 卖单 #${decision.latest_sell_order_id}` : ""}</small></td>
     </tr>

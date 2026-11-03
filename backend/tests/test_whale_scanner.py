@@ -55,6 +55,7 @@ from backend.whale import (
     _auto_follow_reason_display,
     _decimal_display,
     _select_auto_follow_amount,
+    list_whale_auto_decisions,
 )
 from backend.whale_requests import WhaleRequestMonitor
 
@@ -96,7 +97,9 @@ class ScanGate:
 def build_scanner(database: Database) -> WhaleDiscoveryScanner:
     return WhaleDiscoveryScanner(
         database=database,
-        client=SimpleNamespace(),  # type: ignore[arg-type]
+        client=SimpleNamespace(
+            fetch_order_book=AsyncMock(return_value=SimpleNamespace(best_ask=Decimal("0.70")))
+        ),  # type: ignore[arg-type]
         settings=database.settings,
     )
 
@@ -1452,13 +1455,9 @@ async def test_auto_follow_decision_is_one_shot_and_large_rule_has_priority(data
     assert repeated == []
     assert len(decisions) == 1
     assert decisions[0].selected_rule == "large_amount"
-    assert decisions[0].configured_amount_usdc == (dual_amount or Decimal("10"))
-    if dual_amount is None:
-        assert _auto_follow_price(decisions[0].configured_low_price_max_price) == Decimal("0.65")
-        assert decisions[0].configured_low_price_amount_usdc == Decimal("5")
-    else:
-        assert decisions[0].configured_low_price_max_price is None
-        assert decisions[0].configured_low_price_amount_usdc is None
+    assert decisions[0].configured_amount_usdc == Decimal("10")
+    assert _auto_follow_price(decisions[0].configured_low_price_max_price) == Decimal("0.65")
+    assert decisions[0].configured_low_price_amount_usdc == Decimal("5")
     assert _auto_follow_price(decisions[0].configured_min_price) == Decimal("0.60")
     assert json.loads(decisions[0].matched_rules_json) == ["large_amount", "new_account"]
     assert decisions[0].status == "failed"
@@ -2125,7 +2124,6 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
         )
         await session.commit()
         position_id = position.id
-        buy_order_id = buy_order.id
 
     calls: list[tuple[str, Any]] = []
 
@@ -2148,8 +2146,25 @@ async def test_conflict_exit_sells_entire_mixed_position(database):
                 current.cost_usdc = Decimal("0")
                 current.status = "closed"
                 current.closed_at = utcnow()
+                sell = WhaleOrder(
+                    position_id=current.id,
+                    asset_id=current.asset_id,
+                    condition_id=current.condition_id,
+                    title=current.title,
+                    outcome=current.outcome,
+                    side="SELL",
+                    source="conflict_exit",
+                    idempotency_key="test-conflict-sell",
+                    limit_price=Decimal("0.6"),
+                    filled_size=Decimal("15"),
+                    filled_usdc=Decimal("9"),
+                    status="filled",
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+                session.add(sell)
                 await session.commit()
-            return buy_order_id
+                return sell.id
 
     scanner.executor = ConflictExecutor()  # type: ignore[assignment]
     await scanner._process_conflict_exits()
@@ -2984,7 +2999,7 @@ async def test_new_buy_after_history_is_eligible(database, monkeypatch):
         (["new_account", "large_amount"], True, ["politics"], None),
     ],
 )
-async def test_dual_amount_preserves_eligibility_and_does_not_top_up(
+async def test_retired_dual_amount_preserves_strategy_eligibility_and_does_not_top_up(
     database, rules, enabled, categories, expected_amount
 ):
     condition_id = "0x" + "7" * 64
@@ -3189,3 +3204,257 @@ async def test_auto_follow_subcategories_are_independent_and_one_shot(
     assert await scanner._persist_entries([aggregate], **kwargs) == []
     async with database.sessions() as session:
         assert len(list(await session.scalars(select(WhaleAutoFollowDecision)))) == 1
+
+
+@pytest.mark.parametrize("rule", ["new_account", "large_amount"])
+@pytest.mark.parametrize(
+    ("source", "enabled", "expected_tier"),
+    [
+        ("999999.99", True, None),
+        ("1000000", True, "1000000"),
+        ("1999999.99", True, "1000000"),
+        ("2000000", True, "2000000"),
+        ("3000000", True, "2000000"),
+        ("2000000", False, None),
+    ],
+)
+async def test_source_amount_tiers_snapshot_and_no_top_up(
+    database, rule, source, enabled, expected_tier
+):
+    condition_id = "0x" + "7" * 64
+    wallet = "0x7777777777777777777777777777777777777777"
+    await _seed_auto_market(database, condition_id)
+    amounts = ("35", "40") if rule == "new_account" else ("50", "60")
+    config = await _auto_follow_config(
+        database,
+        **{
+            f"{rule}_auto_follow_enabled": True,
+            f"{rule}_auto_follow_min_price": Decimal("0.60"),
+            f"{rule}_auto_follow_source_tiers_enabled": enabled,
+            f"{rule}_auto_follow_source_tiers_json": json.dumps(
+                [
+                    {"min_source_amount_usdc": threshold, "follow_amount_usdc": amount}
+                    for threshold, amount in zip(("1000000", "2000000"), amounts, strict=True)
+                ]
+            ),
+            f"{rule}_auto_follow_low_price_max_price": Decimal("0.65"),
+            f"{rule}_auto_follow_low_price_amount_usdc": Decimal("3"),
+        },
+    )
+    aggregate = replace(
+        _auto_aggregate(wallet=wallet, asset_id="asset-yes", condition_id=condition_id),
+        gross_buy_usdc=Decimal(source),
+    )
+    scanner = build_scanner(database)
+    kwargs = {
+        "rule_matches": {(wallet, "asset-yes"): {"new_account", "large_amount"}},
+        "positions_by_wallet": {
+            wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            }
+        },
+        "failed_wallets": set(),
+        "config": config,
+        "now": utcnow(),
+        "window_start": utcnow() - timedelta(hours=24),
+    }
+    pending = await scanner._persist_entries([aggregate], **kwargs)
+    assert len(pending) == 1
+    async with database.sessions() as session:
+        decision = await session.get(WhaleAutoFollowDecision, pending[0])
+        assert decision.selected_rule == rule
+        assert decision.source_buy_amount_usdc.quantize(Decimal("0.01")) == Decimal(source)
+        assert decision.source_tier_min_usdc == (Decimal(expected_tier) if expected_tier else None)
+        expected_amount = (
+            Decimal(amounts[0 if expected_tier == "1000000" else 1])
+            if expected_tier
+            else config[f"{rule}_auto_follow_amount_usdc"]
+        )
+        assert decision.configured_amount_usdc == expected_amount
+        assert decision.amount_basis == ("source_tier" if expected_tier else "strategy")
+        assert decision.configured_low_price_amount_usdc == (
+            None if expected_tier else Decimal("3")
+        )
+    assert (
+        await scanner._persist_entries(
+            [replace(aggregate, gross_buy_usdc=Decimal("4000000"))], **kwargs
+        )
+        == []
+    )
+    async with database.sessions() as session:
+        decision = await session.get(WhaleAutoFollowDecision, pending[0])
+        assert decision.configured_amount_usdc == expected_amount
+        assert decision.source_buy_amount_usdc.quantize(Decimal("0.01")) == Decimal(source)
+
+    quote_follow = AsyncMock(side_effect=ValueError("模拟报价拒绝，不执行交易"))
+    scanner.executor = SimpleNamespace(quote_follow=quote_follow)
+    await scanner._process_auto_decisions(pending)
+    quote_follow.assert_awaited_once()
+    assert quote_follow.call_args.kwargs["amount_usdc"] == expected_amount
+    assert quote_follow.call_args.kwargs["low_price_amount_usdc"] == (
+        None if expected_tier else Decimal("3")
+    )
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        "below",
+        "above",
+        "min",
+        "max",
+        "in_range",
+        "empty",
+        "error",
+        "disabled",
+        "category",
+        "source_failed",
+    ],
+)
+@pytest.mark.parametrize("priority_enabled", [True, False])
+async def test_conflict_requires_strategy_qualified_quote(
+    database,
+    gate: str,
+    priority_enabled: bool,
+):
+    held_rule = opposite_rule = "large_amount"
+    should_exit = gate in {"min", "max", "in_range"}
+    condition_id = "0x" + ("a" if should_exit else "b") * 64
+    held_wallet = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    opposite_wallet = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    await _seed_auto_market(database, condition_id)
+    config = await _auto_follow_config(
+        database,
+        new_account_auto_follow_enabled=True,
+        large_amount_auto_follow_enabled=True,
+        large_amount_conflict_priority_enabled=priority_enabled,
+    )
+    held = _auto_aggregate(
+        wallet=held_wallet,
+        asset_id="asset-yes",
+        condition_id=condition_id,
+    )
+    scanner = build_scanner(database)
+    initial_pending = await scanner._persist_entries(
+        [held],
+        rule_matches={(held_wallet, "asset-yes"): {held_rule}},
+        positions_by_wallet={
+            held_wallet: {
+                "asset-yes": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-yes",
+                    avg_price=Decimal("0.60"),
+                )
+            }
+        },
+        failed_wallets=set(),
+        config=config,
+        now=utcnow(),
+        window_start=utcnow() - timedelta(hours=24),
+    )
+    assert len(initial_pending) == 1
+    await _fill_auto_decision(database, initial_pending[0])
+
+    opposite = _auto_aggregate(
+        wallet=opposite_wallet,
+        asset_id="asset-no",
+        condition_id=condition_id,
+        outcome="No",
+        outcome_index=1,
+    )
+    config["large_amount_auto_follow_min_price"] = Decimal("0.49")
+    config["large_amount_auto_follow_max_price"] = Decimal("0.68")
+    ask = {"below": "0.45", "above": "0.69", "min": "0.49", "max": "0.68"}.get(gate, "0.60")
+    scanner.client.fetch_order_book = AsyncMock(
+        return_value=SimpleNamespace(best_ask=None if gate == "empty" else Decimal(ask)),
+        side_effect=RuntimeError("quote unavailable") if gate == "error" else None,
+    )
+    if gate == "disabled":
+        config["large_amount_auto_follow_enabled"] = False
+    if gate == "category":
+        config["large_amount_auto_follow_categories_json"] = '["politics"]'
+    if gate == "source_failed":
+        failed = {opposite_wallet}
+    else:
+        failed = set()
+    await scanner._persist_entries(
+        [opposite],
+        rule_matches={(opposite_wallet, "asset-no"): {opposite_rule}},
+        positions_by_wallet={
+            # 优先级模式下，原触发钱包退出也不能改变已成交仓位的策略等级。
+            held_wallet: (
+                {}
+                if priority_enabled
+                else {
+                    "asset-yes": SimpleNamespace(
+                        size=Decimal("1000000"),
+                        condition_id=condition_id,
+                        asset_id="asset-yes",
+                        avg_price=Decimal("0.60"),
+                    )
+                }
+            ),
+            opposite_wallet: {
+                "asset-no": SimpleNamespace(
+                    size=Decimal("1000000"),
+                    condition_id=condition_id,
+                    asset_id="asset-no",
+                    avg_price=Decimal("0.60"),
+                )
+            },
+        },
+        failed_wallets=failed,
+        config=config,
+        now=utcnow(),
+        window_start=utcnow() - timedelta(hours=24),
+    )
+
+    async with database.sessions() as session:
+        decisions = {
+            decision.asset_id: decision
+            for decision in await session.scalars(select(WhaleAutoFollowDecision))
+        }
+        market_lock = await session.get(WhaleAutoMarketLock, condition_id)
+    assert decisions["asset-yes"].status == ("exit_pending" if should_exit else "bought")
+    assert (decisions["asset-no"].status == "conflict_locked") is should_exit
+    assert (market_lock is not None) is should_exit
+    if market_lock is not None:
+        assert market_lock.exit_status == "pending"
+        assert market_lock.trigger_asset_id == "asset-no"
+
+    if should_exit:
+        async with database.sessions() as session:
+            position = await session.scalar(select(WhaleFollowPosition))
+            position.size = Decimal("0")
+            position.status = "redeemed"
+            lock = await session.get(WhaleAutoMarketLock, condition_id)
+            lock.last_error = "卖出报价失败"
+            await session.commit()
+        scanner.executor = SimpleNamespace()
+        await scanner._process_conflict_exits()
+        async with database.sessions() as session:
+            decision = await session.get(WhaleAutoFollowDecision, initial_pending[0])
+            lock = await session.get(WhaleAutoMarketLock, condition_id)
+            assert decision.status == "exit_ended"
+            assert decision.reason == "已赎回，退出任务结束；此前退出失败：卖出报价失败"
+            assert lock.exit_status == "ended"
+            assert lock.last_error == "卖出报价失败"
+
+        # Old rows are corrected for display and filtering without a data rewrite.
+        async with database.sessions() as session:
+            decision = await session.get(WhaleAutoFollowDecision, initial_pending[0])
+            decision.status = "exit_completed"
+            decision.reason = "分歧市场风控退出已完成"
+            await session.commit()
+        page = await list_whale_auto_decisions(database, status="exit_ended")
+        assert page["total"] == 1
+        assert page["items"][0]["reason"] == "已赎回，退出任务结束"
+        async with database.sessions() as session:
+            decision = await session.get(WhaleAutoFollowDecision, initial_pending[0])
+            assert decision.status == "exit_completed"

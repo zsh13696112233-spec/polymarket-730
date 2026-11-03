@@ -76,6 +76,13 @@ class HealthRead(APIModel):
     database: Literal["ok"]
 
 
+class WhaleSourceAmountTier(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_source_amount_usdc: Decimal = Field(gt=0)
+    follow_amount_usdc: Decimal = Field(gt=0)
+
+
 class WhaleSettingsRead(APIModel):
     id: int = 1
     enabled: bool
@@ -84,7 +91,10 @@ class WhaleSettingsRead(APIModel):
     new_account_threshold_usdc: DecimalNumber
     large_amount_threshold_usdc: DecimalNumber
     monitor_categories: list[WhaleCategorySelection]
-    dual_match_auto_follow_amount_usdc: DecimalNumber | None
+    new_account_auto_follow_source_tiers_enabled: bool = False
+    new_account_auto_follow_source_tiers: list[WhaleSourceAmountTier] = Field(default_factory=list)
+    large_amount_auto_follow_source_tiers_enabled: bool = False
+    large_amount_auto_follow_source_tiers: list[WhaleSourceAmountTier] = Field(default_factory=list)
     new_account_auto_follow_enabled: bool
     new_account_auto_follow_amount_usdc: DecimalNumber
     new_account_auto_follow_min_price: DecimalNumber
@@ -152,7 +162,10 @@ class WhaleSettingsUpdate(APIModel):
     new_account_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     large_amount_threshold_usdc: Decimal | None = Field(default=None, gt=0)
     monitor_categories: list[WhaleCategorySelection] | None = Field(default=None, min_length=1)
-    dual_match_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
+    new_account_auto_follow_source_tiers_enabled: bool | None = None
+    new_account_auto_follow_source_tiers: list[WhaleSourceAmountTier] | None = None
+    large_amount_auto_follow_source_tiers_enabled: bool | None = None
+    large_amount_auto_follow_source_tiers: list[WhaleSourceAmountTier] | None = None
     new_account_auto_follow_enabled: bool | None = None
     new_account_auto_follow_amount_usdc: Decimal | None = Field(default=None, gt=0)
     new_account_auto_follow_min_price: Decimal | None = Field(default=None, gt=0, lt=1)
@@ -254,13 +267,24 @@ class WhaleSettingsUpdate(APIModel):
 class WhaleConfigSettings(WhaleSettingsUpdate):
     """Complete v1 snapshot: missing settings must never silently use defaults."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_retired_dual_match_amount(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            value.pop("dual_match_auto_follow_amount_usdc", None)
+        return value
+
     enabled: bool
     window_hours: int = Field(gt=0)
     registration_window_days: int = Field(ge=1, le=30)
     new_account_threshold_usdc: Decimal = Field(gt=0)
     large_amount_threshold_usdc: Decimal = Field(gt=0)
     monitor_categories: list[WhaleCategorySelection] = Field(min_length=1)
-    dual_match_auto_follow_amount_usdc: Decimal | None = Field(gt=0)
+    new_account_auto_follow_source_tiers_enabled: bool = False
+    new_account_auto_follow_source_tiers: list[WhaleSourceAmountTier] = Field(default_factory=list)
+    large_amount_auto_follow_source_tiers_enabled: bool = False
+    large_amount_auto_follow_source_tiers: list[WhaleSourceAmountTier] = Field(default_factory=list)
     new_account_auto_follow_enabled: bool
     new_account_auto_follow_amount_usdc: Decimal = Field(gt=0)
     new_account_auto_follow_min_price: Decimal = Field(gt=0, lt=1)
@@ -359,6 +383,9 @@ class WhaleAutoDecisionRead(APIModel):
     selected_rule: Literal["new_account", "large_amount"] | None
     category: WhaleMarketCategory
     category_label: str
+    source_buy_amount_usdc: DecimalNumber | None = None
+    source_tier_min_usdc: DecimalNumber | None = None
+    amount_basis: str | None = None
     configured_amount_usdc: DecimalNumber | None
     configured_min_price: DecimalNumber | None
     configured_max_price: DecimalNumber | None

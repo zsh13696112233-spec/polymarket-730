@@ -21,7 +21,6 @@ from backend.whale_requests import current_whale_request_capture
 
 ADDRESS_RE = re.compile(r"0x[a-fA-F0-9]{40}")
 ZERO = Decimal("0")
-SDK_DATA_API_URL = "https://data-api.polymarket.com"
 SDK_GAMMA_API_URL = "https://gamma-api.polymarket.com"
 PROXY_ENVIRONMENT_KEYS = (
     "HTTP_PROXY",
@@ -381,7 +380,7 @@ def parse_datetime(value: Any) -> datetime | None:
 
 class PolymarketClient:
     POSITION_PAGE_SIZE = 500
-    TRADE_MARKET_BATCH_SIZE = 100
+    TRADE_MARKET_BATCH_SIZE = 20
     MARKET_RESOLUTION_BATCH_SIZE = 100
     LARGE_TRADE_REQUEST_INTERVAL_SECONDS = 0.5
 
@@ -468,6 +467,164 @@ class PolymarketClient:
         finally:
             await asyncio.shield(client.aclose())
             self._retired_http_clients.discard(client)
+
+    @staticmethod
+    def _data_row(item: dict[str, Any]) -> dict[str, Any]:
+        """Translate the v2 wire vocabulary into the existing snapshot vocabulary."""
+        aliases = {
+            "token_id": "asset",
+            "condition_id": "conditionId",
+            "proxy_wallet": "proxyWallet",
+            "outcome_index": "outcomeIndex",
+            "event_slug": "eventSlug",
+            "transaction_hash": "transactionHash",
+            "profile_image": "profileImage",
+            "profile_image_optimized": "profileImageOptimized",
+            "current_size": "size",
+            "avg_price": "avgPrice",
+            "current_price": "curPrice",
+            "entry_cost_usdc": "initialValue",
+            "current_value": "currentValue",
+            "total_pnl": "cashPnl",
+            "percent_pnl": "percentPnl",
+            "total_size": "totalBought",
+            "realized_pnl": "realizedPnl",
+            "end_date": "endDate",
+            "last_event_at": "timestamp",
+            "usdc_size": "usdcSize",
+        }
+        row = {aliases.get(key, key): value for key, value in item.items()}
+        if "holders" in row:
+            row["token"] = item.get("token_id")
+            row["holders"] = [PolymarketClient._data_row(holder) for holder in row["holders"]]
+        if row.get("outcomeIndex") == 999:
+            row["outcomeIndex"] = None
+        return row
+
+    async def _get_data_json(self, url: str, *, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Serve a logical page to existing callers using only v2 cursor requests.
+
+        Offsets are local row counts, including persisted scanner checkpoints. Never
+        send them upstream. Fill short/empty provider pages before reporting completion.
+        Replaying a walk also lets persisted checkpoints survive process restarts.
+        """
+        route = url.rsplit("/", 1)[-1]
+        query = dict(params)
+        offset = int(query.pop("offset", 0))
+        limit = int(query.get("limit", 500))
+        conditions = list(dict.fromkeys(str(query.pop("market", "")).split(",")))
+        conditions = [condition for condition in conditions if condition]
+        if len(conditions) > 20:
+            rows = []
+            # Preserve a deterministic concatenated logical page across market batches.
+            for index in range(0, len(conditions), 20):
+                batch_offset = 0
+                while True:
+                    page = await self._get_data_json(
+                        url,
+                        params={
+                            **params,
+                            "market": ",".join(conditions[index : index + 20]),
+                            "offset": batch_offset,
+                            "limit": limit,
+                        },
+                    )
+                    rows.extend(page)
+                    if len(rows) >= offset + limit:
+                        return rows[offset : offset + limit]
+                    if len(page) < limit:
+                        break
+                    batch_offset += limit
+                if len(rows) >= offset + limit:
+                    break
+            return rows[offset : offset + limit]
+        if conditions:
+            query["condition"] = ",".join(conditions)
+        redeemable = query.pop("redeemable", None)
+        mergeable = query.pop("mergeable", None)
+        if route == "closed-positions":
+            route = "positions"
+            query["status"] = "CLOSED"
+        if route == "positions":
+            if redeemable is not None:
+                query["status"] = "REDEEMABLE" if redeemable == "true" else "OPEN"
+            query["filter_type"] = "TOKENS"
+            query["filter_amount"] = query.pop("sizeThreshold", 0)
+            if query.get("sortBy") == "CURRENT":
+                query["sortBy"] = "CURRENT_VALUE"
+            if query.get("status") != "CLOSED":
+                query["include_archived"] = "true"
+        base = self.data_api_url.removesuffix("/v2").removesuffix("/v1")
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for _ in range(1000):
+            payload = await self._get_json(f"{base}/v2/{route}", params=query)
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                raise PolymarketAPIError("Data API v2 返回格式无效，请检查接口配置")
+            pagination = payload.get("pagination")
+            if not isinstance(pagination, dict) or "next_cursor" not in pagination:
+                raise PolymarketAPIError("Data API v2 缺少分页信息，无法确认完整覆盖")
+            cursor = pagination["next_cursor"]
+            if (cursor is not None and (not isinstance(cursor, str) or not cursor)) or (
+                pagination.get("has_more") is not (cursor is not None)
+            ):
+                raise PolymarketAPIError("Data API v2 分页信息矛盾，无法确认完整覆盖")
+            if cursor is not None and cursor in seen:
+                raise PolymarketAPIError("Data API v2 游标重复，无法确认完整覆盖")
+            passed_start = False
+            for item in payload["data"]:
+                if not isinstance(item, dict):
+                    raise PolymarketAPIError("Data API v2 包含无效记录，无法确认完整覆盖")
+                row = self._data_row(item)
+                if route in {"positions", "trades"}:
+                    required = ("token_id", "condition_id")
+                    if any(not item.get(key) for key in required):
+                        raise PolymarketAPIError("Data API v2 缺少持仓或成交标识，无法核验数据")
+                if route == "positions":
+                    fields = ("avg_price", "total_size", "realized_pnl")
+                    if query.get("status") != "CLOSED":
+                        fields += ("current_size", "current_price", "current_value")
+                    for field in fields:
+                        try:
+                            value = Decimal(str(item.get(field)))
+                            if not value.is_finite():
+                                raise InvalidOperation
+                        except InvalidOperation as error:
+                            raise PolymarketAPIError(
+                                "Data API v2 持仓数值缺失或无效，无法核验持仓"
+                            ) from error
+                if route == "trades":
+                    if (
+                        str(row.get("side", "")).upper() not in {"BUY", "SELL"}
+                        or not row.get("proxyWallet")
+                        and not query.get("user")
+                        or to_decimal(row.get("size")) <= ZERO
+                        or not ZERO < to_decimal(row.get("price")) <= Decimal("1")
+                    ):
+                        raise PolymarketAPIError("Data API v2 成交记录无效，无法确认完整覆盖")
+                if route == "trades" and not query.get("user"):
+                    timestamp = self._trade_datetime(row.get("timestamp"))
+                    if timestamp is None:
+                        raise PolymarketAPIError("成交缺少有效时间，无法确认完整覆盖")
+                    epoch = int(timestamp.replace(tzinfo=UTC).timestamp())
+                    if epoch < int(query.get("start", 0)):
+                        passed_start = True
+                        continue
+                    if epoch > int(query.get("end", epoch)):
+                        continue
+                if route == "positions" and mergeable is not None:
+                    if not isinstance(item.get("mergeable"), bool):
+                        raise PolymarketAPIError("持仓缺少 mergeable 状态，无法核验完整持仓")
+                    if item["mergeable"] != (mergeable == "true"):
+                        continue
+                rows.append(row)
+            if route == "holders":
+                return rows  # Deliberately only the requested top N per outcome.
+            if len(rows) >= offset + limit or cursor is None or passed_start:
+                return rows[offset : offset + limit]
+            seen.add(cursor)
+            query["cursor"] = cursor
+        raise PolymarketAPIError("Data API v2 分页超过安全上限，请缩小查询范围后重试")
 
     async def _get_json(
         self,
@@ -668,8 +825,8 @@ class PolymarketClient:
     ) -> list[LargeTradeSnapshot]:
         """Fetch one descending Data API page for the whale scanner.
 
-        Both time boundaries are sent to the provider. The scanner also checks
-        them locally and partitions busy market windows to avoid the offset cap.
+        The v2 adapter enforces time boundaries locally and follows cursors;
+        offset remains a local checkpoint for the scanner.
         """
 
         if filter_amount_usdc < ZERO:
@@ -688,7 +845,7 @@ class PolymarketClient:
                 if delay > 0:
                     await asyncio.sleep(delay)
             self._last_large_trade_request_at = monotonic()
-            payload = await self._get_json(
+            payload = await self._get_data_json(
                 f"{self.data_api_url}/trades",
                 params={
                     "filterType": "CASH",
@@ -916,7 +1073,7 @@ class PolymarketClient:
         async def fetch_batch(batch: list[str]) -> Any:
             for attempt in range(5):
                 try:
-                    return await self._get_json(
+                    return await self._get_data_json(
                         f"{self.data_api_url}/holders",
                         params={
                             "market": ",".join(batch),
@@ -930,7 +1087,7 @@ class PolymarketClient:
                     await asyncio.sleep(max(0.1, float(error.retry_after or (attempt + 1))))
             raise AssertionError("unreachable")
 
-        batches = [conditions[offset : offset + 50] for offset in range(0, len(conditions), 50)]
+        batches = [conditions[offset : offset + 20] for offset in range(0, len(conditions), 20)]
         for offset in range(0, len(batches), 5):
             payloads = await asyncio.gather(
                 *(fetch_batch(batch) for batch in batches[offset : offset + 5])
@@ -977,61 +1134,39 @@ class PolymarketClient:
 
         if not 0 < limit <= 500:
             raise ValueError("市场持仓数量必须在 1 到 500 之间")
-        try:
-            from polymarket import AsyncPublicClient
-
-            async with AsyncPublicClient() as sdk:
-                page = await self._monitored_sdk_request(
-                    sdk.list_market_positions(
-                        market=condition_id,
-                        status="OPEN",
-                        sort_by="TOKENS",
-                        sort_direction="DESC",
-                        page_size=limit,
-                    ).first_page(),
-                    url=f"{SDK_DATA_API_URL}/v1/market-positions",
-                    params={
-                        "market": condition_id,
-                        "status": "OPEN",
-                        "sortBy": "TOKENS",
-                        "sortDirection": "DESC",
-                        "limit": limit,
-                    },
-                )
-        except Exception as error:
-            raise self._sdk_api_error("公开 SDK 市场持仓查询失败", error) from error
+        rows = await self._get_data_json(
+            f"{self.data_api_url}/positions",
+            params={
+                "market": condition_id,
+                "status": "OPEN",
+                "sortBy": "TOKENS",
+                "sortDirection": "DESC",
+                "limit": limit,
+            },
+        )
         positions: list[WhaleMarketPositionSnapshot] = []
-        for token_group in page.items:
-            group_asset_id = str(token_group.token or "")
-            for item in token_group.positions or ():
-                wallet = str(item.wallet or "").lower()
-                asset_id = str(item.token_id or group_asset_id)
-                linked_condition_id = str(item.condition_id or condition_id)
-                size = item.size or ZERO
-                if (
-                    not wallet
-                    or not asset_id
-                    or linked_condition_id != condition_id
-                    or size <= ZERO
-                ):
-                    continue
-                positions.append(
-                    WhaleMarketPositionSnapshot(
-                        proxy_wallet=wallet,
-                        asset_id=asset_id,
-                        condition_id=linked_condition_id,
-                        outcome=item.outcome or "",
-                        outcome_index=item.outcome_index or 0,
-                        size=size,
-                        total_bought=item.total_bought or ZERO,
-                        avg_price=item.avg_price or ZERO,
-                        current_price=item.cur_price or ZERO,
-                        current_value=item.current_value or ZERO,
-                        display_name=self._optional_text(item.name),
-                        profile_image_url=self._optional_text(item.profile_image),
-                        verified_badge=bool(item.verified),
-                    )
+        for item in rows:
+            position = self._parse_position(item)
+            wallet = str(item.get("proxyWallet") or "").lower()
+            if not wallet or position.condition_id != condition_id or position.size <= ZERO:
+                raise PolymarketAPIError("市场持仓记录无效，无法核验持仓归属")
+            positions.append(
+                WhaleMarketPositionSnapshot(
+                    proxy_wallet=wallet,
+                    asset_id=position.asset_id,
+                    condition_id=position.condition_id,
+                    outcome=position.outcome,
+                    outcome_index=position.outcome_index or 0,
+                    size=position.size,
+                    total_bought=position.total_bought,
+                    avg_price=position.avg_price,
+                    current_price=position.current_price,
+                    current_value=position.current_value,
+                    display_name=self._optional_text(item.get("name")),
+                    profile_image_url=self._optional_text(item.get("profileImage")),
+                    verified_badge=bool(item.get("verified")),
                 )
+            )
         return positions
 
     async def fetch_public_profile(self, address: str) -> WhalePublicProfile | None:
@@ -1164,20 +1299,24 @@ class PolymarketClient:
             from polymarket import AsyncPublicClient
 
             async with AsyncPublicClient() as sdk:
-                if is_sports_event:
-                    event = await sdk.get_event(slug=routed_segments[-1])
-                    event_title = event.title or routed_segments[-1]
-                    event_slug = event.slug
-                    markets = event.markets
-                elif is_event:
+                if is_sports_event or is_event:
                     event = (
                         await sdk.get_event(slug=routed_segments[-1])
-                        if has_locale_prefix
+                        if has_locale_prefix or is_sports_event
                         else await sdk.get_event(url=value)
                     )
                     event_title = event.title or routed_segments[-1]
                     event_slug = event.slug
-                    markets = event.markets
+                    markets = [(market, event_slug) for market in event.markets]
+                    # Sports pages also display markets from child events (e.g. BTTS).
+                    async for related in sdk.list_events(
+                        slug=event_slug or routed_segments[-1],
+                        include_children=True,
+                        closed=bool(event.state.closed),
+                        page_size=100,
+                    ).iter_items():
+                        if related.parent_event_id == event.id:
+                            markets.extend((market, related.slug) for market in related.markets)
                 else:
                     market = (
                         await sdk.get_market(slug=routed_segments[-1])
@@ -1189,20 +1328,24 @@ class PolymarketClient:
                         first_event.title if first_event and first_event.title else market.question
                     ) or routed_segments[-1]
                     event_slug = first_event.slug if first_event else None
-                    markets = (market,)
+                    markets = [(market, event_slug)]
         except InvalidWalletInput:
             raise
         except Exception as error:
             raise PolymarketAPIError(f"无法通过官方 SDK 解析市场链接：{error}") from error
 
         snapshots: list[WhaleMarketSnapshot] = []
-        for market in markets:
+        seen_conditions: set[str] = set()
+        for market, source_event_slug in markets:
             outcomes = (market.outcomes.yes, market.outcomes.no)
             token_ids = tuple(
                 str(item.token_id) if item.token_id is not None else "" for item in outcomes
             )
             if not market.condition_id or any(not token_id for token_id in token_ids):
                 continue
+            if str(market.condition_id) in seen_conditions:
+                continue
+            seen_conditions.add(str(market.condition_id))
             fee_schedule = market.trading.fee_schedule
             market_event = market.events[0] if market.events else None
             snapshots.append(
@@ -1210,7 +1353,7 @@ class PolymarketClient:
                     condition_id=str(market.condition_id),
                     title=market.question or market.group_item_title or event_title,
                     market_slug=market.slug,
-                    event_slug=(market_event.slug if market_event else None) or event_slug,
+                    event_slug=(market_event.slug if market_event else None) or source_event_slug,
                     icon_url=market.icon or market.image,
                     tags=tuple(
                         OfficialTag(id=str(tag.id), slug=tag.slug or "", label=tag.label or "")
@@ -1668,7 +1811,7 @@ class PolymarketClient:
         limit = 50
         results: list[ClosedPositionSnapshot] = []
         while True:
-            payload = await self._get_json(
+            payload = await self._get_data_json(
                 f"{self.data_api_url}/closed-positions",
                 params={
                     "user": user,
@@ -1733,7 +1876,7 @@ class PolymarketClient:
             }
             if market:
                 params["market"] = market
-            payload = await self._get_json(
+            payload = await self._get_data_json(
                 f"{self.data_api_url}/positions",
                 params=params,
             )
@@ -1869,7 +2012,7 @@ class PolymarketClient:
             }
             if start is not None:
                 params["start"] = int(start.replace(tzinfo=UTC).timestamp())
-            payload = await self._get_json(
+            payload = await self._get_data_json(
                 f"{self.data_api_url}/activity",
                 params=params,
             )
@@ -1904,7 +2047,7 @@ class PolymarketClient:
                 params["start"] = int(start.replace(tzinfo=UTC).timestamp())
             if end is not None:
                 params["end"] = int(end.replace(tzinfo=UTC).timestamp())
-            payload = await self._get_json(
+            payload = await self._get_data_json(
                 f"{self.data_api_url}/activity",
                 params=params,
             )
@@ -1982,7 +2125,7 @@ class PolymarketClient:
                     params["start"] = int(start.replace(tzinfo=UTC).timestamp())
                 if end is not None:
                     params["end"] = int(end.replace(tzinfo=UTC).timestamp())
-                payload = await self._get_json(
+                payload = await self._get_data_json(
                     f"{self.data_api_url}/trades",
                     params=params,
                 )

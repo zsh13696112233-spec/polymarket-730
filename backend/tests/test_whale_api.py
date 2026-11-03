@@ -1363,33 +1363,15 @@ def test_verified_position_quality_fields_are_exposed_in_market_contract(app_cli
     assert entry["position_checked_at"].endswith("Z")
 
 
-def test_dual_match_amount_settings_validation_and_clear(app_client_factory):
+def test_retired_dual_match_amount_is_not_exposed_or_writable(app_client_factory):
     client, _ = app_client_factory([[]])
     endpoint = "/api/whales/settings"
     key = "dual_match_auto_follow_amount_usdc"
-    assert client.get(endpoint).json()[key] is None
-    for amount in (0, -1, 201):
-        assert client.put(endpoint, json={key: amount}).status_code == 422
-    response = client.put(endpoint, json={key: 25})
-    assert response.status_code == 200, response.text
-    assert Decimal(str(response.json()[key])) == Decimal("25")
-    assert Decimal(str(client.get(endpoint).json()[key])) == Decimal("25")
-    assert client.put(endpoint, json={"window_hours": 24}).json()[key] == response.json()[key]
-    assert (
-        client.put(
-            endpoint,
-            json={
-                "new_account_auto_follow_enabled": True,
-                "auto_follow_market_max_purchase_count": 2,
-                "auto_follow_market_max_amount_usdc": 20,
-            },
-        ).status_code
-        == 422
-    )
-    response = client.put(endpoint, json={key: None})
-    assert response.status_code == 200, response.text
-    assert response.json()[key] is None
-    assert client.get(endpoint).json()[key] is None
+    assert key not in client.get(endpoint).json()
+    assert client.put(endpoint, json={key: 25}).status_code == 422
+    response = client.put(endpoint, json={"window_hours": 24})
+    assert response.status_code == 200
+    assert key not in response.json()
 
 
 @pytest.mark.parametrize(
@@ -1542,3 +1524,52 @@ def test_subcategory_settings_round_trip(app_client_factory, field):
     assert response.json()[field] == ["sports", "dota-2"]
     for invalid in ([], ["unknown-sport"]):
         assert client.put("/api/whales/settings", json={field: invalid}).status_code == 422
+
+
+def test_source_amount_tier_settings_round_trip_and_limits(app_client_factory):
+    client, _ = app_client_factory([[]])
+    endpoint = "/api/whales/settings"
+    key = "new_account_auto_follow_source_tiers"
+    enabled = f"{key}_enabled"
+    tiers = [
+        {"min_source_amount_usdc": "1000000", "follow_amount_usdc": "35"},
+        {"min_source_amount_usdc": "2000000", "follow_amount_usdc": "40"},
+    ]
+    response = client.put(endpoint, json={enabled: True, key: tiers})
+    assert response.status_code == 200, response.text
+    assert response.json()[key] == tiers
+    assert client.get(endpoint).json()[enabled] is True
+    for invalid in [
+        [],
+        list(reversed(tiers)),
+        [tiers[0], tiers[0]],
+        [{"min_source_amount_usdc": "0", "follow_amount_usdc": "35"}],
+        [{"min_source_amount_usdc": "1000000", "follow_amount_usdc": "201"}],
+        [{"min_source_amount_usdc": "1000000", "follow_amount_usdc": "1"}],
+    ]:
+        assert client.put(endpoint, json={key: invalid}).status_code == 422
+    assert client.put(endpoint, json={"max_follow_amount_usdc": 39}).status_code == 422
+    assert (
+        client.put(
+            endpoint,
+            json={
+                "new_account_auto_follow_enabled": True,
+                "auto_follow_market_max_purchase_count": 2,
+                "auto_follow_market_max_amount_usdc": 39,
+            },
+        ).status_code
+        == 422
+    )
+    assert (
+        client.put(
+            endpoint,
+            json={
+                "new_account_auto_follow_enabled": True,
+                "auto_follow_market_max_purchase_count": 2,
+                "auto_follow_market_max_amount_usdc": 40,
+            },
+        ).status_code
+        == 200
+    )
+    assert client.put(endpoint, json={enabled: False}).json()[key] == tiers
+    assert client.put(endpoint, json={key: []}).status_code == 200

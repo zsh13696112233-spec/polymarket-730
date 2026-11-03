@@ -30,6 +30,12 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
+    if (
+        len(args.account) == 42
+        and args.account[:2].lower() == "0x"
+        and all(char in "0123456789abcdefABCDEF" for char in args.account[2:])
+    ):
+        args.account = args.account.lower()
     reference = KeychainReference(service=args.service, account=args.account)
     keychain = MacOSKeychain()
     builder_reference = KeychainReference(

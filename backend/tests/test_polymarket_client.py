@@ -114,6 +114,8 @@ def test_configure_polymarket_proxy_overrides_process_proxy_environment(monkeypa
     [
         "zh/sports/epl/epl-che-bri-2026-08-30",
         "sports/epl/epl-che-bri-2026-08-30",
+        "zh/esports/league-of-legends/worlds/lol-dk-blg-2026-11-03",
+        "esports/league-of-legends/worlds/lol-dk-blg-2026-11-03",
         "zh/event/epl-che-bri-2026-08-30",
         "event/epl-che-bri-2026-08-30",
         "market/test-market",
@@ -185,7 +187,7 @@ async def test_resolve_market_url_includes_child_markets_only_for_event_links(
             if path.startswith("event/"):
                 assert kwargs == {"url": f"https://polymarket.com/{path}"}
             else:
-                assert kwargs == {"slug": "epl-che-bri-2026-08-30"}
+                assert kwargs == {"slug": path.rsplit("/", 1)[-1]}
             return event
 
         async def get_market(self, **kwargs):

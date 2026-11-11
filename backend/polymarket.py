@@ -1289,10 +1289,10 @@ class PolymarketClient:
             len(routed_segments) == 3
             and routed_segments[0] == "sports"
             and all(routed_segments[1:])
-        )
+        ) or (len(routed_segments) == 4 and routed_segments[0] == "esports")
         if not is_event and not is_market and not is_sports_event:
             raise InvalidWalletInput(
-                "市场链接路径无效，请粘贴 Polymarket event、market 或 sports 链接"
+                "市场链接路径无效，请粘贴 Polymarket event、market、sports 或 esports 链接"
             )
 
         try:
